@@ -22,12 +22,6 @@ func main() {
 		dbPath = "/data/vedetta.db"
 	}
 
-	scanCIDR := os.Getenv("VEDETTA_SCAN_CIDR")
-	scanInterval := os.Getenv("VEDETTA_SCAN_INTERVAL")
-	if scanInterval == "" {
-		scanInterval = "5m"
-	}
-
 	// Open database
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -35,32 +29,41 @@ func main() {
 	}
 	defer db.Close()
 
-	// Auto-detect subnet if not explicitly configured
-	if scanCIDR == "" || scanCIDR == "auto" {
-		detected := discovery.BestSubnet("192.168.1.0/24")
-		log.Printf("Auto-detected scan subnet: %s", detected)
-		scanCIDR = detected
-	}
-
-	// Set up the API server
+	// Set up the API server (Core)
 	srv := &api.Server{DB: db}
 
-	// Set up nmap scanner (optional — may not be available)
-	scanner, err := discovery.NewScanner()
-	if err != nil {
-		log.Printf("WARNING: nmap not available — network scanning disabled: %v", err)
-	} else {
-		interval, err := time.ParseDuration(scanInterval)
-		if err != nil {
+	// Optional: built-in scanner for Linux host-network deployments.
+	// The primary discovery path is via native sensors (vedetta-sensor).
+	scanner, scanErr := discovery.NewScanner()
+	if scanErr == nil {
+		scanCIDR := os.Getenv("VEDETTA_SCAN_CIDR")
+		if scanCIDR == "" || scanCIDR == "auto" {
+			scanCIDR = discovery.BestSubnet("")
+		}
+
+		scanInterval := os.Getenv("VEDETTA_SCAN_INTERVAL")
+		if scanInterval == "" {
+			scanInterval = "5m"
+		}
+		interval, _ := time.ParseDuration(scanInterval)
+		if interval == 0 {
 			interval = 5 * time.Minute
 		}
 
 		withPorts := os.Getenv("VEDETTA_SCAN_PORTS") == "true"
 		targetAdapter := &store.TargetAdapter{DB: db}
-		scheduler := discovery.NewScheduler(scanner, db, targetAdapter, scanCIDR, interval, withPorts)
-		srv.Scheduler = scheduler
-		scheduler.Start()
-		defer scheduler.Stop()
+
+		if scanCIDR != "" {
+			scheduler := discovery.NewScheduler(scanner, db, targetAdapter, scanCIDR, interval, withPorts)
+			srv.Scheduler = scheduler
+			scheduler.Start()
+			defer scheduler.Stop()
+			log.Printf("Built-in scanner active: cidr=%s interval=%s", scanCIDR, interval)
+		} else {
+			log.Printf("nmap available but no subnet detected — waiting for sensor data or UI configuration")
+		}
+	} else {
+		log.Printf("nmap not available — Core will receive data from sensors")
 	}
 
 	router := api.NewRouter(srv)
@@ -73,7 +76,7 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("Vedetta backend starting on :%s (scan_cidr=%s, scan_interval=%s)", port, scanCIDR, scanInterval)
+	log.Printf("Vedetta Core starting on :%s", port)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)
 	}

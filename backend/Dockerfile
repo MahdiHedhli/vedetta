@@ -8,7 +8,7 @@ COPY . .
 RUN go mod tidy && CGO_ENABLED=1 GOOS=linux go build -o /vedetta ./cmd/vedetta
 
 FROM alpine:3.19
-RUN apk --no-cache add ca-certificates nmap nmap-scripts sqlite
+RUN apk --no-cache add ca-certificates sqlite
 
 COPY --from=builder /vedetta /usr/local/bin/vedetta
 

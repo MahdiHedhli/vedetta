@@ -3,6 +3,7 @@ package discovery
 import (
 	"fmt"
 	"net"
+	"os"
 	"sort"
 )
 
@@ -51,8 +52,8 @@ func DetectSubnets() ([]DetectedSubnet, error) {
 				continue
 			}
 
-			// Skip Docker bridge (typically 172.17.0.0/16 or 172.18-31.x.x)
-			if isDockerBridge(iface.Name, ip) {
+			// Skip Docker/container networks (bridges, Desktop VM, etc.)
+			if isDockerNetwork(iface.Name, ip) {
 				continue
 			}
 
@@ -82,7 +83,14 @@ func DetectSubnets() ([]DetectedSubnet, error) {
 }
 
 // BestSubnet returns the most likely LAN CIDR, or fallback.
+// When running inside Docker, detected interfaces are container-internal,
+// so this returns the fallback to trigger the frontend confirmation dialog.
 func BestSubnet(fallback string) string {
+	if IsInsideDocker() {
+		// Inside a container, interface detection shows container/VM networks
+		// not the host LAN. Return empty to trigger the subnet confirmation UI.
+		return ""
+	}
 	subnets, err := DetectSubnets()
 	if err != nil || len(subnets) == 0 {
 		return fallback
@@ -90,7 +98,36 @@ func BestSubnet(fallback string) string {
 	return subnets[0].CIDR
 }
 
-func isDockerBridge(name string, ip net.IP) bool {
+// IsInsideDocker checks if the process is running inside a Docker container.
+func IsInsideDocker() bool {
+	// Check for /.dockerenv (standard Docker marker)
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	// Check for container-specific cgroup
+	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		s := string(data)
+		if len(s) > 0 && (contains(s, "docker") || contains(s, "containerd") || contains(s, "kubepods")) {
+			return true
+		}
+	}
+	return false
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func isDockerNetwork(name string, ip net.IP) bool {
 	// Common Docker interface names
 	dockerNames := []string{"docker0", "br-", "veth"}
 	for _, dn := range dockerNames {
@@ -99,9 +136,19 @@ func isDockerBridge(name string, ip net.IP) bool {
 		}
 	}
 
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+
 	// Docker's default bridge uses 172.17.0.0/16
 	// User-defined bridges use 172.18-31.x.x
-	if ip[0] == 172 && ip[1] >= 17 && ip[1] <= 31 {
+	if ip4[0] == 172 && ip4[1] >= 17 && ip4[1] <= 31 {
+		return true
+	}
+
+	// Docker Desktop for Mac/Windows uses 192.168.65.0/24 VM network
+	if ip4[0] == 192 && ip4[1] == 168 && ip4[2] == 65 {
 		return true
 	}
 

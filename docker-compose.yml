@@ -7,9 +7,8 @@ services:
   backend:
     build: ./backend
     container_name: vedetta-backend
-    # network_mode: host gives nmap direct access to the LAN for ARP discovery.
-    # The backend listens on port 8080 directly on the host.
-    network_mode: host
+    ports:
+      - "8080:8080"
     environment:
       VEDETTA_PORT: "8080"
       VEDETTA_DB_PATH: "/data/vedetta.db"
@@ -17,8 +16,11 @@ services:
       VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-auto}"
       VEDETTA_SCAN_INTERVAL: "${VEDETTA_SCAN_INTERVAL:-5m}"
       VEDETTA_SCAN_PORTS: "${VEDETTA_SCAN_PORTS:-false}"
+    # Core receives device data from sensors — no direct network scanning needed.
     volumes:
       - vedetta-data:/data
+    networks:
+      - vedetta
     depends_on:
       - collector
     healthcheck:

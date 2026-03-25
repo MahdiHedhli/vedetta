@@ -24,14 +24,13 @@ export default function App() {
   const [status, setStatus] = useState(null);
   const [devices, setDevices] = useState([]);
   const [targets, setTargets] = useState([]);
+  const [sensors, setSensors] = useState([]);
   const [scanStatus, setScanStatus] = useState(null);
   const [error, setError] = useState(null);
   const [view, setView] = useState('dashboard');
   const [scanning, setScanning] = useState(false);
-  const [showSubnetDialog, setShowSubnetDialog] = useState(false);
-  const [detectedSubnets, setDetectedSubnets] = useState([]);
+  const [showSetup, setShowSetup] = useState(false);
   const [defaultCIDR, setDefaultCIDR] = useState('');
-  const [cidrConfirmed, setCidrConfirmed] = useState(false);
 
   const fetchStatus = useCallback(() => {
     fetch('/api/v1/status')
@@ -58,47 +57,38 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const fetchSensors = useCallback(() => {
+    fetch('/api/v1/sensor/list')
+      .then((r) => r.json())
+      .then((data) => setSensors(data.sensors || []))
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     fetchStatus();
     fetchDevices();
     fetchTargets();
+    fetchSensors();
 
-    // Show subnet confirmation on first visit if no devices yet
-    fetch('/api/v1/scan/subnets')
-      .then((r) => r.json())
-      .then((data) => {
-        setDetectedSubnets(data.subnets || []);
-        // Auto-show dialog if this looks like first run
-        fetch('/api/v1/devices')
-          .then((r) => r.json())
-          .then((d) => {
-            if (!d.devices || d.devices.length === 0) {
-              setShowSubnetDialog(true);
-            } else {
-              setCidrConfirmed(true);
-            }
-          });
-      });
+    // Show setup guide if no sensors connected and no devices found
+    Promise.all([
+      fetch('/api/v1/sensor/list').then((r) => r.json()),
+      fetch('/api/v1/devices').then((r) => r.json()),
+    ]).then(([sensorData, deviceData]) => {
+      const hasSensors = sensorData.sensors && sensorData.sensors.length > 0;
+      const hasDevices = deviceData.devices && deviceData.devices.length > 0;
+      if (!hasSensors && !hasDevices) {
+        setShowSetup(true);
+      }
+    }).catch(() => {});
 
     const interval = setInterval(() => {
       fetchStatus();
       fetchDevices();
+      fetchSensors();
     }, 10000);
     return () => clearInterval(interval);
-  }, [fetchStatus, fetchDevices, fetchTargets]);
-
-  const confirmCIDR = (cidr) => {
-    fetch('/api/v1/scan/cidr', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cidr }),
-    }).then(() => {
-      setDefaultCIDR(cidr);
-      setCidrConfirmed(true);
-      setShowSubnetDialog(false);
-      triggerScan();
-    });
-  };
+  }, [fetchStatus, fetchDevices, fetchTargets, fetchSensors]);
 
   const triggerScan = () => {
     setScanning(true);
@@ -146,14 +136,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
-      {/* Subnet confirmation dialog */}
-      {showSubnetDialog && (
-        <SubnetDialog
-          subnets={detectedSubnets}
-          defaultCIDR={defaultCIDR}
-          onConfirm={confirmCIDR}
-          onDismiss={() => { setShowSubnetDialog(false); setCidrConfirmed(true); }}
-        />
+      {/* Sensor setup guide */}
+      {showSetup && (
+        <SensorSetupDialog onDismiss={() => setShowSetup(false)} />
       )}
 
       {/* Header */}
@@ -166,7 +151,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-4">
             <nav className="flex gap-1">
-              {['dashboard', 'devices', 'scan targets'].map((v) => (
+              {['dashboard', 'devices', 'sensors', 'scan targets'].map((v) => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
@@ -180,13 +165,18 @@ export default function App() {
                       {newDeviceCount}
                     </span>
                   )}
+                  {v === 'sensors' && sensors.length > 0 && (
+                    <span className="ml-1.5 bg-green-500/20 text-green-300 text-xs font-bold px-1.5 py-0.5 rounded-full">
+                      {sensors.length}
+                    </span>
+                  )}
                 </button>
               ))}
             </nav>
             {status ? (
               <span className="flex items-center gap-1.5 text-sm text-green-400">
                 <span className="w-2 h-2 bg-green-400 rounded-full" />
-                Connected
+                Core Online
               </span>
             ) : error ? (
               <span className="flex items-center gap-1.5 text-sm text-red-400">
@@ -205,15 +195,16 @@ export default function App() {
           <DashboardView
             devices={devices} scanStatus={scanStatus} newDeviceCount={newDeviceCount}
             scanning={scanning} onScan={triggerScan} onViewDevices={() => setView('devices')}
-            defaultCIDR={defaultCIDR} targets={targets}
+            defaultCIDR={defaultCIDR} targets={targets} sensors={sensors}
           />
         ) : view === 'devices' ? (
           <DevicesView devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus} />
+        ) : view === 'sensors' ? (
+          <SensorsView sensors={sensors} onSetup={() => setShowSetup(true)} />
         ) : (
           <ScanTargetsView
             targets={targets} defaultCIDR={defaultCIDR} scanning={scanning}
             onRefresh={fetchTargets} onScanTarget={triggerTargetScan}
-            onChangeSubnet={() => setShowSubnetDialog(true)}
           />
         )}
       </main>
@@ -221,78 +212,107 @@ export default function App() {
   );
 }
 
-// --- Subnet Confirmation Dialog ---
+// --- Sensor Setup Dialog ---
 
-function SubnetDialog({ subnets, defaultCIDR, onConfirm, onDismiss }) {
-  const [customCIDR, setCustomCIDR] = useState('');
-
+function SensorSetupDialog({ onDismiss }) {
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full p-6">
-        <h2 className="text-lg font-semibold mb-2">Confirm Your Network</h2>
-        <p className="text-gray-400 text-sm mb-4">
-          Vedetta detected the following subnets. Select which one is your primary LAN so we can scan the right network.
+        <h2 className="text-lg font-semibold mb-2">Connect a Sensor</h2>
+        <p className="text-gray-400 text-sm mb-5">
+          Vedetta uses lightweight sensors that run on your host to discover devices on your network. Install the sensor on any machine connected to your LAN.
         </p>
 
-        <div className="space-y-2 mb-4">
-          {subnets.map((s) => (
-            <button
-              key={s.cidr}
-              onClick={() => onConfirm(s.cidr)}
-              className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
-                s.is_default
-                  ? 'border-blue-500 bg-blue-500/10 hover:bg-blue-500/20'
-                  : 'border-gray-700 hover:bg-gray-800'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="font-mono text-sm">{s.cidr}</span>
-                  <span className="text-gray-500 text-xs ml-2">({s.interface})</span>
-                </div>
-                {s.is_default && (
-                  <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded">recommended</span>
-                )}
-              </div>
-              <p className="text-gray-500 text-xs mt-1">IP: {s.ip_address}</p>
-            </button>
-          ))}
+        <div className="bg-gray-800 rounded-lg p-4 mb-4">
+          <p className="text-xs text-gray-400 mb-2 font-medium">Quick start (macOS / Linux):</p>
+          <code className="text-sm text-green-400 font-mono block whitespace-pre-wrap">
+{`cd sensor && go build -o vedetta-sensor ./cmd/vedetta-sensor
+sudo ./vedetta-sensor --core http://localhost:8080`}
+          </code>
         </div>
 
-        <div className="border-t border-gray-800 pt-4">
-          <p className="text-gray-500 text-xs mb-2">Or enter a custom CIDR:</p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={customCIDR}
-              onChange={(e) => setCustomCIDR(e.target.value)}
-              placeholder="e.g. 10.0.0.0/24"
-              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
-            />
-            <button
-              onClick={() => customCIDR && onConfirm(customCIDR)}
-              disabled={!customCIDR}
-              className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            >
-              Use
-            </button>
+        <div className="bg-gray-800 rounded-lg p-4 mb-4">
+          <p className="text-xs text-gray-400 mb-2 font-medium">Options:</p>
+          <div className="text-sm text-gray-300 font-mono space-y-1">
+            <p><span className="text-blue-400">--cidr</span> 10.0.0.0/24 <span className="text-gray-500"># scan specific subnet</span></p>
+            <p><span className="text-blue-400">--interval</span> 5m <span className="text-gray-500"># scan frequency</span></p>
+            <p><span className="text-blue-400">--ports</span> <span className="text-gray-500"># include port scan</span></p>
+            <p><span className="text-blue-400">--once</span> <span className="text-gray-500"># single scan, then exit</span></p>
           </div>
         </div>
 
+        <p className="text-gray-500 text-xs mb-4">
+          The sensor auto-detects your subnet and pushes discovered devices to Core. Run <code className="text-gray-400">sudo</code> for ARP-based discovery (recommended).
+        </p>
+
         <button
           onClick={onDismiss}
-          className="mt-4 w-full text-center text-gray-500 hover:text-gray-300 text-sm"
+          className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-sm font-medium transition-colors"
         >
-          Skip for now
+          Got it
         </button>
       </div>
     </div>
   );
 }
 
+// --- Sensors View ---
+
+function SensorsView({ sensors, onSetup }) {
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-lg font-semibold">Sensors</h2>
+        <button
+          onClick={onSetup}
+          className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+        >
+          + Add Sensor
+        </button>
+      </div>
+
+      {sensors.length === 0 ? (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
+          <div className="w-12 h-12 bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+            </svg>
+          </div>
+          <p className="text-gray-400 text-sm mb-1">No sensors connected</p>
+          <p className="text-gray-500 text-xs">Install vedetta-sensor on a host to start discovering devices</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {sensors.map((s) => (
+            <div key={s.sensor_id} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className={`w-2.5 h-2.5 rounded-full ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
+                  <div>
+                    <p className="text-sm font-medium">{s.hostname}</p>
+                    <p className="text-xs text-gray-500">{s.sensor_id}</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-mono text-gray-300">{s.cidr}</p>
+                  <p className="text-xs text-gray-500">{s.os}/{s.arch} &middot; v{s.version}</p>
+                </div>
+              </div>
+              <div className="flex gap-4 mt-3 pt-3 border-t border-gray-800 text-xs text-gray-500">
+                <span>First seen: {timeAgo(s.first_seen)}</span>
+                <span>Last report: {timeAgo(s.last_seen)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 // --- Dashboard ---
 
-function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, onViewDevices, defaultCIDR, targets }) {
+function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, onViewDevices, defaultCIDR, targets, sensors }) {
   const segmentCounts = {};
   devices.forEach((d) => {
     segmentCounts[d.segment] = (segmentCounts[d.segment] || 0) + 1;
@@ -301,8 +321,8 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
   return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Devices" value={devices.length || '—'} sub={devices.length > 0 ? `${newDeviceCount} new (24h)` : 'Awaiting scan'} highlight={newDeviceCount > 0} />
-        <StatCard label="Networks" value={(targets.length + 1) || '1'} sub={defaultCIDR ? `Primary: ${defaultCIDR}` : 'Not configured'} />
+        <StatCard label="Devices" value={devices.length || '—'} sub={devices.length > 0 ? `${newDeviceCount} new (24h)` : 'Awaiting sensor data'} highlight={newDeviceCount > 0} />
+        <StatCard label="Sensors" value={sensors.length || '0'} sub={sensors.length > 0 ? `${sensors.filter(s => s.status === 'online').length} online` : 'None connected'} highlight={sensors.length === 0} />
         <StatCard label="Threats" value="0" sub="All clear" />
         <StatCard label="DNS Queries" value="—" sub="Pi-hole not connected" />
       </div>
@@ -412,7 +432,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus }) {
 
 // --- Scan Targets ---
 
-function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarget, onChangeSubnet }) {
+function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarget }) {
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState('');
   const [cidr, setCidr] = useState('');
@@ -469,7 +489,7 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
             </div>
             <p className="font-mono text-sm text-gray-400 mt-1">{defaultCIDR || 'Not configured'}</p>
           </div>
-          <button onClick={onChangeSubnet} className="text-sm text-blue-400 hover:text-blue-300">Change</button>
+          <span className="text-xs text-gray-600">via sensor</span>
         </div>
       </div>
 
