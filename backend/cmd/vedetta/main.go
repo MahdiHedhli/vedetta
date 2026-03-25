@@ -23,10 +23,6 @@ func main() {
 	}
 
 	scanCIDR := os.Getenv("VEDETTA_SCAN_CIDR")
-	if scanCIDR == "" {
-		scanCIDR = "192.168.1.0/24"
-	}
-
 	scanInterval := os.Getenv("VEDETTA_SCAN_INTERVAL")
 	if scanInterval == "" {
 		scanInterval = "5m"
@@ -39,10 +35,17 @@ func main() {
 	}
 	defer db.Close()
 
+	// Auto-detect subnet if not explicitly configured
+	if scanCIDR == "" || scanCIDR == "auto" {
+		detected := discovery.BestSubnet("192.168.1.0/24")
+		log.Printf("Auto-detected scan subnet: %s", detected)
+		scanCIDR = detected
+	}
+
 	// Set up the API server
 	srv := &api.Server{DB: db}
 
-	// Set up nmap scanner (optional — may not be available in all envs)
+	// Set up nmap scanner (optional — may not be available)
 	scanner, err := discovery.NewScanner()
 	if err != nil {
 		log.Printf("WARNING: nmap not available — network scanning disabled: %v", err)
@@ -53,7 +56,8 @@ func main() {
 		}
 
 		withPorts := os.Getenv("VEDETTA_SCAN_PORTS") == "true"
-		scheduler := discovery.NewScheduler(scanner, db, scanCIDR, interval, withPorts)
+		targetAdapter := &store.TargetAdapter{DB: db}
+		scheduler := discovery.NewScheduler(scanner, db, targetAdapter, scanCIDR, interval, withPorts)
 		srv.Scheduler = scheduler
 		scheduler.Start()
 		defer scheduler.Stop()

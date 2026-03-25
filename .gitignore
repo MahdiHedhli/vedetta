@@ -10,7 +10,7 @@
 # Local-only workspace for credentials, strategy
 # docs, PII, testing configs, and anything that
 # should never touch a remote.
-internal/
+/internal/
 
 # ----- Secrets & Credentials -----
 .env
