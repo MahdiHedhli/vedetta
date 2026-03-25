@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
+	"github.com/vedetta-network/vedetta/backend/internal/discovery"
+	"github.com/vedetta-network/vedetta/backend/internal/store"
 )
 
 func main() {
@@ -15,9 +17,51 @@ func main() {
 		port = "8080"
 	}
 
-	router := api.NewRouter()
+	dbPath := os.Getenv("VEDETTA_DB_PATH")
+	if dbPath == "" {
+		dbPath = "/data/vedetta.db"
+	}
 
-	srv := &http.Server{
+	scanCIDR := os.Getenv("VEDETTA_SCAN_CIDR")
+	if scanCIDR == "" {
+		scanCIDR = "192.168.1.0/24"
+	}
+
+	scanInterval := os.Getenv("VEDETTA_SCAN_INTERVAL")
+	if scanInterval == "" {
+		scanInterval = "5m"
+	}
+
+	// Open database
+	db, err := store.Open(dbPath)
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Set up the API server
+	srv := &api.Server{DB: db}
+
+	// Set up nmap scanner (optional — may not be available in all envs)
+	scanner, err := discovery.NewScanner()
+	if err != nil {
+		log.Printf("WARNING: nmap not available — network scanning disabled: %v", err)
+	} else {
+		interval, err := time.ParseDuration(scanInterval)
+		if err != nil {
+			interval = 5 * time.Minute
+		}
+
+		withPorts := os.Getenv("VEDETTA_SCAN_PORTS") == "true"
+		scheduler := discovery.NewScheduler(scanner, db, scanCIDR, interval, withPorts)
+		srv.Scheduler = scheduler
+		scheduler.Start()
+		defer scheduler.Stop()
+	}
+
+	router := api.NewRouter(srv)
+
+	httpSrv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      router,
 		ReadTimeout:  15 * time.Second,
@@ -25,8 +69,8 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("Vedetta backend starting on :%s", port)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	log.Printf("Vedetta backend starting on :%s (scan_cidr=%s, scan_interval=%s)", port, scanCIDR, scanInterval)
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
