@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Vedetta — Home Network Security Platform
 # Usage: docker compose up
 # All services communicate over the internal 'vedetta' network.
