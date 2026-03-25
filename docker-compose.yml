@@ -1,0 +1,91 @@
+version: "3.9"
+
+# Vedetta — Home Network Security Platform
+# Usage: docker compose up
+# All services communicate over the internal 'vedetta' network.
+
+services:
+  # --- Go API Backend ---
+  backend:
+    build: ./backend
+    container_name: vedetta-backend
+    ports:
+      - "8080:8080"
+    environment:
+      VEDETTA_PORT: "8080"
+      VEDETTA_DB_PATH: "/data/vedetta.db"
+      VEDETTA_FRONTEND_DIR: "/frontend"
+    volumes:
+      - vedetta-data:/data
+    networks:
+      - vedetta
+    depends_on:
+      - collector
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # --- React + Tailwind Dashboard ---
+  frontend:
+    build: ./frontend
+    container_name: vedetta-frontend
+    ports:
+      - "3000:3000"
+    networks:
+      - vedetta
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # --- Fluent Bit Log Collector ---
+  collector:
+    build: ./collector
+    container_name: vedetta-collector
+    ports:
+      - "5140:5140/udp"  # Syslog input for firewalls
+    volumes:
+      - pihole-logs:/var/log/pihole:ro
+    networks:
+      - vedetta
+    restart: unless-stopped
+
+  # --- Opt-in Telemetry Daemon ---
+  telemetry:
+    build: ./telemetry
+    container_name: vedetta-telemetry
+    environment:
+      VEDETTA_TELEMETRY_OPTIN: "false"  # User must explicitly opt in
+      VEDETTA_THREAT_NETWORK_URL: "http://threat-network:9090"
+    volumes:
+      - vedetta-data:/data:ro
+    networks:
+      - vedetta
+    depends_on:
+      - backend
+      - threat-network
+    restart: unless-stopped
+
+  # --- Central Threat Intelligence Backend ---
+  threat-network:
+    build: ./threat-network
+    container_name: vedetta-threat-network
+    ports:
+      - "9090:9090"
+    environment:
+      THREAT_NETWORK_PORT: "9090"
+    networks:
+      - vedetta
+    restart: unless-stopped
+
+volumes:
+  vedetta-data:
+    driver: local
+  pihole-logs:
+    driver: local
+
+networks:
+  vedetta:
+    driver: bridge

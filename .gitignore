@@ -1,0 +1,125 @@
+# ============================================
+# Vedetta .gitignore — Security-First Defaults
+# ============================================
+# Rule: when in doubt, exclude it. It's easier
+# to explicitly include a file than to scrub
+# a secret from git history.
+# ============================================
+
+# ----- Internal / Private -----
+# Local-only workspace for credentials, strategy
+# docs, PII, testing configs, and anything that
+# should never touch a remote.
+internal/
+
+# ----- Secrets & Credentials -----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.truststore
+credentials.*
+secrets.*
+*secret*
+*token*
+!*_test.go
+service-account*.json
+gcp-credentials*.json
+aws-credentials*
+.aws/
+.gcp/
+kubeconfig
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# ----- API Keys & Config Overrides -----
+config.local.*
+config.prod.*
+config.staging.*
+*.local.yml
+*.local.yaml
+*.local.json
+*.local.toml
+
+# ----- macOS -----
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+Icon?
+
+# ----- Windows -----
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ----- Linux -----
+*~
+.nfs*
+
+# ----- Go -----
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+/backend/vedetta
+/telemetry/telemetry
+/threat-network/threat-network
+
+# ----- Node / Frontend -----
+node_modules/
+frontend/dist/
+.npm
+.yarn/
+.pnp.*
+
+# ----- IDE -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+*.code-workspace
+.project
+.settings/
+.classpath
+
+# ----- Data & Databases -----
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# ----- Docker -----
+docker-compose.override.yml
+.docker/
+
+# ----- Logs -----
+*.log
+logs/
+
+# ----- Coverage & Profiling -----
+coverage/
+*.cover
+*.prof
+*.cpu
+*.mem
+htmlcov/
