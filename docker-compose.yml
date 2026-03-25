@@ -13,12 +13,19 @@ services:
       VEDETTA_PORT: "8080"
       VEDETTA_DB_PATH: "/data/vedetta.db"
       VEDETTA_FRONTEND_DIR: "/frontend"
+      VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-192.168.1.0/24}"
+      VEDETTA_SCAN_INTERVAL: "${VEDETTA_SCAN_INTERVAL:-5m}"
+      VEDETTA_SCAN_PORTS: "${VEDETTA_SCAN_PORTS:-false}"
     volumes:
       - vedetta-data:/data
     networks:
       - vedetta
     depends_on:
       - collector
+    # nmap needs NET_ADMIN + NET_RAW for ARP/ping discovery
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 30s
