@@ -33,6 +33,19 @@ type Device struct {
 	Segment     string    `json:"segment" db:"segment"` // default | iot | guest
 }
 
+// Sensor represents a registered sensor that reports to Core.
+type Sensor struct {
+	SensorID  string    `json:"sensor_id" db:"sensor_id"`
+	Hostname  string    `json:"hostname" db:"hostname"`
+	OS        string    `json:"os" db:"os"`
+	Arch      string    `json:"arch" db:"arch"`
+	CIDR      string    `json:"cidr" db:"cidr"`
+	Version   string    `json:"version" db:"version"`
+	FirstSeen time.Time `json:"first_seen" db:"first_seen"`
+	LastSeen  time.Time `json:"last_seen" db:"last_seen"`
+	Status    string    `json:"status" db:"status"` // online | offline
+}
+
 // ScanTarget represents a named subnet to scan (e.g., IoT VLAN, Guest network).
 type ScanTarget struct {
 	TargetID  string     `json:"target_id" db:"target_id"`

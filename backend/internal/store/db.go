@@ -121,4 +121,16 @@ CREATE TABLE IF NOT EXISTS scan_targets (
     last_scan   TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_scan_targets_enabled ON scan_targets (enabled);
+
+CREATE TABLE IF NOT EXISTS sensors (
+    sensor_id   TEXT PRIMARY KEY,
+    hostname    TEXT NOT NULL,
+    os          TEXT NOT NULL,
+    arch        TEXT NOT NULL,
+    cidr        TEXT NOT NULL,
+    version     TEXT NOT NULL,
+    first_seen  TIMESTAMP NOT NULL,
+    last_seen   TIMESTAMP NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'online'
+);
 `

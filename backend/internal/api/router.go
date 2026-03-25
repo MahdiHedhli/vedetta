@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
+	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 )
 
@@ -53,6 +55,11 @@ func NewRouter(srv *Server) http.Handler {
 		r.Delete("/scan/targets/{targetID}", srv.handleDeleteTarget)
 		r.Put("/scan/targets/{targetID}/toggle", srv.handleToggleTarget)
 		r.Post("/scan/targets/{targetID}/scan", srv.handleScanTarget)
+
+		// Sensor ingest (native sensors push data to Core)
+		r.Post("/sensor/register", srv.handleSensorRegister)
+		r.Post("/sensor/devices", srv.handleSensorDevices)
+		r.Get("/sensor/list", srv.handleSensorList)
 	})
 
 	// Static file server for the React frontend
@@ -64,8 +71,12 @@ func NewRouter(srv *Server) http.Handler {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	deviceCount := 0
+	sensorCount := 0
 	if s.DB != nil {
 		deviceCount, _ = s.DB.CountDevices()
+		if sensors, err := s.DB.ListSensors(); err == nil {
+			sensorCount = len(sensors)
+		}
 	}
 
 	scanStatus := discovery.ScanStatus{}
@@ -78,8 +89,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":       "ok",
 		"version":      "0.1.0-dev",
-		"service":      "vedetta-backend",
+		"service":      "vedetta-core",
 		"device_count": deviceCount,
+		"sensor_count": sensorCount,
 		"scan":         scanStatus,
 		"default_cidr": defaultCIDR,
 	})
@@ -163,7 +175,10 @@ func (s *Server) handleDetectSubnets(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"subnets": subnets})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"subnets":          subnets,
+		"inside_container": discovery.IsInsideDocker(),
+	})
 }
 
 func (s *Server) handleSetDefaultCIDR(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +324,130 @@ func (s *Server) handleScanTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusNotFound, map[string]any{"error": "target not found"})
+}
+
+// --- Sensor Ingest ---
+
+func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	var body struct {
+		SensorID string `json:"sensor_id"`
+		Hostname string `json:"hostname"`
+		OS       string `json:"os"`
+		Arch     string `json:"arch"`
+		CIDR     string `json:"cidr"`
+		Version  string `json:"version"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	if body.SensorID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "sensor_id required"})
+		return
+	}
+
+	sensor := models.Sensor{
+		SensorID: body.SensorID,
+		Hostname: body.Hostname,
+		OS:       body.OS,
+		Arch:     body.Arch,
+		CIDR:     body.CIDR,
+		Version:  body.Version,
+	}
+
+	if err := s.DB.RegisterSensor(sensor); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	log.Printf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "registered", "sensor_id": body.SensorID})
+}
+
+func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	var body struct {
+		SensorID string `json:"sensor_id"`
+		CIDR     string `json:"cidr"`
+		Segment  string `json:"segment"`
+		Hosts    []struct {
+			IPAddress  string `json:"ip_address"`
+			MACAddress string `json:"mac_address"`
+			Hostname   string `json:"hostname"`
+			Vendor     string `json:"vendor"`
+			OpenPorts  []int  `json:"open_ports"`
+			Status     string `json:"status"`
+		} `json:"hosts"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	if body.Segment == "" {
+		body.Segment = "default"
+	}
+
+	// Touch the sensor's last_seen
+	if body.SensorID != "" {
+		s.DB.TouchSensor(body.SensorID)
+	}
+
+	// Upsert each discovered host
+	now := time.Now()
+	newCount := 0
+	for _, h := range body.Hosts {
+		host := discovery.DiscoveredHost{
+			IPAddress:  h.IPAddress,
+			MACAddress: h.MACAddress,
+			Hostname:   h.Hostname,
+			Vendor:     h.Vendor,
+			OpenPorts:  h.OpenPorts,
+			Status:     h.Status,
+		}
+		isNew, err := s.DB.UpsertDevice(host, now, body.Segment)
+		if err != nil {
+			log.Printf("Failed to upsert device %s from sensor %s: %v", h.IPAddress, body.SensorID, err)
+			continue
+		}
+		if isNew {
+			newCount++
+			log.Printf("New device [%s] via sensor %s: %s (%s)", body.Segment, body.SensorID, h.IPAddress, h.MACAddress)
+		}
+	}
+
+	log.Printf("Sensor %s reported %d hosts (%d new) from %s", body.SensorID, len(body.Hosts), newCount, body.CIDR)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted":    len(body.Hosts),
+		"new_devices": newCount,
+	})
+}
+
+func (s *Server) handleSensorList(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	sensors, err := s.DB.ListSensors()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sensors": sensors,
+		"total":   len(sensors),
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

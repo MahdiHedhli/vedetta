@@ -123,3 +123,4 @@ coverage/
 *.cpu
 *.mem
 htmlcov/
+/sensor/vedetta-sensor
