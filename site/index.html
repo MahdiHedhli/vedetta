@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vedetta — Open-Source Home Network Security</title>
+  <meta name="description" content="Vedetta is an open-source SIEM and threat intelligence platform for home networks and small businesses. Monitor, detect, and protect.">
+  <meta property="og:title" content="Vedetta — Open-Source Home Network Security">
+  <meta property="og:description" content="Monitor, detect, and protect your home network with open-source threat intelligence.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://vedettas.com">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%233b82f6'/><text x='16' y='22' font-size='18' font-weight='bold' text-anchor='middle' fill='white' font-family='system-ui'>V</text></svg>">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #030712;
+      --surface: #0a0f1a;
+      --border: #1e293b;
+      --text: #f1f5f9;
+      --muted: #64748b;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.15);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .grain {
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .glow {
+      position: fixed;
+      top: -40%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 800px;
+      height: 600px;
+      background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    main {
+      position: relative;
+      z-index: 1;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+    }
+
+    .logo-mark {
+      width: 48px;
+      height: 48px;
+      background: var(--accent);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.5rem;
+      color: white;
+    }
+
+    .logo-text {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      max-width: 700px;
+      margin-bottom: 1.25rem;
+    }
+
+    h1 span {
+      background: linear-gradient(135deg, var(--accent), #818cf8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      font-size: 1.125rem;
+      color: var(--muted);
+      max-width: 520px;
+      line-height: 1.6;
+      margin-bottom: 3rem;
+    }
+
+    .features {
+      display: flex;
+      gap: 2rem;
+      margin-bottom: 3rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .feature {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+
+    .feature-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .signup-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      max-width: 440px;
+      width: 100%;
+    }
+
+    .signup-box h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .signup-box p {
+      font-size: 0.8125rem;
+      color: var(--muted);
+      margin-bottom: 1.25rem;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .form-row input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.625rem 0.875rem;
+      color: var(--text);
+      font-size: 0.875rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .form-row input:focus {
+      border-color: var(--accent);
+    }
+
+    .form-row input::placeholder {
+      color: #475569;
+    }
+
+    .form-row button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 0.625rem 1.25rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.2s;
+    }
+
+    .form-row button:hover {
+      background: #2563eb;
+    }
+
+    .form-row button:disabled {
+      background: #1e293b;
+      color: #475569;
+      cursor: not-allowed;
+    }
+
+    .success-msg {
+      display: none;
+      color: #4ade80;
+      font-size: 0.875rem;
+      margin-top: 0.75rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      padding: 0.375rem 1rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 1.5rem;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 2rem;
+      border-top: 1px solid var(--border);
+    }
+
+    footer p {
+      font-size: 0.75rem;
+      color: #334155;
+    }
+
+    footer a {
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    footer a:hover {
+      color: var(--text);
+    }
+
+    .links {
+      display: flex;
+      gap: 1.5rem;
+      justify-content: center;
+      margin-bottom: 0.75rem;
+    }
+
+    .links a {
+      font-size: 0.8125rem;
+    }
+
+    @media (max-width: 480px) {
+      .form-row { flex-direction: column; }
+      .features { flex-direction: column; align-items: center; gap: 0.75rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="grain"></div>
+  <div class="glow"></div>
+
+  <main>
+    <div class="logo">
+      <div class="logo-mark">V</div>
+      <div class="logo-text">Vedetta</div>
+    </div>
+
+    <div class="badge">
+      <span class="badge-dot"></span>
+      In active development
+    </div>
+
+    <h1>Network security <span>for everyone</span></h1>
+
+    <p class="subtitle">
+      Open-source SIEM and threat intelligence for home networks and small businesses.
+      Know every device. Detect every threat. Own your data.
+    </p>
+
+    <div class="features">
+      <div class="feature"><span class="feature-dot"></span> Device Discovery</div>
+      <div class="feature"><span class="feature-dot"></span> Threat Detection</div>
+      <div class="feature"><span class="feature-dot"></span> DNS Monitoring</div>
+      <div class="feature"><span class="feature-dot"></span> Self-Hosted</div>
+      <div class="feature"><span class="feature-dot"></span> AGPLv3</div>
+    </div>
+
+    <div class="signup-box">
+      <h3>Get notified when we launch</h3>
+      <p>No spam. Just a single email when Vedetta is ready.</p>
+      <form id="signup-form" action="https://formspree.io/f/xwpkpqjl" method="POST">
+        <div class="form-row">
+          <input type="email" name="email" placeholder="you@example.com" required>
+          <button type="submit">Notify me</button>
+        </div>
+      </form>
+      <div class="success-msg" id="success">You're on the list. We'll be in touch.</div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="links">
+      <a href="https://github.com/MahdiHedhli/vedetta" target="_blank">GitHub</a>
+      <a href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank">Security</a>
+      <a href="mailto:security@vedettas.com">Contact</a>
+    </div>
+    <p>&copy; 2026 Vedetta. All rights reserved.</p>
+  </footer>
+
+  <script>
+    const form = document.getElementById('signup-form');
+    const success = document.getElementById('success');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector('button');
+      const email = form.querySelector('input');
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+
+      try {
+        const res = await fetch(form.action, {
+          method: 'POST',
+          body: new FormData(form),
+          headers: { 'Accept': 'application/json' }
+        });
+
+        if (res.ok) {
+          form.style.display = 'none';
+          success.style.display = 'block';
+        } else {
+          btn.textContent = 'Try again';
+          btn.disabled = false;
+        }
+      } catch {
+        btn.textContent = 'Try again';
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
