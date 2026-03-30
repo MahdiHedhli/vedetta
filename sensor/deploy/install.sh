@@ -16,7 +16,7 @@ set -euo pipefail
 
 VEDETTA_VERSION="0.1.0-dev"
 INSTALL_DIR="/usr/local/bin"
-REPO_URL="https://github.com/vedetta-network/vedetta.git"
+REPO_URL="https://github.com/MahdiHedhli/vedetta.git"
 SENSOR_BIN="vedetta-sensor"
 CORE_URL=""
 SENSOR_FLAGS=""
@@ -223,15 +223,28 @@ install_go() {
 # --- Build sensor ---
 
 build_sensor() {
-    # Create temp dir as the real user so git/go can write to it
-    BUILD_TMP="$(as_user mktemp -d 2>/dev/null || mktemp -d)"
-    chown -R "$REAL_USER" "$BUILD_TMP" 2>/dev/null || true
+    # Check if we're running from inside a local copy of the repo
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    LOCAL_SENSOR_DIR="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)/sensor"
 
-    info "Cloning Vedetta repo..."
-    as_user git clone --depth 1 --quiet "$REPO_URL" "$BUILD_TMP/vedetta"
+    if [[ -f "$LOCAL_SENSOR_DIR/cmd/vedetta-sensor/main.go" ]]; then
+        # Build from local repo — no clone needed
+        info "Building sensor from local repo ($LOCAL_SENSOR_DIR)..."
+        BUILD_TMP="$(as_user mktemp -d 2>/dev/null || mktemp -d)"
+        chown -R "$REAL_USER" "$BUILD_TMP" 2>/dev/null || true
 
-    info "Building sensor..."
-    as_user bash -c "cd '$BUILD_TMP/vedetta/sensor' && go build -o '$BUILD_TMP/${SENSOR_BIN}' ./cmd/vedetta-sensor"
+        as_user bash -c "cd '$LOCAL_SENSOR_DIR' && go build -o '$BUILD_TMP/${SENSOR_BIN}' ./cmd/vedetta-sensor"
+    else
+        # Clone from remote
+        BUILD_TMP="$(as_user mktemp -d 2>/dev/null || mktemp -d)"
+        chown -R "$REAL_USER" "$BUILD_TMP" 2>/dev/null || true
+
+        info "Cloning Vedetta repo..."
+        as_user git clone --depth 1 --quiet "$REPO_URL" "$BUILD_TMP/vedetta"
+
+        info "Building sensor..."
+        as_user bash -c "cd '$BUILD_TMP/vedetta/sensor' && go build -o '$BUILD_TMP/${SENSOR_BIN}' ./cmd/vedetta-sensor"
+    fi
 
     info "Installing binary to ${INSTALL_DIR}/${SENSOR_BIN}"
     cp "$BUILD_TMP/${SENSOR_BIN}" "${INSTALL_DIR}/${SENSOR_BIN}"
