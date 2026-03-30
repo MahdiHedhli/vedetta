@@ -223,9 +223,9 @@ install_go() {
 # --- Build sensor ---
 
 build_sensor() {
-    BUILD_TMP="$(mktemp -d)"
-    # Let the real user own the temp dir (Go needs to write module cache)
-    chown "$REAL_USER" "$BUILD_TMP"
+    # Create temp dir as the real user so git/go can write to it
+    BUILD_TMP="$(as_user mktemp -d 2>/dev/null || mktemp -d)"
+    chown -R "$REAL_USER" "$BUILD_TMP" 2>/dev/null || true
 
     info "Cloning Vedetta repo..."
     as_user git clone --depth 1 --quiet "$REPO_URL" "$BUILD_TMP/vedetta"
