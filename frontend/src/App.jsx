@@ -17,10 +17,28 @@ function isNewDevice(firstSeen) {
 }
 
 const SEGMENT_COLORS = {
-  default: 'bg-blue-500/20 text-blue-300',
-  iot: 'bg-purple-500/20 text-purple-300',
-  guest: 'bg-green-500/20 text-green-300',
+  default: 'bg-teal-500/20 text-teal-300',
+  iot: 'bg-amber-500/20 text-amber-300',
+  guest: 'bg-green-400/20 text-green-400',
 };
+
+// Brand: Geometric Rook mark (amber on dark)
+function RookMark({ size = 32 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg">
+      <rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/>
+      <rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/>
+      <path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/>
+      <rect x="62" y="108" width="76" height="14" fill="#0B1426" opacity="0.2"/>
+      <rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/>
+      <rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/>
+      <rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/>
+      <rect x="56" y="90" width="88" height="12" fill="#E8A020"/>
+      <rect x="84" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/>
+      <rect x="114" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/>
+    </svg>
+  );
+}
 
 export default function App() {
   const [status, setStatus] = useState(null);
@@ -148,9 +166,9 @@ export default function App() {
       <header className="border-b border-gray-800 px-6 py-4">
         <div className="flex items-center justify-between max-w-7xl mx-auto">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-sm">V</div>
-            <h1 className="text-xl font-semibold tracking-tight">Vedetta</h1>
-            <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded">v0.1.0-dev</span>
+            <RookMark size={28} />
+            <h1 className="text-xl font-display tracking-wide">Vedetta</h1>
+            <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded font-mono">v0.1.0-dev</span>
           </div>
           <div className="flex items-center gap-4">
             <nav className="flex gap-1">
@@ -169,7 +187,7 @@ export default function App() {
                     </span>
                   )}
                   {v === 'sensors' && sensors.length > 0 && (
-                    <span className="ml-1.5 bg-green-500/20 text-green-300 text-xs font-bold px-1.5 py-0.5 rounded-full">
+                    <span className="ml-1.5 bg-teal-500/20 text-teal-300 text-xs font-bold px-1.5 py-0.5 rounded-full">
                       {sensors.length}
                     </span>
                   )}
@@ -264,14 +282,14 @@ function SensorSetupDialog({ onDismiss }) {
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full p-6">
-        <h2 className="text-lg font-semibold mb-2">Connect a Sensor</h2>
+        <h2 className="text-lg font-display mb-2">Connect a Sensor</h2>
         <p className="text-gray-400 text-sm mb-5">
           Vedetta uses lightweight sensors that run on your host to discover devices on your network. Install the sensor on any machine connected to your LAN.
         </p>
 
         <div className="bg-gray-800 rounded-lg p-4 mb-4">
           <p className="text-xs text-gray-400 mb-2 font-medium">Quick start (macOS / Linux):</p>
-          <code className="text-sm text-green-400 font-mono block whitespace-pre-wrap">
+          <code className="text-sm text-teal-400 font-mono block whitespace-pre-wrap">
 {`cd sensor && go build -o vedetta-sensor ./cmd/vedetta-sensor
 sudo ./vedetta-sensor --core http://localhost:8080`}
           </code>
@@ -280,11 +298,11 @@ sudo ./vedetta-sensor --core http://localhost:8080`}
         <div className="bg-gray-800 rounded-lg p-4 mb-4">
           <p className="text-xs text-gray-400 mb-2 font-medium">Options:</p>
           <div className="text-sm text-gray-300 font-mono space-y-1">
-            <p><span className="text-blue-400">--cidr</span> 10.0.0.0/24 <span className="text-gray-500"># scan specific subnet</span></p>
-            <p><span className="text-blue-400">--interval</span> 5m <span className="text-gray-500"># scan frequency</span></p>
-            <p><span className="text-blue-400">--ports</span> <span className="text-gray-500"># include port scan</span></p>
-            <p><span className="text-blue-400">--primary</span> <span className="text-gray-500"># register as primary sensor</span></p>
-            <p><span className="text-blue-400">--once</span> <span className="text-gray-500"># single scan, then exit</span></p>
+            <p><span className="text-amber-400">--cidr</span> 10.0.0.0/24 <span className="text-gray-500"># scan specific subnet</span></p>
+            <p><span className="text-amber-400">--interval</span> 5m <span className="text-gray-500"># scan frequency</span></p>
+            <p><span className="text-amber-400">--ports</span> <span className="text-gray-500"># include port scan</span></p>
+            <p><span className="text-amber-400">--primary</span> <span className="text-gray-500"># register as primary sensor</span></p>
+            <p><span className="text-amber-400">--once</span> <span className="text-gray-500"># single scan, then exit</span></p>
           </div>
         </div>
 
@@ -294,7 +312,7 @@ sudo ./vedetta-sensor --core http://localhost:8080`}
 
         <button
           onClick={onDismiss}
-          className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-sm font-medium transition-colors"
+          className="w-full bg-amber-500 hover:bg-amber-400 text-gray-950 py-2.5 rounded-lg text-sm font-medium transition-colors"
         >
           Got it
         </button>
@@ -315,10 +333,10 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
   return (
     <>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-semibold">Sensors</h2>
+        <h2 className="text-2xl font-display">Sensors</h2>
         <button
           onClick={onSetup}
-          className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+          className="bg-amber-500 hover:bg-amber-400 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
         >
           + Add Sensor
         </button>
@@ -337,7 +355,7 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
       ) : (
         <div className="space-y-3">
           {sensors.map((s) => (
-            <div key={s.sensor_id} className={`bg-gray-900 border rounded-lg p-4 ${s.is_primary ? 'border-blue-500/40' : 'border-gray-800'}`}>
+            <div key={s.sensor_id} className={`bg-gray-900 border rounded-lg p-4 ${s.is_primary ? 'border-amber-500/40' : 'border-gray-800'}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <span className={`w-2.5 h-2.5 rounded-full ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
@@ -345,7 +363,7 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-medium">{s.hostname}</p>
                       {s.is_primary && (
-                        <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded">primary</span>
+                        <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded">primary</span>
                       )}
                     </div>
                     <p className="text-xs text-gray-500">{s.sensor_id}</p>
@@ -364,7 +382,7 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
                 {!s.is_primary && (
                   <button
                     onClick={() => setPrimary(s.sensor_id)}
-                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                    className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
                   >
                     Make Primary
                   </button>
@@ -421,10 +439,10 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
             </svg>
           </div>
-          <h2 className="text-lg font-medium text-gray-300">Welcome to Vedetta</h2>
-          <p className="text-gray-500 mt-2 max-w-md mx-auto">Your network watchtower is ready. Run a scan to discover devices.</p>
+          <h2 className="text-lg font-display text-gray-100">Welcome to Vedetta</h2>
+          <p className="text-gray-400 mt-2 max-w-md mx-auto">Your network watchtower is ready. Run a scan to discover devices on your network.</p>
           <div className="mt-6">
-            <button onClick={onScan} disabled={scanning} className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:text-blue-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 mx-auto">
+            <button onClick={onScan} disabled={scanning} className="bg-amber-500 hover:bg-amber-400 disabled:bg-amber-800 disabled:text-amber-600 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 mx-auto">
               {scanning && <Spinner />}
               {scanning ? 'Scanning...' : 'Run Network Scan'}
             </button>
@@ -434,7 +452,7 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-medium">Recent Devices</h2>
-            <button onClick={onViewDevices} className="text-sm text-blue-400 hover:text-blue-300">View all →</button>
+            <button onClick={onViewDevices} className="text-sm text-amber-400 hover:text-amber-300">View all →</button>
           </div>
           <DeviceTable devices={devices.slice(0, 5)} compact />
         </div>
@@ -481,7 +499,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus }) {
     <>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-2xl font-semibold">Device Inventory</h2>
+          <h2 className="text-2xl font-display">Device Inventory</h2>
           <p className="text-gray-400 text-sm mt-1">
             {devices.length} device{devices.length !== 1 ? 's' : ''} discovered
             {scanStatus?.last_scan && <> · Last scan {timeAgo(scanStatus.last_scan)}</>}
@@ -494,7 +512,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus }) {
               Export CSV
             </button>
           )}
-          <button onClick={onScan} disabled={scanning} className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:text-blue-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+          <button onClick={onScan} disabled={scanning} className="bg-amber-500 hover:bg-amber-400 disabled:bg-amber-800 disabled:text-amber-600 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
             {scanning && <Spinner />}
             {scanning ? 'Scanning...' : 'Scan All Networks'}
           </button>
@@ -509,7 +527,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus }) {
               key={seg}
               onClick={() => setSegmentFilter(seg)}
               className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                segmentFilter === seg ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                segmentFilter === seg ? 'bg-amber-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
               }`}
             >
               {seg === 'all' ? 'All' : seg.charAt(0).toUpperCase() + seg.slice(1)}
@@ -571,23 +589,23 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
     <>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-2xl font-semibold">Scan Targets</h2>
+          <h2 className="text-2xl font-display">Scan Targets</h2>
           <p className="text-gray-400 text-sm mt-1">
             Manage which networks Vedetta scans. The primary subnet is auto-scanned on a schedule. Custom targets are included in every scan cycle.
           </p>
         </div>
-        <button onClick={() => setShowAdd(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+        <button onClick={() => setShowAdd(true)} className="bg-amber-500 hover:bg-amber-400 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
           Add Network
         </button>
       </div>
 
       {/* Primary subnet card */}
-      <div className="bg-gray-900 border border-blue-500/30 rounded-lg p-4 mb-4">
+      <div className="bg-gray-900 border border-amber-500/30 rounded-lg p-4 mb-4">
         <div className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">Primary Network</span>
-              <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded">auto-scan</span>
+              <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded">auto-scan</span>
             </div>
             <p className="font-mono text-sm text-gray-400 mt-1">{defaultCIDR || 'Not configured'}</p>
           </div>
@@ -614,7 +632,7 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
                   <button
                     onClick={() => onScanTarget(t.target_id)}
                     disabled={scanning}
-                    className="text-sm text-blue-400 hover:text-blue-300 disabled:text-gray-600"
+                    className="text-sm text-amber-400 hover:text-amber-300 disabled:text-gray-600"
                   >
                     Scan
                   </button>
@@ -642,23 +660,23 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
       {showAdd && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-md w-full p-6">
-            <h3 className="text-lg font-semibold mb-4">Add Scan Target</h3>
+            <h3 className="text-lg font-display mb-4">Add Scan Target</h3>
 
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Name</label>
                 <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="IoT Network"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
               </div>
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">CIDR</label>
                 <input type="text" value={cidr} onChange={(e) => setCidr(e.target.value)} placeholder="10.0.50.0/24"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500" />
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-amber-500" />
               </div>
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Segment</label>
                 <select value={segment} onChange={(e) => setSegment(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
                   <option value="default">Default</option>
                   <option value="iot">IoT</option>
                   <option value="guest">Guest</option>
@@ -672,20 +690,20 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
             </div>
 
             {/* L2 limitation note */}
-            <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 mt-4">
+            <div className="bg-teal-500/10 border border-teal-500/20 rounded-lg p-3 mt-4">
               <div className="flex gap-2">
-                <svg className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 text-teal-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <div>
-                  <p className="text-xs text-blue-300">
+                  <p className="text-xs text-teal-300">
                     Network discovery works best with a sensor running on each network segment. Remote subnets scanned without a local sensor will have limited fingerprinting (no MAC address or vendor identification).
                   </p>
                   <a
                     href="https://github.com/vedetta-network/vedetta/wiki/Deploying-Sensors"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-xs text-blue-400 hover:text-blue-300 mt-1 inline-block"
+                    className="text-xs text-amber-400 hover:text-amber-300 mt-1 inline-block"
                   >
                     Learn how to deploy a sensor →
                   </a>
@@ -695,7 +713,7 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
 
             <div className="flex gap-2 mt-4">
               <button onClick={addTarget} disabled={!name || !cidr}
-                className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                className="flex-1 bg-amber-500 hover:bg-amber-400 disabled:bg-gray-700 disabled:text-gray-500 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                 Add Target
               </button>
               <button onClick={() => setShowAdd(false)}
@@ -742,9 +760,9 @@ function LogsView() {
 
   const categoryColor = (cat) => {
     const colors = {
-      sensor: 'bg-green-500/20 text-green-300',
-      scan: 'bg-blue-500/20 text-blue-300',
-      device: 'bg-purple-500/20 text-purple-300',
+      sensor: 'bg-teal-500/20 text-teal-300',
+      scan: 'bg-teal-500/20 text-teal-300',
+      device: 'bg-amber-500/20 text-amber-300',
       system: 'bg-gray-500/20 text-gray-300',
       ingest: 'bg-amber-500/20 text-amber-300',
     };
@@ -761,7 +779,7 @@ function LogsView() {
     <>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-2xl font-semibold">Activity Log</h2>
+          <h2 className="text-2xl font-display">Activity Log</h2>
           <p className="text-gray-400 text-sm mt-1">
             Real-time activity from Core, sensors, and scans
           </p>
@@ -788,7 +806,7 @@ function LogsView() {
               key={cat}
               onClick={() => setFilter(cat)}
               className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                filter === cat ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                filter === cat ? 'bg-amber-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
               }`}
             >
               {cat === 'all' ? 'All' : cat.charAt(0).toUpperCase() + cat.slice(1)}
@@ -826,7 +844,7 @@ function SettingsView() {
   return (
     <>
       <div className="mb-6">
-        <h2 className="text-2xl font-semibold">Settings</h2>
+        <h2 className="text-2xl font-display">Settings</h2>
         <p className="text-gray-400 text-sm mt-1">Configure Vedetta Core preferences</p>
       </div>
 
@@ -835,7 +853,7 @@ function SettingsView() {
           <h3 className="text-sm font-medium mb-1">Data Retention</h3>
           <p className="text-xs text-gray-500 mb-3">How long to keep event and device history</p>
           <div className="flex items-center gap-3">
-            <input type="number" defaultValue={90} className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-center focus:outline-none focus:border-blue-500" />
+            <input type="number" defaultValue={90} className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-center focus:outline-none focus:border-amber-500" />
             <span className="text-sm text-gray-400">days</span>
           </div>
         </div>
@@ -844,7 +862,7 @@ function SettingsView() {
           <h3 className="text-sm font-medium mb-1">Scan Schedule</h3>
           <p className="text-xs text-gray-500 mb-3">Default interval for automatic sensor scans</p>
           <div className="flex items-center gap-3">
-            <select defaultValue="5m" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500">
+            <select defaultValue="5m" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-amber-500">
               <option value="1m">Every 1 minute</option>
               <option value="5m">Every 5 minutes</option>
               <option value="15m">Every 15 minutes</option>
