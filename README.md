@@ -1,8 +1,8 @@
 # Vedetta
 
-**Your network watchtower.** A free and open-source security monitoring platform for home users and small businesses.
+**Your network, under watch.** Open-source security monitoring for homes and small businesses.
 
-Vedetta acts as a lightweight SIEM and network visibility tool that installs in a single Docker command, runs on a Raspberry Pi 4, and requires zero security expertise to operate. Users who opt in contribute anonymized telemetry to a community-powered threat intelligence network — the first such corpus built specifically from home and SMB network data.
+Vedetta is the watchtower on your network — it sees everything and explains it simply. Install in one command, run on a Raspberry Pi, and get enterprise-grade network visibility without the enterprise learning curve. Vedetta monitors your network with device discovery, passive DNS analysis, and community-powered threat intelligence. Users who opt in contribute anonymized telemetry to a shared threat network — every Vedetta instance makes every other instance smarter.
 
 ## Quick Start
 
@@ -41,7 +41,7 @@ See [Deploying Sensors](#deploying-sensors) for remote deployment, service manag
 
 ## Architecture
 
-Vedetta uses a **Core + Sensor** architecture. Core runs as a set of Docker containers (API, database, dashboard, log collector). Sensors run as native binaries on host machines with direct LAN access for network scanning.
+Vedetta uses a **Core + Sensor** architecture. Core is the watchtower — it runs as a set of Docker containers (API, database, dashboard, log collector) and gives you a single pane of glass across your entire network. Sensors are lightweight native binaries that run on host machines with direct LAN access, scanning for devices and reporting back to Core.
 
 ```
 vedetta/
