@@ -21,6 +21,14 @@ API: [http://localhost:8080/api/v1/status](http://localhost:8080/api/v1/status)
 
 Sensors are lightweight native binaries that run on your LAN hosts and push device discovery data back to Core. You need at least one sensor to start discovering devices.
 
+**One-liner install** (macOS and Linux — installs nmap, Go, builds the sensor, and sets up a persistent service):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core http://<CORE_IP>:8080
+```
+
+Or install manually:
+
 ```bash
 cd sensor
 go build -o vedetta-sensor ./cmd/vedetta-sensor
@@ -29,7 +37,7 @@ sudo ./vedetta-sensor --core http://<CORE_IP>:8080
 
 The sensor auto-detects the local subnet, registers with Core, and begins scanning on a 5-minute cycle. Use `sudo` for ARP-based MAC address and vendor discovery.
 
-See [Deploying Sensors](#deploying-sensors) for remote deployment, systemd setup, and multi-NIC configurations.
+See [Deploying Sensors](#deploying-sensors) for remote deployment, service management, and multi-NIC configurations.
 
 ## Architecture
 
@@ -62,7 +70,37 @@ vedetta/
 
 ## Deploying Sensors
 
-### Prerequisites
+### Automated Install (Recommended)
+
+The install script detects your OS, installs dependencies (nmap, Go), builds the sensor from source, and registers it as a persistent service — launchd on macOS, systemd on Linux.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core http://<CORE_IP>:8080
+```
+
+#### Install script options
+
+| Option | Description |
+|--------|-------------|
+| `--core <url>` | **(Required)** Vedetta Core API URL |
+| `--cidr <cidr>` | Override auto-detected subnet |
+| `--interval <dur>` | Scan interval (default: 5m) |
+| `--ports` | Enable top-100 port scanning |
+| `--primary` | Register as the primary sensor |
+| `--no-service` | Install binary only, skip service setup |
+| `--uninstall` | Remove sensor binary and service |
+
+#### Supported platforms
+
+- **macOS** (Intel and Apple Silicon) — installs via Homebrew, service via launchd
+- **Debian / Ubuntu / Pop!_OS / Linux Mint** — installs via apt
+- **Fedora / RHEL / Rocky / AlmaLinux** — installs via dnf/yum
+- **Alpine** — installs via apk
+- **Arch / Manjaro** — installs via pacman
+
+### Manual Install
+
+#### Prerequisites
 
 The sensor host needs `nmap` and a Go toolchain (to build from source), or you can cross-compile and copy the binary.
 
@@ -70,7 +108,7 @@ The sensor host needs `nmap` and a Go toolchain (to build from source), or you c
 - **Debian/Ubuntu:** `sudo apt install nmap`
 - **Alpine:** `sudo apk add nmap`
 
-### Build
+#### Build
 
 ```bash
 cd sensor
@@ -84,7 +122,7 @@ GOOS=linux GOARCH=amd64 go build -o vedetta-sensor ./cmd/vedetta-sensor
 # then scp vedetta-sensor to the target machine
 ```
 
-### Run
+#### Run
 
 ```bash
 sudo ./vedetta-sensor --core http://<CORE_IP>:8080
@@ -101,33 +139,44 @@ sudo ./vedetta-sensor --core http://<CORE_IP>:8080
 | `--primary` | `false` | Register as the primary sensor |
 | `--once` | `false` | Run a single scan cycle and exit |
 
-### Run as a systemd Service
+### Service Management
 
-For persistent deployment, install the sensor as a systemd service:
+#### macOS (launchd)
 
 ```bash
-# Copy the binary
-sudo cp vedetta-sensor /usr/local/bin/
+# Status
+sudo launchctl list | grep vedetta
 
-# Install the service file
-sudo cp sensor/deploy/vedetta-sensor.service /etc/systemd/system/
+# Logs
+tail -f /usr/local/var/log/vedetta-sensor.log
 
-# Edit the service to set your Core IP
-sudo systemctl edit vedetta-sensor
-# Override the ExecStart line with your Core IP:
-#   [Service]
-#   ExecStart=
-#   ExecStart=/usr/local/bin/vedetta-sensor --core http://<CORE_IP>:8080
+# Stop
+sudo launchctl bootout system/com.vedetta.sensor
 
-# Enable and start
-sudo systemctl enable --now vedetta-sensor
+# Start
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.vedetta.sensor.plist
 
-# Check status
-sudo systemctl status vedetta-sensor
-journalctl -u vedetta-sensor -f
+# Uninstall
+curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --uninstall
 ```
 
-A template service file is provided at `sensor/deploy/vedetta-sensor.service`.
+#### Linux (systemd)
+
+```bash
+# Status
+sudo systemctl status vedetta-sensor
+
+# Logs
+journalctl -u vedetta-sensor -f
+
+# Restart
+sudo systemctl restart vedetta-sensor
+
+# Uninstall
+curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --uninstall
+```
+
+Template service files are provided in `sensor/deploy/`.
 
 ### Multi-NIC / Multi-Segment Hosts
 
