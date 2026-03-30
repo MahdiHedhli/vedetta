@@ -8,7 +8,9 @@ import (
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
+	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
+	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
 )
 
 func main() {
@@ -29,8 +31,30 @@ func main() {
 	}
 	defer db.Close()
 
+	// Start retention enforcer (daily cleanup of old events)
+	stopRetention := db.StartRetentionEnforcer()
+	defer stopRetention()
+
+	// Initialize threat intelligence database and enrichment engine
+	threatDB, err := threatintel.NewThreatIntelDB(db.DB)
+	if err != nil {
+		log.Printf("Threat intel DB init failed (non-fatal): %v", err)
+	}
+
+	enricher := dnsintel.NewEnricher(threatDB)
+	stopEviction := enricher.StartEviction()
+	defer stopEviction()
+
+	// Start threat intelligence feed downloads
+	if threatDB != nil {
+		feedScheduler := threatintel.NewFeedScheduler(threatDB)
+		feedScheduler.Start()
+		defer feedScheduler.Stop()
+		log.Println("Threat intelligence feed scheduler active")
+	}
+
 	// Set up the API server (Core)
-	srv := &api.Server{DB: db}
+	srv := &api.Server{DB: db, Enricher: enricher}
 
 	// Optional: built-in scanner for Linux host-network deployments.
 	// The primary discovery path is via native sensors (vedetta-sensor).

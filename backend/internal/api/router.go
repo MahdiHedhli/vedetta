@@ -6,11 +6,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
+	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 )
@@ -19,6 +23,7 @@ import (
 type Server struct {
 	DB        *store.DB
 	Scheduler *discovery.Scheduler
+	Enricher  *dnsintel.Enricher
 }
 
 // NewRouter creates the main API router with all routes mounted.
@@ -38,6 +43,7 @@ func NewRouter(srv *Server) http.Handler {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/status", srv.handleStatus)
 		r.Get("/events", srv.handleEvents)
+		r.Post("/ingest", srv.handleIngest)
 
 		// Device discovery
 		r.Get("/devices", srv.handleListDevices)
@@ -69,11 +75,15 @@ func NewRouter(srv *Server) http.Handler {
 	return r
 }
 
+// --- Status ---
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	deviceCount := 0
 	sensorCount := 0
+	eventCount := 0
 	if s.DB != nil {
 		deviceCount, _ = s.DB.CountDevices()
+		eventCount, _ = s.DB.CountEvents()
 		if sensors, err := s.DB.ListSensors(); err == nil {
 			sensorCount = len(sensors)
 		}
@@ -91,19 +101,234 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"version":      "0.1.0-dev",
 		"service":      "vedetta-core",
 		"device_count": deviceCount,
+		"event_count":  eventCount,
 		"sensor_count": sensorCount,
 		"scan":         scanStatus,
 		"default_cidr": defaultCIDR,
 	})
 }
 
-func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+// --- Event Ingest ---
+
+// Allowed event types (matches the CHECK constraint in 001_init.sql).
+var allowedEventTypes = map[string]bool{
+	"dns_query":      true,
+	"nmap_discovery": true,
+	"firewall_log":   true,
+	"anomaly":        true,
+}
+
+func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	// Read body (limit to 10MB to prevent abuse)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "failed to read body"})
+		return
+	}
+
+	// Parse: accept both a single event object and an array of events.
+	// Also handle Fluent Bit's HTTP output format: array of [timestamp, record] pairs.
+	var events []models.Event
+
+	// Try array first
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "empty body"})
+		return
+	}
+
+	if trimmed[0] == '[' {
+		// Could be an array of events or Fluent Bit [timestamp, record] pairs
+		var rawArray []json.RawMessage
+		if err := json.Unmarshal(body, &rawArray); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON array"})
+			return
+		}
+
+		for _, raw := range rawArray {
+			// Try as a normal event object
+			var evt models.Event
+			if err := json.Unmarshal(raw, &evt); err == nil && evt.EventType != "" {
+				events = append(events, evt)
+				continue
+			}
+
+			// Try as Fluent Bit [timestamp, record] pair
+			var pair []json.RawMessage
+			if err := json.Unmarshal(raw, &pair); err == nil && len(pair) == 2 {
+				var evt models.Event
+				if err := json.Unmarshal(pair[1], &evt); err == nil && evt.EventType != "" {
+					events = append(events, evt)
+				}
+			}
+		}
+	} else if trimmed[0] == '{' {
+		// Single event object
+		var evt models.Event
+		if err := json.Unmarshal(body, &evt); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON object"})
+			return
+		}
+		events = append(events, evt)
+	} else {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "expected JSON object or array"})
+		return
+	}
+
+	// Validate and assign defaults
+	accepted := make([]models.Event, 0, len(events))
+	rejected := 0
+	for _, e := range events {
+		// Validate event_type
+		if !allowedEventTypes[e.EventType] {
+			rejected++
+			continue
+		}
+
+		// Assign event_id if missing
+		if e.EventID == "" {
+			e.EventID = uuid.New().String()
+		}
+
+		// Assign timestamp if missing or zero
+		if e.Timestamp.IsZero() {
+			e.Timestamp = time.Now().UTC()
+		}
+
+		// Default source_hash
+		if e.SourceHash == "" {
+			e.SourceHash = "unknown"
+		}
+
+		// Clamp anomaly_score
+		if e.AnomalyScore < 0 {
+			e.AnomalyScore = 0
+		}
+		if e.AnomalyScore > 1 {
+			e.AnomalyScore = 1
+		}
+
+		// Default tags
+		if e.Tags == nil {
+			e.Tags = []string{}
+		}
+
+		// Default network_segment
+		if e.NetworkSegment == "" {
+			e.NetworkSegment = "default"
+		}
+
+		accepted = append(accepted, e)
+	}
+
+	// Enrich events with threat intelligence and DNS detection
+	if s.Enricher != nil {
+		for i := range accepted {
+			s.Enricher.Enrich(&accepted[i])
+		}
+	}
+
+	// Insert
+	inserted, err := s.DB.InsertEvents(accepted)
+	if err != nil {
+		log.Printf("Ingest error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":    "insert failed",
+			"accepted": 0,
+			"rejected": len(events),
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"events": []any{},
-		"total":  0,
-		"page":   1,
+		"accepted": inserted,
+		"rejected": rejected + (len(accepted) - inserted),
 	})
 }
+
+// --- Event Query ---
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	q := r.URL.Query()
+	params := store.EventQueryParams{
+		Type:   q.Get("type"),
+		Source: q.Get("source"),
+		Domain: q.Get("domain"),
+		Sort:   q.Get("sort"),
+		Order:  q.Get("order"),
+	}
+
+	// Time range
+	if from := q.Get("from"); from != "" {
+		if t, err := time.Parse(time.RFC3339, from); err == nil {
+			params.From = &t
+		}
+	}
+	if to := q.Get("to"); to != "" {
+		if t, err := time.Parse(time.RFC3339, to); err == nil {
+			params.To = &t
+		}
+	}
+
+	// Tags
+	if tags := q.Get("tags"); tags != "" {
+		params.Tags = strings.Split(tags, ",")
+	}
+
+	// Min score
+	if ms := q.Get("min_score"); ms != "" {
+		if score, err := strconv.ParseFloat(ms, 64); err == nil {
+			params.MinScore = &score
+		}
+	}
+
+	// Pagination
+	if p := q.Get("page"); p != "" {
+		params.Page, _ = strconv.Atoi(p)
+	}
+	if l := q.Get("limit"); l != "" {
+		params.Limit, _ = strconv.Atoi(l)
+	}
+
+	result, err := s.DB.QueryEvents(params)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	// CSV export
+	if q.Get("format") == "csv" {
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", "attachment; filename=events.csv")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("event_id,timestamp,event_type,source_hash,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment\n"))
+		for _, e := range result.Events {
+			tagsStr := strings.Join(e.Tags, ";")
+			line := strings.Join([]string{
+				e.EventID, e.Timestamp.Format(time.RFC3339), e.EventType, e.SourceHash,
+				e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
+				strconv.FormatFloat(e.AnomalyScore, 'f', 4, 64), tagsStr, e.Geo,
+				e.DeviceVendor, e.NetworkSegment,
+			}, ",")
+			w.Write([]byte(line + "\n"))
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// --- Device Discovery ---
 
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	if s.DB == nil {

@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -39,35 +43,112 @@ func Open(dbPath string) (*DB, error) {
 	return store, nil
 }
 
-// migrate runs the SQL migration files.
+// migrate runs all SQL migration files sequentially, tracking applied
+// migrations in a schema_migrations table.
 func (db *DB) migrate() error {
-	// Read migration from embedded path or fallback
-	migrationPaths := []string{
-		"/app/siem/migrations/001_init.sql",
-		"siem/migrations/001_init.sql",
-		"../siem/migrations/001_init.sql",
+	// Create the schema_migrations tracking table
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			id         TEXT PRIMARY KEY,
+			applied_at TIMESTAMP NOT NULL
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("create schema_migrations table: %w", err)
 	}
 
-	var migrationSQL []byte
-	var err error
-	for _, p := range migrationPaths {
-		migrationSQL, err = os.ReadFile(p)
-		if err == nil {
+	// Locate the migrations directory
+	migrationDir := ""
+	candidates := []string{
+		"/app/siem/migrations",
+		"siem/migrations",
+		"../siem/migrations",
+	}
+	for _, dir := range candidates {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			migrationDir = dir
 			break
 		}
 	}
 
-	if err != nil {
-		// Inline fallback — ensures DB works even without migration file
-		migrationSQL = []byte(inlineMigration)
+	if migrationDir == "" {
+		// Inline fallback — ensures DB works even without migration files
+		log.Println("Migration directory not found — applying inline fallback")
+		return db.applyInlineFallback()
 	}
 
-	_, err = db.Exec(string(migrationSQL))
+	// Read all .sql files, sorted by filename (001_, 002_, etc.)
+	entries, err := os.ReadDir(migrationDir)
 	if err != nil {
-		return fmt.Errorf("failed to execute migration: %w", err)
+		return fmt.Errorf("read migrations dir: %w", err)
 	}
 
-	log.Println("Database migrations applied")
+	var sqlFiles []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			sqlFiles = append(sqlFiles, e.Name())
+		}
+	}
+	sort.Strings(sqlFiles)
+
+	if len(sqlFiles) == 0 {
+		log.Println("No migration files found — applying inline fallback")
+		return db.applyInlineFallback()
+	}
+
+	// Apply each migration that hasn't been applied yet
+	for _, filename := range sqlFiles {
+		var applied int
+		err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE id = ?", filename).Scan(&applied)
+		if err != nil {
+			return fmt.Errorf("check migration %s: %w", filename, err)
+		}
+		if applied > 0 {
+			continue
+		}
+
+		// Read the migration file
+		sqlBytes, err := os.ReadFile(filepath.Join(migrationDir, filename))
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", filename, err)
+		}
+
+		// Execute in a transaction
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin tx for %s: %w", filename, err)
+		}
+
+		if _, err := tx.Exec(string(sqlBytes)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("execute migration %s: %w", filename, err)
+		}
+
+		if _, err := tx.Exec("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+			filename, time.Now().UTC()); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration %s: %w", filename, err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %s: %w", filename, err)
+		}
+
+		log.Printf("Migration applied: %s", filename)
+	}
+
+	log.Printf("Database migrations complete (%d files)", len(sqlFiles))
+	return nil
+}
+
+// applyInlineFallback applies the hardcoded schema when migration files
+// are not available (e.g. during development or tests).
+func (db *DB) applyInlineFallback() error {
+	_, err := db.Exec(inlineMigration)
+	if err != nil {
+		return fmt.Errorf("inline migration failed: %w", err)
+	}
+	log.Println("Inline fallback migration applied")
 	return nil
 }
 
