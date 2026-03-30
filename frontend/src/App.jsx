@@ -451,6 +451,32 @@ function DevicesView({ devices, scanning, onScan, scanStatus }) {
   const segments = ['all', ...new Set(devices.map((d) => d.segment).filter(Boolean))];
   const filtered = segmentFilter === 'all' ? devices : devices.filter((d) => d.segment === segmentFilter);
 
+  const exportCSV = () => {
+    const headers = ['Status', 'IP Address', 'Hostname', 'Vendor', 'Segment', 'MAC Address', 'Open Ports', 'First Seen', 'Last Seen'];
+    const rows = filtered.map((d) => [
+      d.is_online ? 'Online' : 'Offline',
+      d.ip_address || '',
+      d.hostname || '',
+      d.vendor || '',
+      d.segment || '',
+      d.mac_address || '',
+      (d.open_ports && d.open_ports.length > 0) ? d.open_ports.map((p) => `${p.port}/${p.protocol}`).join('; ') : '',
+      d.first_seen ? new Date(d.first_seen).toISOString() : '',
+      d.last_seen ? new Date(d.last_seen).toISOString() : '',
+    ]);
+    const csvContent = [headers, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const seg = segmentFilter !== 'all' ? `-${segmentFilter}` : '';
+    a.download = `vedetta-devices${seg}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <>
       <div className="flex items-center justify-between mb-6">
@@ -461,10 +487,18 @@ function DevicesView({ devices, scanning, onScan, scanStatus }) {
             {scanStatus?.last_scan && <> · Last scan {timeAgo(scanStatus.last_scan)}</>}
           </p>
         </div>
-        <button onClick={onScan} disabled={scanning} className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:text-blue-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
-          {scanning && <Spinner />}
-          {scanning ? 'Scanning...' : 'Scan All Networks'}
-        </button>
+        <div className="flex items-center gap-2">
+          {filtered.length > 0 && (
+            <button onClick={exportCSV} className="bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+              Export CSV
+            </button>
+          )}
+          <button onClick={onScan} disabled={scanning} className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:text-blue-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+            {scanning && <Spinner />}
+            {scanning ? 'Scanning...' : 'Scan All Networks'}
+          </button>
+        </div>
       </div>
 
       {/* Segment filter */}
