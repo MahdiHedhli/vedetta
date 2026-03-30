@@ -21,12 +21,13 @@ type CoreClient struct {
 
 // SensorRegistration is the payload sent when the sensor first connects.
 type SensorRegistration struct {
-	SensorID string `json:"sensor_id"`
-	Hostname string `json:"hostname"`
-	OS       string `json:"os"`
-	Arch     string `json:"arch"`
-	CIDR     string `json:"cidr"`
-	Version  string `json:"version"`
+	SensorID  string `json:"sensor_id"`
+	Hostname  string `json:"hostname"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+	CIDR      string `json:"cidr"`
+	Version   string `json:"version"`
+	IsPrimary bool   `json:"is_primary"`
 }
 
 // DeviceReport is what the sensor pushes after each scan.
@@ -37,6 +38,32 @@ type DeviceReport struct {
 	ScanTime time.Time                `json:"scan_time"`
 	Duration string                   `json:"duration"`
 	Hosts    []netscan.DiscoveredHost `json:"hosts"`
+}
+
+// ScanRequest represents a queued scan from Core.
+type ScanRequest struct {
+	CIDR      string    `json:"cidr"`
+	Segment   string    `json:"segment"`
+	ScanPorts bool      `json:"scan_ports"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
+// ScanTarget represents a named scan target from Core.
+type ScanTarget struct {
+	TargetID  string     `json:"target_id"`
+	Name      string     `json:"name"`
+	CIDR      string     `json:"cidr"`
+	Segment   string     `json:"segment"`
+	ScanPorts bool       `json:"scan_ports"`
+	Enabled   bool       `json:"enabled"`
+	CreatedAt time.Time  `json:"created_at"`
+	LastScan  *time.Time `json:"last_scan,omitempty"`
+}
+
+// WorkResponse is the response from /sensor/work endpoint.
+type WorkResponse struct {
+	ScanQueue []ScanRequest `json:"scan_queue"`
+	Targets   []ScanTarget  `json:"targets"`
 }
 
 // New creates a CoreClient pointed at the given API base URL.
@@ -54,30 +81,69 @@ func New(baseURL string) *CoreClient {
 }
 
 // Register announces this sensor to the Core API.
-func (c *CoreClient) Register(cidr string) error {
+func (c *CoreClient) Register(cidr string, primary bool) error {
 	hostname, _ := os.Hostname()
 	reg := SensorRegistration{
-		SensorID: c.SensorID,
-		Hostname: hostname,
-		OS:       runtime.GOOS,
-		Arch:     runtime.GOARCH,
-		CIDR:     cidr,
-		Version:  "0.1.0-dev",
+		SensorID:  c.SensorID,
+		Hostname:  hostname,
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		CIDR:      cidr,
+		Version:   "0.1.0-dev",
+		IsPrimary: primary,
 	}
 	return c.post("/api/v1/sensor/register", reg)
 }
 
 // PushDevices sends discovered hosts to Core for storage.
-func (c *CoreClient) PushDevices(result *netscan.ScanResult, cidr string) error {
+func (c *CoreClient) PushDevices(result *netscan.ScanResult, cidr string, segment ...string) error {
+	seg := "default"
+	if len(segment) > 0 {
+		seg = segment[0]
+	}
 	report := DeviceReport{
 		SensorID: c.SensorID,
 		CIDR:     cidr,
-		Segment:  "default",
+		Segment:  seg,
 		ScanTime: result.ScanTime,
 		Duration: result.Duration.String(),
 		Hosts:    result.Hosts,
 	}
 	return c.post("/api/v1/sensor/devices", report)
+}
+
+// FetchWork retrieves pending scan requests and enabled targets from Core.
+func (c *CoreClient) FetchWork() (*WorkResponse, error) {
+	var work WorkResponse
+	if err := c.get("/api/v1/sensor/work", &work); err != nil {
+		return nil, err
+	}
+	return &work, nil
+}
+
+func (c *CoreClient) get(path string, v any) error {
+	url := c.BaseURL + path
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("X-Sensor-ID", c.SensorID)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("GET %s returned %d", path, resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	return nil
 }
 
 func (c *CoreClient) post(path string, payload any) error {

@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 CREATE INDEX IF NOT EXISTS idx_devices_mac  ON devices (mac_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last ON devices (last_seen);
+CREATE INDEX IF NOT EXISTS idx_devices_ip_segment ON devices (ip_address, segment);
 
 CREATE TABLE IF NOT EXISTS retention_config (
     key   TEXT PRIMARY KEY,
@@ -212,6 +213,20 @@ CREATE TABLE IF NOT EXISTS sensors (
     version     TEXT NOT NULL,
     first_seen  TIMESTAMP NOT NULL,
     last_seen   TIMESTAMP NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'online'
+    status      TEXT NOT NULL DEFAULT 'online',
+    is_primary  BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+CREATE TABLE IF NOT EXISTS threat_indicators (
+    indicator  TEXT NOT NULL,
+    type       TEXT NOT NULL CHECK(type IN ('domain', 'ipv4', 'ipv6', 'ja3', 'url', 'hash')),
+    source     TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    tags       TEXT DEFAULT '[]',
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    ttl_hours  INTEGER NOT NULL DEFAULT 168,
+    PRIMARY KEY (indicator, source)
+);
+CREATE INDEX IF NOT EXISTS idx_ti_indicator ON threat_indicators(indicator);
 `

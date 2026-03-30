@@ -53,8 +53,17 @@ func main() {
 		log.Println("Threat intelligence feed scheduler active")
 	}
 
+	// Set up activity log (ring buffer for UI)
+	activityLog := api.NewActivityLog(500)
+	activityLog.Info("system", "Vedetta Core starting")
+
 	// Set up the API server (Core)
-	srv := &api.Server{DB: db, Enricher: enricher}
+	srv := &api.Server{
+		DB:          db,
+		Enricher:    enricher,
+		ScanQueue:   &api.ScanQueue{},
+		ActivityLog: activityLog,
+	}
 
 	// Optional: built-in scanner for Linux host-network deployments.
 	// The primary discovery path is via native sensors (vedetta-sensor).
