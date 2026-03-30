@@ -263,6 +263,10 @@ install_service_macos() {
 
     info "Installing launchd service..."
 
+    # Build a PATH that includes Homebrew (varies by arch) and standard dirs
+    BREW_PREFIX="$(/opt/homebrew/bin/brew --prefix 2>/dev/null || /usr/local/bin/brew --prefix 2>/dev/null || echo "/opt/homebrew")"
+    LAUNCH_PATH="${BREW_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
     cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -270,6 +274,11 @@ install_service_macos() {
 <dict>
     <key>Label</key>
     <string>com.vedetta.sensor</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${LAUNCH_PATH}</string>
+    </dict>
     <key>ProgramArguments</key>
     <array>
         <string>${INSTALL_DIR}/${SENSOR_BIN}</string>
