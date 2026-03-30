@@ -43,7 +43,8 @@ type Sensor struct {
 	Version   string    `json:"version" db:"version"`
 	FirstSeen time.Time `json:"first_seen" db:"first_seen"`
 	LastSeen  time.Time `json:"last_seen" db:"last_seen"`
-	Status    string    `json:"status" db:"status"` // online | offline
+	Status    string    `json:"status" db:"status"`       // online | offline
+	IsPrimary bool      `json:"is_primary" db:"is_primary"` // only one sensor should be primary
 }
 
 // ScanTarget represents a named subnet to scan (e.g., IoT VLAN, Guest network).

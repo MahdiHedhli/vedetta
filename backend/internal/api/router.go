@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -21,9 +22,11 @@ import (
 
 // Server holds dependencies for all API handlers.
 type Server struct {
-	DB        *store.DB
-	Scheduler *discovery.Scheduler
-	Enricher  *dnsintel.Enricher
+	DB          *store.DB
+	Scheduler   *discovery.Scheduler
+	Enricher    *dnsintel.Enricher
+	ScanQueue   *ScanQueue
+	ActivityLog *ActivityLog
 }
 
 // NewRouter creates the main API router with all routes mounted.
@@ -66,6 +69,11 @@ func NewRouter(srv *Server) http.Handler {
 		r.Post("/sensor/register", srv.handleSensorRegister)
 		r.Post("/sensor/devices", srv.handleSensorDevices)
 		r.Get("/sensor/list", srv.handleSensorList)
+		r.Get("/sensor/work", srv.handleSensorWork)
+		r.Put("/sensor/{sensorID}/primary", srv.handleSetPrimarySensor)
+
+		// Activity log
+		r.Get("/logs", srv.handleLogs)
 	})
 
 	// Static file server for the React frontend
@@ -94,6 +102,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if s.Scheduler != nil {
 		scanStatus = s.Scheduler.Status()
 		defaultCIDR = s.Scheduler.DefaultCIDR()
+	}
+
+	// Fall back to the primary sensor's CIDR if no local scheduler
+	if defaultCIDR == "" && s.DB != nil {
+		if primary, err := s.DB.GetPrimarySensor(); err == nil {
+			defaultCIDR = primary.CIDR
+		} else if sensors, err := s.DB.ListSensors(); err == nil && len(sensors) > 0 {
+			defaultCIDR = sensors[0].CIDR // fallback: most recent sensor
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -371,19 +388,41 @@ func (s *Server) handleNewDevices(w http.ResponseWriter, r *http.Request) {
 // --- Scanning ---
 
 func (s *Server) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
-	if s.Scheduler == nil {
+	if s.Scheduler != nil {
+		// Built-in scanner available (nmap in Docker)
+		status := s.Scheduler.Status()
+		if status.Running {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "scan already in progress"})
+			return
+		}
+		s.Scheduler.RunNow()
+		writeJSON(w, http.StatusAccepted, map[string]any{"message": "scan triggered"})
+		return
+	}
+
+	// No built-in scanner; queue for sensor pickup
+	if s.ScanQueue == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "scanner not available"})
 		return
 	}
 
-	status := s.Scheduler.Status()
-	if status.Running {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "scan already in progress"})
-		return
+	// Queue all enabled targets for the next sensor pickup
+	if s.DB != nil {
+		if targets, err := s.DB.GetEnabledScanTargets(); err == nil && len(targets) > 0 {
+			for _, target := range targets {
+				s.ScanQueue.Enqueue(target.CIDR, target.Segment, target.ScanPorts)
+			}
+			s.logInfo("scan", fmt.Sprintf("Queued %d scan targets for next sensor pickup", len(targets)))
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"message": fmt.Sprintf("queued %d targets for next sensor pickup", len(targets)),
+			})
+			return
+		}
 	}
 
-	s.Scheduler.RunNow()
-	writeJSON(w, http.StatusAccepted, map[string]any{"message": "scan triggered"})
+	writeJSON(w, http.StatusBadRequest, map[string]any{
+		"error": "no default CIDR configured and no targets enabled; please create a scan target",
+	})
 }
 
 func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
@@ -474,6 +513,7 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logInfo("scan", fmt.Sprintf("Scan target created: %s (%s) segment=%s", body.Name, body.CIDR, body.Segment))
 	writeJSON(w, http.StatusCreated, target)
 }
 
@@ -516,14 +556,8 @@ func (s *Server) handleToggleTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleScanTarget(w http.ResponseWriter, r *http.Request) {
-	if s.Scheduler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "scanner not available"})
-		return
-	}
-
-	status := s.Scheduler.Status()
-	if status.Running {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "scan already in progress"})
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
 		return
 	}
 
@@ -536,19 +570,40 @@ func (s *Server) handleScanTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, t := range targets {
-		if t.TargetID == targetID {
-			s.Scheduler.RunTarget(t.CIDR, t.Segment, t.ScanPorts)
-			writeJSON(w, http.StatusAccepted, map[string]any{
-				"message": "scan triggered",
-				"target":  t.Name,
-				"cidr":    t.CIDR,
-			})
-			return
+	var target *models.ScanTarget
+	for i := range targets {
+		if targets[i].TargetID == targetID {
+			target = &targets[i]
+			break
 		}
 	}
 
-	writeJSON(w, http.StatusNotFound, map[string]any{"error": "target not found"})
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "target not found"})
+		return
+	}
+
+	// If built-in scanner is available, use it
+	if s.Scheduler != nil {
+		status := s.Scheduler.Status()
+		if status.Running {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "scan already in progress"})
+			return
+		}
+		s.Scheduler.RunTarget(target.CIDR, target.Segment, target.ScanPorts)
+	} else if s.ScanQueue != nil {
+		// No built-in scanner; queue for sensor pickup
+		s.ScanQueue.Enqueue(target.CIDR, target.Segment, target.ScanPorts)
+	} else {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "scanner not available"})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"message": "scan queued",
+		"target":  target.Name,
+		"cidr":    target.CIDR,
+	})
 }
 
 // --- Sensor Ingest ---
@@ -560,12 +615,13 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		SensorID string `json:"sensor_id"`
-		Hostname string `json:"hostname"`
-		OS       string `json:"os"`
-		Arch     string `json:"arch"`
-		CIDR     string `json:"cidr"`
-		Version  string `json:"version"`
+		SensorID  string `json:"sensor_id"`
+		Hostname  string `json:"hostname"`
+		OS        string `json:"os"`
+		Arch      string `json:"arch"`
+		CIDR      string `json:"cidr"`
+		Version   string `json:"version"`
+		IsPrimary bool   `json:"is_primary"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
@@ -577,12 +633,13 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sensor := models.Sensor{
-		SensorID: body.SensorID,
-		Hostname: body.Hostname,
-		OS:       body.OS,
-		Arch:     body.Arch,
-		CIDR:     body.CIDR,
-		Version:  body.Version,
+		SensorID:  body.SensorID,
+		Hostname:  body.Hostname,
+		OS:        body.OS,
+		Arch:      body.Arch,
+		CIDR:      body.CIDR,
+		Version:   body.Version,
+		IsPrimary: body.IsPrimary,
 	}
 
 	if err := s.DB.RegisterSensor(sensor); err != nil {
@@ -591,6 +648,7 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR)
+	s.logInfo("sensor", fmt.Sprintf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "registered", "sensor_id": body.SensorID})
 }
 
@@ -651,6 +709,7 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Sensor %s reported %d hosts (%d new) from %s", body.SensorID, len(body.Hosts), newCount, body.CIDR)
+	s.logInfo("scan", fmt.Sprintf("Sensor %s reported %d hosts (%d new) from %s [%s]", body.SensorID, len(body.Hosts), newCount, body.CIDR, body.Segment))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accepted":    len(body.Hosts),
 		"new_devices": newCount,
@@ -673,6 +732,96 @@ func (s *Server) handleSensorList(w http.ResponseWriter, r *http.Request) {
 		"sensors": sensors,
 		"total":   len(sensors),
 	})
+}
+
+func (s *Server) handleSensorWork(w http.ResponseWriter, r *http.Request) {
+	sensorID := r.Header.Get("X-Sensor-ID")
+	response := map[string]any{
+		"scan_queue": []ScanRequest{},
+		"targets":    []models.ScanTarget{},
+	}
+
+	// Drain pending scan requests
+	var queuedScans []ScanRequest
+	if s.ScanQueue != nil {
+		queuedScans = s.ScanQueue.Drain()
+		response["scan_queue"] = queuedScans
+	}
+
+	// Get enabled scan targets for auto-scanning
+	var targetCount int
+	if s.DB != nil {
+		targets, err := s.DB.GetEnabledScanTargets()
+		if err == nil {
+			response["targets"] = targets
+			targetCount = len(targets)
+		}
+	}
+
+	if len(queuedScans) > 0 || targetCount > 0 {
+		s.logInfo("sensor", fmt.Sprintf("Sensor %s fetched work: %d queued scans, %d targets", sensorID, len(queuedScans), targetCount))
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleSetPrimarySensor(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	sensorID := chi.URLParam(r, "sensorID")
+	if sensorID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "sensor_id required"})
+		return
+	}
+
+	if err := s.DB.SetPrimarySensor(sensorID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	log.Printf("Primary sensor changed to: %s", sensorID)
+	writeJSON(w, http.StatusOK, map[string]any{"primary": sensorID})
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+
+	var entries []LogEntry
+	if s.ActivityLog != nil {
+		entries = s.ActivityLog.Recent(limit)
+	}
+	if entries == nil {
+		entries = []LogEntry{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"logs": entries})
+}
+
+// logActivity is a nil-safe helper.
+func (s *Server) logInfo(category, message string) {
+	if s.ActivityLog != nil {
+		s.ActivityLog.Info(category, message)
+	}
+}
+
+func (s *Server) logWarn(category, message string) {
+	if s.ActivityLog != nil {
+		s.ActivityLog.Warn(category, message)
+	}
+}
+
+func (s *Server) logError(category, message string) {
+	if s.ActivityLog != nil {
+		s.ActivityLog.Error(category, message)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

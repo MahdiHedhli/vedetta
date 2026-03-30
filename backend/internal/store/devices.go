@@ -11,7 +11,11 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
-// UpsertDevice inserts or updates a device by MAC address.
+// UpsertDevice inserts or updates a device.
+// Identity strategy:
+//   - If MAC address is available → match by MAC (handles DHCP IP changes)
+//   - If MAC is empty (cross-subnet scan) → match by IP + segment
+//
 // The segment parameter tags which network the device was found on.
 // Returns true if this is a newly discovered device.
 func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, segment ...string) (bool, error) {
@@ -20,13 +24,22 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 		seg = segment[0]
 	}
 
-	// Check if device exists by MAC
-	var existingID string
-	err := db.QueryRow("SELECT device_id FROM devices WHERE mac_address = ?", host.MACAddress).Scan(&existingID)
-
 	portsJSON, _ := json.Marshal(host.OpenPorts)
 	if len(host.OpenPorts) == 0 {
 		portsJSON = []byte("[]")
+	}
+
+	// Choose identity key based on whether MAC is available.
+	// Local-subnet scans get MAC via ARP; cross-subnet scans don't.
+	var existingID string
+	var err error
+	if host.MACAddress != "" {
+		// Primary lookup: by MAC address (stable across DHCP changes)
+		err = db.QueryRow("SELECT device_id FROM devices WHERE mac_address = ?", host.MACAddress).Scan(&existingID)
+	} else {
+		// Fallback: by IP + segment (best we can do without layer-2 data)
+		err = db.QueryRow("SELECT device_id FROM devices WHERE ip_address = ? AND segment = ? AND (mac_address = '' OR mac_address IS NULL)",
+			host.IPAddress, seg).Scan(&existingID)
 	}
 
 	if err == sql.ErrNoRows {
@@ -46,12 +59,17 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 		return false, fmt.Errorf("query device: %w", err)
 	}
 
-	// Existing device — update last_seen, IP (may change via DHCP), ports, hostname, segment
+	// Existing device — update last_seen, IP (may change via DHCP), ports, hostname
+	// Only update MAC if we now have one and didn't before (device moved to local subnet)
 	_, err = db.Exec(`
-		UPDATE devices SET last_seen = ?, ip_address = ?, hostname = COALESCE(NULLIF(?, ''), hostname),
+		UPDATE devices SET last_seen = ?, ip_address = ?,
+		mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
+		hostname = COALESCE(NULLIF(?, ''), hostname),
 		vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?
 		WHERE device_id = ?`,
-		scanTime, host.IPAddress, host.Hostname, host.Vendor, string(portsJSON), seg, existingID,
+		scanTime, host.IPAddress,
+		host.MACAddress, host.MACAddress,
+		host.Hostname, host.Vendor, string(portsJSON), seg, existingID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("update device: %w", err)

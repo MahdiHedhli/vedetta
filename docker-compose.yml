@@ -5,7 +5,9 @@
 services:
   # --- Go API Backend ---
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: vedetta-backend
     ports:
       - "8080:8080"
@@ -35,7 +37,7 @@ services:
     build: ./frontend
     container_name: vedetta-frontend
     ports:
-      - "${VEDETTA_FRONTEND_PORT:-3000}:3000"
+      - "${VEDETTA_FRONTEND_PORT:-3107}:3000"
     networks:
       - vedetta
     depends_on:

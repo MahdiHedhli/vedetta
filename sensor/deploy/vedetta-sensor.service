@@ -1,0 +1,23 @@
+[Unit]
+Description=Vedetta Network Sensor
+Documentation=https://github.com/vedetta-network/vedetta
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vedetta-sensor --core http://CORE_IP:8080
+Restart=always
+RestartSec=10
+# The sensor needs root for ARP-based MAC address discovery (nmap raw sockets)
+User=root
+
+# Hardening
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=multi-user.target
