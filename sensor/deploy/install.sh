@@ -23,6 +23,20 @@ SENSOR_FLAGS=""
 SKIP_SERVICE=false
 UNINSTALL=false
 
+# On macOS, Homebrew and Go must not run as root.
+# Capture the real (non-root) user so we can drop privileges for those commands.
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME=$(eval echo "~${REAL_USER}")
+
+# Run a command as the real (non-root) user
+as_user() {
+    if [[ "$(id -u)" -eq 0 && "$REAL_USER" != "root" ]]; then
+        sudo -u "$REAL_USER" -- "$@"
+    else
+        "$@"
+    fi
+}
+
 # --- Helpers ---
 
 info()  { printf "\033[1;34m[vedetta]\033[0m %s\n" "$*"; }
@@ -141,8 +155,8 @@ install_nmap() {
     info "Installing nmap..."
     case "$PLATFORM" in
         macos)
-            if command -v brew &>/dev/null; then
-                brew install nmap
+            if as_user command -v brew &>/dev/null; then
+                as_user brew install nmap
             else
                 die "nmap not found. Install Homebrew (https://brew.sh) then run: brew install nmap"
             fi
@@ -168,16 +182,21 @@ install_nmap() {
 }
 
 install_go() {
+    # Check both root and user PATH for Go
     if command -v go &>/dev/null; then
         info "Go found: $(go version)"
+        return
+    fi
+    if as_user command -v go &>/dev/null; then
+        info "Go found (user): $(as_user go version)"
         return
     fi
 
     info "Installing Go..."
     case "$PLATFORM" in
         macos)
-            if command -v brew &>/dev/null; then
-                brew install go
+            if as_user command -v brew &>/dev/null; then
+                as_user brew install go
             else
                 die "Go not found. Install Homebrew (https://brew.sh) then run: brew install go"
             fi
@@ -198,26 +217,27 @@ install_go() {
             export PATH="/usr/local/go/bin:$PATH"
             ;;
     esac
-    info "Go installed: $(go version)"
+    info "Go installed."
 }
 
 # --- Build sensor ---
 
 build_sensor() {
-    TMPDIR="$(mktemp -d)"
+    BUILD_TMP="$(mktemp -d)"
+    # Let the real user own the temp dir (Go needs to write module cache)
+    chown "$REAL_USER" "$BUILD_TMP"
+
     info "Cloning Vedetta repo..."
-    git clone --depth 1 --quiet "$REPO_URL" "$TMPDIR/vedetta"
+    as_user git clone --depth 1 --quiet "$REPO_URL" "$BUILD_TMP/vedetta"
 
     info "Building sensor..."
-    cd "$TMPDIR/vedetta/sensor"
-    go build -o "${SENSOR_BIN}" ./cmd/vedetta-sensor
+    as_user bash -c "cd '$BUILD_TMP/vedetta/sensor' && go build -o '$BUILD_TMP/${SENSOR_BIN}' ./cmd/vedetta-sensor"
 
     info "Installing binary to ${INSTALL_DIR}/${SENSOR_BIN}"
-    cp "${SENSOR_BIN}" "${INSTALL_DIR}/${SENSOR_BIN}"
+    cp "$BUILD_TMP/${SENSOR_BIN}" "${INSTALL_DIR}/${SENSOR_BIN}"
     chmod +x "${INSTALL_DIR}/${SENSOR_BIN}"
 
-    cd /
-    rm -rf "$TMPDIR"
+    rm -rf "$BUILD_TMP"
     info "Sensor binary installed."
 }
 
