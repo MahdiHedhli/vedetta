@@ -227,6 +227,7 @@ func (p *AdGuardPoller) adguardQueryToEvent(q AdGuardQuery) *models.Event {
 		Timestamp:      q.Time.UTC(),
 		EventType:      "dns_query",
 		SourceHash:     sourceHash,
+		SourceIP:       q.Client,
 		Domain:         q.Question.Name,
 		QueryType:      queryType,
 		ResolvedIP:     resolvedIP,

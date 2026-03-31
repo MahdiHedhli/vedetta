@@ -338,7 +338,6 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
   const [severityFilter, setSeverityFilter] = useState('all');
   const [expandedRows, setExpandedRows] = useState(new Set());
 
-  // Filter events by severity
   const filtered = events.filter(e => {
     const score = e.anomaly_score || 0;
     if (severityFilter === 'critical') return score > 0.7;
@@ -348,11 +347,8 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
 
   const toggleRowExpanded = (eventId) => {
     const newSet = new Set(expandedRows);
-    if (newSet.has(eventId)) {
-      newSet.delete(eventId);
-    } else {
-      newSet.add(eventId);
-    }
+    if (newSet.has(eventId)) newSet.delete(eventId);
+    else newSet.add(eventId);
     setExpandedRows(newSet);
   };
 
@@ -362,8 +358,43 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
     return 'bg-red-500';
   };
 
-  const getScoreBarWidth = (score) => {
-    return Math.max(Math.min(score * 100, 100), 10);
+  const getScoreBarWidth = (score) => Math.max(Math.min(score * 100, 100), 10);
+
+  const tagColors = {
+    dga_candidate: 'bg-red-500/20 text-red-300',
+    dns_tunnel: 'bg-purple-500/20 text-purple-300',
+    beaconing: 'bg-orange-500/20 text-orange-300',
+    dns_rebinding: 'bg-pink-500/20 text-pink-300',
+    known_bad: 'bg-red-600/20 text-red-200',
+    dns_bypass: 'bg-yellow-500/20 text-yellow-300',
+  };
+
+  const tagLabel = (tag) => {
+    const labels = {
+      dga_candidate: 'DGA',
+      dns_tunnel: 'Tunnel',
+      beaconing: 'Beacon',
+      dns_rebinding: 'Rebinding',
+      known_bad: 'Threat Intel',
+      dns_bypass: 'DNS Bypass',
+    };
+    return labels[tag] || tag;
+  };
+
+  const dnsSourceLabel = (src) => {
+    const labels = {
+      passive_capture: 'Passive Capture',
+      pihole: 'Pi-hole',
+      adguard: 'AdGuard Home',
+      embedded_resolver: 'Embedded DNS',
+      iptables_intercept: 'iptables',
+    };
+    return labels[src] || src || '—';
+  };
+
+  const parseMetadata = (metaStr) => {
+    if (!metaStr || metaStr === '{}') return null;
+    try { return JSON.parse(metaStr); } catch { return null; }
   };
 
   return (
@@ -388,7 +419,7 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
         <StatCard label="Total Events" value={stats?.total_count || '0'} sub="All time" />
         <StatCard label="Threats Detected" value={stats?.threat_count || '0'} sub="With anomaly score" highlight={stats?.threat_count > 0} />
         <StatCard label="Events (24h)" value={stats?.last_24h_count || '0'} sub="Last 24 hours" />
-        <StatCard label="Blocked Queries" value={Math.max(events.filter(e => e.status === 'blocked').length, 0)} sub="Recent events" />
+        <StatCard label="Blocked Queries" value={events.filter(e => e.blocked).length} sub="Recent events" />
       </div>
 
       {/* Timeline Chart */}
@@ -438,19 +469,19 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
           <table className="w-full">
             <thead>
               <tr className="text-left text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800 bg-gray-800/30">
-                <th className="px-4 py-3"></th>
+                <th className="px-4 py-3 w-8"></th>
                 <th className="px-4 py-3">Time</th>
+                <th className="px-4 py-3">Source Device</th>
                 <th className="px-4 py-3">Domain</th>
-                <th className="px-4 py-3">Type</th>
                 <th className="px-4 py-3">Score</th>
-                <th className="px-4 py-3">Tags</th>
-                <th className="px-4 py-3">Source</th>
+                <th className="px-4 py-3">Detection</th>
                 <th className="px-4 py-3">Status</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((event) => {
                 const isExpanded = expandedRows.has(event.event_id);
+                const meta = parseMetadata(event.metadata);
                 return (
                   <tbody key={event.event_id}>
                     <tr
@@ -462,31 +493,43 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
                       <td className="px-4 py-3">
                         <svg
                           className={`w-4 h-4 text-gray-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
+                          fill="none" stroke="currentColor" viewBox="0 0 24 24"
                         >
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                         </svg>
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-400">{timeAgo(event.timestamp)}</td>
-                      <td className="px-4 py-3 text-sm font-mono">{event.domain || '—'}</td>
-                      <td className="px-4 py-3 text-sm text-gray-400">{event.event_type || '—'}</td>
                       <td className="px-4 py-3">
-                        <div className="w-16 bg-gray-800 rounded h-2">
-                          <div
-                            className={`h-full rounded ${getScoreColor(event.anomaly_score || 0)}`}
-                            style={{ width: `${getScoreBarWidth(event.anomaly_score || 0)}%` }}
-                            title={`${(event.anomaly_score || 0).toFixed(2)}`}
-                          />
+                        <div className="text-sm">
+                          <span className="font-mono text-gray-200">{event.source_ip || '—'}</span>
+                          {event.device_vendor && (
+                            <span className="text-xs text-gray-500 ml-2">({event.device_vendor})</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm font-mono text-gray-300 max-w-xs truncate" title={event.domain}>
+                        {event.domain || '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-16 bg-gray-800 rounded h-2">
+                            <div
+                              className={`h-full rounded ${getScoreColor(event.anomaly_score || 0)}`}
+                              style={{ width: `${getScoreBarWidth(event.anomaly_score || 0)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-500">{(event.anomaly_score || 0).toFixed(2)}</span>
                         </div>
                       </td>
                       <td className="px-4 py-3">
                         {event.tags && event.tags.length > 0 ? (
                           <div className="flex gap-1 flex-wrap">
                             {event.tags.map((tag, idx) => (
-                              <span key={idx} className="text-xs bg-gray-800 text-gray-300 px-2 py-0.5 rounded">
-                                {tag}
+                              <span
+                                key={idx}
+                                className={`text-xs px-2 py-0.5 rounded font-medium ${tagColors[tag] || 'bg-gray-800 text-gray-300'}`}
+                              >
+                                {tagLabel(tag)}
                               </span>
                             ))}
                           </div>
@@ -494,22 +537,120 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
                           <span className="text-gray-600">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-sm text-gray-400">{event.source || '—'}</td>
                       <td className="px-4 py-3 text-sm">
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          event.status === 'blocked' ? 'bg-red-500/20 text-red-300' : 'bg-green-500/20 text-green-300'
+                          event.blocked ? 'bg-red-500/20 text-red-300' : 'bg-green-500/20 text-green-300'
                         }`}>
-                          {event.status || 'allowed'}
+                          {event.blocked ? 'blocked' : 'allowed'}
                         </span>
                       </td>
                     </tr>
                     {isExpanded && (
                       <tr className="bg-gray-800/20 border-b border-gray-800/50">
-                        <td colSpan="8" className="px-4 py-4">
-                          <div className="text-sm text-gray-300 space-y-2">
-                            <div><span className="text-gray-500">Event ID:</span> {event.event_id}</div>
-                            {event.details && <div><span className="text-gray-500">Details:</span> {event.details}</div>}
-                            {event.anomaly_score && <div><span className="text-gray-500">Score:</span> {(event.anomaly_score).toFixed(3)}</div>}
+                        <td colSpan="7" className="px-6 py-5">
+                          <div className="space-y-4">
+                            {/* Threat explanation */}
+                            {event.threat_desc && (
+                              <div className="bg-red-950/20 border border-red-900/30 rounded-lg p-4">
+                                <h4 className="text-xs uppercase tracking-wider text-red-400 font-medium mb-2">Why this was flagged</h4>
+                                <p className="text-sm text-gray-300 leading-relaxed">{event.threat_desc}</p>
+                              </div>
+                            )}
+
+                            {/* Detection details grid */}
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                              <div>
+                                <span className="text-xs text-gray-500 block">Source IP</span>
+                                <span className="text-sm font-mono text-gray-200">{event.source_ip || '—'}</span>
+                              </div>
+                              <div>
+                                <span className="text-xs text-gray-500 block">Resolved IP</span>
+                                <span className="text-sm font-mono text-gray-200">{event.resolved_ip || '—'}</span>
+                              </div>
+                              <div>
+                                <span className="text-xs text-gray-500 block">Query Type</span>
+                                <span className="text-sm text-gray-200">{event.query_type || '—'}</span>
+                              </div>
+                              <div>
+                                <span className="text-xs text-gray-500 block">DNS Source</span>
+                                <span className="text-sm text-gray-200">{dnsSourceLabel(event.dns_source)}</span>
+                              </div>
+                              <div>
+                                <span className="text-xs text-gray-500 block">Device Vendor</span>
+                                <span className="text-sm text-gray-200">{event.device_vendor || '—'}</span>
+                              </div>
+                              <div>
+                                <span className="text-xs text-gray-500 block">Network Segment</span>
+                                <span className="text-sm text-gray-200">{event.network_segment || 'default'}</span>
+                              </div>
+                              <div>
+                                <span className="text-xs text-gray-500 block">Anomaly Score</span>
+                                <span className="text-sm text-gray-200">{(event.anomaly_score || 0).toFixed(3)}</span>
+                              </div>
+                              <div>
+                                <span className="text-xs text-gray-500 block">Event ID</span>
+                                <span className="text-sm font-mono text-gray-400 text-xs">{event.event_id}</span>
+                              </div>
+                            </div>
+
+                            {/* Algorithm-specific metadata */}
+                            {meta && (
+                              <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-4">
+                                <h4 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-3">Detection Details</h4>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                  {meta.dga && (
+                                    <div className="bg-gray-800/50 rounded p-3">
+                                      <span className="text-red-400 font-medium text-xs">DGA Analysis</span>
+                                      <div className="mt-1 text-gray-300 space-y-1">
+                                        <div>Entropy: <span className="font-mono">{meta.dga.entropy.toFixed(2)}</span> bits</div>
+                                        <div>Bigram anomaly: <span className="font-mono">{(meta.dga.bigram_score * 100).toFixed(0)}%</span></div>
+                                        <div>Scored label: <span className="font-mono">{meta.dga.label}</span></div>
+                                        <div>Composite: <span className="font-mono">{(meta.dga.score * 100).toFixed(0)}%</span></div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {meta.tunnel && (
+                                    <div className="bg-gray-800/50 rounded p-3">
+                                      <span className="text-purple-400 font-medium text-xs">Tunnel Analysis</span>
+                                      <div className="mt-1 text-gray-300 space-y-1">
+                                        <div>Score: <span className="font-mono">{(meta.tunnel.score * 100).toFixed(0)}%</span></div>
+                                        <div>Signals: {meta.tunnel.signals.map((s, i) => (
+                                          <span key={i} className="inline-block bg-purple-500/10 text-purple-300 text-xs px-1.5 py-0.5 rounded mr-1 mt-1">{s}</span>
+                                        ))}</div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {meta.beacon && (
+                                    <div className="bg-gray-800/50 rounded p-3">
+                                      <span className="text-orange-400 font-medium text-xs">Beacon Analysis</span>
+                                      <div className="mt-1 text-gray-300 space-y-1">
+                                        <div>Mean interval: <span className="font-mono">{meta.beacon.mean_interval_sec.toFixed(1)}s</span></div>
+                                        <div>Variation (CV): <span className="font-mono">{(meta.beacon.cv * 100).toFixed(1)}%</span></div>
+                                        <div>Samples: <span className="font-mono">{meta.beacon.samples}</span></div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {meta.rebinding && (
+                                    <div className="bg-gray-800/50 rounded p-3">
+                                      <span className="text-pink-400 font-medium text-xs">Rebinding Detection</span>
+                                      <div className="mt-1 text-gray-300 space-y-1">
+                                        <div>Public IP: <span className="font-mono">{meta.rebinding.public_ip}</span></div>
+                                        <div>Private IP: <span className="font-mono">{meta.rebinding.private_ip}</span></div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {meta.threat_db && (
+                                    <div className="bg-gray-800/50 rounded p-3">
+                                      <span className="text-red-400 font-medium text-xs">Threat Intelligence</span>
+                                      <div className="mt-1 text-gray-300 space-y-1">
+                                        <div>Confidence: <span className="font-mono">{(meta.threat_db.confidence * 100).toFixed(0)}%</span></div>
+                                        {meta.threat_db.feed_tags && <div>Tags: {meta.threat_db.feed_tags.join(', ')}</div>}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </td>
                       </tr>

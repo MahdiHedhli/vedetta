@@ -24,9 +24,10 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 
 	stmt, err := tx.Prepare(`
 		INSERT OR IGNORE INTO events
-			(event_id, timestamp, event_type, source_hash, domain, query_type,
-			 resolved_ip, blocked, anomaly_score, tags, geo, device_vendor, network_segment)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(event_id, timestamp, event_type, source_hash, source_ip, domain, query_type,
+			 resolved_ip, blocked, anomaly_score, tags, geo, device_vendor, network_segment,
+			 dns_source, threat_desc, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		tx.Rollback()
@@ -46,12 +47,19 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 			seg = "default"
 		}
 
+		metadataStr := e.Metadata
+		if metadataStr == "" {
+			metadataStr = "{}"
+		}
+
 		result, err := stmt.Exec(
 			e.EventID, e.Timestamp.UTC(), e.EventType, e.SourceHash,
+			nullableString(e.SourceIP),
 			nullableString(e.Domain), nullableString(e.QueryType),
 			nullableString(e.ResolvedIP), e.Blocked, e.AnomalyScore,
 			string(tagsJSON), nullableString(e.Geo),
 			nullableString(e.DeviceVendor), seg,
+			nullableString(e.DNSSource), nullableString(e.ThreatDesc), metadataStr,
 		)
 		if err != nil {
 			continue // skip individual failures, don't abort the batch
@@ -168,10 +176,11 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 	offset := (params.Page - 1) * params.Limit
 	dataQuery := fmt.Sprintf(`
 		SELECT event_id, timestamp, event_type, source_hash,
-		       COALESCE(domain, ''), COALESCE(query_type, ''),
+		       COALESCE(source_ip, ''), COALESCE(domain, ''), COALESCE(query_type, ''),
 		       COALESCE(resolved_ip, ''), blocked, anomaly_score,
 		       COALESCE(tags, '[]'), COALESCE(geo, ''),
-		       COALESCE(device_vendor, ''), COALESCE(network_segment, 'default')
+		       COALESCE(device_vendor, ''), COALESCE(network_segment, 'default'),
+		       COALESCE(dns_source, ''), COALESCE(threat_desc, ''), COALESCE(metadata, '{}')
 		FROM events %s
 		ORDER BY %s %s
 		LIMIT ? OFFSET ?
@@ -190,9 +199,10 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 		var tagsJSON string
 		err := rows.Scan(
 			&e.EventID, &e.Timestamp, &e.EventType, &e.SourceHash,
-			&e.Domain, &e.QueryType, &e.ResolvedIP, &e.Blocked,
+			&e.SourceIP, &e.Domain, &e.QueryType, &e.ResolvedIP, &e.Blocked,
 			&e.AnomalyScore, &tagsJSON, &e.Geo,
 			&e.DeviceVendor, &e.NetworkSegment,
+			&e.DNSSource, &e.ThreatDesc, &e.Metadata,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan event row: %w", err)
