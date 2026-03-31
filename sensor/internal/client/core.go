@@ -121,6 +121,11 @@ func (c *CoreClient) FetchWork() (*WorkResponse, error) {
 	return &work, nil
 }
 
+// PushDNS sends captured DNS queries to Core for ingestion.
+func (c *CoreClient) PushDNS(payload any) error {
+	return c.post("/api/v1/sensor/dns", payload)
+}
+
 func (c *CoreClient) get(path string, v any) error {
 	url := c.BaseURL + path
 	req, err := http.NewRequest("GET", url, nil)

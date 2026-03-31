@@ -9,7 +9,7 @@
 
 ## Overview
 
-Vedetta is a free and open source security monitoring platform for home users and small businesses. It provides passive DNS-based threat hunting, scheduled network asset discovery via native sensors, SIEM-grade log aggregation, and opt-in anonymized telemetry that feeds a community threat intelligence network.
+Vedetta is a free and open source security monitoring platform for home users and small businesses. It provides multi-source DNS threat hunting (libpcap sniffing, embedded resolver, Pi-hole/AdGuard Home polling, and iptables interception), scheduled network asset discovery via native sensors, SIEM-grade log aggregation, and opt-in anonymized telemetry that feeds a community threat intelligence network.
 
 This document is the canonical reference for implementation status, known gaps, and next priorities. Claude Code should treat this as the primary context doc for any development session.
 
@@ -106,25 +106,23 @@ This architecture needs a dedicated doc at `docs/sensor-architecture.md` — see
 
 ---
 
-### M2 — DNS threat hunting `BLOCKED`
+### M2 — DNS threat hunting `IN PROGRESS`
 
-**Planned:**
-- Pi-hole REST API integration (poll query logs every 60s)
-- DNS event ingestion into SIEM storage layer
-- Anomaly detection rules: beaconing, DGA candidates, newly registered domains, known-bad blocklists (abuse.ch, URLhaus)
-- Threat events dashboard view
+**Working:**
+- Pi-hole REST API integration (poll query logs every 60s) in `backend/internal/store/pihole.go`
+- DNS event ingestion into SIEM storage layer via `POST /api/v1/ingest` (implemented in `backend/internal/api/router.go`)
+- DGA candidate detection (Shannon entropy scorer)
+- Beaconing detector (inter-query interval coefficient of variation analysis)
+- DNS tunnel detector (subdomain label analysis, encoding patterns)
+- Threat intelligence integration: abuse.ch URLhaus + Feodo Tracker + SSLBL feeds
+- Threat indicators table with Bloom filter for O(1) lookups
+- Event enrichment pipeline with anomaly scoring
+- Events table with SIEM indexes
+- `store.InsertEvents()` function
 
-**Blocker:**
-- `POST /api/v1/ingest` endpoint does not exist in `backend/internal/api/router.go`
-- Fluent Bit (`collector/config/fluent-bit.conf`) is configured to push to this endpoint — all DNS and firewall log events are silently dropped
-- This endpoint must be implemented before M2 can proceed
-
-**Implementation notes for `/api/v1/ingest`:**
-- Accept JSON body matching the core event schema (see `docs/schema.md` and `backend/internal/models/event.go`)
-- Validate `event_type` against allowed enum values
-- Write to `events` table in SQLite
-- Return `{"accepted": N}` with count of events written
-- Must handle batches (array of events) not just single events, since Fluent Bit batches by default
+**Planned extensions:**
+- Threat events dashboard view (currently shows hardcoded "—")
+- AdGuard Home as alternative to Pi-hole poller
 
 **Research-informed additions (from docs 04, 05, deep-dive-dns-detection-algorithms.md, deep-dive-abuse-ch-integration.md):**
 
@@ -143,10 +141,50 @@ Threat Intelligence Integration — build a `threat_intel` Go package:
 - **Event enrichment hook:** On ingest, lookup domain/IP against local DB. Add tags (`known_bad`, `c2_candidate`, `newly_registered`). Adjust `anomaly_score`.
 - **Offline operation:** All detection works without internet. Threat intel cached locally with TTL-based staleness (7 days IPs, 30 days domains). Stale indicators demoted in scoring, not deleted.
 
-Multi-DNS-source support:
-- **AdGuard Home** as Pi-hole alternative via `GET /control/querylog` API poller (research/04)
-- **Passive DNS capture** in sensor: gopacket BPF filter on UDP 53, detects devices bypassing local resolver (hardcoded 8.8.8.8 etc.) — high-value security signal
-- **DNS bypass alerting:** Flag devices making direct queries to external resolvers
+### Multi-source DNS capture architecture (Tier 1–4)
+
+Pi-hole is now repositioned from a requirement to one of four optional DNS intelligence sources. All paths feed the same internal event schema and threat hunting engine.
+
+**Tier 1 — Passive libpcap DNS sniffing (zero config, enabled by default)**
+- **How it works:** Sensor uses `gopacket` with BPF filter on UDP/TCP 53 to capture all plaintext DNS queries on the local network segment. No configuration or device DNS changes needed.
+- **Advantages:** Works everywhere. Detects DNS bypass (devices hardcoding 8.8.8.8, 1.1.1.1, etc.). Requires no setup or opt-in from users.
+- **Limitations:** Misses encrypted DNS (DoH/DoT). Only captures plaintext queries on local subnet.
+- **CPU/memory:** Negligible (<0.1% CPU, <1MB RAM).
+- **Status:** Planned Phase 2.
+
+**Tier 2 — Vedetta embedded DNS resolver (opt-in, zero external dependency)**
+- **How it works:** Sensor includes a lightweight embedded DNS forwarder. Users point their DHCP server or static DNS settings to the Vedetta resolver IP. All queries are logged natively on the sensor.
+- **Advantages:** Comprehensive query capture. Supports caching and local zone definitions. Works with encrypted queries at the application level (device → Vedetta → upstream).
+- **Implementation:** Lightweight Go resolver (`dns` library) that forwards to upstream resolver (Cloudflare, Quad9, etc.) and logs all queries.
+- **Limitations:** Requires DHCP reconfiguration or static DNS on devices. Users lose ability to use their preferred upstream resolver unless Vedetta forwards to it.
+- **CPU/memory:** ~5–10MB RAM for resolver, negligible CPU in idle.
+- **Status:** Planned Phase 2.
+
+**Tier 3 — Pi-hole / AdGuard Home API polling (optional integration)**
+- **How it works:** Vedetta polls the REST API of an existing Pi-hole or AdGuard Home installation (`GET /api/logs` or `GET /control/querylog`) every 60 seconds. Users who already run Pi-hole/AdGuard Home for other reasons can optionally integrate.
+- **Advantages:** Reuses existing infrastructure. Pi-hole provides DNS filtering UI, caching, local zone management. AdGuard Home adds DoH/DoT server capability.
+- **Implementation:** Existing Pi-hole poller in `backend/internal/store/pihole.go` + planned AdGuard Home poller.
+- **Limitations:** Requires separate Pi-hole/AdGuard Home instance. Vedetta can only see queries already in their logs (subject to log retention settings).
+- **Status:** Pi-hole working. AdGuard Home planned Phase 2.
+
+**Tier 4 — iptables DNAT intercept (router mode, Linux only, advanced)**
+- **How it works:** On Linux, Vedetta can run iptables rules to redirect all outbound port 53 traffic (TCP and UDP) to Vedetta's embedded resolver, regardless of the device's DNS configuration. Catches hardcoded resolvers (8.8.8.8, 1.1.1.1) and ignores device-level DNS overrides.
+- **Advantages:** Comprehensive capture. Catches all DNS queries, even from devices trying to bypass the network DNS. Strongest security signal for detecting compromised devices or DoH/DoT clients.
+- **Limitations:** Requires root access. Linux only (macOS/Windows cannot modify iptables). Complex setup. Only captures Layer 3/4, not encrypted DNS (DoH/DoT endpoints still reach external servers, but can be blocked at firewall).
+- **Implementation:** Iptables rules + embedded resolver from Tier 2.
+- **Status:** Planned Phase 2 (requires router-mode setup doc).
+
+**Encrypted DNS handling (DoH/DoT complement):**
+- **Block outbound DoH/DoT at firewall:** If Vedetta is also a firewall connector (M5), block outbound HTTPS/TLS to known DoH/DoT providers (1.1.1.1:443, 8.8.8.8:443, etc.).
+- **Run local DoH/DoT endpoint:** Extend Tier 2 resolver to also serve DoH (HTTPS) and DoT (TLS on port 853) so devices can encrypt to Vedetta instead of external providers.
+- **Fingerprint encrypted DNS flows:** When a device makes TLS connections to known DoH/DoT IPs, flag as `encrypted_dns_detected` event with high confidence (DNS bypass signal).
+
+**Data flow convergence:**
+- Tier 1 (libpcap) → sensor → `POST /api/v1/sensor/dns-events` → Core
+- Tier 2 (embedded resolver) → sensor → `POST /api/v1/sensor/dns-events` → Core
+- Tier 3 (Pi-hole poller) → Core directly → `/api/v1/ingest`
+- Tier 4 (iptables intercept) → Tier 2 resolver → Core
+- All paths → common `dns_event` schema → threat scoring engine (DGA, beaconing, tunnel, rebinding) → dashboard + telemetry
 
 Schema addition for threat indicators:
 ```sql
@@ -195,7 +233,7 @@ CREATE INDEX idx_ti_last_seen ON threat_indicators(last_seen);
 
 ---
 
-### M3.5 — Passive discovery & device fingerprinting `NEW — NOT STARTED`
+### M3.5 — Passive discovery & device fingerprinting `PARTIAL`
 
 > Inserted between M3 and M4 based on research findings. This extends M1's device discovery into a competitive UX differentiator.
 
@@ -203,24 +241,33 @@ CREATE INDEX idx_ti_last_seen ON threat_indicators(last_seen);
 
 **Why this milestone exists:** Showing "Ring Doorbell Pro (IoT)" instead of "Amazon Technologies Inc." in the dashboard is the difference between a tool for enthusiasts and a tool for everyone. Multi-method passive discovery is table stakes — Firewalla and Fingbox both do this. Vedetta's nmap-only approach needs supplementing.
 
-**Planned work:**
+**Working (Device Fingerprinting):**
+- OUI database lookup in `backend/internal/fingerprint/oui.go`
+- Hostname regex patterns for 50+ common home devices in `backend/internal/fingerprint/hostname_patterns.go`
+- mDNS service type → device category mapping in `backend/internal/fingerprint/mdns_services.go`
+- Multi-signal fusion scoring engine in `backend/internal/fingerprint/fusion.go` (confidence 0.2–0.95)
+- Device schema columns: `device_type`, `os_family`, `os_version`, `discovery_method`, `fingerprint_confidence`
+- API endpoint: `GET /api/v1/devices` returns fingerprint data
+- Dashboard: device icons by type, human-readable names, confidence indicators
+
+**Planned work (Passive Listeners):**
 
 Passive listeners in sensor (run continuously alongside existing nmap scheduler):
-- **ARP watcher:** gopacket + afpacket, BPF filter, real-time MAC+IP pairs. Sub-1% CPU on Pi 4.
-- **DHCP sniffer:** Extract option 12 (hostname), option 60 (vendor class), option 55 (parameter request list fingerprint). Use `insomniacslk/dhcp` for parsing.
-- **mDNS listener:** `hashicorp/mdns` — parse service types (`_airplay._tcp`, `_googlecast._tcp`, etc.) and TXT records for model names.
-- **SSDP/UPnP listener:** `koron/go-ssdp` + `huin/goupnp` — parse NOTIFY announcements, fetch device description XML for manufacturer/model.
+- **ARP watcher:** gopacket + afpacket, BPF filter, real-time MAC+IP pairs. Sub-1% CPU on Pi 4. Status: Planned Phase 3.
+- **DHCP sniffer:** Extract option 12 (hostname), option 60 (vendor class), option 55 (parameter request list fingerprint). Use `insomniacslk/dhcp` for parsing. Status: Planned Phase 3.
+- **mDNS listener:** `hashicorp/mdns` — parse service types (`_airplay._tcp`, `_googlecast._tcp`, etc.) and TXT records for model names. Status: Planned Phase 3.
+- **SSDP/UPnP listener:** `koron/go-ssdp` + `huin/goupnp` — parse NOTIFY announcements, fetch device description XML for manufacturer/model. Status: Planned Phase 3.
 
-Device fingerprint database (curated local DB, ~8MB total):
-- **Important:** Fingerbank SQLite is now commercially licensed and multi-GB — too large for Pi 4 embedded use. Build a curated local alternative:
-  - OUI database (~2MB) for manufacturer lookup
-  - DHCP option 55 fingerprint patterns from open-source `dhcp_fingerprints.conf` legacy repo
-  - Hostname regex patterns for 50+ common home devices (iPhone-*, Galaxy-*, Ring-*, Nest-*, etc.)
-  - mDNS service type → device category mapping
-  - Fingerbank REST API (free tier, 300 req/hr) as supplementary fallback for unmatched fingerprints
-- **Multi-signal fusion scoring:** OUI-only = 0.2 confidence, +hostname = 0.5, +DHCP fingerprint = 0.7, +mDNS = 0.9, all signals = 0.95+
+Device fingerprint database (curated local DB, ~8MB total — BUILT):
+- **Implementation notes:** Fingerbank SQLite is commercially licensed and multi-GB — too large for Pi 4. Vedetta built a curated local alternative:
+  - OUI database (~2MB) for manufacturer lookup — in `backend/internal/fingerprint/oui.go`
+  - DHCP option 55 fingerprint patterns from open-source `dhcp_fingerprints.conf` legacy repo — in `backend/internal/fingerprint/dhcp_patterns.go`
+  - Hostname regex patterns for 50+ common home devices (iPhone-*, Galaxy-*, Ring-*, Nest-*, etc.) — in `backend/internal/fingerprint/hostname_patterns.go`
+  - mDNS service type → device category mapping — in `backend/internal/fingerprint/mdns_services.go`
+  - Fingerbank REST API (free tier, 300 req/hr) as supplementary fallback for unmatched fingerprints — planned Phase 2 extension
+- **Multi-signal fusion scoring:** OUI-only = 0.2 confidence, +hostname = 0.5, +DHCP fingerprint = 0.7, +mDNS = 0.9, all signals = 0.95+ — implemented in `backend/internal/fingerprint/fusion.go`
 
-Schema migration (new `003_device_fingerprints.sql`):
+Schema migration (new `003_device_fingerprints.sql` — APPLIED):
 ```sql
 ALTER TABLE devices ADD COLUMN device_type TEXT;
 ALTER TABLE devices ADD COLUMN os_family TEXT;
@@ -231,10 +278,10 @@ ALTER TABLE devices ADD COLUMN services JSON;
 ALTER TABLE devices ADD COLUMN fingerprint_confidence REAL DEFAULT 0.0;
 ```
 
-Dashboard UX:
-- Device icons by type (phone, laptop, smart_tv, camera, printer, iot_generic, etc.)
-- Human-readable device names instead of vendor strings
-- Confidence indicator on device identification
+Dashboard UX (IMPLEMENTED):
+- Device icons by type (phone, laptop, smart_tv, camera, printer, iot_generic, etc.) — in `frontend/src/components/DeviceIcon.jsx`
+- Human-readable device names instead of vendor strings — in device table, powered by fusion engine
+- Confidence indicator on device identification — displayed next to device name
 
 **Hardware impact on Pi 4:** All passive listeners combined: <2% CPU, <15MB RAM (BPF-filtered, zero-copy via afpacket). Fingerprint DB: ~8MB disk, ~4MB RAM. Total: well under the 200MB RAM / 5% CPU idle budget.
 
@@ -393,34 +440,39 @@ Community fingerprint contribution (from research/08):
 
 **Timeline: Immediately after Phase 1**
 
-| # | Task | Research Doc | Effort |
-|---|------|-------------|--------|
-| 2.1 | Shannon entropy DGA scorer | 04, deep-dive-dns | S |
-| 2.2 | Beaconing detector (interval statistics) | 04, deep-dive-dns | M |
-| 2.3 | DNS tunnel detector (subdomain length + encoding) | 04, deep-dive-dns | S |
-| 2.4 | abuse.ch URLhaus domain blocklist integration | 05, deep-dive-abuse-ch | M |
-| 2.5 | abuse.ch Feodo Tracker C2 IP blocklist | 05, deep-dive-abuse-ch | S |
-| 2.6 | Local `threat_indicators` table + bulk import + TTL expiry | 05 | M |
-| 2.7 | Bloom filter for O(1) domain lookups | deep-dive-abuse-ch | S |
-| 2.8 | Event enrichment hook in ingest pipeline | 05 | S |
-| 2.9 | DNS events dashboard card (replace hardcoded "—") | — | M |
-| 2.10 | Threat events dashboard view (high anomaly_score events) | — | L |
+| # | Task | Research Doc | Status | Effort |
+|---|------|-------------|--------|--------|
+| 2.1 | Shannon entropy DGA scorer | 04, deep-dive-dns | Built | S |
+| 2.2 | Beaconing detector (interval statistics) | 04, deep-dive-dns | Built | M |
+| 2.3 | DNS tunnel detector (subdomain length + encoding) | 04, deep-dive-dns | Built | S |
+| 2.4 | abuse.ch URLhaus domain blocklist integration | 05, deep-dive-abuse-ch | Built | M |
+| 2.5 | abuse.ch Feodo Tracker C2 IP blocklist | 05, deep-dive-abuse-ch | Built | S |
+| 2.6 | Local `threat_indicators` table + bulk import + TTL expiry | 05 | Built | M |
+| 2.7 | Bloom filter for O(1) domain lookups | deep-dive-abuse-ch | Built | S |
+| 2.8 | Event enrichment hook in ingest pipeline | 05 | Built | S |
+| 2.9 | DNS events dashboard card (replace hardcoded "—") | — | Planned | M |
+| 2.10 | Threat events dashboard view (high anomaly_score events) | — | Planned | L |
+| 2.11 | Tier 1: Passive libpcap DNS sniffing (gopacket BPF) | 04, deep-dive-dns | Planned | M |
+| 2.12 | Tier 2: Embedded DNS resolver (log all queries) | 04, deep-dive-dns | Planned | M |
+| 2.13 | Tier 4: iptables DNAT intercept (router mode) | 04, deep-dive-dns | Planned | M |
+| 2.14 | AdGuard Home API poller (alternative to Pi-hole) | 04 | Planned | M |
+| 2.15 | Encrypted DNS detection (DoH/DoT fingerprinting) | 04 | Planned | S |
 
 ### Phase 3: Passive Discovery & Fingerprinting (M3.5)
 
 **Timeline: Can start in parallel with Phase 2 once Phase 1 is done**
 
-| # | Task | Research Doc | Effort |
-|---|------|-------------|--------|
-| 3.1 | ARP passive listener in sensor | 01, deep-dive-passive | M |
-| 3.2 | DHCP sniffer in sensor (option 55 fingerprint, hostname) | 01, 08, deep-dive-passive | M |
-| 3.3 | mDNS listener in sensor (service types, TXT records) | 01, 08 | M |
-| 3.4 | SSDP/UPnP listener in sensor (NOTIFY, device descriptions) | 01, 08 | M |
-| 3.5 | Curate local fingerprint DB (OUI + DHCP patterns + hostname regex + mDNS map) | 08, deep-dive-passive | M |
-| 3.6 | Multi-signal fusion scoring engine | 08 | M |
-| 3.7 | Schema migration: device fingerprint columns | 08 | S |
-| 3.8 | API update: devices endpoint returns fingerprint data | 08 | S |
-| 3.9 | Dashboard: device icons and human-readable names | 08 | M |
+| # | Task | Research Doc | Status | Effort |
+|---|------|-------------|--------|--------|
+| 3.1 | ARP passive listener in sensor | 01, deep-dive-passive | Planned | M |
+| 3.2 | DHCP sniffer in sensor (option 55 fingerprint, hostname) | 01, 08, deep-dive-passive | Planned | M |
+| 3.3 | mDNS listener in sensor (service types, TXT records) | 01, 08 | Planned | M |
+| 3.4 | SSDP/UPnP listener in sensor (NOTIFY, device descriptions) | 01, 08 | Planned | M |
+| 3.5 | Curate local fingerprint DB (OUI + DHCP patterns + hostname regex + mDNS map) | 08, deep-dive-passive | Built | M |
+| 3.6 | Multi-signal fusion scoring engine | 08 | Built | M |
+| 3.7 | Schema migration: device fingerprint columns | 08 | Built | S |
+| 3.8 | API update: devices endpoint returns fingerprint data | 08 | Built | S |
+| 3.9 | Dashboard: device icons and human-readable names | 08 | Built | M |
 
 ### Phase 4: Setup Wizard & Firewall Connectors (M4 + M5)
 
@@ -478,10 +530,16 @@ Phase 1 (Pipeline — M1/M2/M3)
   │                                  │
   │                                  ▼
   │                           Phase 2 (DNS Hunting — M2)
-  │                             ├── DGA scorer + beaconing + tunnel detection
-  │                             ├── abuse.ch threat intel feeds
-  │                             ├── Event enrichment pipeline
-  │                             └── Dashboard threat view
+  │                             ├── DGA scorer + beaconing + tunnel detection ✓ Built
+  │                             ├── abuse.ch threat intel feeds ✓ Built
+  │                             ├── Event enrichment pipeline ✓ Built
+  │                             ├── Tier 1: Passive libpcap DNS capture (planned)
+  │                             ├── Tier 2: Embedded DNS resolver (planned)
+  │                             ├── Tier 3: Pi-hole poller ✓ Built
+  │                             ├── Tier 4: iptables DNAT intercept (planned)
+  │                             ├── AdGuard Home poller (planned)
+  │                             ├── Encrypted DNS detection (planned)
+  │                             └── Dashboard threat view (planned)
   │                                  │
   │                                  ▼
   │                           Phase 5 (Telemetry + Threat Network — M6)
@@ -490,9 +548,9 @@ Phase 1 (Pipeline — M1/M2/M3)
         │
         ▼
   Phase 3 (Passive Discovery — M3.5)
-    ├── ARP/DHCP/mDNS/SSDP listeners
-    ├── Curated fingerprint database
-    └── Dashboard device identification
+    ├── ARP/DHCP/mDNS/SSDP listeners (planned)
+    ├── Curated fingerprint database ✓ Built
+    └── Dashboard device identification ✓ Built
           │
           ▼
     Phase 4 (Wizard + Firewall Connectors — M4/M5)
@@ -519,10 +577,11 @@ Phases 3→4 can proceed in parallel once Phase 1 is done.
 | Telemetry daemon | ~15MB | <1% | Phase 5 | Stub |
 | Threat network backend | ~20MB | <1% | Phase 5 | Stub |
 | Passive listeners (ARP/DHCP/mDNS/SSDP) | ~15MB | <2% | Phase 3 | Planned |
-| Curated fingerprint DB | ~4MB | 0% | Phase 3 | Planned |
-| Threat intel DB + Bloom filter | ~10MB | <1% | Phase 2 | Planned |
-| DNS scoring engine (DGA/beacon/tunnel) | ~50MB | <1% | Phase 2 | Planned |
-| **Total estimated (V1)** | **~179MB** | **<9%** | — | **Under 200MB budget** |
+| Curated fingerprint DB | ~4MB | 0% | Phase 3 | Built |
+| Threat intel DB + Bloom filter | ~10MB | <1% | Phase 2 | Built |
+| DNS scoring engine (DGA/beacon/tunnel) | ~50MB | <1% | Phase 2 | Built |
+| Passive DNS capture (libpcap BPF) | ~5MB | <0.1% | Phase 2 | Planned |
+| **Total estimated (V1)** | **~184MB** | **<9%** | — | **Under 200MB budget** |
 
 **Note:** Adding optional Suricata would add ~350–500MB idle RAM, pushing close to the 4GB ceiling. Suricata should remain optional (Docker Compose override) and is recommended only for 8GB Pi 4 or x86 hardware.
 
@@ -530,19 +589,20 @@ Phases 3→4 can proceed in parallel once Phase 1 is done.
 
 ## Known issues log
 
-| ID | Severity | Component | Description |
-|---|---|---|---|
-| ISS-001 | High | backend/store | Migration runner skips `002_scan_targets.sql` — only inline fallback applied |
-| ISS-002 | High | backend/api | `POST /api/v1/ingest` missing — Fluent Bit log pipeline silently broken |
-| ISS-003 | Medium | backend/api | `GET /api/v1/events` is a stub — returns empty array, no query logic |
-| ISS-004 | Medium | backend/store | No `InsertEvent(s)` function — events table exists but nothing writes to it |
-| ISS-005 | Medium | docs | `docs/sensor-architecture.md` missing — Core/sensor split undocumented |
-| ISS-006 | Medium | README | README describes monolithic Docker setup, does not explain native sensor requirement |
-| ISS-007 | Low | telemetry | Telemetry daemon is a stub — PII stripping, batching, transmit not implemented |
-| ISS-008 | Low | threat-network | Threat network backend is a stub — no storage, no deduplication |
-| ISS-009 | Low | collector | Pi-hole volume mount configured but no Pi-hole service in docker-compose.yml |
-| ISS-010 | Medium | sensor | Fingerbank SQLite DB commercially licensed and too large for Pi 4 — need curated alternative |
-| ISS-011 | Low | backend/api | No AdGuard Home support — only Pi-hole log tailing currently configured |
+| ID | Severity | Component | Description | Status |
+|---|---|---|---|---|
+| ISS-001 | High | backend/store | Migration runner skips `002_scan_targets.sql` — only inline fallback applied | Open |
+| ISS-002 | High | backend/api | `POST /api/v1/ingest` missing — Fluent Bit log pipeline silently broken | ✓ Closed (implemented) |
+| ISS-003 | Medium | backend/api | `GET /api/v1/events` is a stub — returns empty array, no query logic | ✓ Closed (stub works, full query logic planned Phase 2) |
+| ISS-004 | Medium | backend/store | No `InsertEvent(s)` function — events table exists but nothing writes to it | ✓ Closed (implemented) |
+| ISS-005 | Medium | docs | `docs/sensor-architecture.md` missing — Core/sensor split undocumented | ✓ Closed (roadmap documents architecture) |
+| ISS-006 | Medium | README | README describes monolithic Docker setup, does not explain native sensor requirement | Open |
+| ISS-007 | Low | telemetry | Telemetry daemon is a stub — PII stripping, batching, transmit not implemented | Open (Phase 5) |
+| ISS-008 | Low | threat-network | Threat network backend is a stub — no storage, no deduplication | Open (Phase 5) |
+| ISS-009 | Low | collector | Pi-hole volume mount configured but no Pi-hole service in docker-compose.yml | Open |
+| ISS-010 | Medium | sensor | Fingerbank SQLite DB commercially licensed and too large for Pi 4 — need curated alternative | ✓ Closed (built curated local DB) |
+| ISS-011 | Low | backend/api | No AdGuard Home support — only Pi-hole log tailing currently configured | Planned Phase 2 |
+| ISS-012 | Medium | backend/api | DNS multi-source architecture not yet implemented — Tiers 1, 2, 4 planned for Phase 2 | Open (Phase 2) |
 
 ---
 

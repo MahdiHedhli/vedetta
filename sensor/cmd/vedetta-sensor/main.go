@@ -6,10 +6,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/vedetta-network/vedetta/sensor/internal/client"
+	"github.com/vedetta-network/vedetta/sensor/internal/dnscap"
 	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
 
@@ -25,6 +27,8 @@ func main() {
 	scanPorts := flag.Bool("ports", false, "Include top-100 port scan")
 	primary := flag.Bool("primary", false, "Register as the primary sensor")
 	oneshot := flag.Bool("once", false, "Run a single scan and exit")
+	dnsEnabled := flag.Bool("dns", true, "Enable passive DNS capture")
+	dnsIface := flag.String("dns-iface", "auto", "Network interface for DNS capture (or 'auto')")
 	showVersion := flag.Bool("version", false, "Show version")
 	flag.Parse()
 
@@ -67,10 +71,52 @@ func main() {
 
 	log.Printf("Starting scan loop: cidr=%s interval=%s ports=%v", scanCIDR, *interval, *scanPorts)
 
+	// Set up passive DNS capture (if enabled)
+	var wg sync.WaitGroup
+	var capturer *dnscap.Capturer
+
+	if *dnsEnabled {
+		dnsQueries := make(chan dnscap.DNSQuery, 100)
+
+		capturer, err = dnscap.NewCapturer(dnscap.Config{
+			Interface:    *dnsIface,
+			BatchSize:    100,
+			BatchTimeout: 10 * time.Second,
+			OnQuery: func(q dnscap.Query) {
+				select {
+				case dnsQueries <- q:
+				default:
+					// Queue full, skip
+				}
+			},
+		})
+
+		if err != nil {
+			log.Printf("WARNING: Failed to initialize DNS capture: %v", err)
+		} else {
+			if err := capturer.Start(); err != nil {
+				log.Printf("WARNING: Failed to start DNS capture: %v", err)
+			} else {
+				log.Printf("Passive DNS capture active on interface %s", *dnsIface)
+
+				// Start DNS batch push goroutine
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					pushDNSQueries(core, dnsQueries)
+				}()
+			}
+		}
+	}
+
 	// Run first scan immediately
 	runScan(scanner, core, scanCIDR, *scanPorts)
 
 	if *oneshot {
+		if capturer != nil {
+			capturer.Stop()
+		}
+		wg.Wait()
 		return
 	}
 
@@ -87,6 +133,10 @@ func main() {
 			runScan(scanner, core, scanCIDR, *scanPorts)
 		case s := <-sig:
 			log.Printf("Received %s, shutting down", s)
+			if capturer != nil {
+				capturer.Stop()
+			}
+			wg.Wait()
 			return
 		}
 	}
@@ -171,5 +221,69 @@ func runScan(scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR stri
 
 	if totalHosts > 0 {
 		log.Printf("Scan cycle complete: %d total hosts discovered", totalHosts)
+	}
+}
+
+// pushDNSQueries batches captured DNS queries and pushes them to Core.
+func pushDNSQueries(core *client.CoreClient, queries chan dnscap.Query) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	batch := make([]dnscap.DNSQuery, 0, 100)
+
+	for {
+		select {
+		case q, ok := <-queries:
+			if !ok {
+				// Channel closed
+				if len(batch) > 0 {
+					pushBatch(core, batch)
+				}
+				return
+			}
+
+			batch = append(batch, dnscap.DNSQuery{
+				Timestamp:  q.Timestamp.Unix(),
+				Domain:     q.Domain,
+				QueryType:  q.QueryType,
+				ClientIP:   q.ClientIP,
+				ServerIP:   q.ServerIP,
+				Blocked:    q.Blocked,
+				Source:     q.Source,
+			})
+
+			// Send if batch is full
+			if len(batch) >= 100 {
+				pushBatch(core, batch)
+				batch = make([]dnscap.DNSQuery, 0, 100)
+			}
+
+		case <-ticker.C:
+			// Send batch on timer even if not full
+			if len(batch) > 0 {
+				pushBatch(core, batch)
+				batch = make([]dnscap.DNSQuery, 0, 100)
+			}
+		}
+	}
+}
+
+func pushBatch(core *client.CoreClient, queries []dnscap.DNSQuery) {
+	if len(queries) == 0 {
+		return
+	}
+
+	req := struct {
+		SensorID string              `json:"sensor_id"`
+		Queries  []dnscap.DNSQuery   `json:"queries"`
+	}{
+		SensorID: core.SensorID,
+		Queries:  queries,
+	}
+
+	if err := core.PushDNS(req); err != nil {
+		log.Printf("Failed to push %d DNS queries to Core: %v", len(queries), err)
+	} else {
+		log.Printf("Pushed %d DNS queries to Core", len(queries))
 	}
 }

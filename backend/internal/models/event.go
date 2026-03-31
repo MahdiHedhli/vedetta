@@ -18,6 +18,7 @@ type Event struct {
 	Geo            string    `json:"geo,omitempty" db:"geo"`                                 // Country code (ISO 3166-1 alpha-2)
 	DeviceVendor   string    `json:"device_vendor,omitempty" db:"device_vendor"`
 	NetworkSegment string    `json:"network_segment,omitempty" db:"network_segment"`         // default | iot | guest
+	DNSSource      string    `json:"dns_source,omitempty" db:"dns_source"`                   // passive_capture | pihole | adguard | embedded_resolver | iptables_intercept
 }
 
 // Device represents a discovered network device.

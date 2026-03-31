@@ -1,6 +1,9 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -70,6 +73,7 @@ func NewRouter(srv *Server) http.Handler {
 		// Sensor ingest (native sensors push data to Core)
 		r.Post("/sensor/register", srv.handleSensorRegister)
 		r.Post("/sensor/devices", srv.handleSensorDevices)
+		r.Post("/sensor/dns", srv.handleSensorDNS)
 		r.Get("/sensor/list", srv.handleSensorList)
 		r.Get("/sensor/work", srv.handleSensorWork)
 		r.Put("/sensor/{sensorID}/primary", srv.handleSetPrimarySensor)
@@ -131,10 +135,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // Allowed event types (matches the CHECK constraint in 001_init.sql).
 var allowedEventTypes = map[string]bool{
-	"dns_query":      true,
-	"nmap_discovery": true,
-	"firewall_log":   true,
-	"anomaly":        true,
+	"dns_query":             true,
+	"encrypted_dns_detected": true,
+	"nmap_discovery":        true,
+	"firewall_log":          true,
+	"anomaly":               true,
 }
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -330,14 +335,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", "attachment; filename=events.csv")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("event_id,timestamp,event_type,source_hash,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment\n"))
+		w.Write([]byte("event_id,timestamp,event_type,source_hash,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment,dns_source\n"))
 		for _, e := range result.Events {
 			tagsStr := strings.Join(e.Tags, ";")
 			line := strings.Join([]string{
 				e.EventID, e.Timestamp.Format(time.RFC3339), e.EventType, e.SourceHash,
 				e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
 				strconv.FormatFloat(e.AnomalyScore, 'f', 4, 64), tagsStr, e.Geo,
-				e.DeviceVendor, e.NetworkSegment,
+				e.DeviceVendor, e.NetworkSegment, e.DNSSource,
 			}, ",")
 			w.Write([]byte(line + "\n"))
 		}
@@ -824,6 +829,102 @@ func (s *Server) handleSetPrimarySensor(w http.ResponseWriter, r *http.Request) 
 
 	log.Printf("Primary sensor changed to: %s", sensorID)
 	writeJSON(w, http.StatusOK, map[string]any{"primary": sensorID})
+}
+
+func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	sensorID := r.Header.Get("X-Sensor-ID")
+
+	var body struct {
+		SensorID string `json:"sensor_id"`
+		Queries  []struct {
+			Timestamp  int64  `json:"timestamp"`
+			Domain     string `json:"domain"`
+			QueryType  string `json:"query_type"`
+			ClientIP   string `json:"client_ip"`
+			ResponseIP string `json:"response_ip,omitempty"`
+			ServerIP   string `json:"server_ip,omitempty"`
+			Blocked    bool   `json:"blocked"`
+			Source     string `json:"source"`
+		} `json:"queries"`
+	}
+
+	if err := json.NewDecoder(io.LimitReader(r.Body, 5<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	if len(body.Queries) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"accepted": 0})
+		return
+	}
+
+	// Get install salt for source_hash
+	installSalt := os.Getenv("VEDETTA_INSTALL_SALT")
+	if installSalt == "" {
+		installSalt = "vedetta-install-salt" // fallback
+	}
+
+	// Convert DNS queries to Events
+	events := make([]models.Event, 0, len(body.Queries))
+	for _, q := range body.Queries {
+		if q.Domain == "" || q.ClientIP == "" {
+			continue // skip invalid queries
+		}
+
+		// Generate event ID
+		eventID := uuid.New().String()
+
+		// Compute source_hash as HMAC-SHA256(clientIP, installSalt)
+		h := hmac.New(sha256.New, []byte(installSalt))
+		h.Write([]byte(q.ClientIP))
+		sourceHash := hex.EncodeToString(h.Sum(nil))
+
+		event := models.Event{
+			EventID:        eventID,
+			Timestamp:      time.Unix(q.Timestamp, 0).UTC(),
+			EventType:      "dns_query",
+			SourceHash:     sourceHash,
+			Domain:         q.Domain,
+			QueryType:      q.QueryType,
+			ResolvedIP:     q.ResponseIP,
+			Blocked:        q.Blocked,
+			AnomalyScore:   0.0,
+			Tags:           []string{},
+			Geo:            "",
+			DeviceVendor:   "",
+			NetworkSegment: "default",
+			DNSSource:      q.Source,
+		}
+		events = append(events, event)
+	}
+
+	if len(events) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"accepted": 0})
+		return
+	}
+
+	// Enrich events
+	if s.Enricher != nil {
+		for i := range events {
+			s.Enricher.Enrich(&events[i])
+		}
+	}
+
+	// Insert into database
+	inserted, err := s.DB.InsertEvents(events)
+	if err != nil {
+		log.Printf("Sensor DNS ingest error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "insert failed"})
+		return
+	}
+
+	s.logInfo("ingest", fmt.Sprintf("Sensor %s ingested %d DNS queries", sensorID, inserted))
+	writeJSON(w, http.StatusOK, map[string]any{"accepted": inserted})
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
+	"github.com/vedetta-network/vedetta/backend/internal/dnsingest"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 	"github.com/vedetta-network/vedetta/backend/internal/dnspoller"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
@@ -100,6 +101,14 @@ func main() {
 		log.Printf("nmap not available — Core will receive data from sensors")
 	}
 
+	// Set up DNS ingestion manager
+	dnsEventSink := func(query dnsingest.DNSQuery) error {
+		// This is a placeholder; actual event conversion happens in the API handlers
+		return nil
+	}
+
+	dnsManager := dnsingest.NewManager(dnsEventSink)
+
 	// Optional: Pi-hole DNS query poller
 	piholeURL := os.Getenv("VEDETTA_PIHOLE_URL")
 	piholeToken := os.Getenv("VEDETTA_PIHOLE_TOKEN")
@@ -120,9 +129,16 @@ func main() {
 
 		piholeClient := dnspoller.NewPiHoleClient(piholeURL, piholeToken)
 		poller := dnspoller.NewPoller(piholeClient, db, enricher, activityLog, installSalt, piholeInterval)
-		poller.Start()
-		defer poller.Stop()
-		log.Printf("Pi-hole poller active: url=%s interval=%s", piholeURL, piholeInterval)
+		piholeSrc := dnsingest.NewPiHoleSource(poller)
+		dnsManager.Register(piholeSrc)
+		log.Printf("Pi-hole poller registered: url=%s interval=%s", piholeURL, piholeInterval)
+	}
+
+	// Start DNS ingestion manager
+	if err := dnsManager.Start(); err != nil {
+		log.Printf("WARNING: DNS ingestion manager failed to start: %v", err)
+	} else {
+		defer dnsManager.Stop()
 	}
 
 	router := api.NewRouter(srv)

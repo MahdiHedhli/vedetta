@@ -41,7 +41,7 @@ See [Deploying Sensors](#deploying-sensors) for remote deployment, service manag
 
 ## Architecture
 
-Vedetta uses a **Core + Sensor** architecture. Core is the watchtower — it runs as a set of Docker containers (API, database, dashboard, log collector) and gives you a single pane of glass across your entire network. Sensors are lightweight native binaries that run on host machines with direct LAN access, scanning for devices and reporting back to Core.
+Vedetta uses a **Core + Sensor** architecture. Core is the watchtower — it runs as a set of Docker containers (API, database, dashboard, log collector) and gives you a single pane of glass across your entire network. Sensors are lightweight native binaries that run on host machines with direct LAN access, scanning for devices, capturing DNS traffic passively, and reporting back to Core.
 
 ```
 vedetta/
@@ -63,8 +63,8 @@ vedetta/
 |---------|------|-------------|
 | Backend | 8080 | Go API — device storage, scan coordination, event ingest |
 | Frontend | 3107 | React dashboard (configurable via `VEDETTA_FRONTEND_PORT`) |
-| Sensor | — | Native binary — nmap-based device discovery, pushes to Core |
-| Collector | 5140/udp | Fluent Bit — ingests Pi-hole DNS logs and firewall syslog |
+| Sensor | — | Native binary — nmap-based device discovery, DNS capture, pushes to Core |
+| Collector | 5140/udp | Fluent Bit — ingests firewall syslog (DNS now captured directly by sensor) |
 | Telemetry | — | Opt-in daemon — PII-stripped event batching to threat network |
 | Threat Network | 9090 | Central threat intel backend |
 
@@ -138,6 +138,8 @@ sudo ./vedetta-sensor --core http://<CORE_IP>:8080
 | `--ports` | `false` | Include top-100 port scan |
 | `--primary` | `false` | Register as the primary sensor |
 | `--once` | `false` | Run a single scan cycle and exit |
+| `--dns` | `true` | Enable DNS capture via packet sniffing |
+| `--dns-iface` | `auto` | Network interface for DNS capture (auto-detect if not specified) |
 
 ### Service Management
 

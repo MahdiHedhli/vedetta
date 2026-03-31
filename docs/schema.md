@@ -13,7 +13,7 @@ Every field must earn its place. The schema is lean and meaningful — no bloat,
 |-------|------|----------|-------------|
 | `event_id` | `string` (UUID v4) | Yes | Unique event identifier |
 | `timestamp` | `string` (ISO 8601) | Yes | Event creation time in UTC |
-| `event_type` | `enum` | Yes | One of: `dns_query`, `nmap_discovery`, `firewall_log`, `anomaly` |
+| `event_type` | `enum` | Yes | One of: `dns_query`, `encrypted_dns_detected`, `nmap_discovery`, `firewall_log`, `anomaly` |
 | `source_hash` | `string` (SHA-256) | Yes | Hash of local IP + per-install salt. Preserves correlation without exposing IPs. |
 | `domain` | `string` | No | Queried domain (DNS events) |
 | `query_type` | `enum` | No | DNS record type: `A`, `AAAA`, `MX`, `TXT`, `CNAME`, `SRV`, `PTR` |
@@ -24,6 +24,7 @@ Every field must earn its place. The schema is lean and meaningful — no bloat,
 | `geo` | `string` | No | ISO 3166-1 alpha-2 country code of resolved IP |
 | `device_vendor` | `string` | No | Vendor name from OUI lookup or nmap fingerprint |
 | `network_segment` | `enum` | No | One of: `default`, `iot`, `guest` |
+| `dns_source` | `string` | No | DNS capture method that generated this event: `passive_capture`, `pihole`, `adguard`, `embedded_resolver`, `iptables_intercept` |
 
 ### Example
 
@@ -100,6 +101,7 @@ Tags are freeform strings, but the following are recognized by Vedetta's detecti
 | `GET` | `/api/v1/devices` | List discovered devices |
 | `GET` | `/api/v1/status` | Service health and version |
 | `POST` | `/api/v1/ingest` | Internal: receive normalized events from collector |
+| `POST` | `/api/v1/sensor/dns` | Receive DNS queries from sensor passive capture |
 
 ### Event Query Parameters
 
