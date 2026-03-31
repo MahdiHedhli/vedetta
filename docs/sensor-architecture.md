@@ -20,23 +20,25 @@ The solution: the Sensor runs as a native binary directly on the host OS, where 
 │  ┌──────────────────────┐                                       │
 │  │  vedetta-sensor       │  Native binary, runs with sudo       │
 │  │  - nmap scanning      │  or CAP_NET_RAW                      │
-│  │  - ARP/DHCP passive   │                                      │
-│  │    (planned)          │  Pushes discovered devices to Core   │
-│  └──────────┬───────────┘  via POST /api/v1/sensor/devices      │
-│             │ HTTP                                               │
-│  ┌──────────▼───────────────────────────────────────────────┐   │
-│  │  Docker Compose                                           │   │
-│  │                                                           │   │
-│  │  ┌────────────┐  ┌────────────┐  ┌────────────────────┐  │   │
-│  │  │  backend    │  │  frontend  │  │  collector          │  │   │
-│  │  │  (Go API)   │  │  (React)   │  │  (Fluent Bit)      │  │   │
-│  │  │  Port 8080  │  │  via nginx │  │  Syslog UDP 5140   │  │   │
-│  │  └──────┬─────┘  └────────────┘  └────────────────────┘  │   │
-│  │         │                                                 │   │
-│  │  ┌──────▼─────┐                                           │   │
-│  │  │  SQLite DB  │  /data/vedetta.db                        │   │
-│  │  └────────────┘                                           │   │
-│  └───────────────────────────────────────────────────────────┘   │
+│  │  - DNS capture        │  Pushes discovered devices to Core   │
+│  │  - ARP/DHCP passive   │  via POST /api/v1/sensor/devices     │
+│  │    (planned)          │  Pushes DNS events to Core           │
+│  └──────────┬─────┬──────┘  via POST /api/v1/sensor/dns        │
+│             │ HTTP │                                             │
+│             │      └──────────────────────┐                      │
+│  ┌──────────▼───────────────────────────┐ │                     │
+│  │  Docker Compose                       │ │                     │
+│  │                                       │ │                     │
+│  │  ┌────────────┐  ┌────────────┐  ┌───▼─┬──────────┐  │     │
+│  │  │  backend    │  │  frontend  │  │  collector   │  │     │
+│  │  │  (Go API)   │  │  (React)   │  │  (Fluent Bit)│  │     │
+│  │  │  Port 8080  │  │  via nginx │  │  Syslog UDP  │  │     │
+│  │  └──────┬─────┘  └────────────┘  └──────────────┘  │     │
+│  │         │                                           │     │
+│  │  ┌──────▼─────┐                                     │     │
+│  │  │  SQLite DB  │  /data/vedetta.db                  │     │
+│  │  └────────────┘                                     │     │
+│  └───────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,6 +65,48 @@ The sensor is an nmap-based network scanner that runs on the host OS.
 | `--interval` | `5m` | Time between scan cycles |
 | `--ports` | `false` | Enable TCP port scanning |
 | `--once` | `false` | Run a single scan and exit |
+| `--dns` | `true` | Enable DNS capture via packet sniffing |
+| `--dns-iface` | `auto` | Network interface for DNS capture (auto-detect if not specified) |
+
+### DNS Capture (M2)
+
+The sensor now captures DNS traffic passively via packet sniffing, enabling real-time visibility into network DNS activity without relying on external DNS services.
+
+**Passive DNS sniffing via gopacket** — The sensor listens on the configured network interface and captures DNS queries and responses in real-time. This is a Tier 1 (zero-configuration) capability that requires no setup and runs by default. Combined with nmap active scanning, this provides continuous DNS visibility without polling external DNS providers.
+
+**Encrypted DNS detection** — The sensor detects encrypted DNS traffic (DoH/DoT) by fingerprinting destination IPs known to host major DNS providers (Cloudflare, Quad9, OpenDNS, etc.). When encrypted DNS is detected, an `encrypted_dns_detected` event is recorded with the destination IP and port, allowing you to track which devices are using encrypted DNS resolvers.
+
+**Sensor flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dns` | `true` | Enable DNS capture via packet sniffing |
+| `--dns-iface` | `auto` | Network interface for DNS capture (auto-detect if not specified) |
+
+Captured DNS queries are pushed to Core via `POST /api/v1/sensor/dns` with the following payload:
+
+```json
+{
+  "sensor_id": "a1b2c3d4-...",
+  "dns_events": [
+    {
+      "timestamp": "2026-03-30T14:30:00Z",
+      "domain": "example.com",
+      "query_type": "A",
+      "resolved_ip": "93.184.216.34",
+      "source_ip_hash": "sha256:...",
+      "dns_source": "passive_capture"
+    }
+  ]
+}
+```
+
+**Four-tier DNS architecture:**
+
+1. **Tier 1 (Sensor):** Passive packet capture on the local network. No configuration, runs by default.
+2. **Tier 2 (Core):** Threat intelligence enrichment (domain reputation, geolocation, anomaly scoring) performed on ingested events.
+3. **Tier 3 (Community):** Optional opt-in sharing of anonymized DNS events to the Vedetta threat network for community threat intelligence.
+4. **Tier 4 (Global Intel):** Integration with external threat feeds (OSINT, abuse databases) for historical threat data.
 
 ### Planned (M3.5 — Passive Discovery)
 

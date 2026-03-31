@@ -66,6 +66,16 @@ func (p *Poller) Stop() {
 	<-p.doneCh
 }
 
+// SetInterval updates the polling interval (thread-safe).
+func (p *Poller) SetInterval(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	p.mu.Lock()
+	p.interval = interval
+	p.mu.Unlock()
+}
+
 // run is the main polling loop.
 func (p *Poller) run() {
 	defer close(p.doneCh)
