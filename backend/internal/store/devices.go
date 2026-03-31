@@ -127,7 +127,8 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment,
 		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
 		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
-		       COALESCE(fingerprint_confidence, 0.0)
+		       COALESCE(fingerprint_confidence, 0.0),
+		       COALESCE(custom_name, ''), COALESCE(notes, '')
 		FROM devices ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query devices: %w", err)
@@ -141,7 +142,8 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		err := rows.Scan(&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
 			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
-			&d.DiscoveryMethod, &d.FingerprintConfidence)
+			&d.DiscoveryMethod, &d.FingerprintConfidence,
+			&d.CustomName, &d.Notes)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
@@ -149,6 +151,44 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		devices = append(devices, d)
 	}
 	return devices, rows.Err()
+}
+
+// GetDeviceByIP returns a device matching the given IP address.
+func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
+	var d models.Device
+	var portsJSON string
+	err := db.QueryRow(`
+		SELECT device_id, first_seen, last_seen, ip_address, mac_address,
+		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment,
+		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
+		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
+		       COALESCE(fingerprint_confidence, 0.0),
+		       COALESCE(custom_name, ''), COALESCE(notes, '')
+		FROM devices WHERE ip_address = ? ORDER BY last_seen DESC LIMIT 1`, ip).Scan(
+		&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
+		&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
+		&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
+		&d.DiscoveryMethod, &d.FingerprintConfidence,
+		&d.CustomName, &d.Notes)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query device by ip: %w", err)
+	}
+	json.Unmarshal([]byte(portsJSON), &d.OpenPorts)
+	return &d, nil
+}
+
+// UpdateDeviceMeta updates user-editable fields (custom_name, notes, segment).
+func (db *DB) UpdateDeviceMeta(deviceID, customName, notes, segment string) error {
+	_, err := db.Exec(`
+		UPDATE devices SET custom_name = ?, notes = ?, segment = ? WHERE device_id = ?`,
+		customName, notes, segment, deviceID)
+	if err != nil {
+		return fmt.Errorf("update device meta: %w", err)
+	}
+	return nil
 }
 
 // GetNewDevices returns devices first seen within the given duration.
@@ -159,7 +199,8 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment,
 		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
 		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
-		       COALESCE(fingerprint_confidence, 0.0)
+		       COALESCE(fingerprint_confidence, 0.0),
+		       COALESCE(custom_name, ''), COALESCE(notes, '')
 		FROM devices WHERE first_seen > ? ORDER BY first_seen DESC`, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("query new devices: %w", err)
@@ -173,7 +214,8 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 		err := rows.Scan(&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
 			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
-			&d.DiscoveryMethod, &d.FingerprintConfidence)
+			&d.DiscoveryMethod, &d.FingerprintConfidence,
+			&d.CustomName, &d.Notes)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}

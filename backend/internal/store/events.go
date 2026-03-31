@@ -180,7 +180,8 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 		       COALESCE(resolved_ip, ''), blocked, anomaly_score,
 		       COALESCE(tags, '[]'), COALESCE(geo, ''),
 		       COALESCE(device_vendor, ''), COALESCE(network_segment, 'default'),
-		       COALESCE(dns_source, ''), COALESCE(threat_desc, ''), COALESCE(metadata, '{}')
+		       COALESCE(dns_source, ''), COALESCE(threat_desc, ''), COALESCE(metadata, '{}'),
+		       COALESCE(acknowledged, FALSE), COALESCE(ack_reason, '')
 		FROM events %s
 		ORDER BY %s %s
 		LIMIT ? OFFSET ?
@@ -203,6 +204,7 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 			&e.AnomalyScore, &tagsJSON, &e.Geo,
 			&e.DeviceVendor, &e.NetworkSegment,
 			&e.DNSSource, &e.ThreatDesc, &e.Metadata,
+			&e.Acknowledged, &e.AckReason,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan event row: %w", err)

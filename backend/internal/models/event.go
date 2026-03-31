@@ -22,25 +22,40 @@ type Event struct {
 	DNSSource       string    `json:"dns_source,omitempty" db:"dns_source"`                   // passive_capture | pihole | adguard | embedded_resolver | iptables_intercept
 	ThreatDesc      string    `json:"threat_desc,omitempty" db:"threat_desc"`                 // Human-readable threat explanation
 	Metadata        string    `json:"metadata,omitempty" db:"metadata"`                       // JSON: detection details (entropy, signals, CV, etc.)
+	Acknowledged    bool      `json:"acknowledged" db:"acknowledged"`                         // User reviewed this event
+	AckReason       string    `json:"ack_reason,omitempty" db:"ack_reason"`                   // Why the user dismissed it
 }
 
 // Device represents a discovered network device.
 type Device struct {
-	DeviceID            string    `json:"device_id" db:"device_id"`
-	FirstSeen           time.Time `json:"first_seen" db:"first_seen"`
-	LastSeen            time.Time `json:"last_seen" db:"last_seen"`
-	IPAddress           string    `json:"ip_address" db:"ip_address"`
-	MACAddress          string    `json:"mac_address" db:"mac_address"`
-	Hostname            string    `json:"hostname,omitempty" db:"hostname"`
-	Vendor              string    `json:"vendor,omitempty" db:"vendor"`
-	OpenPorts           []int     `json:"open_ports,omitempty" db:"-"`
-	Segment             string    `json:"segment" db:"segment"` // default | iot | guest
-	DeviceType          string    `json:"device_type,omitempty" db:"device_type"`
-	OSFamily            string    `json:"os_family,omitempty" db:"os_family"`
-	OSVersion           string    `json:"os_version,omitempty" db:"os_version"`
-	Model               string    `json:"model,omitempty" db:"model"`
-	DiscoveryMethod     string    `json:"discovery_method,omitempty" db:"discovery_method"`
-	FingerprintConfidence float64  `json:"fingerprint_confidence" db:"fingerprint_confidence"`
+	DeviceID              string    `json:"device_id" db:"device_id"`
+	FirstSeen             time.Time `json:"first_seen" db:"first_seen"`
+	LastSeen              time.Time `json:"last_seen" db:"last_seen"`
+	IPAddress             string    `json:"ip_address" db:"ip_address"`
+	MACAddress            string    `json:"mac_address" db:"mac_address"`
+	Hostname              string    `json:"hostname,omitempty" db:"hostname"`
+	Vendor                string    `json:"vendor,omitempty" db:"vendor"`
+	OpenPorts             []int     `json:"open_ports,omitempty" db:"-"`
+	Segment               string    `json:"segment" db:"segment"` // default | iot | guest
+	DeviceType            string    `json:"device_type,omitempty" db:"device_type"`
+	OSFamily              string    `json:"os_family,omitempty" db:"os_family"`
+	OSVersion             string    `json:"os_version,omitempty" db:"os_version"`
+	Model                 string    `json:"model,omitempty" db:"model"`
+	DiscoveryMethod       string    `json:"discovery_method,omitempty" db:"discovery_method"`
+	FingerprintConfidence float64   `json:"fingerprint_confidence" db:"fingerprint_confidence"`
+	CustomName            string    `json:"custom_name,omitempty" db:"custom_name"`
+	Notes                 string    `json:"notes,omitempty" db:"notes"`
+}
+
+// SuppressionRule defines a user-created filter to auto-hide matching events.
+type SuppressionRule struct {
+	RuleID    string    `json:"rule_id" db:"rule_id"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	Domain    string    `json:"domain,omitempty" db:"domain"`
+	SourceIP  string    `json:"source_ip,omitempty" db:"source_ip"`
+	Tags      []string  `json:"tags" db:"-"`
+	Reason    string    `json:"reason,omitempty" db:"reason"`
+	Active    bool      `json:"active" db:"active"`
 }
 
 // Sensor represents a registered sensor that reports to Core.
