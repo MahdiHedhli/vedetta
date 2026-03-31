@@ -199,19 +199,21 @@ func (p *Poller) piHoleQueryToEvent(q PiHoleQuery) *models.Event {
 	blocked := q.IsBlocked()
 
 	event := &models.Event{
-		EventID:       eventID,
-		Timestamp:     time.Unix(q.Timestamp, 0).UTC(),
-		EventType:     "dns_query",
-		SourceHash:    sourceHash,
-		Domain:        q.Domain,
-		QueryType:     queryType,
-		ResolvedIP:    q.CNAMETarget, // Use CNAME target if available, else empty
-		Blocked:       blocked,
-		AnomalyScore:  0.0, // Will be set by enricher
-		Tags:          []string{},
-		Geo:           "",
-		DeviceVendor:  "",
+		EventID:        eventID,
+		Timestamp:      time.Unix(q.Timestamp, 0).UTC(),
+		EventType:      "dns_query",
+		SourceHash:     sourceHash,
+		SourceIP:       q.ClientIP,
+		Domain:         q.Domain,
+		QueryType:      queryType,
+		ResolvedIP:     q.CNAMETarget, // Use CNAME target if available, else empty
+		Blocked:        blocked,
+		AnomalyScore:   0.0, // Will be set by enricher
+		Tags:           []string{},
+		Geo:            "",
+		DeviceVendor:   "",
 		NetworkSegment: "default",
+		DNSSource:      "pihole",
 	}
 
 	return event

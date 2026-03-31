@@ -335,14 +335,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", "attachment; filename=events.csv")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("event_id,timestamp,event_type,source_hash,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment,dns_source\n"))
+		w.Write([]byte("event_id,timestamp,event_type,source_hash,source_ip,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment,dns_source,threat_desc\n"))
 		for _, e := range result.Events {
 			tagsStr := strings.Join(e.Tags, ";")
 			line := strings.Join([]string{
 				e.EventID, e.Timestamp.Format(time.RFC3339), e.EventType, e.SourceHash,
-				e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
+				e.SourceIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
 				strconv.FormatFloat(e.AnomalyScore, 'f', 4, 64), tagsStr, e.Geo,
-				e.DeviceVendor, e.NetworkSegment, e.DNSSource,
+				e.DeviceVendor, e.NetworkSegment, e.DNSSource, e.ThreatDesc,
 			}, ",")
 			w.Write([]byte(line + "\n"))
 		}
@@ -899,6 +899,7 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 			Timestamp:      time.Unix(q.Timestamp, 0).UTC(),
 			EventType:      "dns_query",
 			SourceHash:     sourceHash,
+			SourceIP:       q.ClientIP,
 			Domain:         q.Domain,
 			QueryType:      q.QueryType,
 			ResolvedIP:     q.ResponseIP,

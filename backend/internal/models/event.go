@@ -5,20 +5,23 @@ import "time"
 // Event represents the core event schema for all Vedetta events.
 // Every field must earn its place — lean and meaningful.
 type Event struct {
-	EventID        string    `json:"event_id" db:"event_id"`               // UUID v4
-	Timestamp      time.Time `json:"timestamp" db:"timestamp"`             // ISO8601
-	EventType      string    `json:"event_type" db:"event_type"`           // dns_query | nmap_discovery | firewall_log | anomaly
-	SourceHash     string    `json:"source_hash" db:"source_hash"`         // SHA-256 of local IP + per-install salt
-	Domain         string    `json:"domain,omitempty" db:"domain"`         // queried domain (DNS events)
-	QueryType      string    `json:"query_type,omitempty" db:"query_type"` // A | AAAA | MX | TXT
-	ResolvedIP     string    `json:"resolved_ip,omitempty" db:"resolved_ip"`
-	Blocked        bool      `json:"blocked" db:"blocked"`
-	AnomalyScore   float64   `json:"anomaly_score" db:"anomaly_score"`
-	Tags           []string  `json:"tags" db:"-"`                                            // c2_candidate, dga_candidate, new_device, etc.
-	Geo            string    `json:"geo,omitempty" db:"geo"`                                 // Country code (ISO 3166-1 alpha-2)
-	DeviceVendor   string    `json:"device_vendor,omitempty" db:"device_vendor"`
-	NetworkSegment string    `json:"network_segment,omitempty" db:"network_segment"`         // default | iot | guest
-	DNSSource      string    `json:"dns_source,omitempty" db:"dns_source"`                   // passive_capture | pihole | adguard | embedded_resolver | iptables_intercept
+	EventID         string    `json:"event_id" db:"event_id"`               // UUID v4
+	Timestamp       time.Time `json:"timestamp" db:"timestamp"`             // ISO8601
+	EventType       string    `json:"event_type" db:"event_type"`           // dns_query | nmap_discovery | firewall_log | anomaly
+	SourceHash      string    `json:"source_hash" db:"source_hash"`         // SHA-256 of local IP + per-install salt
+	SourceIP        string    `json:"source_ip,omitempty" db:"source_ip"`   // Raw client IP (local network only)
+	Domain          string    `json:"domain,omitempty" db:"domain"`         // queried domain (DNS events)
+	QueryType       string    `json:"query_type,omitempty" db:"query_type"` // A | AAAA | MX | TXT
+	ResolvedIP      string    `json:"resolved_ip,omitempty" db:"resolved_ip"`
+	Blocked         bool      `json:"blocked" db:"blocked"`
+	AnomalyScore    float64   `json:"anomaly_score" db:"anomaly_score"`
+	Tags            []string  `json:"tags" db:"-"`                                            // c2_candidate, dga_candidate, new_device, etc.
+	Geo             string    `json:"geo,omitempty" db:"geo"`                                 // Country code (ISO 3166-1 alpha-2)
+	DeviceVendor    string    `json:"device_vendor,omitempty" db:"device_vendor"`
+	NetworkSegment  string    `json:"network_segment,omitempty" db:"network_segment"`         // default | iot | guest
+	DNSSource       string    `json:"dns_source,omitempty" db:"dns_source"`                   // passive_capture | pihole | adguard | embedded_resolver | iptables_intercept
+	ThreatDesc      string    `json:"threat_desc,omitempty" db:"threat_desc"`                 // Human-readable threat explanation
+	Metadata        string    `json:"metadata,omitempty" db:"metadata"`                       // JSON: detection details (entropy, signals, CV, etc.)
 }
 
 // Device represents a discovered network device.

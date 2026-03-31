@@ -1,7 +1,10 @@
 package dnsintel
 
 import (
+	"encoding/json"
+	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/models"
@@ -30,23 +33,73 @@ func NewEnricher(threatDB *threatintel.ThreatIntelDB) *Enricher {
 	}
 }
 
+// detectionMeta captures structured output from each detection algorithm
+// for storage as JSON in the event's metadata field.
+type detectionMeta struct {
+	DGA       *dgaMeta       `json:"dga,omitempty"`
+	Tunnel    *tunnelMeta    `json:"tunnel,omitempty"`
+	Beacon    *beaconMeta    `json:"beacon,omitempty"`
+	Rebinding *rebindingMeta `json:"rebinding,omitempty"`
+	ThreatDB  *threatDBMeta  `json:"threat_db,omitempty"`
+}
+
+type dgaMeta struct {
+	Entropy     float64 `json:"entropy"`
+	BigramScore float64 `json:"bigram_score"`
+	Score       float64 `json:"score"`
+	Label       string  `json:"label"`
+}
+
+type tunnelMeta struct {
+	Score   float64  `json:"score"`
+	Signals []string `json:"signals"`
+}
+
+type beaconMeta struct {
+	Score        float64 `json:"score"`
+	CV           float64 `json:"cv"`
+	MeanInterval float64 `json:"mean_interval_sec"`
+	Samples      int     `json:"samples"`
+}
+
+type rebindingMeta struct {
+	PublicIP  string `json:"public_ip"`
+	PrivateIP string `json:"private_ip"`
+}
+
+type threatDBMeta struct {
+	Confidence float64  `json:"confidence"`
+	FeedTags   []string `json:"feed_tags"`
+}
+
 // Enrich runs all applicable detection algorithms on the event and
-// modifies it in place (tags, anomaly_score). This is called during
-// ingest, before the event is written to the database.
+// modifies it in place (tags, anomaly_score, threat_desc, metadata).
+// This is called during ingest, before the event is written to the database.
 func (e *Enricher) Enrich(event *models.Event) {
 	if event.EventType != "dns_query" {
-		// Non-DNS events: only run threat intel IP lookup
 		e.enrichIP(event)
 		return
 	}
 
 	var scores []float64
+	var descriptions []string
+	meta := &detectionMeta{}
 
 	// 1. DGA detection on the domain
 	if event.Domain != "" {
 		dgaResult := ScoreDGA(event.Domain)
 		if dgaResult.IsDGA {
 			event.Tags = appendUnique(event.Tags, "dga_candidate")
+			meta.DGA = &dgaMeta{
+				Entropy:     dgaResult.Entropy,
+				BigramScore: dgaResult.BigramScore,
+				Score:       dgaResult.Score,
+				Label:       dgaResult.Label,
+			}
+			descriptions = append(descriptions, fmt.Sprintf(
+				"Domain looks machine-generated (DGA). The label \"%s\" has high entropy (%.1f bits) and unusual character patterns (bigram score %.0f%%), which is characteristic of malware that generates random domain names to contact command servers.",
+				dgaResult.Label, dgaResult.Entropy, dgaResult.BigramScore*100,
+			))
 		}
 		if dgaResult.Score > 0.3 {
 			scores = append(scores, dgaResult.Score)
@@ -58,6 +111,14 @@ func (e *Enricher) Enrich(event *models.Event) {
 		tunnelResult := ScoreTunnel(event.Domain)
 		if tunnelResult.IsTunnel {
 			event.Tags = appendUnique(event.Tags, "dns_tunnel")
+			meta.Tunnel = &tunnelMeta{
+				Score:   tunnelResult.Score,
+				Signals: tunnelResult.Signals,
+			}
+			descriptions = append(descriptions, fmt.Sprintf(
+				"Possible DNS tunneling detected. Signals: %s. Attackers encode data inside DNS queries to bypass firewalls and exfiltrate information.",
+				strings.Join(tunnelResult.Signals, ", "),
+			))
 		}
 		if tunnelResult.Score > 0.3 {
 			scores = append(scores, tunnelResult.Score)
@@ -65,7 +126,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 
 		// TXT query bonus for tunnel detection
 		if IsTXTTunnelCandidate(event.QueryType) && tunnelResult.Score > 0.2 {
-			scores = append(scores, 0.3) // extra weight for TXT queries to suspicious domains
+			scores = append(scores, 0.3)
 		}
 	}
 
@@ -74,6 +135,16 @@ func (e *Enricher) Enrich(event *models.Event) {
 		beaconResult := e.Beacon.RecordAndScore(event.SourceHash, event.Domain, event.Timestamp)
 		if beaconResult.IsBeaconing {
 			event.Tags = appendUnique(event.Tags, "beaconing")
+			meta.Beacon = &beaconMeta{
+				Score:        beaconResult.Score,
+				CV:           beaconResult.CV,
+				MeanInterval: beaconResult.MeanInterval.Seconds(),
+				Samples:      beaconResult.SampleCount,
+			}
+			descriptions = append(descriptions, fmt.Sprintf(
+				"Regular beaconing pattern detected. This device queries this domain at very consistent intervals (every ~%.0fs, %d samples, variation %.1f%%). Malware and implants often 'phone home' on fixed schedules.",
+				beaconResult.MeanInterval.Seconds(), beaconResult.SampleCount, beaconResult.CV*100,
+			))
 		}
 		if beaconResult.Score > 0.3 {
 			scores = append(scores, beaconResult.Score)
@@ -85,18 +156,19 @@ func (e *Enricher) Enrich(event *models.Event) {
 		rebindResult := e.Rebinding.Check(event.Domain, event.ResolvedIP)
 		if rebindResult != nil && rebindResult.IsRebinding {
 			event.Tags = appendUnique(event.Tags, "dns_rebinding")
+			meta.Rebinding = &rebindingMeta{
+				PublicIP:  rebindResult.PublicIP,
+				PrivateIP: rebindResult.PrivateIP,
+			}
+			descriptions = append(descriptions, fmt.Sprintf(
+				"DNS rebinding attack detected. This domain previously resolved to a public IP (%s) and now resolves to a private IP (%s). This technique lets external attackers access devices on your local network.",
+				rebindResult.PublicIP, rebindResult.PrivateIP,
+			))
 			scores = append(scores, 0.4)
 		}
 	}
 
-	// 5. DNS bypass detection (when server_ip is available in the event data)
-	// Note: This requires the event to have DNS_ServerIP populated by passive capture
-	// For now, we check if a bypass detector is configured and alert accordingly
-	if event.SourceHash != "" && e.Bypass != nil && event.ResolvedIP != "" {
-		// If server_ip is in tags or additional fields, check it here
-		// This would require extending the Event model to include server_ip
-		// For future integration with passive capture
-	}
+	// 5. DNS bypass detection — reserved for future server_ip integration
 
 	// 6. Threat intel domain lookup
 	if event.Domain != "" && e.ThreatDB != nil {
@@ -106,6 +178,14 @@ func (e *Enricher) Enrich(event *models.Event) {
 			for _, tag := range result.Indicator.Tags {
 				event.Tags = appendUnique(event.Tags, tag)
 			}
+			meta.ThreatDB = &threatDBMeta{
+				Confidence: result.Confidence,
+				FeedTags:   result.Indicator.Tags,
+			}
+			descriptions = append(descriptions, fmt.Sprintf(
+				"This domain appears in threat intelligence feeds (confidence %.0f%%). It has been associated with: %s.",
+				result.Confidence*100, strings.Join(result.Indicator.Tags, ", "),
+			))
 			scores = append(scores, result.Confidence)
 		}
 	}
@@ -113,8 +193,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	// 7. Threat intel IP lookup
 	e.enrichIP(event)
 
-	// Composite anomaly score: take the max of all individual scores,
-	// with a small boost when multiple signals fire (defense in depth).
+	// Composite anomaly score
 	if len(scores) > 0 {
 		maxScore := 0.0
 		for _, s := range scores {
@@ -123,7 +202,6 @@ func (e *Enricher) Enrich(event *models.Event) {
 			}
 		}
 
-		// Multi-signal boost: each additional signal above threshold adds 0.05
 		signalCount := 0
 		for _, s := range scores {
 			if s > 0.3 {
@@ -136,10 +214,20 @@ func (e *Enricher) Enrich(event *models.Event) {
 		}
 
 		composite := math.Min(1.0, maxScore+boost)
-
-		// Only increase the score, never decrease it (ingest may have set it)
 		if composite > event.AnomalyScore {
 			event.AnomalyScore = composite
+		}
+	}
+
+	// Set human-readable threat description
+	if len(descriptions) > 0 {
+		event.ThreatDesc = strings.Join(descriptions, " ")
+	}
+
+	// Serialize detection metadata as JSON
+	if meta.DGA != nil || meta.Tunnel != nil || meta.Beacon != nil || meta.Rebinding != nil || meta.ThreatDB != nil {
+		if metaJSON, err := json.Marshal(meta); err == nil {
+			event.Metadata = string(metaJSON)
 		}
 	}
 }
