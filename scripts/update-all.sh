@@ -239,8 +239,20 @@ echo ""
 # --- Update Core ---
 echo "▸ Rebuilding Core Docker images..."
 docker compose down
-docker compose build --no-cache backend frontend
-docker compose up -d
+
+if ! docker compose build --no-cache backend frontend; then
+    echo ""
+    echo "  ✗ Docker build FAILED. Attempting to start with previous images..."
+    echo "    Check build output above for errors."
+    docker compose up -d
+    echo ""
+    echo "  WARNING: Running on stale images. The backend may be missing new features."
+    echo "  Fix the build error and run: docker compose build --no-cache && docker compose up -d"
+    echo ""
+else
+    echo "  ✓ Docker build succeeded."
+    docker compose up -d
+fi
 echo ""
 
 # Wait for backend health check
@@ -248,10 +260,19 @@ echo "▸ Waiting for backend to become healthy..."
 for i in $(seq 1 30); do
     if curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
         echo "  Backend healthy."
+        # Verify new routes are present
+        ROUTE_CHECK=$(curl -sf http://localhost:8080/api/v1/version 2>/dev/null)
+        if echo "$ROUTE_CHECK" | grep -q "suppression" 2>/dev/null; then
+            echo "  ✓ New API routes verified."
+        else
+            echo "  ⚠ Backend is running but may be an older build (missing /api/v1/version)."
+            echo "    Try: docker compose down && docker compose build --no-cache backend && docker compose up -d"
+        fi
         break
     fi
     if [ "$i" -eq 30 ]; then
         echo "  WARNING: Backend did not become healthy within 30s."
+        echo "  Check logs: docker logs vedetta-backend"
     fi
     sleep 1
 done

@@ -48,6 +48,13 @@ func NewRouter(srv *Server) http.Handler {
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/status", srv.handleStatus)
+		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"version":    "0.1.0-dev",
+				"build_time": "2026-03-31T00:00:00Z",
+				"routes":     []string{"/suppression", "/events/{eventID}/ack", "/devices/{deviceID}"},
+			})
+		})
 		r.Get("/events", srv.handleEvents)
 		r.Get("/events/stats", srv.handleEventStats)
 		r.Get("/events/timeline", srv.handleEventTimeline)
