@@ -295,7 +295,7 @@ export default function App() {
             threatStats={threatStats} onNavigate={setView}
           />
         ) : view === 'devices' ? (
-          <DevicesView devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus} threatEvents={threatEvents} />
+          <DevicesView devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus} threatEvents={threatEvents} onRefreshThreats={fetchThreatData} />
         ) : view === 'threats' ? (
           <ThreatsView events={threatEvents} stats={threatStats} timeline={threatTimeline} onRefresh={fetchThreatData}
             devices={devices} suppressionRules={suppressionRules} onNavigate={setView} />
@@ -345,17 +345,20 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const [severityFilter, setSeverityFilter] = useState('all');
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [showSuppressed, setShowSuppressed] = useState(false);
-  const [ackingEvent, setAckingEvent] = useState(null);
-  const [ackReason, setAckReason] = useState('');
+  const [actionMode, setActionMode] = useState(null); // { eventId, mode: 'ack'|'suppress', reason: '' }
+  const [refreshing, setRefreshing] = useState(false);
+  const [actionError, setActionError] = useState(null);
+  const [groupModal, setGroupModal] = useState(null); // { events: [], domain: '' }
+  const [visibleCount, setVisibleCount] = useState(30);
 
   // Build device lookup by IP
   const deviceByIP = {};
   (devices || []).forEach(d => { if (d.ip_address) deviceByIP[d.ip_address] = d; });
 
-  // Check if event matches any suppression rule
-  const isSuppressed = (event) => {
-    if (!suppressionRules || suppressionRules.length === 0) return false;
-    return suppressionRules.some(rule => {
+  // Find which suppression rule matches an event (returns rule or null)
+  const findMatchingRule = (event) => {
+    if (!suppressionRules || suppressionRules.length === 0) return null;
+    return suppressionRules.find(rule => {
       if (!rule.active) return false;
       if (rule.domain && rule.domain !== event.domain) return false;
       if (rule.source_ip && rule.source_ip !== event.source_ip) return false;
@@ -364,17 +367,20 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
         if (!rule.tags.every(t => eventTags.includes(t))) return false;
       }
       return true;
-    });
+    }) || null;
   };
 
+  const isSuppressed = (event) => findMatchingRule(event) !== null;
+
   // Group duplicate events (same domain + source_ip + tags within 5 min)
+  // Now stores full event objects, not just IDs
   const groupEvents = (eventList) => {
     const groups = [];
     const used = new Set();
     for (let i = 0; i < eventList.length; i++) {
       if (used.has(i)) continue;
       const e = eventList[i];
-      const group = { lead: e, count: 1, eventIds: [e.event_id] };
+      const group = { lead: e, count: 1, members: [e] };
       const eTime = new Date(e.timestamp).getTime();
       const eTagKey = (e.tags || []).sort().join(',');
       for (let j = i + 1; j < eventList.length; j++) {
@@ -384,7 +390,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
         const oTagKey = (o.tags || []).sort().join(',');
         if (e.domain === o.domain && e.source_ip === o.source_ip && eTagKey === oTagKey && Math.abs(eTime - oTime) < 5 * 60 * 1000) {
           group.count++;
-          group.eventIds.push(o.event_id);
+          group.members.push(o);
           used.add(j);
         }
       }
@@ -406,6 +412,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const suppressedEvents = baseFiltered.filter(e => e.acknowledged || isSuppressed(e));
   const displayEvents = showSuppressed ? suppressedEvents : visibleEvents;
   const grouped = groupEvents(displayEvents);
+  const paginatedGroups = grouped.slice(0, visibleCount);
 
   const toggleRowExpanded = (eventId) => {
     const newSet = new Set(expandedRows);
@@ -459,25 +466,71 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     try { return JSON.parse(metaStr); } catch { return null; }
   };
 
+  const formatTimestamp = (ts) => {
+    if (!ts) return '—';
+    const d = new Date(ts);
+    return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      + ' ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const doRefresh = () => {
+    setRefreshing(true);
+    setActionError(null);
+    onRefresh();
+    // onRefresh is async but doesn't return a promise, so we just reset after a delay
+    setTimeout(() => setRefreshing(false), 1500);
+  };
+
   const handleAck = (eventId, reason) => {
+    setActionError(null);
     fetch(`/api/v1/events/${eventId}/ack`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
-    }).then(() => { setAckingEvent(null); setAckReason(''); onRefresh(); }).catch(() => {});
+    }).then(r => {
+      if (!r.ok) throw new Error(`Server returned ${r.status}`);
+      setActionMode(null);
+      onRefresh();
+    }).catch(err => setActionError(`Acknowledge failed: ${err.message}`));
   };
 
   const handleUnack = (eventId) => {
+    setActionError(null);
     fetch(`/api/v1/events/${eventId}/ack`, { method: 'DELETE' })
-      .then(() => onRefresh()).catch(() => {});
+      .then(r => {
+        if (!r.ok) throw new Error(`Server returned ${r.status}`);
+        onRefresh();
+      }).catch(err => setActionError(`Unacknowledge failed: ${err.message}`));
   };
 
-  const handleCreateSuppression = (event) => {
+  const handleCreateSuppression = (event, reason) => {
+    setActionError(null);
     fetch('/api/v1/suppression', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain: event.domain, source_ip: event.source_ip, tags: [], reason: 'User suppressed from threats view' }),
-    }).then(() => onRefresh()).catch(() => {});
+      body: JSON.stringify({ domain: event.domain, source_ip: event.source_ip, tags: [], reason: reason || '' }),
+    }).then(r => {
+      if (!r.ok) throw new Error(`Server returned ${r.status}`);
+      setActionMode(null);
+      onRefresh();
+    }).catch(err => setActionError(`Suppress failed: ${err.message}. Has migration 012 been applied?`));
+  };
+
+  const handleDeleteSuppression = (ruleId) => {
+    setActionError(null);
+    fetch(`/api/v1/suppression/${ruleId}`, { method: 'DELETE' })
+      .then(r => {
+        if (!r.ok) throw new Error(`Server returned ${r.status}`);
+        onRefresh();
+      }).catch(err => setActionError(`Unsuppress failed: ${err.message}`));
+  };
+
+  // Determine event's current disposition
+  const getEventState = (event) => {
+    const rule = findMatchingRule(event);
+    if (event.acknowledged) return { type: 'acked', reason: event.ack_reason || '', rule: null };
+    if (rule) return { type: 'suppressed', reason: rule.reason || '', rule };
+    return { type: 'active', reason: '', rule: null };
   };
 
   return (
@@ -486,16 +539,26 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
         <div>
           <h2 className="text-2xl font-display">Threat Events</h2>
           <p className="text-gray-400 text-sm mt-1">
-            Detection and anomaly tracking from network analysis
+            {visibleEvents.length} active{suppressedEvents.length > 0 ? `, ${suppressedEvents.length} suppressed` : ''} — detection and anomaly tracking
           </p>
         </div>
         <button
-          onClick={onRefresh}
-          className="bg-amber-500 hover:bg-amber-400 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+          onClick={doRefresh}
+          disabled={refreshing}
+          className="bg-amber-500 hover:bg-amber-400 disabled:bg-amber-800 disabled:text-amber-600 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
         >
-          Refresh
+          {refreshing && <Spinner />}
+          {refreshing ? 'Refreshing...' : 'Refresh'}
         </button>
       </div>
+
+      {/* Error toast */}
+      {actionError && (
+        <div className="bg-red-950/30 border border-red-900/50 rounded-lg p-3 mb-4 flex items-center justify-between">
+          <span className="text-sm text-red-300">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-200 text-sm ml-3">Dismiss</button>
+        </div>
+      )}
 
       {/* Stat Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -557,330 +620,485 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       </div>
 
       {/* Events Table */}
-      {grouped.length > 0 ? (
-        <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-          <table className="w-full table-fixed">
-            <thead>
-              <tr className="text-left text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800 bg-gray-800/30">
-                <th className="px-4 py-3 w-10"></th>
-                <th className="px-4 py-3 w-24">Time</th>
-                <th className="px-4 py-3 w-48">Source Device</th>
-                <th className="px-4 py-3">Domain</th>
-                <th className="px-4 py-3 w-32">Score</th>
-                <th className="px-4 py-3 w-32">Detection</th>
-                <th className="px-4 py-3 w-24">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {grouped.map((group) => {
-                const event = group.lead;
-                const isExpanded = expandedRows.has(event.event_id);
-                const meta = parseMetadata(event.metadata);
-                const device = event.source_ip ? deviceByIP[event.source_ip] : null;
-                const deviceName = device?.custom_name || device?.hostname || null;
-                return (
-                  <React.Fragment key={event.event_id}>
-                    <tr
-                      className={`border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors cursor-pointer ${
-                        (event.anomaly_score || 0) > 0.7 ? 'bg-red-950/10' : ''
-                      } ${event.acknowledged ? 'opacity-50' : ''}`}
-                      onClick={() => toggleRowExpanded(event.event_id)}
-                    >
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1">
-                          <svg
-                            className={`w-4 h-4 text-gray-500 transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
-                            fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                          {group.count > 1 && (
-                            <span className="bg-gray-700 text-gray-300 text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">{group.count}</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-400 truncate">{timeAgo(event.timestamp)}</td>
-                      <td className="px-4 py-3">
-                        <div className="text-sm truncate">
-                          {device ? (
-                            <button
-                              className="text-left hover:text-amber-400 transition-colors"
-                              onClick={(e) => { e.stopPropagation(); onNavigate && onNavigate('devices'); }}
-                              title={`View device: ${device.ip_address}`}
+      {paginatedGroups.length > 0 ? (
+        <>
+          <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+            <table className="w-full table-fixed">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800 bg-gray-800/30">
+                  <th className="px-4 py-3 w-10"></th>
+                  <th className="px-4 py-3 w-24">Time</th>
+                  <th className="px-4 py-3 w-48">Source Device</th>
+                  <th className="px-4 py-3">Domain</th>
+                  <th className="px-4 py-3 w-32">Score</th>
+                  <th className="px-4 py-3 w-32">Detection</th>
+                  <th className="px-4 py-3 w-28">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedGroups.map((group) => {
+                  const event = group.lead;
+                  const isExpanded = expandedRows.has(event.event_id);
+                  const meta = parseMetadata(event.metadata);
+                  const device = event.source_ip ? deviceByIP[event.source_ip] : null;
+                  const deviceName = device?.custom_name || device?.hostname || null;
+                  const eventState = getEventState(event);
+                  const isEditing = actionMode && actionMode.eventId === event.event_id;
+                  return (
+                    <React.Fragment key={event.event_id}>
+                      <tr
+                        className={`border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors cursor-pointer ${
+                          (event.anomaly_score || 0) > 0.7 ? 'bg-red-950/10' : ''
+                        } ${eventState.type !== 'active' ? 'opacity-60' : ''}`}
+                        onClick={() => toggleRowExpanded(event.event_id)}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1">
+                            <svg
+                              className={`w-4 h-4 text-gray-500 transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
+                              fill="none" stroke="currentColor" viewBox="0 0 24 24"
                             >
-                              <span className="font-medium text-amber-300">{deviceName || device.ip_address}</span>
-                              {device.mac_address && <span className="text-xs text-gray-500 ml-1.5">{device.mac_address.slice(-8)}</span>}
-                            </button>
-                          ) : (
-                            <span className="font-mono text-gray-200">{event.source_ip || '—'}</span>
-                          )}
-                          {!device && event.device_vendor && (
-                            <span className="text-xs text-gray-500 ml-2">({event.device_vendor})</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm font-mono text-gray-300 truncate" title={event.domain}>
-                        {event.domain || '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 bg-gray-800 rounded h-2 shrink-0">
-                            <div
-                              className={`h-full rounded ${getScoreColor(event.anomaly_score || 0)}`}
-                              style={{ width: `${getScoreBarWidth(event.anomaly_score || 0)}%` }}
-                            />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                            {group.count > 1 && (
+                              <span className="bg-gray-700 text-gray-300 text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">{group.count}</span>
+                            )}
                           </div>
-                          <span className="text-xs text-gray-500">{(event.anomaly_score || 0).toFixed(2)}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        {event.tags && event.tags.length > 0 ? (
-                          <div className="flex gap-1 flex-wrap">
-                            {event.tags.slice(0, 2).map((tag, idx) => (
-                              <span
-                                key={idx}
-                                className={`text-xs px-2 py-0.5 rounded font-medium ${tagColors[tag] || 'bg-gray-800 text-gray-300'}`}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-400 truncate">{timeAgo(event.timestamp)}</td>
+                        <td className="px-4 py-3">
+                          <div className="text-sm truncate">
+                            {device ? (
+                              <button
+                                className="text-left hover:text-amber-400 transition-colors"
+                                onClick={(e) => { e.stopPropagation(); onNavigate && onNavigate('devices'); }}
+                                title={`View device: ${device.ip_address}`}
                               >
-                                {tagLabel(tag)}
-                              </span>
-                            ))}
-                            {event.tags.length > 2 && <span className="text-xs text-gray-500">+{event.tags.length - 2}</span>}
+                                <span className="font-medium text-amber-300">{deviceName || device.ip_address}</span>
+                                {device.mac_address && <span className="text-xs text-gray-500 ml-1.5">{device.mac_address.slice(-8)}</span>}
+                              </button>
+                            ) : (
+                              <span className="font-mono text-gray-200">{event.source_ip || '—'}</span>
+                            )}
+                            {!device && event.device_vendor && (
+                              <span className="text-xs text-gray-500 ml-2">({event.device_vendor})</span>
+                            )}
                           </div>
-                        ) : (
-                          <span className="text-gray-600">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-sm">
-                        <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          event.blocked ? 'bg-red-500/20 text-red-300' : 'bg-green-500/20 text-green-300'
-                        }`}>
-                          {event.blocked ? 'blocked' : 'allowed'}
-                        </span>
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr className="bg-gray-800/20 border-b border-gray-800/50">
-                        <td colSpan="7" className="px-6 py-5">
-                          <div className="space-y-4">
-                            {/* Threat explanation */}
-                            {event.threat_desc && (
-                              <div className="bg-red-950/20 border border-red-900/30 rounded-lg p-4">
-                                <div className="flex items-center justify-between mb-2">
-                                  <h4 className="text-xs uppercase tracking-wider text-red-400 font-medium">Why this was flagged</h4>
-                                  {meta?.threat_db && (
-                                    <a
-                                      href={`https://www.virustotal.com/gui/domain/${event.domain}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-xs text-amber-400 hover:text-amber-300"
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      More info →
-                                    </a>
-                                  )}
-                                </div>
-                                <p className="text-sm text-gray-300 leading-relaxed">{event.threat_desc}</p>
-                              </div>
-                            )}
-
-                            {/* Device info card (if matched) */}
-                            {device && (
-                              <div className="bg-teal-950/20 border border-teal-900/30 rounded-lg p-4">
-                                <h4 className="text-xs uppercase tracking-wider text-teal-400 font-medium mb-2">Source Device</h4>
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                                  <div>
-                                    <span className="text-xs text-gray-500 block">Name</span>
-                                    <span className="text-gray-200">{device.custom_name || device.hostname || '—'}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-xs text-gray-500 block">IP</span>
-                                    <span className="font-mono text-gray-200">{device.ip_address}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-xs text-gray-500 block">MAC</span>
-                                    <span className="font-mono text-gray-200">{device.mac_address || '—'}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-xs text-gray-500 block">Vendor</span>
-                                    <span className="text-gray-200">{device.vendor || '—'}</span>
-                                  </div>
-                                </div>
-                                <button
-                                  className="text-xs text-amber-400 hover:text-amber-300 mt-2"
-                                  onClick={(e) => { e.stopPropagation(); onNavigate && onNavigate('devices'); }}
+                        </td>
+                        <td className="px-4 py-3 text-sm font-mono text-gray-300 truncate" title={event.domain}>
+                          {event.domain || '—'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="w-16 bg-gray-800 rounded h-2 shrink-0">
+                              <div
+                                className={`h-full rounded ${getScoreColor(event.anomaly_score || 0)}`}
+                                style={{ width: `${getScoreBarWidth(event.anomaly_score || 0)}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-gray-500">{(event.anomaly_score || 0).toFixed(2)}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          {event.tags && event.tags.length > 0 ? (
+                            <div className="flex gap-1 flex-wrap">
+                              {event.tags.slice(0, 2).map((tag, idx) => (
+                                <span
+                                  key={idx}
+                                  className={`text-xs px-2 py-0.5 rounded font-medium ${tagColors[tag] || 'bg-gray-800 text-gray-300'}`}
                                 >
-                                  View device details →
-                                </button>
-                              </div>
-                            )}
-
-                            {/* Detection details grid */}
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                              <div>
-                                <span className="text-xs text-gray-500 block">Source IP</span>
-                                <span className="text-sm font-mono text-gray-200">{event.source_ip || '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-xs text-gray-500 block">Resolved IP</span>
-                                <span className="text-sm font-mono text-gray-200">{event.resolved_ip || '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-xs text-gray-500 block">Query Type</span>
-                                <span className="text-sm text-gray-200">{event.query_type || '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-xs text-gray-500 block">DNS Source</span>
-                                <span className="text-sm text-gray-200">{dnsSourceLabel(event.dns_source)}</span>
-                              </div>
-                              <div>
-                                <span className="text-xs text-gray-500 block">Device Vendor</span>
-                                <span className="text-sm text-gray-200">{event.device_vendor || '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-xs text-gray-500 block">Network Segment</span>
-                                <span className="text-sm text-gray-200">{event.network_segment || 'default'}</span>
-                              </div>
-                              <div>
-                                <span className="text-xs text-gray-500 block">Anomaly Score</span>
-                                <span className="text-sm text-gray-200">{(event.anomaly_score || 0).toFixed(3)}</span>
-                              </div>
-                              <div>
-                                <span className="text-xs text-gray-500 block">Event ID</span>
-                                <span className="text-sm font-mono text-gray-400 text-xs">{event.event_id}</span>
-                              </div>
+                                  {tagLabel(tag)}
+                                </span>
+                              ))}
+                              {event.tags.length > 2 && <span className="text-xs text-gray-500">+{event.tags.length - 2}</span>}
                             </div>
-
-                            {/* Algorithm-specific metadata */}
-                            {meta && (
-                              <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-4">
-                                <h4 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-3">Detection Details</h4>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                                  {meta.dga && (
-                                    <div className="bg-gray-800/50 rounded p-3">
-                                      <span className="text-red-400 font-medium text-xs">DGA Analysis</span>
-                                      <div className="mt-1 text-gray-300 space-y-1">
-                                        <div>Entropy: <span className="font-mono">{meta.dga.entropy.toFixed(2)}</span> bits</div>
-                                        <div>Bigram anomaly: <span className="font-mono">{(meta.dga.bigram_score * 100).toFixed(0)}%</span></div>
-                                        <div>Scored label: <span className="font-mono">{meta.dga.label}</span></div>
-                                        <div>Composite: <span className="font-mono">{(meta.dga.score * 100).toFixed(0)}%</span></div>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {meta.tunnel && (
-                                    <div className="bg-gray-800/50 rounded p-3">
-                                      <span className="text-purple-400 font-medium text-xs">Tunnel Analysis</span>
-                                      <div className="mt-1 text-gray-300 space-y-1">
-                                        <div>Score: <span className="font-mono">{(meta.tunnel.score * 100).toFixed(0)}%</span></div>
-                                        <div>Signals: {meta.tunnel.signals.map((s, i) => (
-                                          <span key={i} className="inline-block bg-purple-500/10 text-purple-300 text-xs px-1.5 py-0.5 rounded mr-1 mt-1">{s}</span>
-                                        ))}</div>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {meta.beacon && (
-                                    <div className="bg-gray-800/50 rounded p-3">
-                                      <span className="text-orange-400 font-medium text-xs">Beacon Analysis</span>
-                                      <div className="mt-1 text-gray-300 space-y-1">
-                                        <div>Mean interval: <span className="font-mono">{meta.beacon.mean_interval_sec.toFixed(1)}s</span></div>
-                                        <div>Variation (CV): <span className="font-mono">{(meta.beacon.cv * 100).toFixed(1)}%</span></div>
-                                        <div>Samples: <span className="font-mono">{meta.beacon.samples}</span></div>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {meta.rebinding && (
-                                    <div className="bg-gray-800/50 rounded p-3">
-                                      <span className="text-pink-400 font-medium text-xs">Rebinding Detection</span>
-                                      <div className="mt-1 text-gray-300 space-y-1">
-                                        <div>Public IP: <span className="font-mono">{meta.rebinding.public_ip}</span></div>
-                                        <div>Private IP: <span className="font-mono">{meta.rebinding.private_ip}</span></div>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {meta.threat_db && (
-                                    <div className="bg-gray-800/50 rounded p-3">
-                                      <span className="text-red-400 font-medium text-xs">Threat Intelligence</span>
-                                      <div className="mt-1 text-gray-300 space-y-1">
-                                        <div>Confidence: <span className="font-mono">{(meta.threat_db.confidence * 100).toFixed(0)}%</span></div>
-                                        {meta.threat_db.feed_tags && <div>Tags: {meta.threat_db.feed_tags.join(', ')}</div>}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
+                          ) : (
+                            <span className="text-gray-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-sm">
+                          <div className="flex flex-col gap-1">
+                            <span className={`px-2 py-0.5 rounded text-xs font-medium inline-block w-fit ${
+                              event.blocked ? 'bg-red-500/20 text-red-300' : 'bg-green-500/20 text-green-300'
+                            }`}>
+                              {event.blocked ? 'blocked' : 'allowed'}
+                            </span>
+                            {eventState.type === 'acked' && (
+                              <span className="text-xs text-blue-400 px-2 py-0.5 bg-blue-500/10 rounded w-fit">ack'd</span>
                             )}
-
-                            {/* Action buttons */}
-                            <div className="flex items-center gap-3 pt-2 border-t border-gray-800">
-                              {!event.acknowledged ? (
-                                <>
-                                  {ackingEvent === event.event_id ? (
-                                    <div className="flex items-center gap-2 flex-1">
-                                      <input
-                                        type="text"
-                                        value={ackReason}
-                                        onChange={(e) => setAckReason(e.target.value)}
-                                        placeholder="Reason (e.g., my VPN, Ring doorbell)"
-                                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-amber-500"
-                                        onClick={(e) => e.stopPropagation()}
-                                      />
-                                      <button
-                                        className="text-xs bg-amber-500/20 text-amber-300 px-3 py-1.5 rounded hover:bg-amber-500/30"
-                                        onClick={(e) => { e.stopPropagation(); handleAck(event.event_id, ackReason); }}
-                                      >
-                                        Confirm
-                                      </button>
-                                      <button
-                                        className="text-xs text-gray-500 hover:text-gray-300"
-                                        onClick={(e) => { e.stopPropagation(); setAckingEvent(null); setAckReason(''); }}
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <>
-                                      <button
-                                        className="text-xs bg-gray-800 text-gray-300 px-3 py-1.5 rounded hover:bg-gray-700"
-                                        onClick={(e) => { e.stopPropagation(); setAckingEvent(event.event_id); }}
-                                      >
-                                        Acknowledge
-                                      </button>
-                                      <button
-                                        className="text-xs bg-gray-800 text-gray-300 px-3 py-1.5 rounded hover:bg-gray-700"
-                                        onClick={(e) => { e.stopPropagation(); handleCreateSuppression(event); }}
-                                        title="Always suppress events matching this domain + source"
-                                      >
-                                        Suppress Similar
-                                      </button>
-                                    </>
-                                  )}
-                                </>
-                              ) : (
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs text-gray-500">Acknowledged{event.ack_reason ? `: ${event.ack_reason}` : ''}</span>
-                                  <button
-                                    className="text-xs text-amber-400 hover:text-amber-300"
-                                    onClick={(e) => { e.stopPropagation(); handleUnack(event.event_id); }}
-                                  >
-                                    Undo
-                                  </button>
-                                </div>
-                              )}
-                            </div>
+                            {eventState.type === 'suppressed' && (
+                              <span className="text-xs text-gray-400 px-2 py-0.5 bg-gray-500/10 rounded w-fit">suppressed</span>
+                            )}
                           </div>
                         </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      {isExpanded && (
+                        <tr className="bg-gray-800/20 border-b border-gray-800/50">
+                          <td colSpan="7" className="px-6 py-5">
+                            <div className="space-y-4">
+                              {/* Grouped events button */}
+                              {group.count > 1 && (
+                                <button
+                                  className="w-full bg-gray-800/60 border border-gray-700 rounded-lg p-3 text-sm text-gray-300 hover:bg-gray-800 transition-colors flex items-center justify-between"
+                                  onClick={(e) => { e.stopPropagation(); setGroupModal({ events: group.members, domain: event.domain }); }}
+                                >
+                                  <span>View all {group.count} individual events</span>
+                                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                                  </svg>
+                                </button>
+                              )}
+
+                              {/* Threat explanation */}
+                              {event.threat_desc && (
+                                <div className="bg-red-950/20 border border-red-900/30 rounded-lg p-4">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <h4 className="text-xs uppercase tracking-wider text-red-400 font-medium">Why this was flagged</h4>
+                                    {meta?.threat_db && (
+                                      <a
+                                        href={`https://www.virustotal.com/gui/domain/${event.domain}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-amber-400 hover:text-amber-300"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        More info →
+                                      </a>
+                                    )}
+                                  </div>
+                                  <p className="text-sm text-gray-300 leading-relaxed">{event.threat_desc}</p>
+                                </div>
+                              )}
+
+                              {/* Device info card (if matched) */}
+                              {device && (
+                                <div className="bg-teal-950/20 border border-teal-900/30 rounded-lg p-4">
+                                  <h4 className="text-xs uppercase tracking-wider text-teal-400 font-medium mb-2">Source Device</h4>
+                                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                    <div>
+                                      <span className="text-xs text-gray-500 block">Name</span>
+                                      <span className="text-gray-200">{device.custom_name || device.hostname || '—'}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-xs text-gray-500 block">IP</span>
+                                      <span className="font-mono text-gray-200">{device.ip_address}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-xs text-gray-500 block">MAC</span>
+                                      <span className="font-mono text-gray-200">{device.mac_address || '—'}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-xs text-gray-500 block">Vendor</span>
+                                      <span className="text-gray-200">{device.vendor || '—'}</span>
+                                    </div>
+                                  </div>
+                                  <button
+                                    className="text-xs text-amber-400 hover:text-amber-300 mt-2"
+                                    onClick={(e) => { e.stopPropagation(); onNavigate && onNavigate('devices'); }}
+                                  >
+                                    View device details →
+                                  </button>
+                                </div>
+                              )}
+
+                              {/* Detection details grid */}
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Source IP</span>
+                                  <span className="text-sm font-mono text-gray-200">{event.source_ip || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Resolved IP</span>
+                                  <span className="text-sm font-mono text-gray-200">{event.resolved_ip || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Query Type</span>
+                                  <span className="text-sm text-gray-200">{event.query_type || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">DNS Source</span>
+                                  <span className="text-sm text-gray-200">{dnsSourceLabel(event.dns_source)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Device Vendor</span>
+                                  <span className="text-sm text-gray-200">{event.device_vendor || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Network Segment</span>
+                                  <span className="text-sm text-gray-200">{event.network_segment || 'default'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Anomaly Score</span>
+                                  <span className="text-sm text-gray-200">{(event.anomaly_score || 0).toFixed(3)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Event ID</span>
+                                  <span className="text-sm font-mono text-gray-400 text-xs">{event.event_id}</span>
+                                </div>
+                              </div>
+
+                              {/* Algorithm-specific metadata */}
+                              {meta && (
+                                <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-4">
+                                  <h4 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-3">Detection Details</h4>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                    {meta.dga && (
+                                      <div className="bg-gray-800/50 rounded p-3">
+                                        <span className="text-red-400 font-medium text-xs">DGA Analysis</span>
+                                        <div className="mt-1 text-gray-300 space-y-1">
+                                          <div>Entropy: <span className="font-mono">{meta.dga.entropy.toFixed(2)}</span> bits</div>
+                                          <div>Bigram anomaly: <span className="font-mono">{(meta.dga.bigram_score * 100).toFixed(0)}%</span></div>
+                                          <div>Scored label: <span className="font-mono">{meta.dga.label}</span></div>
+                                          <div>Composite: <span className="font-mono">{(meta.dga.score * 100).toFixed(0)}%</span></div>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {meta.tunnel && (
+                                      <div className="bg-gray-800/50 rounded p-3">
+                                        <span className="text-purple-400 font-medium text-xs">Tunnel Analysis</span>
+                                        <div className="mt-1 text-gray-300 space-y-1">
+                                          <div>Score: <span className="font-mono">{(meta.tunnel.score * 100).toFixed(0)}%</span></div>
+                                          <div>Signals: {meta.tunnel.signals.map((s, i) => (
+                                            <span key={i} className="inline-block bg-purple-500/10 text-purple-300 text-xs px-1.5 py-0.5 rounded mr-1 mt-1">{s}</span>
+                                          ))}</div>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {meta.beacon && (
+                                      <div className="bg-gray-800/50 rounded p-3">
+                                        <span className="text-orange-400 font-medium text-xs">Beacon Analysis</span>
+                                        <div className="mt-1 text-gray-300 space-y-1">
+                                          <div>Mean interval: <span className="font-mono">{meta.beacon.mean_interval_sec.toFixed(1)}s</span></div>
+                                          <div>Variation (CV): <span className="font-mono">{(meta.beacon.cv * 100).toFixed(1)}%</span></div>
+                                          <div>Samples: <span className="font-mono">{meta.beacon.samples}</span></div>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {meta.rebinding && (
+                                      <div className="bg-gray-800/50 rounded p-3">
+                                        <span className="text-pink-400 font-medium text-xs">Rebinding Detection</span>
+                                        <div className="mt-1 text-gray-300 space-y-1">
+                                          <div>Public IP: <span className="font-mono">{meta.rebinding.public_ip}</span></div>
+                                          <div>Private IP: <span className="font-mono">{meta.rebinding.private_ip}</span></div>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {meta.threat_db && (
+                                      <div className="bg-gray-800/50 rounded p-3">
+                                        <span className="text-red-400 font-medium text-xs">Threat Intelligence</span>
+                                        <div className="mt-1 text-gray-300 space-y-1">
+                                          <div>Confidence: <span className="font-mono">{(meta.threat_db.confidence * 100).toFixed(0)}%</span></div>
+                                          {meta.threat_db.feed_tags && <div>Tags: {meta.threat_db.feed_tags.join(', ')}</div>}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Action panel — stateful ack/suppress */}
+                              <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-4">
+                                <h4 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-3">Actions</h4>
+
+                                {/* Current state display */}
+                                {eventState.type === 'acked' && !isEditing && (
+                                  <div className="flex items-start justify-between bg-blue-950/20 border border-blue-900/30 rounded p-3 mb-3">
+                                    <div>
+                                      <span className="text-xs font-medium text-blue-400">Acknowledged</span>
+                                      {eventState.reason && <p className="text-sm text-gray-300 mt-1">{eventState.reason}</p>}
+                                    </div>
+                                    <div className="flex gap-2 shrink-0 ml-3">
+                                      <button
+                                        className="text-xs text-blue-400 hover:text-blue-300"
+                                        onClick={(e) => { e.stopPropagation(); setActionMode({ eventId: event.event_id, mode: 'edit-ack', reason: eventState.reason }); }}
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        className="text-xs text-gray-500 hover:text-gray-300"
+                                        onClick={(e) => { e.stopPropagation(); handleUnack(event.event_id); }}
+                                      >
+                                        Remove
+                                      </button>
+                                      <button
+                                        className="text-xs text-amber-400 hover:text-amber-300"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleUnack(event.event_id);
+                                          setActionMode({ eventId: event.event_id, mode: 'suppress', reason: eventState.reason });
+                                        }}
+                                      >
+                                        Switch to Suppress
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {eventState.type === 'suppressed' && !isEditing && (
+                                  <div className="flex items-start justify-between bg-gray-800/40 border border-gray-700 rounded p-3 mb-3">
+                                    <div>
+                                      <span className="text-xs font-medium text-gray-400">Suppressed by rule</span>
+                                      {eventState.reason && <p className="text-sm text-gray-300 mt-1">{eventState.reason}</p>}
+                                      <p className="text-xs text-gray-600 mt-1">Matching: {eventState.rule?.domain || '*'} from {eventState.rule?.source_ip || '*'}</p>
+                                    </div>
+                                    <div className="flex gap-2 shrink-0 ml-3">
+                                      <button
+                                        className="text-xs text-gray-400 hover:text-gray-200"
+                                        onClick={(e) => { e.stopPropagation(); handleDeleteSuppression(eventState.rule.rule_id); }}
+                                      >
+                                        Remove Rule
+                                      </button>
+                                      <button
+                                        className="text-xs text-blue-400 hover:text-blue-300"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleDeleteSuppression(eventState.rule.rule_id);
+                                          setActionMode({ eventId: event.event_id, mode: 'ack', reason: eventState.reason });
+                                        }}
+                                      >
+                                        Switch to Ack
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Edit/Create form */}
+                                {isEditing ? (
+                                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                    <span className="text-xs text-gray-500 shrink-0">
+                                      {actionMode.mode === 'ack' || actionMode.mode === 'edit-ack' ? 'Ack reason:' : 'Suppress reason:'}
+                                    </span>
+                                    <input
+                                      type="text"
+                                      value={actionMode.reason}
+                                      onChange={(e) => setActionMode({ ...actionMode, reason: e.target.value })}
+                                      placeholder="e.g., my VPN, Ring doorbell, expected traffic"
+                                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-amber-500"
+                                      autoFocus
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          if (actionMode.mode === 'ack' || actionMode.mode === 'edit-ack') handleAck(event.event_id, actionMode.reason);
+                                          else handleCreateSuppression(event, actionMode.reason);
+                                        }
+                                        if (e.key === 'Escape') setActionMode(null);
+                                      }}
+                                    />
+                                    <button
+                                      className="text-xs bg-amber-500/20 text-amber-300 px-3 py-1.5 rounded hover:bg-amber-500/30 shrink-0"
+                                      onClick={() => {
+                                        if (actionMode.mode === 'ack' || actionMode.mode === 'edit-ack') handleAck(event.event_id, actionMode.reason);
+                                        else handleCreateSuppression(event, actionMode.reason);
+                                      }}
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      className="text-xs text-gray-500 hover:text-gray-300 shrink-0"
+                                      onClick={() => setActionMode(null)}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : eventState.type === 'active' && (
+                                  <div className="flex gap-2">
+                                    <button
+                                      className="text-xs bg-blue-500/10 text-blue-300 border border-blue-500/20 px-3 py-1.5 rounded hover:bg-blue-500/20 transition-colors"
+                                      onClick={(e) => { e.stopPropagation(); setActionMode({ eventId: event.event_id, mode: 'ack', reason: '' }); }}
+                                    >
+                                      Acknowledge
+                                    </button>
+                                    <button
+                                      className="text-xs bg-gray-700/50 text-gray-300 border border-gray-600 px-3 py-1.5 rounded hover:bg-gray-700 transition-colors"
+                                      onClick={(e) => { e.stopPropagation(); setActionMode({ eventId: event.event_id, mode: 'suppress', reason: '' }); }}
+                                    >
+                                      Suppress Similar
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Load More */}
+          {grouped.length > visibleCount && (
+            <div className="text-center mt-4">
+              <button
+                onClick={() => setVisibleCount(prev => prev + 30)}
+                className="bg-gray-800 hover:bg-gray-700 text-gray-300 px-6 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Show more ({grouped.length - visibleCount} remaining)
+              </button>
+            </div>
+          )}
+        </>
       ) : (
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
           <p className="text-gray-500">
             {showSuppressed ? 'No suppressed events.' : 'No threat events detected. Your network is secure.'}
           </p>
+        </div>
+      )}
+
+      {/* Grouped Events Modal */}
+      {groupModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-2xl w-full p-6 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-display">Grouped Events</h3>
+                <p className="text-sm text-gray-400 font-mono mt-1">{groupModal.domain}</p>
+              </div>
+              <button onClick={() => setGroupModal(null)} className="text-gray-500 hover:text-white text-lg px-2">✕</button>
+            </div>
+            <div className="overflow-y-auto flex-1 -mx-2 px-2">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-left text-xs text-gray-500 uppercase border-b border-gray-800">
+                    <th className="pb-2 pr-4">Time</th>
+                    <th className="pb-2 pr-4">Source IP</th>
+                    <th className="pb-2 pr-4">Score</th>
+                    <th className="pb-2 pr-4">Status</th>
+                    <th className="pb-2">Event ID</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupModal.events.map((evt) => (
+                    <tr key={evt.event_id} className="border-b border-gray-800/30 text-sm">
+                      <td className="py-2 pr-4 text-gray-300">{formatTimestamp(evt.timestamp)}</td>
+                      <td className="py-2 pr-4 font-mono text-gray-400">{evt.source_ip || '—'}</td>
+                      <td className="py-2 pr-4">
+                        <span className={`text-xs font-medium ${(evt.anomaly_score || 0) > 0.7 ? 'text-red-400' : (evt.anomaly_score || 0) > 0.3 ? 'text-amber-400' : 'text-green-400'}`}>
+                          {(evt.anomaly_score || 0).toFixed(2)}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-4">
+                        <span className={`text-xs px-2 py-0.5 rounded ${evt.blocked ? 'bg-red-500/20 text-red-300' : 'bg-green-500/20 text-green-300'}`}>
+                          {evt.blocked ? 'blocked' : 'allowed'}
+                        </span>
+                      </td>
+                      <td className="py-2 font-mono text-xs text-gray-600">{evt.event_id.slice(0, 8)}...</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="pt-4 border-t border-gray-800 mt-4">
+              <button
+                onClick={() => setGroupModal(null)}
+                className="w-full bg-gray-800 hover:bg-gray-700 text-gray-300 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>
@@ -1074,13 +1292,18 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
 
 // --- Devices ---
 
-function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents }) {
+function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRefreshThreats }) {
   const [segmentFilter, setSegmentFilter] = useState('all');
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [editName, setEditName] = useState('');
   const [editNotes, setEditNotes] = useState('');
   const [editSegment, setEditSegment] = useState('');
   const [saving, setSaving] = useState(false);
+  const [checkedEvents, setCheckedEvents] = useState(new Set());
+  const [bulkAction, setBulkAction] = useState(null); // null | 'ack' | 'suppress'
+  const [bulkReason, setBulkReason] = useState('');
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [bulkError, setBulkError] = useState(null);
 
   const segments = ['all', ...new Set(devices.map((d) => d.segment).filter(Boolean))];
   const filtered = segmentFilter === 'all' ? devices : devices.filter((d) => d.segment === segmentFilter);
@@ -1160,6 +1383,10 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents }) {
             setEditName(d.custom_name || '');
             setEditNotes(d.notes || '');
             setEditSegment(d.segment || 'default');
+            setCheckedEvents(new Set());
+            setBulkAction(null);
+            setBulkReason('');
+            setBulkError(null);
           }} />
         </div>
       ) : (
@@ -1264,25 +1491,163 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents }) {
             {threatEvents && threatEvents.length > 0 && (() => {
               const deviceThreats = threatEvents.filter(e => e.source_ip === selectedDevice.ip_address);
               if (deviceThreats.length === 0) return null;
+
+              const allChecked = deviceThreats.length > 0 && deviceThreats.every(e => checkedEvents.has(e.event_id));
+              const someChecked = checkedEvents.size > 0;
+
+              const toggleAll = () => {
+                if (allChecked) {
+                  setCheckedEvents(new Set());
+                } else {
+                  setCheckedEvents(new Set(deviceThreats.map(e => e.event_id)));
+                }
+              };
+
+              const toggleOne = (eventId) => {
+                const next = new Set(checkedEvents);
+                if (next.has(eventId)) next.delete(eventId); else next.add(eventId);
+                setCheckedEvents(next);
+              };
+
+              const doBulkAction = async (action, reason) => {
+                setBulkProcessing(true);
+                setBulkError(null);
+                const ids = [...checkedEvents];
+                try {
+                  if (action === 'ack') {
+                    for (const id of ids) {
+                      const r = await fetch(`/api/v1/events/${id}/ack`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ reason }),
+                      });
+                      if (!r.ok) throw new Error(`Failed to ack ${id}: ${r.status}`);
+                    }
+                  } else if (action === 'suppress') {
+                    // Get unique domain+source_ip combos from checked events
+                    const seen = new Set();
+                    for (const id of ids) {
+                      const evt = deviceThreats.find(e => e.event_id === id);
+                      if (!evt) continue;
+                      const key = `${evt.domain}||${evt.source_ip}`;
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      const r = await fetch('/api/v1/suppression', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ domain: evt.domain, source_ip: evt.source_ip, tags: [], reason }),
+                      });
+                      if (!r.ok) throw new Error(`Failed to suppress: ${r.status}`);
+                    }
+                  }
+                  setCheckedEvents(new Set());
+                  setBulkAction(null);
+                  setBulkReason('');
+                  if (onRefreshThreats) onRefreshThreats();
+                } catch (err) {
+                  setBulkError(err.message);
+                } finally {
+                  setBulkProcessing(false);
+                }
+              };
+
               return (
                 <div className="border-t border-gray-800 pt-4">
-                  <h4 className="text-sm font-medium text-gray-300 mb-3">Threat History ({deviceThreats.length} events)</h4>
-                  <div className="space-y-2 max-h-60 overflow-y-auto">
-                    {deviceThreats.slice(0, 20).map((evt) => (
-                      <div key={evt.event_id} className="bg-gray-800/50 rounded p-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono text-gray-300 truncate flex-1">{evt.domain || '—'}</span>
-                          <span className="text-xs text-gray-500 ml-2 shrink-0">{timeAgo(evt.timestamp)}</span>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-medium text-gray-300">Threat History ({deviceThreats.length} events)</h4>
+                    {someChecked && !bulkAction && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">{checkedEvents.size} selected</span>
+                        <button
+                          className="text-xs bg-blue-500/10 text-blue-300 border border-blue-500/20 px-2.5 py-1 rounded hover:bg-blue-500/20 transition-colors"
+                          onClick={() => setBulkAction('ack')}
+                        >
+                          Ack Selected
+                        </button>
+                        <button
+                          className="text-xs bg-gray-700/50 text-gray-300 border border-gray-600 px-2.5 py-1 rounded hover:bg-gray-700 transition-colors"
+                          onClick={() => setBulkAction('suppress')}
+                        >
+                          Suppress Selected
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bulk action reason input */}
+                  {bulkAction && (
+                    <div className="bg-gray-800/60 border border-gray-700 rounded-lg p-3 mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400 shrink-0">
+                          {bulkAction === 'ack' ? 'Ack' : 'Suppress'} {checkedEvents.size} events — reason:
+                        </span>
+                        <input
+                          type="text"
+                          value={bulkReason}
+                          onChange={(e) => setBulkReason(e.target.value)}
+                          placeholder="e.g., known Azure traffic, my VPN"
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded px-2.5 py-1 text-sm focus:outline-none focus:border-amber-500"
+                          autoFocus
+                          onKeyDown={(e) => { if (e.key === 'Enter') doBulkAction(bulkAction, bulkReason); if (e.key === 'Escape') { setBulkAction(null); setBulkReason(''); } }}
+                        />
+                        <button
+                          disabled={bulkProcessing}
+                          className="text-xs bg-amber-500/20 text-amber-300 px-3 py-1 rounded hover:bg-amber-500/30 disabled:opacity-50"
+                          onClick={() => doBulkAction(bulkAction, bulkReason)}
+                        >
+                          {bulkProcessing ? 'Processing...' : 'Confirm'}
+                        </button>
+                        <button
+                          className="text-xs text-gray-500 hover:text-gray-300"
+                          onClick={() => { setBulkAction(null); setBulkReason(''); }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {bulkError && <p className="text-xs text-red-400 mt-2">{bulkError}</p>}
+                    </div>
+                  )}
+
+                  {/* Select all checkbox */}
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <input
+                      type="checkbox"
+                      checked={allChecked}
+                      onChange={toggleAll}
+                      className="rounded border-gray-600 w-3.5 h-3.5"
+                    />
+                    <span className="text-xs text-gray-500">Select all</span>
+                  </div>
+
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                    {deviceThreats.map((evt) => (
+                      <div key={evt.event_id} className={`rounded p-3 text-sm flex items-start gap-3 ${
+                        checkedEvents.has(evt.event_id) ? 'bg-amber-500/5 border border-amber-500/20' : 'bg-gray-800/50'
+                      } ${evt.acknowledged ? 'opacity-50' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={checkedEvents.has(evt.event_id)}
+                          onChange={() => toggleOne(evt.event_id)}
+                          className="rounded border-gray-600 mt-0.5 w-3.5 h-3.5 shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono text-gray-300 truncate flex-1">{evt.domain || '—'}</span>
+                            <span className="text-xs text-gray-500 ml-2 shrink-0">{timeAgo(evt.timestamp)}</span>
+                          </div>
+                          <div className="flex items-center gap-2 mt-1">
+                            {evt.tags && evt.tags.map((tag, idx) => (
+                              <span key={idx} className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded">{tag}</span>
+                            ))}
+                            <span className={`text-xs ${evt.blocked ? 'text-red-400' : 'text-green-400'}`}>
+                              {evt.blocked ? 'blocked' : 'allowed'}
+                            </span>
+                            {evt.acknowledged && (
+                              <span className="text-xs text-blue-400">ack'd{evt.ack_reason ? `: ${evt.ack_reason}` : ''}</span>
+                            )}
+                          </div>
+                          {evt.threat_desc && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{evt.threat_desc}</p>}
                         </div>
-                        <div className="flex items-center gap-2 mt-1">
-                          {evt.tags && evt.tags.map((tag, idx) => (
-                            <span key={idx} className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded">{tag}</span>
-                          ))}
-                          <span className={`text-xs ${evt.blocked ? 'text-red-400' : 'text-green-400'}`}>
-                            {evt.blocked ? 'blocked' : 'allowed'}
-                          </span>
-                        </div>
-                        {evt.threat_desc && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{evt.threat_desc}</p>}
                       </div>
                     ))}
                   </div>
