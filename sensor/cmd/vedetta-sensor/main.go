@@ -76,7 +76,7 @@ func main() {
 	var capturer *dnscap.Capturer
 
 	if *dnsEnabled {
-		dnsQueries := make(chan dnscap.DNSQuery, 100)
+		dnsQueries := make(chan dnscap.Query, 100)
 
 		capturer, err = dnscap.NewCapturer(dnscap.Config{
 			Interface:    *dnsIface,
