@@ -95,6 +95,8 @@ Tags are freeform strings, but the following are recognized by Vedetta's detecti
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/events` | Query events with filtering, sorting, pagination |
+| `GET` | `/api/v1/events/stats` | Aggregate event statistics (counts by type, top domains, threats) |
+| `GET` | `/api/v1/events/timeline` | Hourly event counts for last 24 hours (for dashboard charts) |
 | `GET` | `/api/v1/devices` | List discovered devices |
 | `GET` | `/api/v1/status` | Service health and version |
 | `POST` | `/api/v1/ingest` | Internal: receive normalized events from collector |
@@ -114,6 +116,48 @@ Tags are freeform strings, but the following are recognized by Vedetta's detecti
 | `page` | int | Page number (default: `1`) |
 | `limit` | int | Results per page (default: `50`, max: `500`) |
 | `format` | `json` / `csv` | Response format (default: `json`) |
+
+### Event Stats Response
+
+`GET /api/v1/events/stats` returns:
+
+```json
+{
+  "total_count": 42150,
+  "threat_count": 287,
+  "last_24h_count": 1540,
+  "count_by_type": {
+    "dns_query": 35000,
+    "nmap_discovery": 2100,
+    "firewall_log": 4500,
+    "anomaly": 550
+  },
+  "top_10_domains": [
+    {"domain": "google.com", "count": 8420},
+    {"domain": "github.com", "count": 3100}
+  ],
+  "top_10_blocked_domains": [
+    {"domain": "malware.com", "count": 45},
+    {"domain": "c2.evil.net", "count": 23}
+  ]
+}
+```
+
+### Event Timeline Response
+
+`GET /api/v1/events/timeline` returns 24 hourly buckets for the last 24 hours:
+
+```json
+{
+  "timeline": [
+    {"hour": "2026-03-30T00:00:00Z", "count": 42},
+    {"hour": "2026-03-30T01:00:00Z", "count": 58},
+    {"hour": "2026-03-30T02:00:00Z", "count": 0},
+    ...
+    {"hour": "2026-03-30T23:00:00Z", "count": 103}
+  ]
+}
+```
 
 ## Schema Versioning
 

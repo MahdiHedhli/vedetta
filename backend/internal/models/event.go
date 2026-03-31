@@ -22,15 +22,21 @@ type Event struct {
 
 // Device represents a discovered network device.
 type Device struct {
-	DeviceID    string    `json:"device_id" db:"device_id"`
-	FirstSeen   time.Time `json:"first_seen" db:"first_seen"`
-	LastSeen    time.Time `json:"last_seen" db:"last_seen"`
-	IPAddress   string    `json:"ip_address" db:"ip_address"`
-	MACAddress  string    `json:"mac_address" db:"mac_address"`
-	Hostname    string    `json:"hostname,omitempty" db:"hostname"`
-	Vendor      string    `json:"vendor,omitempty" db:"vendor"`
-	OpenPorts   []int     `json:"open_ports,omitempty" db:"-"`
-	Segment     string    `json:"segment" db:"segment"` // default | iot | guest
+	DeviceID            string    `json:"device_id" db:"device_id"`
+	FirstSeen           time.Time `json:"first_seen" db:"first_seen"`
+	LastSeen            time.Time `json:"last_seen" db:"last_seen"`
+	IPAddress           string    `json:"ip_address" db:"ip_address"`
+	MACAddress          string    `json:"mac_address" db:"mac_address"`
+	Hostname            string    `json:"hostname,omitempty" db:"hostname"`
+	Vendor              string    `json:"vendor,omitempty" db:"vendor"`
+	OpenPorts           []int     `json:"open_ports,omitempty" db:"-"`
+	Segment             string    `json:"segment" db:"segment"` // default | iot | guest
+	DeviceType          string    `json:"device_type,omitempty" db:"device_type"`
+	OSFamily            string    `json:"os_family,omitempty" db:"os_family"`
+	OSVersion           string    `json:"os_version,omitempty" db:"os_version"`
+	Model               string    `json:"model,omitempty" db:"model"`
+	DiscoveryMethod     string    `json:"discovery_method,omitempty" db:"discovery_method"`
+	FingerprintConfidence float64  `json:"fingerprint_confidence" db:"fingerprint_confidence"`
 }
 
 // Sensor represents a registered sensor that reports to Core.

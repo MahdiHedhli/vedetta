@@ -46,6 +46,8 @@ func NewRouter(srv *Server) http.Handler {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/status", srv.handleStatus)
 		r.Get("/events", srv.handleEvents)
+		r.Get("/events/stats", srv.handleEventStats)
+		r.Get("/events/timeline", srv.handleEventTimeline)
 		r.Post("/ingest", srv.handleIngest)
 
 		// Device discovery
@@ -343,6 +345,44 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// --- Event Stats and Timeline ---
+
+func (s *Server) handleEventStats(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	stats, err := s.DB.GetEventStats()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (s *Server) handleEventTimeline(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	timeline, err := s.DB.GetEventTimeline()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	if timeline == nil {
+		timeline = []store.TimelineEntry{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"timeline": timeline,
+	})
 }
 
 // --- Device Discovery ---

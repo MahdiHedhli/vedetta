@@ -9,6 +9,7 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/api"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
+	"github.com/vedetta-network/vedetta/backend/internal/dnspoller"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
 )
@@ -97,6 +98,31 @@ func main() {
 		}
 	} else {
 		log.Printf("nmap not available — Core will receive data from sensors")
+	}
+
+	// Optional: Pi-hole DNS query poller
+	piholeURL := os.Getenv("VEDETTA_PIHOLE_URL")
+	piholeToken := os.Getenv("VEDETTA_PIHOLE_TOKEN")
+	if piholeURL != "" && piholeToken != "" {
+		// Get or generate install salt for source_hash computation
+		installSalt := os.Getenv("VEDETTA_INSTALL_SALT")
+		if installSalt == "" {
+			installSalt = "vedetta-install-salt" // fallback; in production, should be persisted
+		}
+
+		// Parse polling interval (default 60s)
+		piholeInterval := 60 * time.Second
+		if intervalStr := os.Getenv("VEDETTA_PIHOLE_INTERVAL"); intervalStr != "" {
+			if d, err := time.ParseDuration(intervalStr); err == nil {
+				piholeInterval = d
+			}
+		}
+
+		piholeClient := dnspoller.NewPiHoleClient(piholeURL, piholeToken)
+		poller := dnspoller.NewPoller(piholeClient, db, enricher, activityLog, installSalt, piholeInterval)
+		poller.Start()
+		defer poller.Stop()
+		log.Printf("Pi-hole poller active: url=%s interval=%s", piholeURL, piholeInterval)
 	}
 
 	router := api.NewRouter(srv)
