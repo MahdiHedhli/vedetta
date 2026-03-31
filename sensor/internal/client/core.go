@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/vedetta-network/vedetta/sensor/internal/netinfo"
 	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
 
@@ -21,13 +22,14 @@ type CoreClient struct {
 
 // SensorRegistration is the payload sent when the sensor first connects.
 type SensorRegistration struct {
-	SensorID  string `json:"sensor_id"`
-	Hostname  string `json:"hostname"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
-	CIDR      string `json:"cidr"`
-	Version   string `json:"version"`
-	IsPrimary bool   `json:"is_primary"`
+	SensorID   string                    `json:"sensor_id"`
+	Hostname   string                    `json:"hostname"`
+	OS         string                    `json:"os"`
+	Arch       string                    `json:"arch"`
+	CIDR       string                    `json:"cidr"`
+	Version    string                    `json:"version"`
+	IsPrimary  bool                      `json:"is_primary"`
+	Interfaces []netinfo.NetworkInterface `json:"interfaces"`
 }
 
 // DeviceReport is what the sensor pushes after each scan.
@@ -50,14 +52,16 @@ type ScanRequest struct {
 
 // ScanTarget represents a named scan target from Core.
 type ScanTarget struct {
-	TargetID  string     `json:"target_id"`
-	Name      string     `json:"name"`
-	CIDR      string     `json:"cidr"`
-	Segment   string     `json:"segment"`
-	ScanPorts bool       `json:"scan_ports"`
-	Enabled   bool       `json:"enabled"`
-	CreatedAt time.Time  `json:"created_at"`
-	LastScan  *time.Time `json:"last_scan,omitempty"`
+	TargetID     string     `json:"target_id"`
+	Name         string     `json:"name"`
+	CIDR         string     `json:"cidr"`
+	Segment      string     `json:"segment"`
+	ScanPorts    bool       `json:"scan_ports"`
+	Enabled      bool       `json:"enabled"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastScan     *time.Time `json:"last_scan,omitempty"`
+	DNSCapture   bool       `json:"dns_capture"`
+	DNSInterface string     `json:"dns_interface,omitempty"`
 }
 
 // WorkResponse is the response from /sensor/work endpoint.
@@ -81,16 +85,17 @@ func New(baseURL string) *CoreClient {
 }
 
 // Register announces this sensor to the Core API.
-func (c *CoreClient) Register(cidr string, primary bool) error {
+func (c *CoreClient) Register(cidr string, primary bool, interfaces []netinfo.NetworkInterface) error {
 	hostname, _ := os.Hostname()
 	reg := SensorRegistration{
-		SensorID:  c.SensorID,
-		Hostname:  hostname,
-		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
-		CIDR:      cidr,
-		Version:   "0.1.0-dev",
-		IsPrimary: primary,
+		SensorID:   c.SensorID,
+		Hostname:   hostname,
+		OS:         runtime.GOOS,
+		Arch:       runtime.GOARCH,
+		CIDR:       cidr,
+		Version:    "0.1.0-dev",
+		IsPrimary:  primary,
+		Interfaces: interfaces,
 	}
 	return c.post("/api/v1/sensor/register", reg)
 }

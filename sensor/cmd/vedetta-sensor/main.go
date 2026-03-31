@@ -12,6 +12,7 @@ import (
 
 	"github.com/vedetta-network/vedetta/sensor/internal/client"
 	"github.com/vedetta-network/vedetta/sensor/internal/dnscap"
+	"github.com/vedetta-network/vedetta/sensor/internal/netinfo"
 	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
 
@@ -61,8 +62,20 @@ func main() {
 	// Set up Core API client
 	core := client.New(*coreURL)
 
+	// Enumerate local network interfaces
+	interfaces, err := netinfo.ListInterfaces()
+	if err != nil {
+		log.Printf("WARNING: Could not enumerate network interfaces: %v", err)
+		interfaces = []netinfo.NetworkInterface{}
+	} else if len(interfaces) > 0 {
+		log.Printf("Discovered %d network interfaces", len(interfaces))
+		for _, iface := range interfaces {
+			log.Printf("  - %s (%s) IPs: %v", iface.Name, iface.MAC, iface.IPs)
+		}
+	}
+
 	// Register this sensor with Core
-	if err := core.Register(scanCIDR, *primary); err != nil {
+	if err := core.Register(scanCIDR, *primary, interfaces); err != nil {
 		log.Printf("WARNING: Could not register with Core at %s: %v", *coreURL, err)
 		log.Printf("Scans will continue — results will be pushed when Core becomes available")
 	} else {

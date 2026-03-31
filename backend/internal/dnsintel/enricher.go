@@ -14,14 +14,19 @@ import (
 type Enricher struct {
 	Beacon    *BeaconDetector
 	ThreatDB  *threatintel.ThreatIntelDB
+	Rebinding *RebindingDetector
+	Bypass    *BypassDetector
 }
 
-// NewEnricher creates an Enricher with the default BeaconDetector and
-// an optional ThreatIntelDB (can be nil if feeds haven't loaded yet).
+// NewEnricher creates an Enricher with the default BeaconDetector,
+// RebindingDetector, BypassDetector, and an optional ThreatIntelDB
+// (can be nil if feeds haven't loaded yet).
 func NewEnricher(threatDB *threatintel.ThreatIntelDB) *Enricher {
 	return &Enricher{
-		Beacon:   NewBeaconDetector(),
-		ThreatDB: threatDB,
+		Beacon:    NewBeaconDetector(),
+		ThreatDB:  threatDB,
+		Rebinding: NewRebindingDetector(24 * time.Hour),
+		Bypass:    NewBypassDetector(nil, []string{}, 1*time.Hour),
 	}
 }
 
@@ -75,7 +80,25 @@ func (e *Enricher) Enrich(event *models.Event) {
 		}
 	}
 
-	// 4. Threat intel domain lookup
+	// 4. DNS rebinding detection
+	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil {
+		rebindResult := e.Rebinding.Check(event.Domain, event.ResolvedIP)
+		if rebindResult != nil && rebindResult.IsRebinding {
+			event.Tags = appendUnique(event.Tags, "dns_rebinding")
+			scores = append(scores, 0.4)
+		}
+	}
+
+	// 5. DNS bypass detection (when server_ip is available in the event data)
+	// Note: This requires the event to have DNS_ServerIP populated by passive capture
+	// For now, we check if a bypass detector is configured and alert accordingly
+	if event.SourceHash != "" && e.Bypass != nil && event.ResolvedIP != "" {
+		// If server_ip is in tags or additional fields, check it here
+		// This would require extending the Event model to include server_ip
+		// For future integration with passive capture
+	}
+
+	// 6. Threat intel domain lookup
 	if event.Domain != "" && e.ThreatDB != nil {
 		result := e.ThreatDB.Lookup(event.Domain)
 		if result.Found {
@@ -87,7 +110,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 		}
 	}
 
-	// 5. Threat intel IP lookup
+	// 7. Threat intel IP lookup
 	e.enrichIP(event)
 
 	// Composite anomaly score: take the max of all individual scores,

@@ -25,7 +25,7 @@ var ouiDatabase = map[string]OUIResult{
 	"00:17:f2": {Vendor: "Apple", DeviceType: ""},
 	"00:19:e3": {Vendor: "Apple", DeviceType: ""},
 	"00:1a:92": {Vendor: "Apple", DeviceType: ""},
-	"00:1d:4f": {Vendor: "Apple", DeviceType: ""},
+	"00:1d:4f": {Vendor: "Apple", DeviceType: "media_player"},
 	"00:1e:52": {Vendor: "Apple", DeviceType: ""},
 	"00:1e:c2": {Vendor: "Apple", DeviceType: ""},
 	"00:1f:5b": {Vendor: "Apple", DeviceType: ""},
@@ -149,8 +149,8 @@ var ouiDatabase = map[string]OUIResult{
 	// Marvell
 	"00:11:88": {Vendor: "Marvell", DeviceType: ""},
 
-	// Nvidia
-	"00:04:4b": {Vendor: "Nvidia", DeviceType: ""},
+	// Nvidia (00:04:4b shared with Xbox — keeping as game_console)
+	"00:04:4b": {Vendor: "Microsoft Xbox", DeviceType: "game_console"},
 
 	// Roku
 	"d4:a5:d8": {Vendor: "Roku", DeviceType: "media_player"},
@@ -159,11 +159,9 @@ var ouiDatabase = map[string]OUIResult{
 	// Chromecast
 	"54:a0:50": {Vendor: "Google Chromecast", DeviceType: "media_player"},
 
-	// Apple TV
-	"00:1d:4f": {Vendor: "Apple", DeviceType: "media_player"},
+	// Xbox (00:04:4b is shared — Nvidia/Xbox/DirecTV, using game console as most common home device)
 
-	// Xbox
-	"00:04:4b": {Vendor: "Microsoft Xbox", DeviceType: "game_console"},
+
 
 	// PlayStation
 	"00:04:1f": {Vendor: "Sony PlayStation", DeviceType: "game_console"},
@@ -207,14 +205,14 @@ var ouiDatabase = map[string]OUIResult{
 	// Hikvision
 	"00:09:c5": {Vendor: "Hikvision", DeviceType: "camera"},
 
-	// Dahua
-	"00:0a:95": {Vendor: "Dahua", DeviceType: "camera"},
+	// Dahua (NOTE: 00:0a:95 shared with Dell — Dell entry kept above)
+	// "00:0a:95": Dahua — removed, conflicts with Dell
 
 	// Axis Communications
 	"00:40:8c": {Vendor: "Axis Communications", DeviceType: "camera"},
 
-	// Ubiquiti UniFi Protect
-	"80:2a:a8": {Vendor: "Ubiquiti", DeviceType: "camera"},
+	// Ubiquiti UniFi Protect (NOTE: 80:2a:a8 shared with Ubiquiti AP — AP entry kept above)
+	// "80:2a:a8": Ubiquiti Protect — removed, conflicts with Ubiquiti AP
 
 	// Reolink
 	"6c:72:20": {Vendor: "Reolink", DeviceType: "camera"},
@@ -222,8 +220,8 @@ var ouiDatabase = map[string]OUIResult{
 	// Wyoming Security (Wyze)
 	"84:0d:8e": {Vendor: "Wyze", DeviceType: "camera"},
 
-	// TP-Link Kasa Smart Plug
-	"f4:f2:6d": {Vendor: "TP-Link Kasa", DeviceType: "iot_generic"},
+	// TP-Link Kasa (NOTE: f4:f2:6d shared with TP-Link — generic entry kept above)
+	// "f4:f2:6d": TP-Link Kasa — removed, conflicts with TP-Link
 
 	// iHome
 	"00:1d:43": {Vendor: "iHome", DeviceType: "smart_speaker"},
@@ -235,8 +233,8 @@ var ouiDatabase = map[string]OUIResult{
 	// Bose
 	"00:02:5b": {Vendor: "Bose", DeviceType: "smart_speaker"},
 
-	// Jbl / Harman Kardon
-	"00:02:5b": {Vendor: "JBL", DeviceType: "smart_speaker"},
+	// JBL / Harman Kardon (NOTE: 00:02:5b shared with Bose — Bose entry kept above)
+	// "00:02:5b": JBL — removed, conflicts with Bose
 
 	// Bang & Olufsen
 	"b8:ae:ed": {Vendor: "Bang & Olufsen", DeviceType: "smart_speaker"},
@@ -269,8 +267,8 @@ var ouiDatabase = map[string]OUIResult{
 	// Buffalo
 	"00:1f:3a": {Vendor: "Buffalo", DeviceType: "router"},
 
-	// Belkin
-	"00:1a:7d": {Vendor: "Belkin", DeviceType: "router"},
+	// Belkin (NOTE: 00:1a:7d shared with Kindle — Kindle entry kept above)
+	// "00:1a:7d": Belkin — removed, conflicts with Kindle
 	"30:46:9a": {Vendor: "Belkin", DeviceType: ""},
 
 	// Linksys (Cisco subsidiary)
@@ -280,14 +278,14 @@ var ouiDatabase = map[string]OUIResult{
 	// Dlink
 	"08:17:35": {Vendor: "D-Link", DeviceType: ""},
 
-	// Ralink / Mediatek
-	"00:0c:43": {Vendor: "Ralink", DeviceType: ""},
+	// Ralink / Mediatek (NOTE: 00:0c:43 shared with Mediatek above — removed)
+	// "00:0c:43": Ralink — removed, conflicts with Mediatek
 
-	// Broadcom wireless
-	"00:10:18": {Vendor: "Broadcom", DeviceType: ""},
+	// Broadcom wireless (NOTE: 00:10:18 already present above — removed)
+	// "00:10:18": Broadcom — removed, duplicate
 
-	// AVM / Fritzbox
-	"00:04:0e": {Vendor: "AVM Fritzbox", DeviceType: "router"},
+	// AVM / Fritzbox (NOTE: 00:04:0e shared with Logitech above — removed)
+	// "00:04:0e": AVM Fritzbox — removed, conflicts with Logitech
 
 	// Synology
 	"00:11:32": {Vendor: "Synology", DeviceType: ""},
@@ -296,17 +294,17 @@ var ouiDatabase = map[string]OUIResult{
 	"00:08:9b": {Vendor: "QNAP", DeviceType: ""},
 
 	// Western Digital
-	"00:13:10": {Vendor: "Western Digital", DeviceType: ""},
+	// "00:13:10": {Vendor: "Western Digital", DeviceType: ""},  // REMOVED: duplicate key
 
 	// Seagate
-	"00:14:38": {Vendor: "Seagate", DeviceType: ""},
+	// "00:14:38": {Vendor: "Seagate", DeviceType: ""},  // REMOVED: duplicate key
 
 	// Buffalo
-	"00:1f:3a": {Vendor: "Buffalo", DeviceType: ""},
+	// "00:1f:3a": {Vendor: "Buffalo", DeviceType: ""},  // REMOVED: duplicate key
 
 	// NAS/Storage (continued)
 	"00:01:29": {Vendor: "Iomega", DeviceType: ""},
-	"00:0e:8c": {Vendor: "Eaton", DeviceType: ""},
+	// "00:0e:8c": {Vendor: "Eaton", DeviceType: ""},  // REMOVED: duplicate key
 
 	// Wemo (Belkin smart home)
 	"78:99:7b": {Vendor: "Wemo (Belkin)", DeviceType: "iot_generic"},
@@ -324,7 +322,7 @@ var ouiDatabase = map[string]OUIResult{
 	"84:18:26": {Vendor: "GE Enbrighten", DeviceType: "smart_light"},
 
 	// Innr
-	"d0:73:d5": {Vendor: "Innr", DeviceType: "smart_light"},
+	// "d0:73:d5": {Vendor: "Innr", DeviceType: "smart_light"},  // REMOVED: duplicate key
 
 	// nanoleaf
 	"00:2e:d9": {Vendor: "Nanoleaf", DeviceType: "smart_light"},
@@ -360,7 +358,7 @@ var ouiDatabase = map[string]OUIResult{
 	"00:1f:4b": {Vendor: "Garmin", DeviceType: ""},
 
 	// Fitbit
-	"00:1d:43": {Vendor: "Fitbit", DeviceType: ""},
+	// "00:1d:43": {Vendor: "Fitbit", DeviceType: ""},  // REMOVED: duplicate key
 
 	// Polar
 	"00:22:d0": {Vendor: "Polar", DeviceType: ""},
@@ -368,8 +366,8 @@ var ouiDatabase = map[string]OUIResult{
 	// Withings
 	"00:24:e4": {Vendor: "Withings", DeviceType: ""},
 
-	// Omron
-	"00:1a:7d": {Vendor: "Omron", DeviceType: ""},
+	// Omron (NOTE: 00:1a:7d shared with Kindle — removed)
+	// "00:1a:7d": Omron — removed, conflicts with Kindle
 
 	// Philips Healthcare
 	"00:14:6b": {Vendor: "Philips Healthcare", DeviceType: ""},
@@ -381,7 +379,7 @@ var ouiDatabase = map[string]OUIResult{
 	"d4:6d:50": {Vendor: "Nest / Google", DeviceType: "camera"},
 
 	// Arlo (Netgear subsidiary)
-	"78:d2:94": {Vendor: "Arlo", DeviceType: "camera"},
+	// "78:d2:94": {Vendor: "Arlo", DeviceType: "camera"},  // REMOVED: duplicate key
 
 	// Blink (Amazon subsidiary)
 	"38:5d:e4": {Vendor: "Blink", DeviceType: "camera"},
@@ -408,7 +406,7 @@ var ouiDatabase = map[string]OUIResult{
 	"00:08:94": {Vendor: "Mobotix", DeviceType: "camera"},
 
 	// Hanwha Techwin (Samsung surveillance)
-	"08:ed:b7": {Vendor: "Hanwha", DeviceType: "camera"},
+	// "08:ed:b7": {Vendor: "Hanwha", DeviceType: "camera"},  // REMOVED: duplicate key
 
 	// Vivotek
 	"00:10:04": {Vendor: "Vivotek", DeviceType: "camera"},
@@ -423,7 +421,7 @@ var ouiDatabase = map[string]OUIResult{
 	"00:0e:7f": {Vendor: "Motorola / Arris", DeviceType: "router"},
 
 	// Comcast Xfinity Gateway
-	"00:0e:7f": {Vendor: "Comcast Xfinity", DeviceType: "router"},
+	// "00:0e:7f": {Vendor: "Comcast Xfinity", DeviceType: "router"},  // REMOVED: duplicate key
 
 	// Verizon Fios
 	"00:26:5e": {Vendor: "Verizon", DeviceType: "router"},
@@ -449,14 +447,14 @@ var ouiDatabase = map[string]OUIResult{
 	// Dish Network
 	"00:13:e0": {Vendor: "Dish Network", DeviceType: ""},
 
-	// DirecTV
-	"00:04:4b": {Vendor: "DirecTV", DeviceType: ""},
+	// DirecTV (NOTE: 00:04:4b shared with Xbox — removed)
+	// "00:04:4b": DirecTV — removed, conflicts with Xbox
 
-	// Roku Streaming Stick
-	"d4:a5:d8": {Vendor: "Roku", DeviceType: "media_player"},
+	// Roku Streaming Stick (NOTE: d4:a5:d8 already present above — removed)
+	// "d4:a5:d8": Roku — removed, duplicate
 
 	// Fire Stick (Amazon)
-	"74:c7:f0": {Vendor: "Amazon Fire Stick", DeviceType: "media_player"},
+	// "74:c7:f0": {Vendor: "Amazon Fire Stick", DeviceType: "media_player"},  // REMOVED: duplicate key
 
 	// HiSense TV
 	"30:39:f2": {Vendor: "Hisense", DeviceType: "smart_tv"},
@@ -474,37 +472,37 @@ var ouiDatabase = map[string]OUIResult{
 	"04:5b:da": {Vendor: "Sharp", DeviceType: "smart_tv"},
 
 	// Insignia (Best Buy)
-	"30:39:f2": {Vendor: "Insignia", DeviceType: "smart_tv"},
+	// "30:39:f2": {Vendor: "Insignia", DeviceType: "smart_tv"},  // REMOVED: duplicate key
 
 	// Sceptre
-	"84:1b:5e": {Vendor: "Sceptre", DeviceType: "smart_tv"},
+	// "84:1b:5e": {Vendor: "Sceptre", DeviceType: "smart_tv"},  // REMOVED: duplicate key
 
 	// Element Electronics
 	"f4:54:6b": {Vendor: "Element Electronics", DeviceType: "smart_tv"},
 
 	// ONN (Walmart)
-	"f4:54:6b": {Vendor: "ONN", DeviceType: "smart_tv"},
+	// "f4:54:6b": {Vendor: "ONN", DeviceType: "smart_tv"},  // REMOVED: duplicate key
 
 	// Emerson TV
-	"30:39:f2": {Vendor: "Emerson", DeviceType: "smart_tv"},
+	// "30:39:f2": {Vendor: "Emerson", DeviceType: "smart_tv"},  // REMOVED: duplicate key
 
 	// Sanyo TV
 	"3c:d0:f8": {Vendor: "Sanyo", DeviceType: "smart_tv"},
 
 	// Panasonic TV
-	"00:02:48": {Vendor: "Panasonic", DeviceType: "smart_tv"},
+	// "00:02:48": {Vendor: "Panasonic", DeviceType: "smart_tv"},  // REMOVED: duplicate key
 
 	// Mitsubishi TV
 	"00:01:c8": {Vendor: "Mitsubishi", DeviceType: "smart_tv"},
 
 	// Philco TV
-	"f4:54:6b": {Vendor: "Philco", DeviceType: "smart_tv"},
+	// "f4:54:6b": {Vendor: "Philco", DeviceType: "smart_tv"},  // REMOVED: duplicate key
 
 	// Akai TV
-	"30:39:f2": {Vendor: "Akai", DeviceType: "smart_tv"},
+	// "30:39:f2": {Vendor: "Akai", DeviceType: "smart_tv"},  // REMOVED: duplicate key
 
 	// Element Smart Speaker
-	"f4:54:6b": {Vendor: "Element", DeviceType: "smart_speaker"},
+	// "f4:54:6b": {Vendor: "Element", DeviceType: "smart_speaker"},  // REMOVED: duplicate key
 }
 
 // Lookup returns vendor and device type for a given MAC address.

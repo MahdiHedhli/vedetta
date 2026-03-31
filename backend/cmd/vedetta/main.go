@@ -109,16 +109,16 @@ func main() {
 
 	dnsManager := dnsingest.NewManager(dnsEventSink)
 
+	// Get or generate install salt for source_hash computation (used by both Pi-hole and AdGuard)
+	installSalt := os.Getenv("VEDETTA_INSTALL_SALT")
+	if installSalt == "" {
+		installSalt = "vedetta-install-salt" // fallback; in production, should be persisted
+	}
+
 	// Optional: Pi-hole DNS query poller
 	piholeURL := os.Getenv("VEDETTA_PIHOLE_URL")
 	piholeToken := os.Getenv("VEDETTA_PIHOLE_TOKEN")
 	if piholeURL != "" && piholeToken != "" {
-		// Get or generate install salt for source_hash computation
-		installSalt := os.Getenv("VEDETTA_INSTALL_SALT")
-		if installSalt == "" {
-			installSalt = "vedetta-install-salt" // fallback; in production, should be persisted
-		}
-
 		// Parse polling interval (default 60s)
 		piholeInterval := 60 * time.Second
 		if intervalStr := os.Getenv("VEDETTA_PIHOLE_INTERVAL"); intervalStr != "" {
@@ -132,6 +132,26 @@ func main() {
 		piholeSrc := dnsingest.NewPiHoleSource(poller)
 		dnsManager.Register(piholeSrc)
 		log.Printf("Pi-hole poller registered: url=%s interval=%s", piholeURL, piholeInterval)
+	}
+
+	// Optional: AdGuard Home DNS query poller
+	adguardURL := os.Getenv("VEDETTA_ADGUARD_URL")
+	adguardUser := os.Getenv("VEDETTA_ADGUARD_USER")
+	adguardPass := os.Getenv("VEDETTA_ADGUARD_PASS")
+	if adguardURL != "" {
+		// Parse polling interval (default 60s)
+		adguardInterval := 60 * time.Second
+		if intervalStr := os.Getenv("VEDETTA_ADGUARD_INTERVAL"); intervalStr != "" {
+			if d, err := time.ParseDuration(intervalStr); err == nil {
+				adguardInterval = d
+			}
+		}
+
+		adguardClient := dnspoller.NewAdGuardHTTPClient(adguardURL, adguardUser, adguardPass)
+		adguardPoller := dnspoller.NewAdGuardPoller(adguardClient, db, enricher, activityLog, installSalt, adguardInterval)
+		adguardSrc := dnsingest.NewAdGuardSource(adguardPoller)
+		dnsManager.Register(adguardSrc)
+		log.Printf("AdGuard Home poller registered: url=%s interval=%s", adguardURL, adguardInterval)
 	}
 
 	// Start DNS ingestion manager

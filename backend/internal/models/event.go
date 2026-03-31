@@ -42,26 +42,29 @@ type Device struct {
 
 // Sensor represents a registered sensor that reports to Core.
 type Sensor struct {
-	SensorID  string    `json:"sensor_id" db:"sensor_id"`
-	Hostname  string    `json:"hostname" db:"hostname"`
-	OS        string    `json:"os" db:"os"`
-	Arch      string    `json:"arch" db:"arch"`
-	CIDR      string    `json:"cidr" db:"cidr"`
-	Version   string    `json:"version" db:"version"`
-	FirstSeen time.Time `json:"first_seen" db:"first_seen"`
-	LastSeen  time.Time `json:"last_seen" db:"last_seen"`
-	Status    string    `json:"status" db:"status"`       // online | offline
-	IsPrimary bool      `json:"is_primary" db:"is_primary"` // only one sensor should be primary
+	SensorID   string    `json:"sensor_id" db:"sensor_id"`
+	Hostname   string    `json:"hostname" db:"hostname"`
+	OS         string    `json:"os" db:"os"`
+	Arch       string    `json:"arch" db:"arch"`
+	CIDR       string    `json:"cidr" db:"cidr"`
+	Version    string    `json:"version" db:"version"`
+	FirstSeen  time.Time `json:"first_seen" db:"first_seen"`
+	LastSeen   time.Time `json:"last_seen" db:"last_seen"`
+	Status     string    `json:"status" db:"status"`       // online | offline
+	IsPrimary  bool      `json:"is_primary" db:"is_primary"` // only one sensor should be primary
+	Interfaces string    `json:"interfaces,omitempty" db:"interfaces"` // JSON-encoded []NetworkInterface
 }
 
 // ScanTarget represents a named subnet to scan (e.g., IoT VLAN, Guest network).
 type ScanTarget struct {
-	TargetID  string     `json:"target_id" db:"target_id"`
-	Name      string     `json:"name" db:"name"`
-	CIDR      string     `json:"cidr" db:"cidr"`
-	Segment   string     `json:"segment" db:"segment"`     // default | iot | guest
-	ScanPorts bool       `json:"scan_ports" db:"scan_ports"`
-	Enabled   bool       `json:"enabled" db:"enabled"`
-	CreatedAt time.Time  `json:"created_at" db:"created_at"`
-	LastScan  *time.Time `json:"last_scan,omitempty" db:"last_scan"`
+	TargetID      string     `json:"target_id" db:"target_id"`
+	Name          string     `json:"name" db:"name"`
+	CIDR          string     `json:"cidr" db:"cidr"`
+	Segment       string     `json:"segment" db:"segment"`     // default | iot | guest
+	ScanPorts     bool       `json:"scan_ports" db:"scan_ports"`
+	Enabled       bool       `json:"enabled" db:"enabled"`
+	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
+	LastScan      *time.Time `json:"last_scan,omitempty" db:"last_scan"`
+	DNSCapture    bool       `json:"dns_capture" db:"dns_capture"`
+	DNSInterface  string     `json:"dns_interface,omitempty" db:"dns_interface"` // which NIC to capture DNS on
 }

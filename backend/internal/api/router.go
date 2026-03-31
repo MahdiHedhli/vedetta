@@ -535,10 +535,12 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name      string `json:"name"`
-		CIDR      string `json:"cidr"`
-		Segment   string `json:"segment"`
-		ScanPorts bool   `json:"scan_ports"`
+		Name          string `json:"name"`
+		CIDR          string `json:"cidr"`
+		Segment       string `json:"segment"`
+		ScanPorts     bool   `json:"scan_ports"`
+		DNSCapture    bool   `json:"dns_capture"`
+		DNSInterface  string `json:"dns_interface"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
@@ -552,7 +554,7 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 		body.Segment = "default"
 	}
 
-	target, err := s.DB.CreateScanTarget(body.Name, body.CIDR, body.Segment, body.ScanPorts)
+	target, err := s.DB.CreateScanTarget(body.Name, body.CIDR, body.Segment, body.ScanPorts, body.DNSCapture, body.DNSInterface)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -660,15 +662,16 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		SensorID  string `json:"sensor_id"`
-		Hostname  string `json:"hostname"`
-		OS        string `json:"os"`
-		Arch      string `json:"arch"`
-		CIDR      string `json:"cidr"`
-		Version   string `json:"version"`
-		IsPrimary bool   `json:"is_primary"`
+		SensorID   string          `json:"sensor_id"`
+		Hostname   string          `json:"hostname"`
+		OS         string          `json:"os"`
+		Arch       string          `json:"arch"`
+		CIDR       string          `json:"cidr"`
+		Version    string          `json:"version"`
+		IsPrimary  bool            `json:"is_primary"`
+		Interfaces json.RawMessage `json:"interfaces"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 10240)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
 		return
 	}
@@ -677,14 +680,21 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Store interfaces as JSON string
+	interfacesStr := ""
+	if len(body.Interfaces) > 0 {
+		interfacesStr = string(body.Interfaces)
+	}
+
 	sensor := models.Sensor{
-		SensorID:  body.SensorID,
-		Hostname:  body.Hostname,
-		OS:        body.OS,
-		Arch:      body.Arch,
-		CIDR:      body.CIDR,
-		Version:   body.Version,
-		IsPrimary: body.IsPrimary,
+		SensorID:   body.SensorID,
+		Hostname:   body.Hostname,
+		OS:         body.OS,
+		Arch:       body.Arch,
+		CIDR:       body.CIDR,
+		Version:    body.Version,
+		IsPrimary:  body.IsPrimary,
+		Interfaces: interfacesStr,
 	}
 
 	if err := s.DB.RegisterSensor(sensor); err != nil {

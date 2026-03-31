@@ -20,8 +20,8 @@ func (db *DB) RegisterSensor(sensor models.Sensor) error {
 	makePrimary := count == 0 || primaryCount == 0 || sensor.IsPrimary
 
 	_, err := db.Exec(`
-		INSERT INTO sensors (sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online', ?)
+		INSERT INTO sensors (sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary, interfaces)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online', ?, ?)
 		ON CONFLICT(sensor_id) DO UPDATE SET
 			hostname = excluded.hostname,
 			os = excluded.os,
@@ -29,8 +29,9 @@ func (db *DB) RegisterSensor(sensor models.Sensor) error {
 			cidr = excluded.cidr,
 			version = excluded.version,
 			last_seen = excluded.last_seen,
-			status = 'online'
-	`, sensor.SensorID, sensor.Hostname, sensor.OS, sensor.Arch, sensor.CIDR, sensor.Version, now, now, makePrimary)
+			status = 'online',
+			interfaces = excluded.interfaces
+	`, sensor.SensorID, sensor.Hostname, sensor.OS, sensor.Arch, sensor.CIDR, sensor.Version, now, now, makePrimary, sensor.Interfaces)
 	if err != nil {
 		return err
 	}
@@ -53,7 +54,7 @@ func (db *DB) TouchSensor(sensorID string) error {
 // ListSensors returns all registered sensors, primary first, then by last_seen.
 func (db *DB) ListSensors() ([]models.Sensor, error) {
 	rows, err := db.Query(`
-		SELECT sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary
+		SELECT sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary, interfaces
 		FROM sensors
 		ORDER BY is_primary DESC, last_seen DESC
 	`)
@@ -65,7 +66,7 @@ func (db *DB) ListSensors() ([]models.Sensor, error) {
 	var sensors []models.Sensor
 	for rows.Next() {
 		var s models.Sensor
-		if err := rows.Scan(&s.SensorID, &s.Hostname, &s.OS, &s.Arch, &s.CIDR, &s.Version, &s.FirstSeen, &s.LastSeen, &s.Status, &s.IsPrimary); err != nil {
+		if err := rows.Scan(&s.SensorID, &s.Hostname, &s.OS, &s.Arch, &s.CIDR, &s.Version, &s.FirstSeen, &s.LastSeen, &s.Status, &s.IsPrimary, &s.Interfaces); err != nil {
 			return nil, err
 		}
 		sensors = append(sensors, s)
@@ -77,9 +78,9 @@ func (db *DB) ListSensors() ([]models.Sensor, error) {
 func (db *DB) GetPrimarySensor() (*models.Sensor, error) {
 	var s models.Sensor
 	err := db.QueryRow(`
-		SELECT sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary
+		SELECT sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary, interfaces
 		FROM sensors WHERE is_primary = TRUE LIMIT 1
-	`).Scan(&s.SensorID, &s.Hostname, &s.OS, &s.Arch, &s.CIDR, &s.Version, &s.FirstSeen, &s.LastSeen, &s.Status, &s.IsPrimary)
+	`).Scan(&s.SensorID, &s.Hostname, &s.OS, &s.Arch, &s.CIDR, &s.Version, &s.FirstSeen, &s.LastSeen, &s.Status, &s.IsPrimary, &s.Interfaces)
 	if err != nil {
 		return nil, err
 	}

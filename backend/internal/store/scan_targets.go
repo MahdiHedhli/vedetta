@@ -10,21 +10,23 @@ import (
 )
 
 // CreateScanTarget inserts a new scan target.
-func (db *DB) CreateScanTarget(name, cidr, segment string, scanPorts bool) (*models.ScanTarget, error) {
+func (db *DB) CreateScanTarget(name, cidr, segment string, scanPorts, dnsCapture bool, dnsInterface string) (*models.ScanTarget, error) {
 	t := &models.ScanTarget{
-		TargetID:  uuid.New().String(),
-		Name:      name,
-		CIDR:      cidr,
-		Segment:   segment,
-		ScanPorts: scanPorts,
-		Enabled:   true,
-		CreatedAt: time.Now(),
+		TargetID:     uuid.New().String(),
+		Name:         name,
+		CIDR:         cidr,
+		Segment:      segment,
+		ScanPorts:    scanPorts,
+		Enabled:      true,
+		CreatedAt:    time.Now(),
+		DNSCapture:   dnsCapture,
+		DNSInterface: dnsInterface,
 	}
 
 	_, err := db.Exec(`
-		INSERT INTO scan_targets (target_id, name, cidr, segment, scan_ports, enabled, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.TargetID, t.Name, t.CIDR, t.Segment, t.ScanPorts, t.Enabled, t.CreatedAt,
+		INSERT INTO scan_targets (target_id, name, cidr, segment, scan_ports, enabled, created_at, dns_capture, dns_interface)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.TargetID, t.Name, t.CIDR, t.Segment, t.ScanPorts, t.Enabled, t.CreatedAt, t.DNSCapture, t.DNSInterface,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert scan target: %w", err)
@@ -35,7 +37,7 @@ func (db *DB) CreateScanTarget(name, cidr, segment string, scanPorts bool) (*mod
 // ListScanTargets returns all scan targets.
 func (db *DB) ListScanTargets() ([]models.ScanTarget, error) {
 	rows, err := db.Query(`
-		SELECT target_id, name, cidr, segment, scan_ports, enabled, created_at, last_scan
+		SELECT target_id, name, cidr, segment, scan_ports, enabled, created_at, last_scan, dns_capture, dns_interface
 		FROM scan_targets ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("query scan targets: %w", err)
@@ -46,7 +48,7 @@ func (db *DB) ListScanTargets() ([]models.ScanTarget, error) {
 	for rows.Next() {
 		var t models.ScanTarget
 		var lastScan sql.NullTime
-		err := rows.Scan(&t.TargetID, &t.Name, &t.CIDR, &t.Segment, &t.ScanPorts, &t.Enabled, &t.CreatedAt, &lastScan)
+		err := rows.Scan(&t.TargetID, &t.Name, &t.CIDR, &t.Segment, &t.ScanPorts, &t.Enabled, &t.CreatedAt, &lastScan, &t.DNSCapture, &t.DNSInterface)
 		if err != nil {
 			return nil, fmt.Errorf("scan target row: %w", err)
 		}
@@ -61,7 +63,7 @@ func (db *DB) ListScanTargets() ([]models.ScanTarget, error) {
 // GetEnabledScanTargets returns only enabled targets.
 func (db *DB) GetEnabledScanTargets() ([]models.ScanTarget, error) {
 	rows, err := db.Query(`
-		SELECT target_id, name, cidr, segment, scan_ports, enabled, created_at, last_scan
+		SELECT target_id, name, cidr, segment, scan_ports, enabled, created_at, last_scan, dns_capture, dns_interface
 		FROM scan_targets WHERE enabled = TRUE ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("query enabled scan targets: %w", err)
@@ -72,7 +74,7 @@ func (db *DB) GetEnabledScanTargets() ([]models.ScanTarget, error) {
 	for rows.Next() {
 		var t models.ScanTarget
 		var lastScan sql.NullTime
-		err := rows.Scan(&t.TargetID, &t.Name, &t.CIDR, &t.Segment, &t.ScanPorts, &t.Enabled, &t.CreatedAt, &lastScan)
+		err := rows.Scan(&t.TargetID, &t.Name, &t.CIDR, &t.Segment, &t.ScanPorts, &t.Enabled, &t.CreatedAt, &lastScan, &t.DNSCapture, &t.DNSInterface)
 		if err != nil {
 			return nil, fmt.Errorf("scan target row: %w", err)
 		}
