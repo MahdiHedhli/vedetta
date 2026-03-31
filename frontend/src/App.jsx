@@ -45,6 +45,7 @@ export default function App() {
   const [devices, setDevices] = useState([]);
   const [targets, setTargets] = useState([]);
   const [sensors, setSensors] = useState([]);
+  const [sensorInterfaces, setSensorInterfaces] = useState([]);
   const [scanStatus, setScanStatus] = useState(null);
   const [error, setError] = useState(null);
   const [view, setView] = useState('dashboard');
@@ -52,6 +53,9 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [defaultCIDR, setDefaultCIDR] = useState('');
+  const [threatEvents, setThreatEvents] = useState([]);
+  const [threatStats, setThreatStats] = useState(null);
+  const [threatTimeline, setThreatTimeline] = useState([]);
 
   const fetchStatus = useCallback(() => {
     fetch('/api/v1/status')
@@ -85,11 +89,39 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const fetchThreatData = useCallback(() => {
+    Promise.all([
+      fetch('/api/v1/events?min_score=0.3&limit=50&order=desc').then((r) => r.json()).catch(() => ({ events: [] })),
+      fetch('/api/v1/events/stats').then((r) => r.json()).catch(() => ({})),
+      fetch('/api/v1/events/timeline').then((r) => r.json()).catch(() => ({ timeline: [] })),
+    ]).then(([eventsData, statsData, timelineData]) => {
+      setThreatEvents(eventsData.events || []);
+      setThreatStats(statsData);
+      setThreatTimeline(timelineData.timeline || []);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const ifaces = [];
+    sensors.forEach(s => {
+      try {
+        const parsed = JSON.parse(s.interfaces || '[]');
+        parsed.forEach(iface => {
+          if (!ifaces.find(i => i.name === iface.name)) {
+            ifaces.push(iface);
+          }
+        });
+      } catch {}
+    });
+    setSensorInterfaces(ifaces);
+  }, [sensors]);
+
   useEffect(() => {
     fetchStatus();
     fetchDevices();
     fetchTargets();
     fetchSensors();
+    fetchThreatData();
 
     // Show setup guide if no sensors connected and no devices found
     Promise.all([
@@ -107,9 +139,10 @@ export default function App() {
       fetchStatus();
       fetchDevices();
       fetchSensors();
+      fetchThreatData();
     }, 10000);
     return () => clearInterval(interval);
-  }, [fetchStatus, fetchDevices, fetchTargets, fetchSensors]);
+  }, [fetchStatus, fetchDevices, fetchTargets, fetchSensors, fetchThreatData]);
 
   const triggerScan = () => {
     setScanning(true);
@@ -172,7 +205,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-4">
             <nav className="flex gap-1">
-              {['dashboard', 'devices', 'sensors', 'scan targets'].map((v) => (
+              {['dashboard', 'devices', 'threats', 'sensors', 'scan targets'].map((v) => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
@@ -256,9 +289,12 @@ export default function App() {
             devices={devices} scanStatus={scanStatus} newDeviceCount={newDeviceCount}
             scanning={scanning} onScan={triggerScan} onViewDevices={() => setView('devices')}
             defaultCIDR={defaultCIDR} targets={targets} sensors={sensors}
+            threatStats={threatStats}
           />
         ) : view === 'devices' ? (
           <DevicesView devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus} />
+        ) : view === 'threats' ? (
+          <ThreatsView events={threatEvents} stats={threatStats} timeline={threatTimeline} onRefresh={fetchThreatData} />
         ) : view === 'sensors' ? (
           <SensorsView sensors={sensors} onSetup={() => setShowSetup(true)} onRefreshSensors={fetchSensors} />
         ) : view === 'logs' ? (
@@ -268,11 +304,228 @@ export default function App() {
         ) : (
           <ScanTargetsView
             targets={targets} defaultCIDR={defaultCIDR} scanning={scanning}
-            onRefresh={fetchTargets} onScanTarget={triggerTargetScan}
+            onRefresh={fetchTargets} onScanTarget={triggerTargetScan} sensorInterfaces={sensorInterfaces}
           />
         )}
       </main>
     </div>
+  );
+}
+
+// --- Threat Intelligence Status Card ---
+
+function ThreatIntelStatusCard({ stats }) {
+  const threatCount = stats?.threat_count || 0;
+  const isActive = threatCount > 0;
+
+  return (
+    <div className={`bg-gray-900 border rounded-lg p-4 ${isActive ? 'border-red-500/40' : 'border-gray-800'}`}>
+      <p className="text-sm text-gray-400">Threat Intel</p>
+      <div className="flex items-center gap-2 mt-1">
+        <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-red-500' : 'bg-green-400'}`} />
+        <p className="text-2xl font-semibold">{threatCount}</p>
+      </div>
+      <p className={`text-xs mt-1 ${isActive ? 'text-red-400' : 'text-gray-500'}`}>
+        {isActive ? `${threatCount} threats detected` : 'No threats'}
+      </p>
+    </div>
+  );
+}
+
+// --- Threats View ---
+
+function ThreatsView({ events, stats, timeline, onRefresh }) {
+  const [severityFilter, setSeverityFilter] = useState('all');
+  const [expandedRows, setExpandedRows] = useState(new Set());
+
+  // Filter events by severity
+  const filtered = events.filter(e => {
+    const score = e.anomaly_score || 0;
+    if (severityFilter === 'critical') return score > 0.7;
+    if (severityFilter === 'warning') return score >= 0.3 && score <= 0.7;
+    return true;
+  });
+
+  const toggleRowExpanded = (eventId) => {
+    const newSet = new Set(expandedRows);
+    if (newSet.has(eventId)) {
+      newSet.delete(eventId);
+    } else {
+      newSet.add(eventId);
+    }
+    setExpandedRows(newSet);
+  };
+
+  const getScoreColor = (score) => {
+    if (score < 0.3) return 'bg-green-500';
+    if (score < 0.7) return 'bg-amber-500';
+    return 'bg-red-500';
+  };
+
+  const getScoreBarWidth = (score) => {
+    return Math.max(Math.min(score * 100, 100), 10);
+  };
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-display">Threat Events</h2>
+          <p className="text-gray-400 text-sm mt-1">
+            Detection and anomaly tracking from network analysis
+          </p>
+        </div>
+        <button
+          onClick={onRefresh}
+          className="bg-amber-500 hover:bg-amber-400 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {/* Stat Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <StatCard label="Total Events" value={stats?.total_count || '0'} sub="All time" />
+        <StatCard label="Threats Detected" value={stats?.threat_count || '0'} sub="With anomaly score" highlight={stats?.threat_count > 0} />
+        <StatCard label="Events (24h)" value={stats?.last_24h_count || '0'} sub="Last 24 hours" />
+        <StatCard label="Blocked Queries" value={Math.max(events.filter(e => e.status === 'blocked').length, 0)} sub="Recent events" />
+      </div>
+
+      {/* Timeline Chart */}
+      {timeline && timeline.length > 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-6 mb-8">
+          <h3 className="text-sm font-medium mb-4">Event Timeline (24h)</h3>
+          <div className="flex items-end gap-1 h-32 justify-between">
+            {timeline.map((hour, idx) => {
+              const maxCount = Math.max(...timeline.map(t => t.count || 0));
+              const height = maxCount > 0 ? ((hour.count || 0) / maxCount) * 100 : 0;
+              const isThreat = (hour.count || 0) > 0;
+              return (
+                <div key={idx} className="flex-1 flex flex-col items-center gap-1">
+                  <div className="w-full bg-gray-800 rounded-sm relative h-28 flex items-end">
+                    <div
+                      className={`w-full rounded-sm transition-all ${isThreat ? 'bg-red-500' : 'bg-teal-500'}`}
+                      style={{ height: `${Math.max(height, 5)}%` }}
+                      title={`${hour.count || 0} events`}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-600 whitespace-nowrap">{new Date(hour.hour).getHours()}:00</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Severity Filter */}
+      <div className="flex gap-2 mb-4">
+        {['all', 'warning', 'critical'].map((sev) => (
+          <button
+            key={sev}
+            onClick={() => setSeverityFilter(sev)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              severityFilter === sev ? 'bg-amber-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
+            }`}
+          >
+            {sev === 'all' ? 'All' : sev === 'critical' ? 'Critical (>0.7)' : 'Warning (0.3-0.7)'}
+          </button>
+        ))}
+      </div>
+
+      {/* Events Table */}
+      {filtered.length > 0 ? (
+        <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="text-left text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800 bg-gray-800/30">
+                <th className="px-4 py-3"></th>
+                <th className="px-4 py-3">Time</th>
+                <th className="px-4 py-3">Domain</th>
+                <th className="px-4 py-3">Type</th>
+                <th className="px-4 py-3">Score</th>
+                <th className="px-4 py-3">Tags</th>
+                <th className="px-4 py-3">Source</th>
+                <th className="px-4 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((event) => {
+                const isExpanded = expandedRows.has(event.event_id);
+                return (
+                  <tbody key={event.event_id}>
+                    <tr
+                      className={`border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors cursor-pointer ${
+                        (event.anomaly_score || 0) > 0.7 ? 'bg-red-950/10' : ''
+                      }`}
+                      onClick={() => toggleRowExpanded(event.event_id)}
+                    >
+                      <td className="px-4 py-3">
+                        <svg
+                          className={`w-4 h-4 text-gray-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-400">{timeAgo(event.timestamp)}</td>
+                      <td className="px-4 py-3 text-sm font-mono">{event.domain || '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-400">{event.event_type || '—'}</td>
+                      <td className="px-4 py-3">
+                        <div className="w-16 bg-gray-800 rounded h-2">
+                          <div
+                            className={`h-full rounded ${getScoreColor(event.anomaly_score || 0)}`}
+                            style={{ width: `${getScoreBarWidth(event.anomaly_score || 0)}%` }}
+                            title={`${(event.anomaly_score || 0).toFixed(2)}`}
+                          />
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        {event.tags && event.tags.length > 0 ? (
+                          <div className="flex gap-1 flex-wrap">
+                            {event.tags.map((tag, idx) => (
+                              <span key={idx} className="text-xs bg-gray-800 text-gray-300 px-2 py-0.5 rounded">
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-gray-600">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-400">{event.source || '—'}</td>
+                      <td className="px-4 py-3 text-sm">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          event.status === 'blocked' ? 'bg-red-500/20 text-red-300' : 'bg-green-500/20 text-green-300'
+                        }`}>
+                          {event.status || 'allowed'}
+                        </span>
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="bg-gray-800/20 border-b border-gray-800/50">
+                        <td colSpan="8" className="px-4 py-4">
+                          <div className="text-sm text-gray-300 space-y-2">
+                            <div><span className="text-gray-500">Event ID:</span> {event.event_id}</div>
+                            {event.details && <div><span className="text-gray-500">Details:</span> {event.details}</div>}
+                            {event.anomaly_score && <div><span className="text-gray-500">Score:</span> {(event.anomaly_score).toFixed(3)}</div>}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
+          <p className="text-gray-500">No threat events detected. Your network is secure.</p>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -398,7 +651,7 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
 
 // --- Dashboard ---
 
-function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, onViewDevices, defaultCIDR, targets, sensors }) {
+function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, onViewDevices, defaultCIDR, targets, sensors, threatStats }) {
   const segmentCounts = {};
   devices.forEach((d) => {
     segmentCounts[d.segment] = (segmentCounts[d.segment] || 0) + 1;
@@ -409,7 +662,7 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
         <StatCard label="Devices" value={devices.length || '—'} sub={devices.length > 0 ? `${newDeviceCount} new (24h)` : 'Awaiting sensor data'} highlight={newDeviceCount > 0} />
         <StatCard label="Sensors" value={sensors.length || '0'} sub={sensors.length > 0 ? `${sensors.filter(s => s.status === 'online').length} online` : 'None connected'} highlight={sensors.length === 0} />
-        <StatCard label="Threats" value="0" sub="All clear" />
+        <ThreatIntelStatusCard stats={threatStats} />
         <StatCard label="DNS Queries" value="—" sub="Pi-hole not connected" />
       </div>
 
@@ -552,23 +805,27 @@ function DevicesView({ devices, scanning, onScan, scanStatus }) {
 
 // --- Scan Targets ---
 
-function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarget }) {
+function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarget, sensorInterfaces }) {
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState('');
   const [cidr, setCidr] = useState('');
   const [segment, setSegment] = useState('iot');
   const [scanPorts, setScanPorts] = useState(false);
+  const [dnsCapture, setDnsCapture] = useState(false);
+  const [dnsInterface, setDnsInterface] = useState('');
 
   const addTarget = () => {
     if (!name || !cidr) return;
     fetch('/api/v1/scan/targets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, cidr, segment, scan_ports: scanPorts }),
+      body: JSON.stringify({ name, cidr, segment, scan_ports: scanPorts, dns_capture: dnsCapture, dns_interface: dnsInterface }),
     }).then(() => {
       setShowAdd(false);
       setName('');
       setCidr('');
+      setDnsCapture(false);
+      setDnsInterface('');
       onRefresh();
     });
   };
@@ -606,6 +863,7 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">Primary Network</span>
               <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded">auto-scan</span>
+              <span className="text-xs bg-teal-500/20 text-teal-300 px-1.5 py-0.5 rounded">DNS capture</span>
             </div>
             <p className="font-mono text-sm text-gray-400 mt-1">{defaultCIDR || 'Not configured'}</p>
           </div>
@@ -624,6 +882,11 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
                     <span className="text-sm font-medium">{t.name}</span>
                     <SegmentBadge segment={t.segment} />
                     {t.scan_ports && <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded">ports</span>}
+                    {t.dns_capture && (
+                      <span className="text-xs bg-teal-500/20 text-teal-300 px-1.5 py-0.5 rounded">
+                        DNS: {t.dns_interface || 'auto'}
+                      </span>
+                    )}
                   </div>
                   <p className="font-mono text-sm text-gray-400 mt-1">{t.cidr}</p>
                   {t.last_scan && <p className="text-xs text-gray-500 mt-1">Last scan: {timeAgo(t.last_scan)}</p>}
@@ -687,6 +950,25 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
                   className="rounded border-gray-600" />
                 Scan top 100 ports
               </label>
+              <label className="flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" checked={dnsCapture} onChange={(e) => setDnsCapture(e.target.checked)}
+                  className="rounded border-gray-600" />
+                Capture DNS traffic
+              </label>
+              {dnsCapture && (
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">DNS Interface</label>
+                  <select value={dnsInterface} onChange={(e) => setDnsInterface(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
+                    <option value="">Auto-detect</option>
+                    {sensorInterfaces.map(iface => (
+                      <option key={iface.name} value={iface.name}>
+                        {iface.name} ({iface.subnet || iface.ips?.[0] || 'no IP'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             {/* L2 limitation note */}
@@ -716,7 +998,7 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
                 className="flex-1 bg-amber-500 hover:bg-amber-400 disabled:bg-gray-700 disabled:text-gray-500 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                 Add Target
               </button>
-              <button onClick={() => setShowAdd(false)}
+              <button onClick={() => { setShowAdd(false); setDnsCapture(false); setDnsInterface(''); }}
                 className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm font-medium transition-colors">
                 Cancel
               </button>
