@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
+	"github.com/vedetta-network/vedetta/backend/internal/fingerprint"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
@@ -17,6 +18,7 @@ import (
 //   - If MAC is empty (cross-subnet scan) → match by IP + segment
 //
 // The segment parameter tags which network the device was found on.
+// Runs device fingerprinting to enrich device type, OS, and model information.
 // Returns true if this is a newly discovered device.
 func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, segment ...string) (bool, error) {
 	seg := "default"
@@ -42,13 +44,25 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 			host.IPAddress, seg).Scan(&existingID)
 	}
 
+	// Run fingerprinting on the new host data
+	engine := fingerprint.NewEngine()
+	deviceModel := &models.Device{
+		IPAddress:  host.IPAddress,
+		MACAddress: host.MACAddress,
+		Hostname:   host.Hostname,
+		Vendor:     host.Vendor,
+	}
+	fpResult := engine.Fingerprint(deviceModel)
+
 	if err == sql.ErrNoRows {
 		// New device
 		id := uuid.New().String()
 		_, err := db.Exec(`
-			INSERT INTO devices (device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, open_ports, segment)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, scanTime, scanTime, host.IPAddress, host.MACAddress, host.Hostname, host.Vendor, string(portsJSON), seg,
+			INSERT INTO devices (device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, open_ports, segment,
+			                      device_type, os_family, os_version, model, discovery_method, fingerprint_confidence)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, scanTime, scanTime, host.IPAddress, host.MACAddress, host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
+			fpResult.DeviceType, fpResult.OSFamily, fpResult.OSVersion, fpResult.Model, fpResult.DiscoveryMethod, fpResult.FingerprintConfidence,
 		)
 		if err != nil {
 			return false, fmt.Errorf("insert device: %w", err)
@@ -59,18 +73,47 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 		return false, fmt.Errorf("query device: %w", err)
 	}
 
-	// Existing device — update last_seen, IP (may change via DHCP), ports, hostname
-	// Only update MAC if we now have one and didn't before (device moved to local subnet)
-	_, err = db.Exec(`
-		UPDATE devices SET last_seen = ?, ip_address = ?,
-		mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
-		hostname = COALESCE(NULLIF(?, ''), hostname),
-		vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?
-		WHERE device_id = ?`,
-		scanTime, host.IPAddress,
-		host.MACAddress, host.MACAddress,
-		host.Hostname, host.Vendor, string(portsJSON), seg, existingID,
-	)
+	// Existing device — fetch current fingerprint confidence
+	var currentConfidence float64
+	err = db.QueryRow("SELECT COALESCE(fingerprint_confidence, 0.0) FROM devices WHERE device_id = ?", existingID).Scan(&currentConfidence)
+	if err != nil && err != sql.ErrNoRows {
+		return false, fmt.Errorf("query device confidence: %w", err)
+	}
+
+	// Only update fingerprint fields if new confidence >= existing confidence
+	// This preserves higher-confidence matches made previously
+	updateFP := fpResult.FingerprintConfidence >= currentConfidence
+
+	if updateFP {
+		// Update with fingerprinting
+		_, err = db.Exec(`
+			UPDATE devices SET last_seen = ?, ip_address = ?,
+			mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
+			hostname = COALESCE(NULLIF(?, ''), hostname),
+			vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?,
+			device_type = ?, os_family = ?, os_version = ?, model = ?,
+			discovery_method = ?, fingerprint_confidence = ?
+			WHERE device_id = ?`,
+			scanTime, host.IPAddress,
+			host.MACAddress, host.MACAddress,
+			host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
+			fpResult.DeviceType, fpResult.OSFamily, fpResult.OSVersion, fpResult.Model,
+			fpResult.DiscoveryMethod, fpResult.FingerprintConfidence, existingID,
+		)
+	} else {
+		// Update without fingerprinting (preserve higher confidence match)
+		_, err = db.Exec(`
+			UPDATE devices SET last_seen = ?, ip_address = ?,
+			mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
+			hostname = COALESCE(NULLIF(?, ''), hostname),
+			vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?
+			WHERE device_id = ?`,
+			scanTime, host.IPAddress,
+			host.MACAddress, host.MACAddress,
+			host.Hostname, deviceModel.Vendor, string(portsJSON), seg, existingID,
+		)
+	}
+
 	if err != nil {
 		return false, fmt.Errorf("update device: %w", err)
 	}
@@ -81,7 +124,10 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 func (db *DB) ListDevices() ([]models.Device, error) {
 	rows, err := db.Query(`
 		SELECT device_id, first_seen, last_seen, ip_address, mac_address,
-		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment
+		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment,
+		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
+		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
+		       COALESCE(fingerprint_confidence, 0.0)
 		FROM devices ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query devices: %w", err)
@@ -93,7 +139,9 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		var d models.Device
 		var portsJSON string
 		err := rows.Scan(&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
-			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment)
+			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
+			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
+			&d.DiscoveryMethod, &d.FingerprintConfidence)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
@@ -108,7 +156,10 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 	cutoff := time.Now().Add(-since)
 	rows, err := db.Query(`
 		SELECT device_id, first_seen, last_seen, ip_address, mac_address,
-		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment
+		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment,
+		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
+		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
+		       COALESCE(fingerprint_confidence, 0.0)
 		FROM devices WHERE first_seen > ? ORDER BY first_seen DESC`, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("query new devices: %w", err)
@@ -120,7 +171,9 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 		var d models.Device
 		var portsJSON string
 		err := rows.Scan(&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
-			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment)
+			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
+			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
+			&d.DiscoveryMethod, &d.FingerprintConfidence)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
