@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
@@ -56,6 +56,7 @@ export default function App() {
   const [threatEvents, setThreatEvents] = useState([]);
   const [threatStats, setThreatStats] = useState(null);
   const [threatTimeline, setThreatTimeline] = useState([]);
+  const [suppressionRules, setSuppressionRules] = useState([]);
 
   const fetchStatus = useCallback(() => {
     fetch('/api/v1/status')
@@ -91,13 +92,15 @@ export default function App() {
 
   const fetchThreatData = useCallback(() => {
     Promise.all([
-      fetch('/api/v1/events?min_score=0.3&limit=50&order=desc').then((r) => r.json()).catch(() => ({ events: [] })),
+      fetch('/api/v1/events?min_score=0.3&limit=100&order=desc').then((r) => r.json()).catch(() => ({ events: [] })),
       fetch('/api/v1/events/stats').then((r) => r.json()).catch(() => ({})),
       fetch('/api/v1/events/timeline').then((r) => r.json()).catch(() => ({ timeline: [] })),
-    ]).then(([eventsData, statsData, timelineData]) => {
+      fetch('/api/v1/suppression').then((r) => r.json()).catch(() => ({ rules: [] })),
+    ]).then(([eventsData, statsData, timelineData, suppressionData]) => {
       setThreatEvents(eventsData.events || []);
       setThreatStats(statsData);
       setThreatTimeline(timelineData.timeline || []);
+      setSuppressionRules(suppressionData.rules || []);
     }).catch(() => {});
   }, []);
 
@@ -289,12 +292,13 @@ export default function App() {
             devices={devices} scanStatus={scanStatus} newDeviceCount={newDeviceCount}
             scanning={scanning} onScan={triggerScan} onViewDevices={() => setView('devices')}
             defaultCIDR={defaultCIDR} targets={targets} sensors={sensors}
-            threatStats={threatStats}
+            threatStats={threatStats} onNavigate={setView}
           />
         ) : view === 'devices' ? (
-          <DevicesView devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus} />
+          <DevicesView devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus} threatEvents={threatEvents} />
         ) : view === 'threats' ? (
-          <ThreatsView events={threatEvents} stats={threatStats} timeline={threatTimeline} onRefresh={fetchThreatData} />
+          <ThreatsView events={threatEvents} stats={threatStats} timeline={threatTimeline} onRefresh={fetchThreatData}
+            devices={devices} suppressionRules={suppressionRules} onNavigate={setView} />
         ) : view === 'sensors' ? (
           <SensorsView sensors={sensors} onSetup={() => setShowSetup(true)} onRefreshSensors={fetchSensors} />
         ) : view === 'logs' ? (
@@ -314,12 +318,15 @@ export default function App() {
 
 // --- Threat Intelligence Status Card ---
 
-function ThreatIntelStatusCard({ stats }) {
+function ThreatIntelStatusCard({ stats, onClick }) {
   const threatCount = stats?.threat_count || 0;
   const isActive = threatCount > 0;
 
   return (
-    <div className={`bg-gray-900 border rounded-lg p-4 ${isActive ? 'border-red-500/40' : 'border-gray-800'}`}>
+    <div
+      className={`bg-gray-900 border rounded-lg p-4 ${isActive ? 'border-red-500/40' : 'border-gray-800'} ${onClick ? 'cursor-pointer hover:bg-gray-800/50 transition-colors' : ''}`}
+      onClick={onClick}
+    >
       <p className="text-sm text-gray-400">Threat Intel</p>
       <div className="flex items-center gap-2 mt-1">
         <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-red-500' : 'bg-green-400'}`} />
@@ -334,16 +341,71 @@ function ThreatIntelStatusCard({ stats }) {
 
 // --- Threats View ---
 
-function ThreatsView({ events, stats, timeline, onRefresh }) {
+function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionRules, onNavigate }) {
   const [severityFilter, setSeverityFilter] = useState('all');
   const [expandedRows, setExpandedRows] = useState(new Set());
+  const [showSuppressed, setShowSuppressed] = useState(false);
+  const [ackingEvent, setAckingEvent] = useState(null);
+  const [ackReason, setAckReason] = useState('');
 
-  const filtered = events.filter(e => {
+  // Build device lookup by IP
+  const deviceByIP = {};
+  (devices || []).forEach(d => { if (d.ip_address) deviceByIP[d.ip_address] = d; });
+
+  // Check if event matches any suppression rule
+  const isSuppressed = (event) => {
+    if (!suppressionRules || suppressionRules.length === 0) return false;
+    return suppressionRules.some(rule => {
+      if (!rule.active) return false;
+      if (rule.domain && rule.domain !== event.domain) return false;
+      if (rule.source_ip && rule.source_ip !== event.source_ip) return false;
+      if (rule.tags && rule.tags.length > 0) {
+        const eventTags = event.tags || [];
+        if (!rule.tags.every(t => eventTags.includes(t))) return false;
+      }
+      return true;
+    });
+  };
+
+  // Group duplicate events (same domain + source_ip + tags within 5 min)
+  const groupEvents = (eventList) => {
+    const groups = [];
+    const used = new Set();
+    for (let i = 0; i < eventList.length; i++) {
+      if (used.has(i)) continue;
+      const e = eventList[i];
+      const group = { lead: e, count: 1, eventIds: [e.event_id] };
+      const eTime = new Date(e.timestamp).getTime();
+      const eTagKey = (e.tags || []).sort().join(',');
+      for (let j = i + 1; j < eventList.length; j++) {
+        if (used.has(j)) continue;
+        const o = eventList[j];
+        const oTime = new Date(o.timestamp).getTime();
+        const oTagKey = (o.tags || []).sort().join(',');
+        if (e.domain === o.domain && e.source_ip === o.source_ip && eTagKey === oTagKey && Math.abs(eTime - oTime) < 5 * 60 * 1000) {
+          group.count++;
+          group.eventIds.push(o.event_id);
+          used.add(j);
+        }
+      }
+      groups.push(group);
+      used.add(i);
+    }
+    return groups;
+  };
+
+  // Filter: severity, ack/suppressed
+  const baseFiltered = events.filter(e => {
     const score = e.anomaly_score || 0;
     if (severityFilter === 'critical') return score > 0.7;
     if (severityFilter === 'warning') return score >= 0.3 && score <= 0.7;
     return true;
   });
+
+  const visibleEvents = baseFiltered.filter(e => !e.acknowledged && !isSuppressed(e));
+  const suppressedEvents = baseFiltered.filter(e => e.acknowledged || isSuppressed(e));
+  const displayEvents = showSuppressed ? suppressedEvents : visibleEvents;
+  const grouped = groupEvents(displayEvents);
 
   const toggleRowExpanded = (eventId) => {
     const newSet = new Set(expandedRows);
@@ -397,6 +459,27 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
     try { return JSON.parse(metaStr); } catch { return null; }
   };
 
+  const handleAck = (eventId, reason) => {
+    fetch(`/api/v1/events/${eventId}/ack`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    }).then(() => { setAckingEvent(null); setAckReason(''); onRefresh(); }).catch(() => {});
+  };
+
+  const handleUnack = (eventId) => {
+    fetch(`/api/v1/events/${eventId}/ack`, { method: 'DELETE' })
+      .then(() => onRefresh()).catch(() => {});
+  };
+
+  const handleCreateSuppression = (event) => {
+    fetch('/api/v1/suppression', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: event.domain, source_ip: event.source_ip, tags: [], reason: 'User suppressed from threats view' }),
+    }).then(() => onRefresh()).catch(() => {});
+  };
+
   return (
     <>
       <div className="flex items-center justify-between mb-6">
@@ -448,71 +531,100 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
         </div>
       )}
 
-      {/* Severity Filter */}
-      <div className="flex gap-2 mb-4">
-        {['all', 'warning', 'critical'].map((sev) => (
-          <button
-            key={sev}
-            onClick={() => setSeverityFilter(sev)}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-              severityFilter === sev ? 'bg-amber-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
-            }`}
-          >
-            {sev === 'all' ? 'All' : sev === 'critical' ? 'Critical (>0.7)' : 'Warning (0.3-0.7)'}
-          </button>
-        ))}
+      {/* Severity Filter + Suppressed Toggle */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex gap-2">
+          {['all', 'warning', 'critical'].map((sev) => (
+            <button
+              key={sev}
+              onClick={() => setSeverityFilter(sev)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                severityFilter === sev ? 'bg-amber-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
+              }`}
+            >
+              {sev === 'all' ? 'All' : sev === 'critical' ? 'Critical (>0.7)' : 'Warning (0.3-0.7)'}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setShowSuppressed(!showSuppressed)}
+          className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+            showSuppressed ? 'bg-gray-600 text-white' : 'bg-gray-800 text-gray-500 hover:text-white'
+          }`}
+        >
+          {showSuppressed ? `Showing ${suppressedEvents.length} suppressed` : `${suppressedEvents.length} suppressed`}
+        </button>
       </div>
 
       {/* Events Table */}
-      {filtered.length > 0 ? (
+      {grouped.length > 0 ? (
         <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-          <table className="w-full">
+          <table className="w-full table-fixed">
             <thead>
               <tr className="text-left text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800 bg-gray-800/30">
-                <th className="px-4 py-3 w-8"></th>
-                <th className="px-4 py-3">Time</th>
-                <th className="px-4 py-3">Source Device</th>
+                <th className="px-4 py-3 w-10"></th>
+                <th className="px-4 py-3 w-24">Time</th>
+                <th className="px-4 py-3 w-48">Source Device</th>
                 <th className="px-4 py-3">Domain</th>
-                <th className="px-4 py-3">Score</th>
-                <th className="px-4 py-3">Detection</th>
-                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 w-32">Score</th>
+                <th className="px-4 py-3 w-32">Detection</th>
+                <th className="px-4 py-3 w-24">Status</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((event) => {
+              {grouped.map((group) => {
+                const event = group.lead;
                 const isExpanded = expandedRows.has(event.event_id);
                 const meta = parseMetadata(event.metadata);
+                const device = event.source_ip ? deviceByIP[event.source_ip] : null;
+                const deviceName = device?.custom_name || device?.hostname || null;
                 return (
-                  <tbody key={event.event_id}>
+                  <React.Fragment key={event.event_id}>
                     <tr
                       className={`border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors cursor-pointer ${
                         (event.anomaly_score || 0) > 0.7 ? 'bg-red-950/10' : ''
-                      }`}
+                      } ${event.acknowledged ? 'opacity-50' : ''}`}
                       onClick={() => toggleRowExpanded(event.event_id)}
                     >
                       <td className="px-4 py-3">
-                        <svg
-                          className={`w-4 h-4 text-gray-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                          fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
+                        <div className="flex items-center gap-1">
+                          <svg
+                            className={`w-4 h-4 text-gray-500 transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
+                            fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                          {group.count > 1 && (
+                            <span className="bg-gray-700 text-gray-300 text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">{group.count}</span>
+                          )}
+                        </div>
                       </td>
-                      <td className="px-4 py-3 text-sm text-gray-400">{timeAgo(event.timestamp)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-400 truncate">{timeAgo(event.timestamp)}</td>
                       <td className="px-4 py-3">
-                        <div className="text-sm">
-                          <span className="font-mono text-gray-200">{event.source_ip || '—'}</span>
-                          {event.device_vendor && (
+                        <div className="text-sm truncate">
+                          {device ? (
+                            <button
+                              className="text-left hover:text-amber-400 transition-colors"
+                              onClick={(e) => { e.stopPropagation(); onNavigate && onNavigate('devices'); }}
+                              title={`View device: ${device.ip_address}`}
+                            >
+                              <span className="font-medium text-amber-300">{deviceName || device.ip_address}</span>
+                              {device.mac_address && <span className="text-xs text-gray-500 ml-1.5">{device.mac_address.slice(-8)}</span>}
+                            </button>
+                          ) : (
+                            <span className="font-mono text-gray-200">{event.source_ip || '—'}</span>
+                          )}
+                          {!device && event.device_vendor && (
                             <span className="text-xs text-gray-500 ml-2">({event.device_vendor})</span>
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-sm font-mono text-gray-300 max-w-xs truncate" title={event.domain}>
+                      <td className="px-4 py-3 text-sm font-mono text-gray-300 truncate" title={event.domain}>
                         {event.domain || '—'}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <div className="w-16 bg-gray-800 rounded h-2">
+                          <div className="w-16 bg-gray-800 rounded h-2 shrink-0">
                             <div
                               className={`h-full rounded ${getScoreColor(event.anomaly_score || 0)}`}
                               style={{ width: `${getScoreBarWidth(event.anomaly_score || 0)}%` }}
@@ -524,7 +636,7 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
                       <td className="px-4 py-3">
                         {event.tags && event.tags.length > 0 ? (
                           <div className="flex gap-1 flex-wrap">
-                            {event.tags.map((tag, idx) => (
+                            {event.tags.slice(0, 2).map((tag, idx) => (
                               <span
                                 key={idx}
                                 className={`text-xs px-2 py-0.5 rounded font-medium ${tagColors[tag] || 'bg-gray-800 text-gray-300'}`}
@@ -532,6 +644,7 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
                                 {tagLabel(tag)}
                               </span>
                             ))}
+                            {event.tags.length > 2 && <span className="text-xs text-gray-500">+{event.tags.length - 2}</span>}
                           </div>
                         ) : (
                           <span className="text-gray-600">—</span>
@@ -552,8 +665,52 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
                             {/* Threat explanation */}
                             {event.threat_desc && (
                               <div className="bg-red-950/20 border border-red-900/30 rounded-lg p-4">
-                                <h4 className="text-xs uppercase tracking-wider text-red-400 font-medium mb-2">Why this was flagged</h4>
+                                <div className="flex items-center justify-between mb-2">
+                                  <h4 className="text-xs uppercase tracking-wider text-red-400 font-medium">Why this was flagged</h4>
+                                  {meta?.threat_db && (
+                                    <a
+                                      href={`https://www.virustotal.com/gui/domain/${event.domain}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-xs text-amber-400 hover:text-amber-300"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      More info →
+                                    </a>
+                                  )}
+                                </div>
                                 <p className="text-sm text-gray-300 leading-relaxed">{event.threat_desc}</p>
+                              </div>
+                            )}
+
+                            {/* Device info card (if matched) */}
+                            {device && (
+                              <div className="bg-teal-950/20 border border-teal-900/30 rounded-lg p-4">
+                                <h4 className="text-xs uppercase tracking-wider text-teal-400 font-medium mb-2">Source Device</h4>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                  <div>
+                                    <span className="text-xs text-gray-500 block">Name</span>
+                                    <span className="text-gray-200">{device.custom_name || device.hostname || '—'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-xs text-gray-500 block">IP</span>
+                                    <span className="font-mono text-gray-200">{device.ip_address}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-xs text-gray-500 block">MAC</span>
+                                    <span className="font-mono text-gray-200">{device.mac_address || '—'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-xs text-gray-500 block">Vendor</span>
+                                    <span className="text-gray-200">{device.vendor || '—'}</span>
+                                  </div>
+                                </div>
+                                <button
+                                  className="text-xs text-amber-400 hover:text-amber-300 mt-2"
+                                  onClick={(e) => { e.stopPropagation(); onNavigate && onNavigate('devices'); }}
+                                >
+                                  View device details →
+                                </button>
                               </div>
                             )}
 
@@ -651,11 +808,69 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
                                 </div>
                               </div>
                             )}
+
+                            {/* Action buttons */}
+                            <div className="flex items-center gap-3 pt-2 border-t border-gray-800">
+                              {!event.acknowledged ? (
+                                <>
+                                  {ackingEvent === event.event_id ? (
+                                    <div className="flex items-center gap-2 flex-1">
+                                      <input
+                                        type="text"
+                                        value={ackReason}
+                                        onChange={(e) => setAckReason(e.target.value)}
+                                        placeholder="Reason (e.g., my VPN, Ring doorbell)"
+                                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-amber-500"
+                                        onClick={(e) => e.stopPropagation()}
+                                      />
+                                      <button
+                                        className="text-xs bg-amber-500/20 text-amber-300 px-3 py-1.5 rounded hover:bg-amber-500/30"
+                                        onClick={(e) => { e.stopPropagation(); handleAck(event.event_id, ackReason); }}
+                                      >
+                                        Confirm
+                                      </button>
+                                      <button
+                                        className="text-xs text-gray-500 hover:text-gray-300"
+                                        onClick={(e) => { e.stopPropagation(); setAckingEvent(null); setAckReason(''); }}
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <button
+                                        className="text-xs bg-gray-800 text-gray-300 px-3 py-1.5 rounded hover:bg-gray-700"
+                                        onClick={(e) => { e.stopPropagation(); setAckingEvent(event.event_id); }}
+                                      >
+                                        Acknowledge
+                                      </button>
+                                      <button
+                                        className="text-xs bg-gray-800 text-gray-300 px-3 py-1.5 rounded hover:bg-gray-700"
+                                        onClick={(e) => { e.stopPropagation(); handleCreateSuppression(event); }}
+                                        title="Always suppress events matching this domain + source"
+                                      >
+                                        Suppress Similar
+                                      </button>
+                                    </>
+                                  )}
+                                </>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-gray-500">Acknowledged{event.ack_reason ? `: ${event.ack_reason}` : ''}</span>
+                                  <button
+                                    className="text-xs text-amber-400 hover:text-amber-300"
+                                    onClick={(e) => { e.stopPropagation(); handleUnack(event.event_id); }}
+                                  >
+                                    Undo
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
                       </tr>
                     )}
-                  </tbody>
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -663,7 +878,9 @@ function ThreatsView({ events, stats, timeline, onRefresh }) {
         </div>
       ) : (
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
-          <p className="text-gray-500">No threat events detected. Your network is secure.</p>
+          <p className="text-gray-500">
+            {showSuppressed ? 'No suppressed events.' : 'No threat events detected. Your network is secure.'}
+          </p>
         </div>
       )}
     </>
@@ -792,7 +1009,7 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
 
 // --- Dashboard ---
 
-function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, onViewDevices, defaultCIDR, targets, sensors, threatStats }) {
+function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, onViewDevices, defaultCIDR, targets, sensors, threatStats, onNavigate }) {
   const segmentCounts = {};
   devices.forEach((d) => {
     segmentCounts[d.segment] = (segmentCounts[d.segment] || 0) + 1;
@@ -801,10 +1018,10 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
   return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Devices" value={devices.length || '—'} sub={devices.length > 0 ? `${newDeviceCount} new (24h)` : 'Awaiting sensor data'} highlight={newDeviceCount > 0} />
-        <StatCard label="Sensors" value={sensors.length || '0'} sub={sensors.length > 0 ? `${sensors.filter(s => s.status === 'online').length} online` : 'None connected'} highlight={sensors.length === 0} />
-        <ThreatIntelStatusCard stats={threatStats} />
-        <StatCard label="DNS Queries" value="—" sub="Pi-hole not connected" />
+        <StatCard label="Devices" value={devices.length || '—'} sub={devices.length > 0 ? `${newDeviceCount} new (24h)` : 'Awaiting sensor data'} highlight={newDeviceCount > 0} onClick={() => onNavigate('devices')} />
+        <StatCard label="Sensors" value={sensors.length || '0'} sub={sensors.length > 0 ? `${sensors.filter(s => s.status === 'online').length} online` : 'None connected'} highlight={sensors.length === 0} onClick={() => onNavigate('sensors')} />
+        <ThreatIntelStatusCard stats={threatStats} onClick={() => onNavigate('threats')} />
+        <StatCard label="DNS Queries" value={threatStats?.total_count || '—'} sub={threatStats?.last_24h_count ? `${threatStats.last_24h_count} in 24h` : 'Monitoring'} onClick={() => onNavigate('threats')} />
       </div>
 
       {newDeviceCount > 0 && (
@@ -857,8 +1074,13 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
 
 // --- Devices ---
 
-function DevicesView({ devices, scanning, onScan, scanStatus }) {
+function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents }) {
   const [segmentFilter, setSegmentFilter] = useState('all');
+  const [selectedDevice, setSelectedDevice] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+  const [editSegment, setEditSegment] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const segments = ['all', ...new Set(devices.map((d) => d.segment).filter(Boolean))];
   const filtered = segmentFilter === 'all' ? devices : devices.filter((d) => d.segment === segmentFilter);
@@ -933,11 +1155,141 @@ function DevicesView({ devices, scanning, onScan, scanStatus }) {
 
       {filtered.length > 0 ? (
         <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-          <DeviceTable devices={filtered} />
+          <DeviceTable devices={filtered} onSelectDevice={(d) => {
+            setSelectedDevice(d);
+            setEditName(d.custom_name || '');
+            setEditNotes(d.notes || '');
+            setEditSegment(d.segment || 'default');
+          }} />
         </div>
       ) : (
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
           <p className="text-gray-500">No devices found. Run a scan to discover your network.</p>
+        </div>
+      )}
+
+      {/* Device Detail Panel */}
+      {selectedDevice && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-2xl w-full p-6 max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-display">{selectedDevice.custom_name || selectedDevice.hostname || selectedDevice.ip_address}</h3>
+              <button onClick={() => setSelectedDevice(null)} className="text-gray-500 hover:text-white text-lg">✕</button>
+            </div>
+
+            {/* Device info grid */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+              <div>
+                <span className="text-xs text-gray-500 block">IP Address</span>
+                <span className="text-sm font-mono">{selectedDevice.ip_address}</span>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500 block">MAC Address</span>
+                <span className="text-sm font-mono">{selectedDevice.mac_address || '—'}</span>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500 block">Vendor</span>
+                <span className="text-sm">{selectedDevice.vendor || '—'}</span>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500 block">Device Type</span>
+                <span className="text-sm">{selectedDevice.device_type || '—'}</span>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500 block">OS</span>
+                <span className="text-sm">{selectedDevice.os_family ? `${selectedDevice.os_family} ${selectedDevice.os_version || ''}`.trim() : '—'}</span>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500 block">First Seen</span>
+                <span className="text-sm">{timeAgo(selectedDevice.first_seen)}</span>
+              </div>
+              {selectedDevice.open_ports && selectedDevice.open_ports.length > 0 && (
+                <div className="col-span-2">
+                  <span className="text-xs text-gray-500 block">Open Ports</span>
+                  <div className="flex gap-1 flex-wrap mt-1">
+                    {selectedDevice.open_ports.map((p) => (
+                      <span key={p} className="bg-gray-800 text-gray-300 text-xs px-1.5 py-0.5 rounded">{p}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Editable fields */}
+            <div className="space-y-3 mb-6 border-t border-gray-800 pt-4">
+              <h4 className="text-sm font-medium text-gray-300">Edit Device</h4>
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Custom Name</label>
+                <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)}
+                  placeholder="e.g., Living Room TV, Ring Doorbell"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Notes</label>
+                <textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)}
+                  placeholder="Any notes about this device..."
+                  rows={2}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 resize-none" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Segment</label>
+                <select value={editSegment} onChange={(e) => setEditSegment(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
+                  <option value="default">Default</option>
+                  <option value="iot">IoT</option>
+                  <option value="guest">Guest</option>
+                </select>
+              </div>
+              <button
+                disabled={saving}
+                onClick={() => {
+                  setSaving(true);
+                  fetch(`/api/v1/devices/${selectedDevice.device_id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ custom_name: editName, notes: editNotes, segment: editSegment }),
+                  }).then(() => {
+                    setSaving(false);
+                    setSelectedDevice(null);
+                    // Trigger re-fetch from parent
+                  }).catch(() => setSaving(false));
+                }}
+                className="bg-amber-500 hover:bg-amber-400 disabled:bg-gray-700 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                {saving ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+
+            {/* Threat history for this device */}
+            {threatEvents && threatEvents.length > 0 && (() => {
+              const deviceThreats = threatEvents.filter(e => e.source_ip === selectedDevice.ip_address);
+              if (deviceThreats.length === 0) return null;
+              return (
+                <div className="border-t border-gray-800 pt-4">
+                  <h4 className="text-sm font-medium text-gray-300 mb-3">Threat History ({deviceThreats.length} events)</h4>
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {deviceThreats.slice(0, 20).map((evt) => (
+                      <div key={evt.event_id} className="bg-gray-800/50 rounded p-3 text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-gray-300 truncate flex-1">{evt.domain || '—'}</span>
+                          <span className="text-xs text-gray-500 ml-2 shrink-0">{timeAgo(evt.timestamp)}</span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1">
+                          {evt.tags && evt.tags.map((tag, idx) => (
+                            <span key={idx} className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded">{tag}</span>
+                          ))}
+                          <span className={`text-xs ${evt.blocked ? 'text-red-400' : 'text-green-400'}`}>
+                            {evt.blocked ? 'blocked' : 'allowed'}
+                          </span>
+                        </div>
+                        {evt.threat_desc && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{evt.threat_desc}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
         </div>
       )}
     </>
@@ -1324,13 +1676,13 @@ function SettingsView() {
 
 // --- Shared Components ---
 
-function DeviceTable({ devices, compact = false }) {
+function DeviceTable({ devices, compact = false, onSelectDevice }) {
   return (
     <table className="w-full">
       <thead>
         <tr className="text-left text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
           <th className="px-4 py-3">Status</th>
-          <th className="px-4 py-3">IP Address</th>
+          <th className="px-4 py-3">Name / IP</th>
           <th className="px-4 py-3">Hostname</th>
           <th className="px-4 py-3">Vendor</th>
           <th className="px-4 py-3">Segment</th>
@@ -1342,7 +1694,11 @@ function DeviceTable({ devices, compact = false }) {
       </thead>
       <tbody>
         {devices.map((device) => (
-          <tr key={device.device_id} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
+          <tr
+            key={device.device_id}
+            className={`border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors ${onSelectDevice ? 'cursor-pointer' : ''}`}
+            onClick={() => onSelectDevice && onSelectDevice(device)}
+          >
             <td className="px-4 py-3">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 bg-green-400 rounded-full" />
@@ -1351,7 +1707,18 @@ function DeviceTable({ devices, compact = false }) {
                 )}
               </div>
             </td>
-            <td className="px-4 py-3 font-mono text-sm">{device.ip_address}</td>
+            <td className="px-4 py-3">
+              <div>
+                {device.custom_name ? (
+                  <>
+                    <span className="text-sm font-medium text-amber-300">{device.custom_name}</span>
+                    <span className="font-mono text-xs text-gray-500 ml-2">{device.ip_address}</span>
+                  </>
+                ) : (
+                  <span className="font-mono text-sm">{device.ip_address}</span>
+                )}
+              </div>
+            </td>
             <td className="px-4 py-3 text-sm">{device.hostname || <span className="text-gray-600">—</span>}</td>
             <td className="px-4 py-3 text-sm text-gray-400">{device.vendor || '—'}</td>
             <td className="px-4 py-3"><SegmentBadge segment={device.segment} /></td>
@@ -1385,9 +1752,12 @@ function SegmentBadge({ segment }) {
   );
 }
 
-function StatCard({ label, value, sub, highlight = false }) {
+function StatCard({ label, value, sub, highlight = false, onClick }) {
   return (
-    <div className={`bg-gray-900 border rounded-lg p-4 ${highlight ? 'border-amber-500/40' : 'border-gray-800'}`}>
+    <div
+      className={`bg-gray-900 border rounded-lg p-4 ${highlight ? 'border-amber-500/40' : 'border-gray-800'} ${onClick ? 'cursor-pointer hover:bg-gray-800/50 transition-colors' : ''}`}
+      onClick={onClick}
+    >
       <p className="text-sm text-gray-400">{label}</p>
       <p className="text-2xl font-semibold mt-1">{value}</p>
       <p className={`text-xs mt-1 ${highlight ? 'text-amber-400' : 'text-gray-500'}`}>{sub}</p>
