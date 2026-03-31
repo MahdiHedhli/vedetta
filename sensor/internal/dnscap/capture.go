@@ -3,7 +3,6 @@ package dnscap
 import (
 	"fmt"
 	"log"
-	"net"
 	"sync"
 	"time"
 
