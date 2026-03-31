@@ -2,7 +2,6 @@ package dnscap
 
 import (
 	"log"
-	"net"
 	"sync"
 	"time"
 )
