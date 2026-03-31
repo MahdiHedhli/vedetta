@@ -513,7 +513,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       if (!r.ok) throw new Error(`Server returned ${r.status}`);
       setActionMode(null);
       onRefresh();
-    }).catch(err => setActionError(`Suppress failed: ${err.message}. Has migration 012 been applied?`));
+    }).catch(err => setActionError(`Suppress failed: ${err.message}. Try: docker compose up -d --build`));
   };
 
   const handleDeleteSuppression = (ruleId) => {

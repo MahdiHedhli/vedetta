@@ -56,6 +56,14 @@ func NewRouter(srv *Server) http.Handler {
 		// Device discovery
 		r.Get("/devices", srv.handleListDevices)
 		r.Get("/devices/new", srv.handleNewDevices)
+		r.Put("/devices/{deviceID}", srv.handleUpdateDevice)
+
+		// Event acknowledgment and suppression
+		r.Put("/events/{eventID}/ack", srv.handleAckEvent)
+		r.Delete("/events/{eventID}/ack", srv.handleUnackEvent)
+		r.Get("/suppression", srv.handleListSuppression)
+		r.Post("/suppression", srv.handleCreateSuppression)
+		r.Delete("/suppression/{ruleID}", srv.handleDeleteSuppression)
 
 		// Scanning
 		r.Post("/scan", srv.handleTriggerScan)
@@ -974,6 +982,98 @@ func (s *Server) logError(category, message string) {
 	if s.ActivityLog != nil {
 		s.ActivityLog.Error(category, message)
 	}
+}
+
+// --- Device Update ---
+
+func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
+	deviceID := chi.URLParam(r, "deviceID")
+	if deviceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing device ID"})
+		return
+	}
+
+	var body struct {
+		CustomName string `json:"custom_name"`
+		Notes      string `json:"notes"`
+		Segment    string `json:"segment"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	if err := s.DB.UpdateDeviceMeta(deviceID, body.CustomName, body.Notes, body.Segment); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// --- Event Acknowledgment ---
+
+func (s *Server) handleAckEvent(w http.ResponseWriter, r *http.Request) {
+	eventID := chi.URLParam(r, "eventID")
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body)
+
+	if err := s.DB.AcknowledgeEvent(eventID, body.Reason); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleUnackEvent(w http.ResponseWriter, r *http.Request) {
+	eventID := chi.URLParam(r, "eventID")
+	if err := s.DB.UnacknowledgeEvent(eventID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// --- Suppression Rules ---
+
+func (s *Server) handleListSuppression(w http.ResponseWriter, r *http.Request) {
+	rules, err := s.DB.ListSuppressionRules()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": rules})
+}
+
+func (s *Server) handleCreateSuppression(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Domain   string   `json:"domain"`
+		SourceIP string   `json:"source_ip"`
+		Tags     []string `json:"tags"`
+		Reason   string   `json:"reason"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	rule, err := s.DB.CreateSuppressionRule(body.Domain, body.SourceIP, body.Tags, body.Reason)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, rule)
+}
+
+func (s *Server) handleDeleteSuppression(w http.ResponseWriter, r *http.Request) {
+	ruleID := chi.URLParam(r, "ruleID")
+	if err := s.DB.DeleteSuppressionRule(ruleID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
