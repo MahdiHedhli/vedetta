@@ -9,7 +9,7 @@
   <meta property="og:description" content="Monitor, detect, and protect your home network with open-source threat intelligence.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://vedettas.com">
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%233b82f6'/><text x='16' y='22' font-size='18' font-weight='bold' text-anchor='middle' fill='white' font-family='system-ui'>V</text></svg>">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23f59e0b'/><text x='16' y='22' font-size='18' font-weight='bold' text-anchor='middle' fill='white' font-family='system-ui'>V</text></svg>">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -19,8 +19,8 @@
       --border: #1e293b;
       --text: #f1f5f9;
       --muted: #64748b;
-      --accent: #3b82f6;
-      --accent-glow: rgba(59, 130, 246, 0.15);
+      --accent: #f59e0b;
+      --accent-glow: rgba(245, 158, 11, 0.15);
     }
 
     body {
@@ -53,6 +53,156 @@
       z-index: 0;
     }
 
+    /* Navigation Bar */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: rgba(3, 7, 18, 0.8);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 700;
+      font-size: 1.125rem;
+    }
+
+    .nav-logo-mark {
+      width: 32px;
+      height: 32px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1rem;
+      color: white;
+    }
+
+    .hamburger {
+      display: none;
+      flex-direction: column;
+      gap: 0.375rem;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0.5rem;
+    }
+
+    .hamburger span {
+      width: 24px;
+      height: 2px;
+      background: var(--text);
+      border-radius: 1px;
+      transition: all 0.3s;
+    }
+
+    .hamburger.active span:nth-child(1) {
+      transform: rotate(45deg) translateY(10px);
+    }
+
+    .hamburger.active span:nth-child(2) {
+      opacity: 0;
+    }
+
+    .hamburger.active span:nth-child(3) {
+      transform: rotate(-45deg) translateY(-10px);
+    }
+
+    .nav-menu {
+      display: flex;
+      gap: 2rem;
+      list-style: none;
+    }
+
+    .nav-menu a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.9375rem;
+      transition: color 0.2s;
+    }
+
+    .nav-menu a:hover {
+      color: var(--accent);
+    }
+
+    .nav-menu .coming-soon {
+      color: #475569;
+      cursor: not-allowed;
+    }
+
+    .coming-soon-badge {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(100, 116, 139, 0.2);
+      padding: 0.125rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.625rem;
+      margin-left: 0.375rem;
+      color: #64748b;
+    }
+
+    .mobile-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-top: 0.5rem;
+      margin-right: 2rem;
+      min-width: 180px;
+      flex-direction: column;
+      gap: 0.5rem;
+      padding: 0.75rem 0;
+    }
+
+    .mobile-menu a {
+      padding: 0.75rem 1.5rem;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.9375rem;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .mobile-menu a:hover {
+      background: var(--border);
+      color: var(--accent);
+    }
+
+    .mobile-menu a.coming-soon {
+      color: #475569;
+      cursor: not-allowed;
+    }
+
+    .mobile-menu a.coming-soon:hover {
+      background: transparent;
+    }
+
+    @media (max-width: 768px) {
+      .hamburger { display: flex; }
+      .nav-menu { display: none; }
+      .mobile-menu.active { display: flex; }
+    }
+
+    /* Main Content */
     main {
       position: relative;
       z-index: 1;
@@ -61,15 +211,88 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 2rem;
+      padding: 6rem 2rem 2rem;
+    }
+
+    .hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
       text-align: center;
+      max-width: 900px;
+      margin-bottom: 3rem;
+    }
+
+    .logo-container {
+      position: relative;
+      width: 200px;
+      height: 200px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 2rem;
+    }
+
+    .radar {
+      position: absolute;
+      width: 200px;
+      height: 200px;
+      inset: 0;
+      opacity: 0.35;
+    }
+
+    .radar-ring {
+      position: absolute;
+      border: 1px solid var(--accent);
+      border-radius: 50%;
+      inset: 0;
+      animation: pulse-ring 3s infinite;
+    }
+
+    .radar-ring:nth-child(1) { animation-delay: 0s; }
+    .radar-ring:nth-child(2) { animation-delay: 1s; }
+    .radar-ring:nth-child(3) { animation-delay: 2s; }
+
+    @keyframes pulse-ring {
+      0% {
+        transform: scale(0.3);
+        opacity: 0.35;
+      }
+      50% {
+        opacity: 0.2;
+      }
+      100% {
+        transform: scale(1);
+        opacity: 0;
+      }
+    }
+
+    .radar-sweep {
+      position: absolute;
+      width: 200px;
+      height: 200px;
+      border-radius: 50%;
+      background: conic-gradient(
+        from 0deg,
+        rgba(245, 158, 11, 0.4) 0deg,
+        rgba(245, 158, 11, 0.2) 45deg,
+        transparent 90deg
+      );
+      animation: rotate-sweep 4s linear infinite;
+    }
+
+    @keyframes rotate-sweep {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
     }
 
     .logo {
+      position: relative;
+      z-index: 10;
       display: inline-flex;
       align-items: center;
       gap: 0.75rem;
-      margin-bottom: 2rem;
     }
 
     .logo-mark {
@@ -91,6 +314,32 @@
       letter-spacing: -0.03em;
     }
 
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      padding: 0.375rem 1rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 1.5rem;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
     h1 {
       font-size: clamp(2rem, 5vw, 3.5rem);
       font-weight: 700;
@@ -101,10 +350,18 @@
     }
 
     h1 span {
-      background: linear-gradient(135deg, var(--accent), #818cf8);
+      background: linear-gradient(135deg, var(--accent), #fbbf24);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+    }
+
+    h2 {
+      font-size: clamp(1.75rem, 4vw, 2.25rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 3rem;
+      margin-top: 4rem;
     }
 
     .subtitle {
@@ -115,27 +372,117 @@
       margin-bottom: 3rem;
     }
 
-    .features {
-      display: flex;
-      gap: 2rem;
-      margin-bottom: 3rem;
-      flex-wrap: wrap;
-      justify-content: center;
+    /* Features Grid */
+    #features {
+      width: 100%;
+      padding: 2rem;
     }
 
-    .feature {
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      transition: all 0.3s;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .feature-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-4px);
+    }
+
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      background: var(--accent);
+      border-radius: 8px;
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      color: var(--muted);
-      font-size: 0.875rem;
+      justify-content: center;
+      font-size: 1.5rem;
+      color: white;
     }
 
-    .feature-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
+    .feature-card h3 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .feature-card p {
+      font-size: 0.9375rem;
+      color: var(--muted);
+      line-height: 1.6;
+      margin: 0;
+    }
+
+    /* How It Works Section */
+    #how-it-works {
+      width: 100%;
+      padding: 2rem;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 2rem;
+      max-width: 1000px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .step {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .step-number {
+      width: 48px;
+      height: 48px;
       background: var(--accent);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.5rem;
+      color: white;
+      flex-shrink: 0;
+    }
+
+    .step h3 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .step p {
+      font-size: 0.9375rem;
+      color: var(--muted);
+      line-height: 1.6;
+      margin: 0;
+    }
+
+    /* Get Started Section */
+    #get-started {
+      width: 100%;
+      padding: 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     .signup-box {
@@ -198,7 +545,7 @@
     }
 
     .form-row button:hover {
-      background: #2563eb;
+      background: #d97706;
     }
 
     .form-row button:disabled {
@@ -214,38 +561,14 @@
       margin-top: 0.75rem;
     }
 
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.375rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 100px;
-      padding: 0.375rem 1rem;
-      font-size: 0.75rem;
-      color: var(--muted);
-      margin-bottom: 1.5rem;
-    }
-
-    .badge-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #4ade80;
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-
+    /* Footer */
     footer {
       position: relative;
       z-index: 1;
       text-align: center;
       padding: 2rem;
       border-top: 1px solid var(--border);
+      margin-top: 2rem;
     }
 
     footer p {
@@ -260,7 +583,7 @@
     }
 
     footer a:hover {
-      color: var(--text);
+      color: var(--accent);
     }
 
     .links {
@@ -274,9 +597,69 @@
       font-size: 0.8125rem;
     }
 
-    @media (max-width: 480px) {
-      .form-row { flex-direction: column; }
-      .features { flex-direction: column; align-items: center; gap: 0.75rem; }
+    /* Responsive */
+    @media (max-width: 768px) {
+      nav {
+        padding: 0.75rem 1rem;
+      }
+
+      .nav-logo {
+        font-size: 1rem;
+      }
+
+      .nav-logo-mark {
+        width: 28px;
+        height: 28px;
+        font-size: 0.875rem;
+      }
+
+      main {
+        padding: 5rem 1rem 2rem;
+      }
+
+      .hero {
+        margin-bottom: 2rem;
+      }
+
+      .logo-container {
+        width: 160px;
+        height: 160px;
+        margin-bottom: 1.5rem;
+      }
+
+      .radar {
+        width: 160px;
+        height: 160px;
+      }
+
+      .logo-mark {
+        width: 40px;
+        height: 40px;
+        font-size: 1.125rem;
+      }
+
+      .logo-text {
+        font-size: 1.5rem;
+      }
+
+      .features-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+      }
+
+      .steps {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+      }
+
+      .form-row {
+        flex-direction: column;
+      }
+
+      .links {
+        flex-direction: column;
+        gap: 1rem;
+      }
     }
   </style>
 </head>
@@ -284,45 +667,143 @@
   <div class="grain"></div>
   <div class="glow"></div>
 
+  <!-- Navigation -->
+  <nav>
+    <a href="#" class="nav-logo">
+      <div class="nav-logo-mark">V</div>
+      <span>Vedetta</span>
+    </a>
+    <ul class="nav-menu">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#how-it-works">How It Works</a></li>
+      <li><a href="#get-started">Get Started</a></li>
+      <li><a href="#" class="coming-soon">Threat Network <span class="coming-soon-badge">Coming Soon</span></a></li>
+    </ul>
+    <button class="hamburger" id="hamburger">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+    <div class="mobile-menu" id="mobile-menu">
+      <a href="#features">Features</a>
+      <a href="#how-it-works">How It Works</a>
+      <a href="#get-started">Get Started</a>
+      <a href="#" class="coming-soon">Threat Network <span class="coming-soon-badge">Coming Soon</span></a>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
   <main>
-    <div class="logo">
-      <div class="logo-mark">V</div>
-      <div class="logo-text">Vedetta</div>
-    </div>
-
-    <div class="badge">
-      <span class="badge-dot"></span>
-      In active development
-    </div>
-
-    <h1>Network security <span>for everyone</span></h1>
-
-    <p class="subtitle">
-      Open-source SIEM and threat intelligence for home networks and small businesses.
-      Know every device. Detect every threat. Own your data.
-    </p>
-
-    <div class="features">
-      <div class="feature"><span class="feature-dot"></span> Device Discovery</div>
-      <div class="feature"><span class="feature-dot"></span> Threat Detection</div>
-      <div class="feature"><span class="feature-dot"></span> DNS Monitoring</div>
-      <div class="feature"><span class="feature-dot"></span> Self-Hosted</div>
-      <div class="feature"><span class="feature-dot"></span> AGPLv3</div>
-    </div>
-
-    <div class="signup-box">
-      <h3>Get notified when we launch</h3>
-      <p>No spam. Just a single email when Vedetta is ready.</p>
-      <form id="signup-form" action="https://formspree.io/f/mqegkevy" method="POST">
-        <div class="form-row">
-          <input type="email" name="email" placeholder="you@example.com" required>
-          <button type="submit">Notify me</button>
+    <section class="hero">
+      <div class="logo-container">
+        <div class="radar">
+          <div class="radar-sweep"></div>
+          <div class="radar-ring"></div>
+          <div class="radar-ring"></div>
+          <div class="radar-ring"></div>
         </div>
-      </form>
-      <div class="success-msg" id="success">You're on the list. We'll be in touch.</div>
-    </div>
+        <div class="logo">
+          <div class="logo-mark">V</div>
+          <div class="logo-text">Vedetta</div>
+        </div>
+      </div>
+
+      <div class="badge">
+        <span class="badge-dot"></span>
+        In active development
+      </div>
+
+      <h1>Network security <span>for everyone</span></h1>
+
+      <p class="subtitle">
+        Open-source SIEM and threat intelligence for home networks and small businesses.
+        Know every device. Detect every threat. Own your data.
+      </p>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features">
+      <h2>Powerful Features</h2>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🔍</div>
+          <h3>Device Discovery</h3>
+          <p>Automatically find every device on your network: phones, cameras, smart home gear, servers. Know what's connected and when something new shows up.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🤝</div>
+          <h3>Community Threat Intel</h3>
+          <p>Opt in to contribute anonymized telemetry to help build a shared threat network. Every Vedetta instance makes every other instance smarter. Strength in numbers.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🚀</div>
+          <h3>Runs Anywhere</h3>
+          <p>Deploy on a Raspberry Pi, a Windows PC, or a Mac. Docker-based Core with native sensors. Five minutes to full network visibility.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📡</div>
+          <h3>DNS Monitoring</h3>
+          <p>Passive DNS analysis via libpcap and Pi-hole integration. DNSMasq and other options for advanced setups. See where your devices are calling home, catch suspicious domains, and track query patterns over time.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">⚙️</div>
+          <h3>Core + Sensor</h3>
+          <p>Core manages the dashboard, database, and intelligence. Sensors are lightweight binaries that can be deployed on each network segment with full L2 fingerprinting.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🔓</div>
+          <h3>Open Source</h3>
+          <p>AGPLv3 licensed. Audit the code, contribute to it, fork it, extend it. No vendor lock-in, no subscriptions. Your network data stays on your hardware.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- How It Works Section -->
+    <section id="how-it-works">
+      <h2>How It Works</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h3>Deploy Core</h3>
+          <p><code>git clone</code> + <code>docker compose up -d</code>. Dashboard live in under a minute.</p>
+        </div>
+
+        <div class="step">
+          <div class="step-number">2</div>
+          <h3>Install Sensors</h3>
+          <p>One-liner install on any host. Auto-detects your network and starts scanning.</p>
+        </div>
+
+        <div class="step">
+          <div class="step-number">3</div>
+          <h3>Monitor & Hunt</h3>
+          <p>Passive DNS capture, threat detection, device fingerprinting. All from your browser.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Get Started Section -->
+    <section id="get-started">
+      <div class="signup-box">
+        <h3>Get notified when we launch</h3>
+        <p>No spam. Just a single email when Vedetta is ready.</p>
+        <form id="signup-form" action="https://formspree.io/f/mqegkevy" method="POST">
+          <div class="form-row">
+            <input type="email" name="email" placeholder="you@example.com" required>
+            <button type="submit">Notify me</button>
+          </div>
+        </form>
+        <div class="success-msg" id="success">You're on the list. We'll be in touch.</div>
+      </div>
+    </section>
   </main>
 
+  <!-- Footer -->
   <footer>
     <div class="links">
       <a href="https://github.com/MahdiHedhli/vedetta" target="_blank">GitHub</a>
@@ -333,6 +814,39 @@
   </footer>
 
   <script>
+    // Mobile menu toggle
+    const hamburger = document.getElementById('hamburger');
+    const mobileMenu = document.getElementById('mobile-menu');
+
+    hamburger.addEventListener('click', () => {
+      hamburger.classList.toggle('active');
+      mobileMenu.classList.toggle('active');
+    });
+
+    // Close menu when a link is clicked
+    const mobileMenuLinks = mobileMenu.querySelectorAll('a');
+    mobileMenuLinks.forEach(link => {
+      link.addEventListener('click', () => {
+        hamburger.classList.remove('active');
+        mobileMenu.classList.remove('active');
+      });
+    });
+
+    // Smooth scroll for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function(e) {
+        const href = this.getAttribute('href');
+        if (href !== '#') {
+          e.preventDefault();
+          const element = document.querySelector(href);
+          if (element) {
+            element.scrollIntoView({ behavior: 'smooth' });
+          }
+        }
+      });
+    });
+
+    // Form handling
     const form = document.getElementById('signup-form');
     const success = document.getElementById('success');
 

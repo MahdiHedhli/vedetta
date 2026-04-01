@@ -108,7 +108,7 @@ Captured DNS queries are pushed to Core via `POST /api/v1/sensor/dns` with the f
 3. **Tier 3 (Community):** Optional opt-in sharing of anonymized DNS events to the Vedetta threat network for community threat intelligence.
 4. **Tier 4 (Global Intel):** Integration with external threat feeds (OSINT, abuse databases) for historical threat data.
 
-### Planned (M3.5 — Passive Discovery)
+### Planned (M4 — Passive Discovery)
 
 The sensor will expand to include continuous passive listeners that require no active network probing:
 
@@ -268,4 +268,4 @@ The dashboard shows which sensor discovered each device and tracks sensor health
 
 ---
 
-*See also: [Roadmap](roadmap.md) — M1 (Network Discovery), M3.5 (Passive Discovery & Fingerprinting)*
+*See also: [Roadmap](roadmap.md) — M1 (Network Discovery), M4 (Passive Discovery & Fingerprinting)*

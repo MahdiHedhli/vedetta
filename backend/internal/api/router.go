@@ -52,7 +52,7 @@ func NewRouter(srv *Server) http.Handler {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"version":    "0.1.0-dev",
 				"build_time": "2026-03-31T00:00:00Z",
-				"routes":     []string{"/suppression", "/events/{eventID}/ack", "/devices/{deviceID}"},
+				"routes":     []string{"/suppression", "/whitelist", "/events/{eventID}/ack", "/devices/{deviceID}"},
 			})
 		})
 		r.Get("/events", srv.handleEvents)
@@ -71,6 +71,13 @@ func NewRouter(srv *Server) http.Handler {
 		r.Get("/suppression", srv.handleListSuppression)
 		r.Post("/suppression", srv.handleCreateSuppression)
 		r.Delete("/suppression/{ruleID}", srv.handleDeleteSuppression)
+
+		// Known-traffic whitelist
+		r.Get("/whitelist", srv.handleListWhitelist)
+		r.Post("/whitelist", srv.handleCreateWhitelist)
+		r.Put("/whitelist/{ruleID}", srv.handleToggleWhitelist)
+		r.Delete("/whitelist/{ruleID}", srv.handleDeleteWhitelist)
+		r.Post("/whitelist/seed", srv.handleSeedWhitelist)
 
 		// Scanning
 		r.Post("/scan", srv.handleTriggerScan)
@@ -1077,6 +1084,64 @@ func (s *Server) handleCreateSuppression(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleDeleteSuppression(w http.ResponseWriter, r *http.Request) {
 	ruleID := chi.URLParam(r, "ruleID")
 	if err := s.DB.DeleteSuppressionRule(ruleID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleListWhitelist(w http.ResponseWriter, r *http.Request) {
+	rules, err := s.DB.ListWhitelistRules()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": rules})
+}
+
+func (s *Server) handleCreateWhitelist(w http.ResponseWriter, r *http.Request) {
+	var body models.WhitelistRule
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	rule, err := s.DB.CreateWhitelistRule(body)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, rule)
+}
+
+func (s *Server) handleToggleWhitelist(w http.ResponseWriter, r *http.Request) {
+	ruleID := chi.URLParam(r, "ruleID")
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	if err := s.DB.UpdateWhitelistRule(ruleID, body.Enabled); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleDeleteWhitelist(w http.ResponseWriter, r *http.Request) {
+	ruleID := chi.URLParam(r, "ruleID")
+	if err := s.DB.DeleteWhitelistRule(ruleID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSeedWhitelist(w http.ResponseWriter, r *http.Request) {
+	if err := s.DB.SeedDefaultWhitelistRules(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
