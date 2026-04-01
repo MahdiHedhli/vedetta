@@ -681,6 +681,20 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
               Acknowledge All
             </button>
           )}
+          {visibleEvents.length > 0 && (
+            <button
+              onClick={() => {
+                const params = new URLSearchParams();
+                params.set('format', 'csv');
+                params.set('limit', '10000');
+                if (severityFilter !== 'all') params.set('min_score', '0.3');
+                window.open('/api/v1/events?' + params.toString(), '_blank');
+              }}
+              className="px-3 py-2 border border-amber-500/30 text-amber-400 rounded-lg text-sm hover:bg-amber-500/10 transition-colors"
+            >
+              Export CSV
+            </button>
+          )}
           <button
             onClick={doRefresh}
             disabled={refreshing}

@@ -70,6 +70,8 @@ type rebindingMeta struct {
 type threatDBMeta struct {
 	Confidence float64  `json:"confidence"`
 	FeedTags   []string `json:"feed_tags"`
+	Source     string   `json:"source"`    // which feed (urlhaus, feodotracker, etc)
+	Indicator  string   `json:"indicator"` // the matching indicator value
 }
 
 // Enrich runs all applicable detection algorithms on the event and
@@ -181,11 +183,25 @@ func (e *Enricher) Enrich(event *models.Event) {
 			meta.ThreatDB = &threatDBMeta{
 				Confidence: result.Confidence,
 				FeedTags:   result.Indicator.Tags,
+				Source:     result.Indicator.Source,
+				Indicator:  result.Indicator.Value,
 			}
-			descriptions = append(descriptions, fmt.Sprintf(
-				"This domain appears in threat intelligence feeds (confidence %.0f%%). It has been associated with: %s.",
-				result.Confidence*100, strings.Join(result.Indicator.Tags, ", "),
-			))
+
+			// Build description with feed source reference URLs
+			desc := fmt.Sprintf(
+				"This domain appears in threat intelligence feeds (confidence %.0f%%, source: %s). It has been associated with: %s.",
+				result.Confidence*100, result.Indicator.Source, strings.Join(result.Indicator.Tags, ", "),
+			)
+
+			// Add reference URLs based on feed source
+			switch result.Indicator.Source {
+			case "urlhaus":
+				desc += fmt.Sprintf(" Verify: https://urlhaus.abuse.ch/browse.php?search=%s", event.Domain)
+			case "feodotracker":
+				desc += fmt.Sprintf(" Verify: https://feodotracker.abuse.ch/browse/host/%s/", result.Indicator.Value)
+			}
+
+			descriptions = append(descriptions, desc)
 			scores = append(scores, result.Confidence)
 		}
 	}

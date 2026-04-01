@@ -863,6 +863,116 @@ func (s *Server) handleSetPrimarySensor(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"primary": sensorID})
 }
 
+// deduplicateGatewayEchoes removes duplicate DNS events caused by gateway/DNS forwarder
+// echoing the same query. Groups events by (domain, queryType) within a 2-second window
+// and keeps only the event that is NOT from a gateway IP (ends in .1 or .254).
+// Tags deduplicated events with "deduplicated" so users know dedup occurred.
+func deduplicateGatewayEchoes(events []models.Event) []models.Event {
+	if len(events) <= 1 {
+		return events
+	}
+
+	type groupKey struct {
+		domain    string
+		queryType string
+	}
+
+	// Group events by (domain, queryType)
+	groups := make(map[groupKey][]*models.Event)
+	for i := range events {
+		key := groupKey{domain: events[i].Domain, queryType: events[i].QueryType}
+		groups[key] = append(groups[key], &events[i])
+	}
+
+	isGatewayIP := func(ip string) bool {
+		// Check if IP ends in .1 or .254 (common gateway addresses)
+		parts := strings.Split(ip, ".")
+		if len(parts) == 4 {
+			if parts[3] == "1" || parts[3] == "254" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Process each group and deduplicate
+	var result []models.Event
+	dedupCount := 0
+
+	for _, groupEvents := range groups {
+		if len(groupEvents) <= 1 {
+			// No duplicates in this group
+			result = append(result, *groupEvents[0])
+			continue
+		}
+
+		// Check if events are within 2-second window
+		minTime := groupEvents[0].Timestamp
+		maxTime := groupEvents[0].Timestamp
+		for _, evt := range groupEvents {
+			if evt.Timestamp.Before(minTime) {
+				minTime = evt.Timestamp
+			}
+			if evt.Timestamp.After(maxTime) {
+				maxTime = evt.Timestamp
+			}
+		}
+
+		timeDiff := maxTime.Sub(minTime).Seconds()
+		if timeDiff > 2 {
+			// Events are outside 2-second window, keep all
+			for _, evt := range groupEvents {
+				result = append(result, *evt)
+			}
+			continue
+		}
+
+		// Find event that is NOT from a gateway IP
+		var nonGatewayEvent *models.Event
+		var gatewayEvents []*models.Event
+
+		for _, evt := range groupEvents {
+			if isGatewayIP(evt.SourceIP) {
+				gatewayEvents = append(gatewayEvents, evt)
+			} else {
+				nonGatewayEvent = evt
+			}
+		}
+
+		// Keep the non-gateway event, or if all are gateway IPs, keep the first one
+		var kept *models.Event
+		if nonGatewayEvent != nil {
+			kept = nonGatewayEvent
+			dedupCount += len(groupEvents) - 1
+		} else {
+			kept = groupEvents[0]
+			dedupCount += len(groupEvents) - 1
+		}
+
+		// Tag the kept event as deduplicated
+		if len(groupEvents) > 1 {
+			// appendUnique inline: add "deduplicated" if not already present
+			found := false
+			for _, tag := range kept.Tags {
+				if tag == "deduplicated" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				kept.Tags = append(kept.Tags, "deduplicated")
+			}
+		}
+		result = append(result, *kept)
+	}
+
+	if dedupCount > 0 {
+		log.Printf("Deduplication: removed %d gateway echo events from batch", dedupCount)
+	}
+
+	return result
+}
+
 func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 	if s.DB == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
@@ -940,6 +1050,9 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"accepted": 0})
 		return
 	}
+
+	// Deduplicate gateway echoes before enrichment
+	events = deduplicateGatewayEchoes(events)
 
 	// Enrich events
 	if s.Enricher != nil {
