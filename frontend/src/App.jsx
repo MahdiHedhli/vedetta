@@ -1438,46 +1438,212 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   );
 }
 
-// --- Sensor Setup Dialog ---
+// --- Sensor Setup Wizard ---
 
 function SensorSetupDialog({ onDismiss }) {
+  const [step, setStep] = useState(0);
+  const [setupStatus, setSetupStatus] = useState(null);
+  const [sensorConnected, setSensorConnected] = useState(false);
+  const [deviceCount, setDeviceCount] = useState(0);
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    // Check setup status on mount
+    fetch('/api/v1/auth/setup-status')
+      .then(r => r.json())
+      .then(data => {
+        setSetupStatus(data);
+        // Auto-advance based on completed steps
+        if (data.sensor_connected) setSensorConnected(true);
+      })
+      .catch(() => {});
+
+    // Poll device count if on step 3
+    if (step === 3) {
+      const interval = setInterval(() => {
+        fetch('/api/v1/devices')
+          .then(r => r.json())
+          .then(data => setDeviceCount(data.devices ? data.devices.length : 0))
+          .catch(() => {});
+      }, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [step]);
+
+  const checkSensorConnection = () => {
+    setChecking(true);
+    fetch('/api/v1/sensor/list')
+      .then(r => r.json())
+      .then(data => {
+        if (data.sensors && data.sensors.length > 0) {
+          setSensorConnected(true);
+          setStep(3); // Jump to discovery step
+        }
+        setChecking(false);
+      })
+      .catch(() => setChecking(false));
+  };
+
+  const steps = [
+    {
+      title: 'Welcome to Vedetta',
+      content: (
+        <div className="text-center space-y-4">
+          <div className="flex justify-center">
+            <RookMark size={80} />
+          </div>
+          <p className="text-gray-300">Your network watchtower</p>
+          <p className="text-sm text-gray-400">Vedetta is an open-source home SIEM that discovers devices on your network, monitors DNS activity, and alerts you to threats.</p>
+        </div>
+      ),
+    },
+    {
+      title: 'Deploy Sensor',
+      content: (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-400">Install the lightweight sensor on any machine connected to your network.</p>
+          <div className="bg-gray-800 rounded-lg p-4">
+            <p className="text-xs text-gray-400 mb-2 font-medium">Quick start (macOS / Linux):</p>
+            <code className="text-sm text-teal-400 font-mono block whitespace-pre-wrap break-words">
+{`cd sensor && go build -o vedetta-sensor ./cmd/vedetta-sensor
+sudo ./vedetta-sensor --core http://localhost:8080`}
+            </code>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-4">
+            <p className="text-xs text-gray-400 mb-2 font-medium">Common options:</p>
+            <div className="text-xs text-gray-400 space-y-1 font-mono">
+              <p><span className="text-amber-400">--cidr</span> 10.0.0.0/24 <span className="text-gray-600"># scan specific subnet</span></p>
+              <p><span className="text-amber-400">--interval</span> 5m <span className="text-gray-600"># scan frequency</span></p>
+              <p><span className="text-amber-400">--ports</span> <span className="text-gray-600"># include port scan</span></p>
+            </div>
+          </div>
+          <button
+            onClick={checkSensorConnection}
+            disabled={checking}
+            className="w-full bg-blue-500 hover:bg-blue-400 disabled:bg-gray-700 text-white py-2 rounded-lg text-sm font-medium transition-colors"
+          >
+            {checking ? 'Checking...' : 'Check Connection'}
+          </button>
+        </div>
+      ),
+    },
+    {
+      title: 'Network Discovery',
+      content: (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-400">Your sensor is connected and discovering devices on your network.</p>
+          <div className="bg-gray-800 rounded-lg p-6 text-center">
+            <p className="text-3xl font-bold text-amber-400">{deviceCount}</p>
+            <p className="text-xs text-gray-400 mt-1">device{deviceCount !== 1 ? 's' : ''} discovered</p>
+          </div>
+          <p className="text-xs text-gray-400">The sensor will continue to discover new devices as they connect to your network.</p>
+        </div>
+      ),
+    },
+    {
+      title: 'DNS Monitoring',
+      content: (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-400">Choose how to monitor DNS activity on your network:</p>
+          <div className="space-y-3">
+            <label className="flex items-center gap-3 p-3 border border-gray-700 rounded-lg hover:bg-gray-800/50 cursor-pointer">
+              <input type="radio" name="dns" defaultChecked className="w-4 h-4" />
+              <div>
+                <p className="text-sm text-gray-200">Passive DNS Capture</p>
+                <p className="text-xs text-gray-500">Monitor DNS queries from your network</p>
+              </div>
+            </label>
+            <label className="flex items-center gap-3 p-3 border border-gray-700 rounded-lg hover:bg-gray-800/50 cursor-pointer">
+              <input type="radio" name="dns" className="w-4 h-4" />
+              <div>
+                <p className="text-sm text-gray-200">Pi-hole Integration</p>
+                <p className="text-xs text-gray-500">Connect to existing Pi-hole instance</p>
+              </div>
+            </label>
+            <label className="flex items-center gap-3 p-3 border border-gray-700 rounded-lg hover:bg-gray-800/50 cursor-pointer">
+              <input type="radio" name="dns" className="w-4 h-4" />
+              <div>
+                <p className="text-sm text-gray-200">AdGuard Integration</p>
+                <p className="text-xs text-gray-500">Connect to existing AdGuard instance</p>
+              </div>
+            </label>
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: 'All Set!',
+      content: (
+        <div className="text-center space-y-4">
+          <div className="flex justify-center">
+            <svg className="w-16 h-16 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <p className="text-gray-300 font-medium">You're all set!</p>
+          <p className="text-sm text-gray-400">Start exploring your network and monitoring threats.</p>
+          <div className="grid grid-cols-2 gap-3 pt-4">
+            <a href="#" className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-2 rounded-lg text-center transition-colors">View Devices</a>
+            <a href="#" className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-2 rounded-lg text-center transition-colors">View Threats</a>
+          </div>
+        </div>
+      ),
+    },
+  ];
+
+  const currentStep = steps[step];
+  const progress = ((step + 1) / steps.length) * 100;
+
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full p-6">
-        <h2 className="text-lg font-display mb-2">Connect a Sensor</h2>
-        <p className="text-gray-400 text-sm mb-5">
-          Vedetta uses lightweight sensors that run on your host to discover devices on your network. Install the sensor on any machine connected to your LAN.
-        </p>
-
-        <div className="bg-gray-800 rounded-lg p-4 mb-4">
-          <p className="text-xs text-gray-400 mb-2 font-medium">Quick start (macOS / Linux):</p>
-          <code className="text-sm text-teal-400 font-mono block whitespace-pre-wrap">
-{`cd sensor && go build -o vedetta-sensor ./cmd/vedetta-sensor
-sudo ./vedetta-sensor --core http://localhost:8080`}
-          </code>
-        </div>
-
-        <div className="bg-gray-800 rounded-lg p-4 mb-4">
-          <p className="text-xs text-gray-400 mb-2 font-medium">Options:</p>
-          <div className="text-sm text-gray-300 font-mono space-y-1">
-            <p><span className="text-amber-400">--cidr</span> 10.0.0.0/24 <span className="text-gray-500"># scan specific subnet</span></p>
-            <p><span className="text-amber-400">--interval</span> 5m <span className="text-gray-500"># scan frequency</span></p>
-            <p><span className="text-amber-400">--ports</span> <span className="text-gray-500"># include port scan</span></p>
-            <p><span className="text-amber-400">--primary</span> <span className="text-gray-500"># register as primary sensor</span></p>
-            <p><span className="text-amber-400">--once</span> <span className="text-gray-500"># single scan, then exit</span></p>
+        {/* Progress bar */}
+        <div className="mb-6">
+          <div className="h-1 bg-gray-800 rounded-full overflow-hidden">
+            <div className="h-full bg-amber-500 transition-all duration-300" style={{ width: `${progress}%` }} />
           </div>
+          <p className="text-xs text-gray-500 mt-2">{step + 1} of {steps.length}</p>
         </div>
 
-        <p className="text-gray-500 text-xs mb-4">
-          The sensor auto-detects your subnet and pushes discovered devices to Core. Run <code className="text-gray-400">sudo</code> for ARP-based discovery (recommended).
-        </p>
+        {/* Step title */}
+        <h2 className="text-xl font-display mb-4">{currentStep.title}</h2>
 
-        <button
-          onClick={onDismiss}
-          className="w-full bg-amber-500 hover:bg-amber-400 text-gray-950 py-2.5 rounded-lg text-sm font-medium transition-colors"
-        >
-          Got it
-        </button>
+        {/* Step content */}
+        <div className="mb-6">
+          {currentStep.content}
+        </div>
+
+        {/* Navigation buttons */}
+        <div className="flex gap-3">
+          {step > 0 && (
+            <button
+              onClick={() => setStep(step - 1)}
+              className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
+              Back
+            </button>
+          )}
+          <button
+            onClick={() => {
+              if (step < steps.length - 1) {
+                setStep(step + 1);
+              } else {
+                onDismiss();
+              }
+            }}
+            className="flex-1 bg-amber-500 hover:bg-amber-400 text-gray-950 py-2 rounded-lg text-sm font-medium transition-colors"
+          >
+            {step === steps.length - 1 ? 'Finish' : 'Continue'}
+          </button>
+          {step > 0 && step < steps.length - 1 && (
+            <button
+              onClick={onDismiss}
+              className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
+              Skip
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1631,6 +1797,9 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
   const [editName, setEditName] = useState('');
   const [editNotes, setEditNotes] = useState('');
   const [editSegment, setEditSegment] = useState('');
+  const [editDeviceType, setEditDeviceType] = useState('');
+  const [editOSFamily, setEditOSFamily] = useState('');
+  const [editModel, setEditModel] = useState('');
   const [saving, setSaving] = useState(false);
   const [checkedEvents, setCheckedEvents] = useState(new Set());
   const [bulkAction, setBulkAction] = useState(null); // null | 'ack' | 'suppress'
@@ -1716,6 +1885,9 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
             setEditName(d.custom_name || '');
             setEditNotes(d.notes || '');
             setEditSegment(d.segment || 'default');
+            setEditDeviceType(d.device_type || '');
+            setEditOSFamily(d.os_family || '');
+            setEditModel(d.model || '');
             setCheckedEvents(new Set());
             setBulkAction(null);
             setBulkReason('');
@@ -1800,6 +1972,43 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                   <option value="guest">Guest</option>
                 </select>
               </div>
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Device Type</label>
+                <select value={editDeviceType} onChange={(e) => setEditDeviceType(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
+                  <option value="">Auto-detect</option>
+                  <option value="computer">Computer</option>
+                  <option value="laptop">Laptop</option>
+                  <option value="phone">Phone</option>
+                  <option value="tablet">Tablet</option>
+                  <option value="smart_tv">Smart TV</option>
+                  <option value="streaming">Streaming Device</option>
+                  <option value="speaker">Smart Speaker</option>
+                  <option value="camera">Camera</option>
+                  <option value="printer">Printer</option>
+                  <option value="router">Router/Gateway</option>
+                  <option value="access_point">Access Point</option>
+                  <option value="nas">NAS</option>
+                  <option value="game_console">Game Console</option>
+                  <option value="iot_generic">IoT Device</option>
+                  <option value="wearable">Wearable</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">OS / Platform</label>
+                  <input type="text" value={editOSFamily} onChange={(e) => setEditOSFamily(e.target.value)}
+                    placeholder="e.g., macOS, Windows, iOS, Linux"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">Model</label>
+                  <input type="text" value={editModel} onChange={(e) => setEditModel(e.target.value)}
+                    placeholder="e.g., MacBook Pro, Ring Doorbell"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
+                </div>
+              </div>
               <button
                 disabled={saving}
                 onClick={() => {
@@ -1807,7 +2016,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                   fetch(`/api/v1/devices/${selectedDevice.device_id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ custom_name: editName, notes: editNotes, segment: editSegment }),
+                    body: JSON.stringify({ custom_name: editName, notes: editNotes, segment: editSegment, device_type: editDeviceType, os_family: editOSFamily, model: editModel }),
                   }).then(() => {
                     setSaving(false);
                     setSelectedDevice(null);

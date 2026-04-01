@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
@@ -11,6 +12,8 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/dnsingest"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 	"github.com/vedetta-network/vedetta/backend/internal/dnspoller"
+	"github.com/vedetta-network/vedetta/backend/internal/firewall"
+	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
 )
@@ -157,6 +160,46 @@ func main() {
 		adguardSrc := dnsingest.NewAdGuardSource(adguardPoller)
 		dnsManager.Register(adguardSrc)
 		log.Printf("AdGuard Home poller registered: url=%s interval=%s", adguardURL, adguardInterval)
+	}
+
+	// Set up firewall connector manager
+	fwSink := func(events []models.Event) error {
+		_, err := db.InsertEvents(events)
+		return err
+	}
+	fwManager := firewall.NewManager(fwSink)
+
+	// Optional: UniFi firewall connector
+	unifiHost := os.Getenv("VEDETTA_UNIFI_HOST")
+	unifiUser := os.Getenv("VEDETTA_UNIFI_USER")
+	unifiPass := os.Getenv("VEDETTA_UNIFI_PASS")
+	if unifiHost != "" && unifiUser != "" {
+		unifiPort := 443
+		if p := os.Getenv("VEDETTA_UNIFI_PORT"); p != "" {
+			if n, err := strconv.Atoi(p); err == nil {
+				unifiPort = n
+			}
+		}
+		unifiCfg := firewall.ConnectorConfig{
+			Name:          "unifi",
+			Type:          "unifi",
+			Host:          unifiHost,
+			Port:          unifiPort,
+			Username:      unifiUser,
+			Password:      unifiPass,
+			TLSSkipVerify: os.Getenv("VEDETTA_UNIFI_TLS_SKIP_VERIFY") == "true",
+			PollInterval:  60 * time.Second,
+			Enabled:       true,
+		}
+		unifiConn := firewall.NewUniFiConnector(unifiCfg)
+		fwManager.Register(unifiCfg, unifiConn)
+		log.Printf("UniFi firewall connector registered: host=%s", unifiHost)
+	}
+
+	if err := fwManager.Start(); err != nil {
+		log.Printf("WARNING: Firewall connector manager failed to start: %v", err)
+	} else {
+		defer fwManager.Stop()
 	}
 
 	// Start DNS ingestion manager

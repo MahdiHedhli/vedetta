@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/vedetta-network/vedetta/backend/internal/auth"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
@@ -92,13 +93,26 @@ func NewRouter(srv *Server) http.Handler {
 		r.Put("/scan/targets/{targetID}/toggle", srv.handleToggleTarget)
 		r.Post("/scan/targets/{targetID}/scan", srv.handleScanTarget)
 
+		// Authentication and token management
+		r.Get("/auth/setup-status", srv.handleSetupStatus)
+		r.Post("/auth/tokens", srv.handleCreateToken)
+		r.Route("/auth", func(r chi.Router) {
+			r.Use(auth.RequireAuth(srv.DB))
+			r.Get("/tokens", srv.handleListTokens)
+			r.Delete("/tokens/{tokenID}", srv.handleRevokeToken)
+		})
+
 		// Sensor ingest (native sensors push data to Core)
-		r.Post("/sensor/register", srv.handleSensorRegister)
-		r.Post("/sensor/devices", srv.handleSensorDevices)
-		r.Post("/sensor/dns", srv.handleSensorDNS)
-		r.Get("/sensor/list", srv.handleSensorList)
-		r.Get("/sensor/work", srv.handleSensorWork)
-		r.Put("/sensor/{sensorID}/primary", srv.handleSetPrimarySensor)
+		// Apply auth middleware to sensor routes
+		r.Route("/sensor", func(r chi.Router) {
+			r.Use(auth.RequireAuth(srv.DB))
+			r.Post("/register", srv.handleSensorRegister)
+			r.Post("/devices", srv.handleSensorDevices)
+			r.Post("/dns", srv.handleSensorDNS)
+			r.Get("/list", srv.handleSensorList)
+			r.Get("/work", srv.handleSensorWork)
+			r.Put("/{sensorID}/primary", srv.handleSetPrimarySensor)
+		})
 
 		// Activity log
 		r.Get("/logs", srv.handleLogs)
@@ -724,9 +738,28 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate a sensor-scoped authentication token
+	rawToken, token, err := auth.GenerateToken(auth.ScopeSensor, body.SensorID, "auto-generated-registration")
+	if err != nil {
+		log.Printf("Warning: failed to generate token for sensor %s: %v", body.SensorID, err)
+		// Continue anyway — sensor can still function but won't have auth
+	} else if err := s.DB.CreateToken(token); err != nil {
+		log.Printf("Warning: failed to store token for sensor %s: %v", body.SensorID, err)
+		// Continue anyway — sensor can still function but won't have auth
+	} else {
+		log.Printf("Sensor token generated: %s (label: %s)", token.TokenID, token.Label)
+	}
+
 	log.Printf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR)
 	s.logInfo("sensor", fmt.Sprintf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR))
-	writeJSON(w, http.StatusOK, map[string]any{"status": "registered", "sensor_id": body.SensorID})
+
+	response := map[string]any{"status": "registered", "sensor_id": body.SensorID}
+	if rawToken != "" {
+		response["token"] = rawToken
+		response["token_id"] = token.TokenID
+		response["token_warning"] = "save this token now — it will not be displayed again"
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
@@ -1124,6 +1157,10 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		CustomName string `json:"custom_name"`
 		Notes      string `json:"notes"`
 		Segment    string `json:"segment"`
+		DeviceType string `json:"device_type,omitempty"`
+		OSFamily   string `json:"os_family,omitempty"`
+		OSVersion  string `json:"os_version,omitempty"`
+		Model      string `json:"model,omitempty"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
@@ -1133,6 +1170,13 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	if err := s.DB.UpdateDeviceMeta(deviceID, body.CustomName, body.Notes, body.Segment); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+
+	// Update device fingerprint fields if provided (device correction)
+	if body.DeviceType != "" || body.OSFamily != "" || body.OSVersion != "" || body.Model != "" {
+		if err := s.DB.UpdateDeviceFingerprint(deviceID, body.DeviceType, body.OSFamily, body.OSVersion, body.Model); err != nil {
+			log.Printf("Failed to update device fingerprint: %v", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

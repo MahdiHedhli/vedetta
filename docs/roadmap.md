@@ -297,19 +297,29 @@ Dashboard UX (IMPLEMENTED):
 ---
 
 
-### M5 — Firewall connectors `NOT STARTED`
+### M5 — Firewall connectors `IN PROGRESS`
 
-**Planned V1 targets (in priority order):**
-1. **UniFi** (REST API — most prevalent in prosumer/SMB segment)
-2. **OpenWRT** (luci-rpc or ubus JSON-RPC — most popular open-source router firmware)
-3. **pfSense / OPNsense** (syslog via Fluent Bit + REST API for richer data)
-4. **MikroTik** (RouterOS API — popular in WISP and SMB deployments)
-5. More to come — community contributions welcome via `FirewallConnector` Go interface
+**Working:**
+- `Connector` Go interface defined in `backend/internal/firewall/connector.go` with 6 methods: `Name`, `Discover`, `Connect`, `Disconnect`, `Poll`, `Health`
+- `ConnectorConfig` struct with host, port, credentials, TLS, polling config
+- `FirewallEvent` type with normalized firewall log fields + `ToEvent()` conversion to Vedetta events
+- `Manager` in `backend/internal/firewall/manager.go` — registers connectors, runs background polling loops, thread-safe
+- **UniFi REST API connector** in `backend/internal/firewall/unifi.go` — full implementation supporting UDM/UDR (UniFi OS) and standalone controllers, cookie-based auth, IPS/IDS event polling, alarm collection, self-signed cert support
+- **DNS bypass detection** in `backend/internal/dnsintel/bypass.go` — detects hardcoded public DNS resolvers (Google, Cloudflare, Quad9, OpenDNS, NextDNS, AdGuard) and DoH/DoT provider domain queries
+- Wired into `main.go` with env-var configuration (`VEDETTA_UNIFI_HOST`, `VEDETTA_UNIFI_USER`, `VEDETTA_UNIFI_PASS`)
+- Community connector guide at `docs/connector-guide.md`
+- MockConnector for testing in `backend/internal/firewall/example_integration.go`
+
+**V1 targets (in priority order):**
+1. **UniFi** (REST API — BUILT)
+2. **OpenWRT** (luci-rpc or ubus JSON-RPC — planned)
+3. **pfSense / OPNsense** (syslog via Fluent Bit + REST API — planned)
+4. **MikroTik** (RouterOS API — planned)
+5. More to come — community contributions welcome via `Connector` Go interface
 
 **Notes:**
 - Fluent Bit syslog input is already configured in `collector/config/fluent-bit.conf` on UDP port 5140, exposed in `docker-compose.yml`
-- Connector interface should be documented so community contributors can add new ones
-- These surface as an optional step at the end of the setup wizard (M7, formerly M4), not a required install step
+- These surface as an optional step at the end of the setup wizard (M7), not a required install step
 
 **Research-informed additions (from doc 03, deep-dive-firewall-connectors.md):**
 
@@ -397,23 +407,33 @@ Community fingerprint contribution (from research/08):
 
 ---
 
-### M7 — Setup wizard and UX `NOT STARTED`
+### M7 — Setup wizard and UX `IN PROGRESS`
 
 > Moved after M6 — the wizard's onboarding flow depends on which features (firewall connectors, threat network telemetry, passive listeners) are available. Building it last ensures it covers the full feature set.
 
-**Planned:**
-- Onboarding wizard: network interface selection, Pi-hole/AdGuard Home connection (auto-detect or manual), firewall connector selection, telemetry opt-in with plain-language explanation
+**Working:**
+- **Multi-step onboarding wizard** in `frontend/src/App.jsx` (`SensorSetupDialog`): 5-step flow (Welcome → Deploy Sensor → Network Discovery → DNS Monitoring → Complete) with progress indicator, auto-advance on sensor connection, and live device counting
+- **Setup status endpoint** at `GET /api/v1/auth/setup-status` returning step completion state (core running, sensor connected, devices found, events flowing, auth configured) and counts
+- **Sensor-Core authentication** via Bearer tokens:
+  - `backend/internal/auth/` — token generation (32-byte random, SHA-256 hashed), scope-based access (sensor/admin)
+  - `backend/internal/auth/middleware.go` — chi middleware with fresh-install bypass (no tokens = all requests allowed)
+  - `backend/internal/store/tokens.go` — CRUD operations, validation, audit timestamps
+  - `siem/migrations/014_api_tokens.sql` — token storage schema
+  - Token management API: `POST /api/v1/auth/tokens`, `GET /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/{tokenID}`
+  - Auto-generates sensor-scoped token on sensor registration
+- **Device correction UI** in device detail panel: users can override auto-detected device type (16 categories), OS/platform, and model. Updates stored with `discovery_method = 'user_corrected'`
+- `UpdateDeviceFingerprint()` store method for user-corrected fingerprint data
+
+**Remaining:**
+- Firewall connector selection step in wizard
+- Telemetry opt-in with plain-language explanation
 - Target completion time: under 3 minutes for a standard install
 - Usability testing with 5+ non-technical users
 
-**Notes:**
-- The sensor setup dialog (`SensorSetupDialog` in `frontend/src/App.jsx`) is a good foundation — it surfaces when no sensors and no devices are detected
-- The subnet confirmation flow is partially scaffolded via `/api/v1/scan/subnets` and `PUT /api/v1/scan/cidr`
-
 **Research-informed additions (from docs 04, 08):**
-- Add AdGuard Home as alternative to Pi-hole in wizard (increasingly popular, has DoH/DoT built-in)
-- Add device correction UI: let users manually identify/correct device types, stored locally and optionally contributed to community fingerprint DB
-- Add "Threat Intel Status" dashboard card showing feed freshness and indicator counts
+- AdGuard Home as alternative to Pi-hole in wizard step (built)
+- Device correction UI (built)
+- "Threat Intel Status" dashboard card showing feed freshness and indicator counts (planned)
 
 ---
 

@@ -40,6 +40,7 @@ type detectionMeta struct {
 	Tunnel    *tunnelMeta    `json:"tunnel,omitempty"`
 	Beacon    *beaconMeta    `json:"beacon,omitempty"`
 	Rebinding *rebindingMeta `json:"rebinding,omitempty"`
+	Bypass    *bypassMeta    `json:"bypass,omitempty"`
 	ThreatDB  *threatDBMeta  `json:"threat_db,omitempty"`
 }
 
@@ -72,6 +73,12 @@ type threatDBMeta struct {
 	FeedTags   []string `json:"feed_tags"`
 	Source     string   `json:"source"`    // which feed (urlhaus, feodotracker, etc)
 	Indicator  string   `json:"indicator"` // the matching indicator value
+}
+
+type bypassMeta struct {
+	Provider string  `json:"provider"`
+	Method   string  `json:"method"` // "hardcoded_resolver" | "doh_dot_domain"
+	Score    float64 `json:"score"`
 }
 
 // Enrich runs all applicable detection algorithms on the event and
@@ -176,7 +183,48 @@ func (e *Enricher) Enrich(event *models.Event) {
 		}
 	}
 
-	// 5. DNS bypass detection — reserved for future server_ip integration
+	// 5. DNS bypass detection
+	// Alert when a device is querying well-known public DNS resolvers directly,
+	// bypassing the local network DNS (Pi-hole, router, etc.).
+	// This is a strong signal of IoT devices with hardcoded resolvers, or
+	// compromised devices trying to evade DNS-level security controls.
+	if event.Domain != "" && e.Bypass != nil {
+		// Check for hardcoded public DNS resolver IPs
+		if event.ResolvedIP != "" {
+			resolverIP, provider := e.Bypass.DetectPublicResolverBypass(event.ResolvedIP)
+			if resolverIP != "" {
+				event.Tags = appendUnique(event.Tags, "dns_bypass")
+				meta.Bypass = &bypassMeta{
+					Provider: provider,
+					Method:   "hardcoded_resolver",
+					Score:    0.6,
+				}
+				descriptions = append(descriptions, fmt.Sprintf(
+					"DNS bypass detected. This device queried a hardcoded public DNS resolver (%s, %s) instead of using the local DNS resolver (Pi-hole, router, or AdGuard). This is typical of IoT devices with embedded DNS settings or compromised devices trying to evade local DNS-level security controls.",
+					resolverIP, provider,
+				))
+				scores = append(scores, 0.6)
+			}
+		}
+
+		// Check for DoH/DoT domain queries if no hardcoded resolver was found
+		if meta.Bypass == nil && event.Domain != "" {
+			dohProvider := e.Bypass.DetectDoHDotBypass(event.Domain)
+			if dohProvider != "" {
+				event.Tags = appendUnique(event.Tags, "dns_bypass")
+				meta.Bypass = &bypassMeta{
+					Provider: dohProvider,
+					Method:   "doh_dot_domain",
+					Score:    0.5,
+				}
+				descriptions = append(descriptions, fmt.Sprintf(
+					"DNS bypass via DoH/DoT detected. This device queried a DNS-over-HTTPS or DNS-over-TLS provider domain (%s via %s), which bypasses local DNS filtering. This suggests the device is intentionally trying to circumvent network-level DNS security controls.",
+					event.Domain, dohProvider,
+				))
+				scores = append(scores, 0.5)
+			}
+		}
+	}
 
 	// 6. Threat intel domain lookup
 	if event.Domain != "" && e.ThreatDB != nil {
@@ -247,7 +295,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	}
 
 	// Serialize detection metadata as JSON
-	if meta.DGA != nil || meta.Tunnel != nil || meta.Beacon != nil || meta.Rebinding != nil || meta.ThreatDB != nil {
+	if meta.DGA != nil || meta.Tunnel != nil || meta.Beacon != nil || meta.Rebinding != nil || meta.Bypass != nil || meta.ThreatDB != nil {
 		if metaJSON, err := json.Marshal(meta); err == nil {
 			event.Metadata = string(metaJSON)
 		}
