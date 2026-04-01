@@ -57,6 +57,7 @@ export default function App() {
   const [threatStats, setThreatStats] = useState(null);
   const [threatTimeline, setThreatTimeline] = useState([]);
   const [suppressionRules, setSuppressionRules] = useState([]);
+  const [whitelistRules, setWhitelistRules] = useState([]);
 
   const fetchStatus = useCallback(() => {
     fetch('/api/v1/status')
@@ -96,11 +97,13 @@ export default function App() {
       fetch('/api/v1/events/stats').then((r) => r.json()).catch(() => ({})),
       fetch('/api/v1/events/timeline').then((r) => r.json()).catch(() => ({ timeline: [] })),
       fetch('/api/v1/suppression').then((r) => r.json()).catch(() => ({ rules: [] })),
-    ]).then(([eventsData, statsData, timelineData, suppressionData]) => {
+      fetch('/api/v1/whitelist').then((r) => r.json()).catch(() => ({ rules: [] })),
+    ]).then(([eventsData, statsData, timelineData, suppressionData, whitelistData]) => {
       setThreatEvents(eventsData.events || []);
       setThreatStats(statsData);
       setThreatTimeline(timelineData.timeline || []);
       setSuppressionRules(suppressionData.rules || []);
+      setWhitelistRules(whitelistData.rules || []);
     }).catch(() => {});
   }, []);
 
@@ -269,6 +272,15 @@ export default function App() {
                       Activity Log
                     </button>
                     <button
+                      onClick={() => { setView('whitelist'); setShowMenu(false); }}
+                      className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-3 transition-colors ${view === 'whitelist' ? 'bg-gray-800 text-white' : 'text-gray-300 hover:bg-gray-800 hover:text-white'}`}
+                    >
+                      <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      Whitelist Rules
+                    </button>
+                    <button
                       onClick={() => { setView('settings'); setShowMenu(false); }}
                       className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-3 transition-colors ${view === 'settings' ? 'bg-gray-800 text-white' : 'text-gray-300 hover:bg-gray-800 hover:text-white'}`}
                     >
@@ -298,11 +310,13 @@ export default function App() {
           <DevicesView devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus} threatEvents={threatEvents} onRefreshThreats={fetchThreatData} />
         ) : view === 'threats' ? (
           <ThreatsView events={threatEvents} stats={threatStats} timeline={threatTimeline} onRefresh={fetchThreatData}
-            devices={devices} suppressionRules={suppressionRules} onNavigate={setView} />
+            devices={devices} suppressionRules={suppressionRules} whitelistRules={whitelistRules} onNavigate={setView} />
         ) : view === 'sensors' ? (
           <SensorsView sensors={sensors} onSetup={() => setShowSetup(true)} onRefreshSensors={fetchSensors} />
         ) : view === 'logs' ? (
           <LogsView />
+        ) : view === 'whitelist' ? (
+          <WhitelistManagementView whitelistRules={whitelistRules} onRefresh={fetchThreatData} />
         ) : view === 'settings' ? (
           <SettingsView />
         ) : (
@@ -339,17 +353,96 @@ function ThreatIntelStatusCard({ stats, onClick }) {
   );
 }
 
+// --- Add Whitelist Rule (inline form) ---
+
+function AddWhitelistRule({ onAdd, onError }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [domainPattern, setDomainPattern] = useState('');
+  const [sourceIpPattern, setSourceIpPattern] = useState('');
+  const [tagMatch, setTagMatch] = useState('');
+  const [category, setCategory] = useState('custom');
+  const [saving, setSaving] = useState(false);
+
+  const doCreate = () => {
+    if (!name.trim()) return onError('Rule name is required');
+    if (!domainPattern.trim() && !sourceIpPattern.trim()) return onError('At least a domain or IP pattern is required');
+    setSaving(true);
+    fetch('/api/v1/whitelist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: name.trim(), domain_pattern: domainPattern.trim(), source_ip_pattern: sourceIpPattern.trim(),
+        tag_match: tagMatch.trim(), category, enabled: true,
+      }),
+    }).then(r => {
+      if (!r.ok) throw new Error(`Server returned ${r.status}`);
+      setOpen(false); setName(''); setDomainPattern(''); setSourceIpPattern(''); setTagMatch(''); setCategory('custom');
+      onAdd();
+    }).catch(err => onError(`Failed to create rule: ${err.message}`))
+      .finally(() => setSaving(false));
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="text-sm text-teal-400 hover:text-teal-300 transition-colors flex items-center gap-1">
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+        Add Custom Rule
+      </button>
+    );
+  }
+
+  return (
+    <div className="bg-gray-800/40 rounded-lg p-3 space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Rule name"
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:border-teal-500" />
+        <select value={category} onChange={(e) => setCategory(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:border-teal-500">
+          <option value="custom">Custom</option>
+          <option value="mdns">mDNS</option>
+          <option value="apple">Apple</option>
+          <option value="cloud">Cloud</option>
+          <option value="os_updates">OS Updates</option>
+          <option value="iot">IoT</option>
+        </select>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <input type="text" value={domainPattern} onChange={(e) => setDomainPattern(e.target.value)} placeholder="Domain (*.example.com)"
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-teal-500" />
+        <input type="text" value={sourceIpPattern} onChange={(e) => setSourceIpPattern(e.target.value)} placeholder="Source IP (10.0.0.*)"
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-teal-500" />
+        <input type="text" value={tagMatch} onChange={(e) => setTagMatch(e.target.value)} placeholder="Tag (beaconing)"
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-teal-500" />
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button onClick={() => setOpen(false)} className="text-xs text-gray-500 hover:text-gray-300 px-3 py-1">Cancel</button>
+        <button onClick={doCreate} disabled={saving}
+          className="text-xs bg-teal-500/20 text-teal-300 border border-teal-500/30 px-3 py-1.5 rounded hover:bg-teal-500/30 disabled:opacity-50 transition-colors">
+          {saving ? 'Creating...' : 'Create Rule'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // --- Threats View ---
 
-function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionRules, onNavigate }) {
+function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionRules, whitelistRules, onNavigate }) {
   const [severityFilter, setSeverityFilter] = useState('all');
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [showSuppressed, setShowSuppressed] = useState(false);
+  const [hideWhitelisted, setHideWhitelisted] = useState(true);
+  const [showWhitelistPanel, setShowWhitelistPanel] = useState(false);
   const [actionMode, setActionMode] = useState(null); // { eventId, mode: 'ack'|'suppress', reason: '' }
   const [refreshing, setRefreshing] = useState(false);
   const [actionError, setActionError] = useState(null);
   const [groupModal, setGroupModal] = useState(null); // { events: [], domain: '' }
   const [visibleCount, setVisibleCount] = useState(30);
+  const [showAckAllModal, setShowAckAllModal] = useState(false);
+  const [ackAllReason, setAckAllReason] = useState('');
+  const [ackAllProcessing, setAckAllProcessing] = useState(false);
 
   // Build device lookup by IP
   const deviceByIP = {};
@@ -371,6 +464,32 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   };
 
   const isSuppressed = (event) => findMatchingRule(event) !== null;
+
+  // Check if an event matches any enabled whitelist rule (glob matching)
+  const globMatch = (pattern, value) => {
+    if (!pattern || !value) return false;
+    // Convert glob to regex: * -> .*, escape other special chars
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+    try { return new RegExp(`^${escaped}$`, 'i').test(value); } catch { return false; }
+  };
+
+  const isWhitelisted = (event) => {
+    if (!whitelistRules || whitelistRules.length === 0) return false;
+    return whitelistRules.some(rule => {
+      if (!rule.enabled) return false;
+      let domainMatch = !rule.domain_pattern;
+      let ipMatch = !rule.source_ip_pattern;
+      let tagMatch = !rule.tag_match;
+      if (rule.domain_pattern && event.domain) domainMatch = globMatch(rule.domain_pattern, event.domain);
+      if (rule.source_ip_pattern && event.source_ip) ipMatch = globMatch(rule.source_ip_pattern, event.source_ip);
+      if (rule.tag_match && event.tags) tagMatch = event.tags.includes(rule.tag_match);
+      else if (rule.tag_match) tagMatch = false;
+      // All specified criteria must match
+      return domainMatch && ipMatch && tagMatch;
+    });
+  };
+
+  const whitelistedCount = events.filter(e => isWhitelisted(e)).length;
 
   // Group duplicate events (same domain + source_ip + tags within 5 min)
   // Now stores full event objects, not just IDs
@@ -408,8 +527,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     return true;
   });
 
-  const visibleEvents = baseFiltered.filter(e => !e.acknowledged && !isSuppressed(e));
-  const suppressedEvents = baseFiltered.filter(e => e.acknowledged || isSuppressed(e));
+  const afterWhitelist = hideWhitelisted ? baseFiltered.filter(e => !isWhitelisted(e)) : baseFiltered;
+  const visibleEvents = afterWhitelist.filter(e => !e.acknowledged && !isSuppressed(e));
+  const suppressedEvents = afterWhitelist.filter(e => e.acknowledged || isSuppressed(e));
   const displayEvents = showSuppressed ? suppressedEvents : visibleEvents;
   const grouped = groupEvents(displayEvents);
   const paginatedGroups = grouped.slice(0, visibleCount);
@@ -539,18 +659,115 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
         <div>
           <h2 className="text-2xl font-display">Threat Events</h2>
           <p className="text-gray-400 text-sm mt-1">
-            {visibleEvents.length} active{suppressedEvents.length > 0 ? `, ${suppressedEvents.length} suppressed` : ''} — detection and anomaly tracking
+            {visibleEvents.length} active{suppressedEvents.length > 0 ? `, ${suppressedEvents.length} suppressed` : ''}
+            {hideWhitelisted && whitelistedCount > 0 ? ` · ${whitelistedCount} hidden by whitelist` : ''}
           </p>
         </div>
-        <button
-          onClick={doRefresh}
-          disabled={refreshing}
-          className="bg-amber-500 hover:bg-amber-400 disabled:bg-amber-800 disabled:text-amber-600 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-        >
-          {refreshing && <Spinner />}
-          {refreshing ? 'Refreshing...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowWhitelistPanel(!showWhitelistPanel)}
+            className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+              showWhitelistPanel ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'
+            }`}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+            Whitelist{whitelistRules.filter(r => r.enabled).length > 0 ? ` (${whitelistRules.filter(r => r.enabled).length})` : ''}
+          </button>
+          {visibleEvents.length > 0 && (
+            <button
+              onClick={() => setShowAckAllModal(true)}
+              className="bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
+              Acknowledge All
+            </button>
+          )}
+          <button
+            onClick={doRefresh}
+            disabled={refreshing}
+            className="bg-amber-500 hover:bg-amber-400 disabled:bg-amber-800 disabled:text-amber-600 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            {refreshing && <Spinner />}
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        </div>
       </div>
+
+      {/* Acknowledge All Modal */}
+      {showAckAllModal && (
+        <>
+          <div className="fixed inset-0 bg-black/60 z-40" onClick={() => !ackAllProcessing && setShowAckAllModal(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-gray-800 rounded-lg max-w-md w-full shadow-xl">
+              <div className="border-b border-gray-800 px-6 py-4">
+                <h3 className="text-lg font-medium text-white">Acknowledge All Threat Events</h3>
+              </div>
+              <div className="px-6 py-4 space-y-4">
+                <div className="bg-amber-950/30 border border-amber-900/50 rounded-lg p-3 flex gap-3">
+                  <svg className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4v2m0 4v2M8.228 9.228A9 9 0 1120.228 20.228M12 5v4m0 4v4" />
+                  </svg>
+                  <p className="text-sm text-amber-300">This will acknowledge and clear all existing threat alerts from the active view. It will NOT suppress future alerts matching these patterns. Acknowledged events can still be viewed by toggling the suppressed filter.</p>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">Reason (optional)</label>
+                  <input
+                    type="text"
+                    value={ackAllReason}
+                    onChange={(e) => setAckAllReason(e.target.value)}
+                    placeholder="e.g., Initial baseline, reviewed all events"
+                    disabled={ackAllProcessing}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                  />
+                </div>
+              </div>
+              <div className="border-t border-gray-800 px-6 py-4 flex items-center justify-end gap-3">
+                <button
+                  onClick={() => !ackAllProcessing && setShowAckAllModal(false)}
+                  disabled={ackAllProcessing}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    setAckAllProcessing(true);
+                    setActionError(null);
+                    let completed = 0;
+                    let failed = 0;
+                    for (const event of visibleEvents) {
+                      try {
+                        const r = await fetch(`/api/v1/events/${event.event_id}/ack`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ reason: ackAllReason }),
+                        });
+                        if (r.ok) completed++;
+                        else failed++;
+                      } catch {
+                        failed++;
+                      }
+                    }
+                    setAckAllProcessing(false);
+                    setShowAckAllModal(false);
+                    setAckAllReason('');
+                    if (failed === 0) {
+                      onRefresh();
+                    } else {
+                      setActionError(`Acknowledged ${completed} events, ${failed} failed`);
+                      setTimeout(() => onRefresh(), 500);
+                    }
+                  }}
+                  disabled={ackAllProcessing}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-amber-500 text-gray-950 hover:bg-amber-400 transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  {ackAllProcessing && <Spinner />}
+                  {ackAllProcessing ? 'Acknowledging...' : 'Yes, Acknowledge All'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Error toast */}
       {actionError && (
@@ -594,6 +811,95 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
         </div>
       )}
 
+      {/* Whitelist Management Panel */}
+      {showWhitelistPanel && (
+        <div className="bg-gray-900 border border-teal-500/20 rounded-lg p-5 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-medium text-teal-300">Known Traffic Whitelist</h3>
+              <p className="text-xs text-gray-500 mt-1">Auto-hide expected home network traffic. Toggle rules on/off to tune your signal-to-noise ratio.</p>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className="text-xs text-gray-400">Hide whitelisted</span>
+              <div className={`relative w-9 h-5 rounded-full transition-colors ${hideWhitelisted ? 'bg-teal-500' : 'bg-gray-700'}`}
+                onClick={() => setHideWhitelisted(!hideWhitelisted)}>
+                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${hideWhitelisted ? 'translate-x-4' : 'translate-x-0.5'}`} />
+              </div>
+            </label>
+          </div>
+          {(() => {
+            const categories = [...new Set((whitelistRules || []).map(r => r.category))].sort();
+            const categoryLabels = { apple: 'Apple', mdns: 'mDNS / Bonjour', cloud: 'Cloud Services', os_updates: 'OS Updates', iot: 'IoT / Smart Home', custom: 'Custom' };
+            const toggleRule = (ruleId, enabled) => {
+              fetch(`/api/v1/whitelist/${ruleId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled }),
+              }).then(r => { if (r.ok) onRefresh(); else setActionError('Failed to update whitelist rule'); })
+                .catch(() => setActionError('Failed to update whitelist rule'));
+            };
+            const deleteRule = (ruleId) => {
+              fetch(`/api/v1/whitelist/${ruleId}`, { method: 'DELETE' })
+                .then(r => { if (r.ok) onRefresh(); else r.text().then(t => setActionError(t || 'Cannot delete default rules')); })
+                .catch(() => setActionError('Failed to delete whitelist rule'));
+            };
+            return categories.length > 0 ? (
+              <div className="space-y-4">
+                {categories.map(cat => (
+                  <div key={cat}>
+                    <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">{categoryLabels[cat] || cat}</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {whitelistRules.filter(r => r.category === cat).map(rule => (
+                        <div key={rule.rule_id} className={`flex items-center justify-between bg-gray-800/60 rounded-lg px-3 py-2 ${
+                          rule.enabled ? '' : 'opacity-50'
+                        }`}>
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <div className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${rule.enabled ? 'bg-teal-500' : 'bg-gray-700'}`}
+                              onClick={() => toggleRule(rule.rule_id, !rule.enabled)}>
+                              <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${rule.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-sm text-gray-200 block truncate">{rule.name}</span>
+                              <span className="text-xs text-gray-500 font-mono block truncate">
+                                {rule.domain_pattern || rule.source_ip_pattern || '—'}
+                                {rule.tag_match ? ` [${rule.tag_match}]` : ''}
+                              </span>
+                            </div>
+                          </div>
+                          {!rule.is_default && (
+                            <button onClick={() => deleteRule(rule.rule_id)}
+                              className="text-gray-600 hover:text-red-400 text-xs ml-2 shrink-0">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <div className="border-t border-gray-800 pt-3">
+                  <AddWhitelistRule onAdd={() => onRefresh()} onError={setActionError} />
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-4">
+                <p className="text-gray-500 text-sm mb-3">No whitelist rules loaded yet.</p>
+                <button
+                  onClick={() => {
+                    fetch('/api/v1/whitelist/seed', { method: 'POST' })
+                      .then(r => { if (r.ok) onRefresh(); })
+                      .catch(() => {});
+                  }}
+                  className="bg-teal-500/20 text-teal-300 border border-teal-500/30 px-4 py-2 rounded-lg text-sm hover:bg-teal-500/30 transition-colors"
+                >
+                  Load Default Rules
+                </button>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {/* Severity Filter + Suppressed Toggle */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-2">
@@ -609,14 +915,24 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
             </button>
           ))}
         </div>
-        <button
-          onClick={() => setShowSuppressed(!showSuppressed)}
-          className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-            showSuppressed ? 'bg-gray-600 text-white' : 'bg-gray-800 text-gray-500 hover:text-white'
-          }`}
-        >
-          {showSuppressed ? `Showing ${suppressedEvents.length} suppressed` : `${suppressedEvents.length} suppressed`}
-        </button>
+        <div className="flex items-center gap-2">
+          {hideWhitelisted && whitelistedCount > 0 && (
+            <button
+              onClick={() => setHideWhitelisted(false)}
+              className="px-3 py-1 rounded-full text-xs font-medium bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 transition-colors"
+            >
+              {whitelistedCount} whitelisted
+            </button>
+          )}
+          <button
+            onClick={() => setShowSuppressed(!showSuppressed)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              showSuppressed ? 'bg-gray-600 text-white' : 'bg-gray-800 text-gray-500 hover:text-white'
+            }`}
+          >
+            {showSuppressed ? `Showing ${suppressedEvents.length} suppressed` : `${suppressedEvents.length} suppressed`}
+          </button>
+        </div>
       </div>
 
       {/* Events Table */}
@@ -728,6 +1044,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                             )}
                             {eventState.type === 'suppressed' && (
                               <span className="text-xs text-gray-400 px-2 py-0.5 bg-gray-500/10 rounded w-fit">suppressed</span>
+                            )}
+                            {!hideWhitelisted && isWhitelisted(event) && (
+                              <span className="text-xs text-teal-400 px-2 py-0.5 bg-teal-500/10 rounded w-fit">whitelisted</span>
                             )}
                           </div>
                         </td>
@@ -1609,26 +1928,30 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                   )}
 
                   {/* Select all checkbox */}
-                  <div className="flex items-center gap-2 mb-2 px-1">
+                  <div className="flex items-center gap-2 mb-2 px-1 cursor-pointer" onClick={toggleAll}>
                     <input
                       type="checkbox"
                       checked={allChecked}
                       onChange={toggleAll}
+                      style={{ accentColor: '#f59e0b' }}
                       className="rounded border-gray-600 w-3.5 h-3.5"
+                      onClick={(e) => e.stopPropagation()}
                     />
                     <span className="text-xs text-gray-500">Select all</span>
                   </div>
 
                   <div className="space-y-1.5 max-h-72 overflow-y-auto">
                     {deviceThreats.map((evt) => (
-                      <div key={evt.event_id} className={`rounded p-3 text-sm flex items-start gap-3 ${
+                      <div key={evt.event_id} className={`rounded p-3 text-sm flex items-start gap-3 cursor-pointer ${
                         checkedEvents.has(evt.event_id) ? 'bg-amber-500/5 border border-amber-500/20' : 'bg-gray-800/50'
-                      } ${evt.acknowledged ? 'opacity-50' : ''}`}>
+                      } ${evt.acknowledged ? 'opacity-50' : ''}`} onClick={() => toggleOne(evt.event_id)}>
                         <input
                           type="checkbox"
                           checked={checkedEvents.has(evt.event_id)}
                           onChange={() => toggleOne(evt.event_id)}
+                          style={{ accentColor: '#f59e0b' }}
                           className="rounded border-gray-600 mt-0.5 w-3.5 h-3.5 shrink-0"
+                          onClick={(e) => e.stopPropagation()}
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between">
@@ -1972,6 +2295,113 @@ function LogsView() {
       ) : (
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
           <p className="text-gray-500">No activity logged yet. Trigger a scan or connect a sensor to see events here.</p>
+        </div>
+      )}
+    </>
+  );
+}
+
+// --- Whitelist Management View ---
+
+function WhitelistManagementView({ whitelistRules, onRefresh }) {
+  const [actionError, setActionError] = useState(null);
+
+  const toggleRule = (ruleId, enabled) => {
+    fetch(`/api/v1/whitelist/${ruleId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }).then(r => {
+      if (r.ok) onRefresh();
+      else setActionError('Failed to update whitelist rule');
+    }).catch(() => setActionError('Failed to update whitelist rule'));
+  };
+
+  const deleteRule = (ruleId) => {
+    fetch(`/api/v1/whitelist/${ruleId}`, { method: 'DELETE' })
+      .then(r => {
+        if (r.ok) onRefresh();
+        else r.text().then(t => setActionError(t || 'Cannot delete default rules'));
+      }).catch(() => setActionError('Failed to delete whitelist rule'));
+  };
+
+  const categories = [...new Set((whitelistRules || []).map(r => r.category))].sort();
+  const categoryLabels = {
+    apple: 'Apple',
+    mdns: 'mDNS / Bonjour',
+    cloud: 'Cloud Services',
+    os_updates: 'OS Updates',
+    iot: 'IoT / Smart Home',
+    custom: 'Custom'
+  };
+
+  return (
+    <>
+      <div className="mb-6">
+        <h2 className="text-2xl font-display">Whitelist Rules</h2>
+        <p className="text-gray-400 text-sm mt-1">Manage expected home network traffic to reduce alert noise</p>
+      </div>
+
+      {/* Error toast */}
+      {actionError && (
+        <div className="bg-red-950/30 border border-red-900/50 rounded-lg p-3 mb-4 flex items-center justify-between">
+          <span className="text-sm text-red-300">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-200 text-sm ml-3">Dismiss</button>
+        </div>
+      )}
+
+      {categories.length > 0 ? (
+        <div className="space-y-6">
+          {categories.map(cat => (
+            <div key={cat} className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+              <h3 className="text-sm font-medium text-gray-300 uppercase tracking-wider mb-4">{categoryLabels[cat] || cat}</h3>
+              <div className="space-y-2">
+                {whitelistRules.filter(r => r.category === cat).map(rule => (
+                  <div key={rule.rule_id} className={`flex items-center justify-between bg-gray-800/50 rounded-lg px-4 py-3 ${
+                    rule.enabled ? '' : 'opacity-50'
+                  }`}>
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${rule.enabled ? 'bg-teal-500' : 'bg-gray-700'}`}
+                        onClick={() => toggleRule(rule.rule_id, !rule.enabled)}>
+                        <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${rule.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-sm text-gray-200 block">{rule.name}</span>
+                        <div className="text-xs text-gray-500 font-mono space-y-0.5">
+                          {rule.domain_pattern && <div>Domain: {rule.domain_pattern}</div>}
+                          {rule.source_ip_pattern && <div>IP: {rule.source_ip_pattern}</div>}
+                          {rule.tag_match && <div>Tag: {rule.tag_match}</div>}
+                        </div>
+                      </div>
+                    </div>
+                    {!rule.is_default && (
+                      <button onClick={() => deleteRule(rule.rule_id)}
+                        className="text-gray-600 hover:text-red-400 text-xs ml-2 shrink-0">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+            <AddWhitelistRule onAdd={() => onRefresh()} onError={setActionError} />
+          </div>
+        </div>
+      ) : (
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-8 text-center">
+          <p className="text-gray-500 text-sm mb-4">No whitelist rules loaded yet.</p>
+          <button
+            onClick={() => {
+              fetch('/api/v1/whitelist/seed', { method: 'POST' })
+                .then(r => { if (r.ok) onRefresh(); })
+                .catch(() => {});
+            }}
+            className="bg-teal-500/20 text-teal-300 border border-teal-500/30 px-4 py-2 rounded-lg text-sm hover:bg-teal-500/30 transition-colors"
+          >
+            Load Default Rules
+          </button>
         </div>
       )}
     </>

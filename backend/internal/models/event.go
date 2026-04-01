@@ -86,3 +86,17 @@ type ScanTarget struct {
 	DNSCapture    bool       `json:"dns_capture" db:"dns_capture"`
 	DNSInterface  string     `json:"dns_interface,omitempty" db:"dns_interface"` // which NIC to capture DNS on
 }
+
+// WhitelistRule defines a known-traffic pattern to filter expected home network noise.
+type WhitelistRule struct {
+	RuleID          string    `json:"rule_id" db:"rule_id"`
+	Name            string    `json:"name" db:"name"`
+	Description     string    `json:"description,omitempty" db:"description"`
+	DomainPattern   string    `json:"domain_pattern,omitempty" db:"domain_pattern"`
+	SourceIPPattern string    `json:"source_ip_pattern,omitempty" db:"source_ip_pattern"`
+	TagMatch        string    `json:"tag_match,omitempty" db:"tag_match"`
+	Category        string    `json:"category" db:"category"`
+	IsDefault       bool      `json:"is_default" db:"is_default"`
+	Enabled         bool      `json:"enabled" db:"enabled"`
+	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+}

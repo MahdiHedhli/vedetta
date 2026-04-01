@@ -33,6 +33,11 @@ func main() {
 	}
 	defer db.Close()
 
+	// Seed default whitelist rules if none exist
+	if err := db.SeedDefaultWhitelistRules(); err != nil {
+		log.Printf("WARNING: failed to seed default whitelist rules: %v", err)
+	}
+
 	// Start retention enforcer (daily cleanup of old events)
 	stopRetention := db.StartRetentionEnforcer()
 	defer stopRetention()

@@ -2,7 +2,17 @@
 
 **Your network, under watch.** Open-source security monitoring for homes and small businesses.
 
-Vedetta is the watchtower on your network — it sees everything and explains it simply. Install in one command, run on a Raspberry Pi, and get enterprise-grade network visibility without the enterprise learning curve. Vedetta monitors your network with device discovery, passive DNS analysis, and community-powered threat intelligence. Users who opt in contribute anonymized telemetry to a shared threat network — every Vedetta instance makes every other instance smarter.
+Vedetta is the watchtower on your network — it sees everything and explains it simply. Install in one command, run on a Raspberry Pi, and get enterprise-grade network visibility without the enterprise learning curve.
+
+### What's included
+
+- **DNS threat hunting** with 5 detection engines: DGA detection (Shannon entropy), beaconing detection (callback patterns), DNS tunneling, DNS rebinding, and DNS bypass detection
+- **Passive DNS capture** via libpcap — zero-config, no DNS proxy needed
+- **Pi-hole integration** for DNS event enrichment
+- **Device discovery** via nmap + OUI lookup and hostname fingerprinting
+- **Community threat intelligence** (planned) — shared, anonymized threat feeds
+- **Known-traffic whitelist** with 20 default rules (Apple, mDNS, cloud services, OS updates, etc.)
+- **Event management** — acknowledge, suppress, bulk manage, and deduplicate threats
 
 ## Quick Start
 
@@ -17,7 +27,18 @@ docker compose up -d
 Dashboard: [http://localhost:3107](http://localhost:3107)
 API: [http://localhost:8080/api/v1/status](http://localhost:8080/api/v1/status)
 
-### 2. Deploy a Sensor
+### 2. Update Vedetta
+
+```bash
+# Update all services (pull latest code + rebuild)
+./scripts/update-all.sh
+
+# Or update individual components
+./scripts/update-core.sh     # Core services only
+./scripts/update-sensor.sh   # Sensor binary only
+```
+
+### 3. Deploy a Sensor
 
 Sensors are lightweight native binaries that run on your LAN hosts and push device discovery data back to Core. You need at least one sensor to start discovering devices.
 
@@ -38,6 +59,44 @@ sudo ./vedetta-sensor --core http://<CORE_IP>:8080
 The sensor auto-detects the local subnet, registers with Core, and begins scanning on a 5-minute cycle. Use `sudo` for ARP-based MAC address and vendor discovery.
 
 See [Deploying Sensors](#deploying-sensors) for remote deployment, service management, and multi-NIC configurations.
+
+## Features
+
+### DNS Threat Detection
+
+Five detection engines analyze DNS traffic in real-time:
+
+- **DGA Detection** — Shannon entropy scoring to identify algorithmically generated domains
+- **Beaconing Detection** — Recognizes regular callback patterns indicating command & control
+- **DNS Tunnel Detection** — Detects subdomain exfiltration and data tunneling attempts
+- **DNS Rebinding Detection** — Identifies public→private IP transitions that could bypass firewalls
+- **DNS Bypass Detection** — Catches hardcoded resolver queries and DNS-over-HTTPS tunnels
+
+### Multi-Source DNS Capture
+
+- **Tier 1:** Passive libpcap sniffing via gopacket (zero-config, enabled by default)
+- **Tier 2:** Pi-hole REST API polling (60-second intervals)
+- **Tier 3:** Embedded DNS resolver (planned)
+- **Tier 4:** iptables DNAT intercept (planned, Linux router mode)
+
+### Device Discovery & Fingerprinting
+
+Active nmap scanning with OUI lookup, hostname pattern matching, and multi-signal fusion scoring (confidence 0.2–0.95).
+
+### Threat Intelligence
+
+abuse.ch feeds (URLhaus, Feodo Tracker, SSLBL) with Bloom filter for O(1) lookups. All detection works offline — no external API calls required for threat matching.
+
+### Event Management
+
+- Acknowledge or suppress individual events or in bulk
+- Suppression rules — auto-hide matching future events
+- Known-traffic whitelist with 20 default rules
+- Event grouping and deduplication
+
+### Dashboard
+
+React + Tailwind dark-theme UI featuring device inventory, threat events with severity filtering, sensor management, scan target configuration, and activity logging.
 
 ## Architecture
 
@@ -63,10 +122,15 @@ vedetta/
 |---------|------|-------------|
 | Backend | 8080 | Go API — device storage, scan coordination, event ingest |
 | Frontend | 3107 | React dashboard (configurable via `VEDETTA_FRONTEND_PORT`) |
-| Sensor | — | Native binary — nmap-based device discovery, DNS capture, pushes to Core |
+| Sensor | — | Native binary — nmap-based device discovery, passive DNS capture, pushes to Core |
 | Collector | 5140/udp | Fluent Bit — ingests firewall syslog (DNS now captured directly by sensor) |
 | Telemetry | — | Opt-in daemon — PII-stripped event batching to threat network |
 | Threat Network | 9090 | Central threat intel backend |
+
+## Hardware Requirements
+
+- **Core:** Raspberry Pi 4 (4GB RAM) or better. Docker + Docker Compose required.
+- **Sensor:** Any Linux, macOS, or Windows (planned) host on the target network segment. Requires nmap.
 
 ## Deploying Sensors
 
@@ -97,6 +161,7 @@ curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor
 - **Fedora / RHEL / Rocky / AlmaLinux** — installs via dnf/yum
 - **Alpine** — installs via apk
 - **Arch / Manjaro** — installs via pacman
+- **Windows** (planned)
 
 ### Manual Install
 
@@ -190,10 +255,25 @@ Device fingerprinting (MAC address, vendor, hostname) relies on ARP, which is a 
 
 For full fingerprinting on every segment, deploy a sensor on each network — or use a host with NICs on all segments you want to monitor.
 
-## Hardware Requirements
+## Firewall Integration
 
-- **Core:** Raspberry Pi 4 (4 GB RAM, 32 GB storage) or better, with Docker and Docker Compose
-- **Sensor:** Any Linux/macOS host on the target network segment, with nmap installed
+### Planned Integrations
+
+Firewall log ingestion is coming in a future release. Planned targets (in priority order):
+
+1. UniFi (REST API)
+2. OpenWRT (ubus JSON-RPC)
+3. pfSense / OPNsense (syslog + REST API)
+4. MikroTik (RouterOS API)
+
+Fluent Bit syslog input is already configured on UDP port 5140.
+
+## Documentation Links
+
+- [Architecture Reference](docs/architecture.md)
+- [Project Roadmap](docs/roadmap.md)
+- [Event Schema](docs/schema.md)
+- [Sensor Architecture](docs/sensor-architecture.md)
 
 ## License
 

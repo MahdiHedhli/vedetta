@@ -1,7 +1,7 @@
 # Vedetta — Project Roadmap
 
 > Version: 2.0.0
-> Last updated: 2026-03-30
+> Last updated: 2026-04-01
 > Status: Active development — V1 in progress
 > Research integration: 17 research documents (8 capability areas + 7 deep dives) reviewed and incorporated
 
@@ -96,8 +96,16 @@ This architecture needs a dedicated doc at `docs/sensor-architecture.md` — see
 - Sensor tracking table with `first_seen`, `last_seen`, `status` in `backend/internal/store/sensors.go`
 - Frontend dashboard with device table, new device alerts (24h), segment filtering, scan targets UI, sensor setup dialog
 
+**Supported platforms:**
+- Linux (native binary with full ARP/packet capture capabilities)
+- macOS (native binary, requires manual network interface configuration)
+- Windows (planned Phase 3 — cross-compile to GOOS=windows, requires npcap/WinPcap for Layer 2 scanning)
+
 **Known gaps:**
 - Migration runner only applies the inline fallback schema, not `siem/migrations/002_scan_targets.sql`. Need a proper sequential migration runner with a `schema_migrations` tracking table.
+
+**Planned extensions:**
+- **Windows native sensor:** Cross-compile sensor binary for Windows (GOOS=windows). Requires npcap or WinPcap for Layer 2 scanning and passive DNS capture. Windows service registration via `sc.exe` or NSSM. Priority: Phase 3 alongside other passive listener work.
 
 **Research-informed additions (from docs 01, 08, deep-dive-passive-discovery-go.md):**
 - Add passive ARP listener to sensor for real-time device detection between nmap intervals
@@ -175,7 +183,7 @@ Pi-hole is now repositioned from a requirement to one of four optional DNS intel
 - **Status:** Planned Phase 2 (requires router-mode setup doc).
 
 **Encrypted DNS handling (DoH/DoT complement):**
-- **Block outbound DoH/DoT at firewall:** If Vedetta is also a firewall connector (M5), block outbound HTTPS/TLS to known DoH/DoT providers (1.1.1.1:443, 8.8.8.8:443, etc.).
+- **Block outbound DoH/DoT at firewall:** If Vedetta is also a firewall connector (M5), block outbound HTTPS/TLS to known DoH/DoT providers (1.1.1.1:443, 8.8.8.8:443, etc.) for analysis and blocking.
 - **Run local DoH/DoT endpoint:** Extend Tier 2 resolver to also serve DoH (HTTPS) and DoT (TLS on port 853) so devices can encrypt to Vedetta instead of external providers.
 - **Fingerprint encrypted DNS flows:** When a device makes TLS connections to known DoH/DoT IPs, flag as `encrypted_dns_detected` event with high confidence (DNS bypass signal).
 
@@ -233,9 +241,9 @@ CREATE INDEX idx_ti_last_seen ON threat_indicators(last_seen);
 
 ---
 
-### M3.5 — Passive discovery & device fingerprinting `PARTIAL`
+### M4 — Passive discovery & device fingerprinting `PARTIAL`
 
-> Inserted between M3 and M4 based on research findings. This extends M1's device discovery into a competitive UX differentiator.
+> Extends M1's device discovery into a competitive UX differentiator. Research-driven milestone based on docs 01, 08, and deep-dive-passive-discovery-go.md.
 
 **Research source:** docs 01, 08, deep-dive-passive-discovery-go.md
 
@@ -257,6 +265,7 @@ Passive listeners in sensor (run continuously alongside existing nmap scheduler)
 - **DHCP sniffer:** Extract option 12 (hostname), option 60 (vendor class), option 55 (parameter request list fingerprint). Use `insomniacslk/dhcp` for parsing. Status: Planned Phase 3.
 - **mDNS listener:** `hashicorp/mdns` — parse service types (`_airplay._tcp`, `_googlecast._tcp`, etc.) and TXT records for model names. Status: Planned Phase 3.
 - **SSDP/UPnP listener:** `koron/go-ssdp` + `huin/goupnp` — parse NOTIFY announcements, fetch device description XML for manufacturer/model. Status: Planned Phase 3.
+- **NAT-PMP/PCP listener:** Monitor for port mapping requests (RFC 6886 NAT-PMP, RFC 6887 PCP). IoT devices opening unexpected port forwards is a strong indicator of compromise. Passive observation of multicast announcements on port 5350/5351. Status: Planned Phase 3.
 
 Device fingerprint database (curated local DB, ~8MB total — BUILT):
 - **Implementation notes:** Fingerbank SQLite is commercially licensed and multi-GB — too large for Pi 4. Vedetta built a curated local alternative:
@@ -287,34 +296,20 @@ Dashboard UX (IMPLEMENTED):
 
 ---
 
-### M4 — Setup wizard and UX `NOT STARTED`
-
-**Planned:**
-- Onboarding wizard: network interface selection, Pi-hole/AdGuard Home connection (auto-detect or manual), telemetry opt-in with plain-language explanation, optional firewall connector setup
-- Target completion time: under 3 minutes for a standard install
-- Usability testing with 5+ non-technical users
-
-**Notes:**
-- The sensor setup dialog (`SensorSetupDialog` in `frontend/src/App.jsx`) is a good foundation — it surfaces when no sensors and no devices are detected
-- The subnet confirmation flow is partially scaffolded via `/api/v1/scan/subnets` and `PUT /api/v1/scan/cidr`
-
-**Research-informed additions (from docs 04, 08):**
-- Add AdGuard Home as alternative to Pi-hole in wizard (increasingly popular, has DoH/DoT built-in)
-- Add device correction UI: let users manually identify/correct device types, stored locally and optionally contributed to community fingerprint DB
-- Add "Threat Intel Status" dashboard card showing feed freshness and indicator counts
-
----
 
 ### M5 — Firewall connectors `NOT STARTED`
 
-**Planned V1 targets:**
-- UniFi (REST API — most prevalent in prosumer/SMB segment)
-- pfSense or OPNsense (syslog via Fluent Bit input plugin)
+**Planned V1 targets (in priority order):**
+1. **UniFi** (REST API — most prevalent in prosumer/SMB segment)
+2. **OpenWRT** (luci-rpc or ubus JSON-RPC — most popular open-source router firmware)
+3. **pfSense / OPNsense** (syslog via Fluent Bit + REST API for richer data)
+4. **MikroTik** (RouterOS API — popular in WISP and SMB deployments)
+5. More to come — community contributions welcome via `FirewallConnector` Go interface
 
 **Notes:**
 - Fluent Bit syslog input is already configured in `collector/config/fluent-bit.conf` on UDP port 5140, exposed in `docker-compose.yml`
 - Connector interface should be documented so community contributors can add new ones
-- These surface as an optional step at the end of the setup wizard (M4), not a required install step
+- These surface as an optional step at the end of the setup wizard (M7, formerly M4), not a required install step
 
 **Research-informed additions (from doc 03, deep-dive-firewall-connectors.md):**
 
@@ -402,7 +397,44 @@ Community fingerprint contribution (from research/08):
 
 ---
 
-### M7 — V1 public release `NOT STARTED`
+### M7 — Setup wizard and UX `NOT STARTED`
+
+> Moved after M6 — the wizard's onboarding flow depends on which features (firewall connectors, threat network telemetry, passive listeners) are available. Building it last ensures it covers the full feature set.
+
+**Planned:**
+- Onboarding wizard: network interface selection, Pi-hole/AdGuard Home connection (auto-detect or manual), firewall connector selection, telemetry opt-in with plain-language explanation
+- Target completion time: under 3 minutes for a standard install
+- Usability testing with 5+ non-technical users
+
+**Notes:**
+- The sensor setup dialog (`SensorSetupDialog` in `frontend/src/App.jsx`) is a good foundation — it surfaces when no sensors and no devices are detected
+- The subnet confirmation flow is partially scaffolded via `/api/v1/scan/subnets` and `PUT /api/v1/scan/cidr`
+
+**Research-informed additions (from docs 04, 08):**
+- Add AdGuard Home as alternative to Pi-hole in wizard (increasingly popular, has DoH/DoT built-in)
+- Add device correction UI: let users manually identify/correct device types, stored locally and optionally contributed to community fingerprint DB
+- Add "Threat Intel Status" dashboard card showing feed freshness and indicator counts
+
+---
+
+### Sensor-Core Security Hardening
+
+**Context:** Zabbix and Zenoss agent/server communication has been historically exploited due to weak authentication between agents and the central server. Vedetta must not repeat this pattern.
+
+**Current state:** Sensor→Core communication uses unauthenticated HTTP POST to `/api/v1/sensor/*` endpoints. No TLS, no auth token, no request signing. An attacker on the LAN could impersonate a sensor or inject false device/DNS data into Core.
+
+**Required before V1:**
+- Shared secret authentication: Sensor sends `Authorization: Bearer <token>` header on all API calls. Token generated during sensor install and stored in Core.
+- TLS for sensor→Core communication (optional but recommended, especially when Core is on a different subnet)
+- Request signing: HMAC-SHA256 of request body with shared secret to prevent tampering
+- Sensor ID validation: Core rejects data from unregistered sensor IDs
+- Rate limiting on sensor endpoints to prevent DoS
+
+**Priority:** HIGH — this is a blocking requirement for V1 public release. Must be addressed in M8 (pre-release hardening) at latest.
+
+---
+
+### M8 — V1 public release `NOT STARTED`
 
 - Full documentation pass (README, install guide, architecture overview, FAQ, contributing guide)
 - Security review: dependency audit, Docker image hardening, authentication review
@@ -419,7 +451,7 @@ Community fingerprint contribution (from research/08):
 
 ## Development pipeline — research-informed execution plan
 
-> This section synthesizes all 17 research documents into a phased execution plan aligned with the M0–M7 milestone structure. It replaces the previous "Immediate priorities" section with a comprehensive pipeline.
+> This section synthesizes all 17 research documents into a phased execution plan aligned with the M0–M8 milestone structure. It replaces the previous "Immediate priorities" section with a comprehensive pipeline.
 
 ### Phase 1: Unblock the Pipeline (M1 completion + M2 + M3)
 
@@ -458,7 +490,7 @@ Community fingerprint contribution (from research/08):
 | 2.14 | AdGuard Home API poller (alternative to Pi-hole) | 04 | Planned | M |
 | 2.15 | Encrypted DNS detection (DoH/DoT fingerprinting) | 04 | Planned | S |
 
-### Phase 3: Passive Discovery & Fingerprinting (M3.5)
+### Phase 3: Passive Discovery & Fingerprinting (M4)
 
 **Timeline: Can start in parallel with Phase 2 once Phase 1 is done**
 
@@ -468,25 +500,36 @@ Community fingerprint contribution (from research/08):
 | 3.2 | DHCP sniffer in sensor (option 55 fingerprint, hostname) | 01, 08, deep-dive-passive | Planned | M |
 | 3.3 | mDNS listener in sensor (service types, TXT records) | 01, 08 | Planned | M |
 | 3.4 | SSDP/UPnP listener in sensor (NOTIFY, device descriptions) | 01, 08 | Planned | M |
-| 3.5 | Curate local fingerprint DB (OUI + DHCP patterns + hostname regex + mDNS map) | 08, deep-dive-passive | Built | M |
+| 3.5a | NAT-PMP/PCP listener in sensor (port mapping detection, compromise indicator) | — | Planned | S |
+| 3.5b | Curate local fingerprint DB (OUI + DHCP patterns + hostname regex + mDNS map) | 08, deep-dive-passive | Built | M |
 | 3.6 | Multi-signal fusion scoring engine | 08 | Built | M |
 | 3.7 | Schema migration: device fingerprint columns | 08 | Built | S |
 | 3.8 | API update: devices endpoint returns fingerprint data | 08 | Built | S |
 | 3.9 | Dashboard: device icons and human-readable names | 08 | Built | M |
 
-### Phase 4: Setup Wizard & Firewall Connectors (M4 + M5)
+### Phase 4: Firewall Connectors (M5)
 
 **Timeline: After Phase 3 (device types needed for wizard UX)**
 
 | # | Task | Research Doc | Effort |
 |---|------|-------------|--------|
-| 4.1 | Onboarding wizard (interface selection, Pi-hole/AdGuard, telemetry opt-in) | 04 | L |
-| 4.2 | UniFi REST API connector | 03, deep-dive-firewall | L |
+| 4.1 | UniFi REST API connector | 03, deep-dive-firewall | L |
+| 4.2 | OpenWRT luci-rpc / ubus JSON-RPC connector | 03, deep-dive-firewall | M |
 | 4.3 | pfSense/OPNsense syslog normalization | 03, deep-dive-firewall | M |
-| 4.4 | Generic `FirewallConnector` Go interface + contributor docs | deep-dive-firewall | M |
-| 4.5 | DNS bypass detection alert | 04 | S |
-| 4.6 | Device correction UI (user identifies/corrects device types) | 08 | M |
+| 4.4 | MikroTik RouterOS API connector | 03, deep-dive-firewall | M |
+| 4.5 | Generic `FirewallConnector` Go interface + contributor docs | deep-dive-firewall | M |
+| 4.6 | DNS bypass detection alert | 04 | S |
 | 4.7 | Optional Suricata integration (Docker Compose override) | 03, deep-dive-suricata | L |
+
+### Phase 4b: Setup Wizard (M7)
+
+**Timeline: After Phases 2, 3, 4, 5 are solid (requires full feature set for wizard to cover)**
+
+| # | Task | Research Doc | Effort |
+|---|------|-------------|--------|
+| 4b.1 | Onboarding wizard (interface selection, Pi-hole/AdGuard, telemetry opt-in, firewall connector selection) | 04 | L |
+| 4b.2 | Device correction UI (user identifies/corrects device types) | 08 | M |
+| 4b.3 | Sensor-Core security hardening (auth tokens, TLS, request signing) | — | M |
 
 ### Phase 5: Telemetry & Threat Network (M6)
 
@@ -547,20 +590,30 @@ Phase 1 (Pipeline — M1/M2/M3)
   └── Sensor architecture doc
         │
         ▼
-  Phase 3 (Passive Discovery — M3.5)
-    ├── ARP/DHCP/mDNS/SSDP listeners (planned)
+  Phase 3 (Passive Discovery — M4)
+    ├── ARP/DHCP/mDNS/SSDP/NAT-PMP listeners (planned)
     ├── Curated fingerprint database ✓ Built
     └── Dashboard device identification ✓ Built
           │
           ▼
-    Phase 4 (Wizard + Firewall Connectors — M4/M5)
-      ├── Setup wizard
-      ├── UniFi + pfSense connectors
+    Phase 4 (Firewall Connectors — M5)
+      ├── UniFi + OpenWRT + pfSense/OPNsense + MikroTik connectors
+      ├── Generic FirewallConnector interface
       └── Optional Suricata
+          │
+          ▼
+    Phase 4b (Setup Wizard + Security Hardening — M7)
+      ├── Onboarding wizard (complete feature set)
+      ├── Device correction UI
+      └── Sensor-Core security hardening
+          │
+          ▼
+    Phase 7 (Release — M8)
+      └── Documentation, security review, public release
 ```
 
 Phases 1→2→5 are the main critical path (pipeline → detection → community intelligence).
-Phases 3→4 can proceed in parallel once Phase 1 is done.
+Phases 3→4→4b can proceed in sequence. M7 (setup wizard) builds last to incorporate all features built in M5 and M6.
 
 ---
 
