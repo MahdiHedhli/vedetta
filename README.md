@@ -268,6 +268,12 @@ Firewall log ingestion is coming in a future release. Planned targets (in priori
 
 Fluent Bit syslog input is already configured on UDP port 5140.
 
+## Community
+
+Join the Vedetta community on Discord for support, feature discussion, and threat intel sharing.
+
+**[Discord](https://discord.gg/aubRTSWRyc)** · **[Community Guide](COMMUNITY.md)**
+
 ## Documentation Links
 
 - [Architecture Reference](docs/architecture.md)
