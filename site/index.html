@@ -97,6 +97,12 @@
       font-family: var(--font-display);
       font-size: 1.25rem;
       font-weight: 400;
+      letter-spacing: 0.5px;
+    }
+
+    .nav-logo .accent-e {
+      color: var(--accent);
+      font-style: italic;
     }
 
     .hamburger {
@@ -233,18 +239,18 @@
 
     .logo-container {
       position: relative;
-      width: 200px;
-      height: 200px;
+      width: 280px;
+      height: 280px;
       display: flex;
       align-items: center;
       justify-content: center;
-      margin-bottom: 2rem;
+      margin-bottom: 1rem;
     }
 
     .radar {
       position: absolute;
-      width: 200px;
-      height: 200px;
+      width: 280px;
+      height: 280px;
       inset: 0;
       opacity: 0.35;
     }
@@ -277,8 +283,8 @@
 
     .radar-sweep {
       position: absolute;
-      width: 200px;
-      height: 200px;
+      width: 280px;
+      height: 280px;
       border-radius: 50%;
       background: conic-gradient(
         from 0deg,
@@ -294,17 +300,9 @@
       100% { transform: rotate(360deg); }
     }
 
-    .logo {
+    .logo-mark {
       position: relative;
       z-index: 10;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-
-    .logo-mark {
-      width: 72px;
-      height: 94px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -312,9 +310,17 @@
 
     .logo-text {
       font-family: var(--font-display);
-      font-size: 2.5rem;
+      font-size: 3.5rem;
       font-weight: 400;
-      letter-spacing: -0.02em;
+      letter-spacing: 0.5px;
+      text-align: center;
+      margin-bottom: 1.5rem;
+      color: var(--text);
+    }
+
+    .logo-text .accent-e {
+      color: var(--accent);
+      font-style: italic;
     }
 
     .badge {
@@ -353,11 +359,15 @@
       margin-bottom: 1.25rem;
     }
 
-    h1 span {
-      background: linear-gradient(135deg, var(--accent), #fbbf24);
+    h1 > span {
+      background: linear-gradient(135deg, var(--accent), var(--accent-bright));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+    }
+
+    h1 .accent-e {
+      font-style: italic;
     }
 
     h2 {
@@ -631,28 +641,29 @@
       }
 
       .logo-container {
-        width: 160px;
-        height: 160px;
-        margin-bottom: 1.5rem;
+        width: 200px;
+        height: 200px;
+        margin-bottom: 0.75rem;
       }
 
       .radar {
-        width: 160px;
-        height: 160px;
+        width: 200px;
+        height: 200px;
       }
 
-      .logo-mark {
-        width: 56px;
-        height: 72px;
+      .radar-sweep {
+        width: 200px;
+        height: 200px;
       }
 
       .logo-mark svg {
-        width: 56px;
-        height: 72px;
+        width: 88px;
+        height: 114px;
       }
 
       .logo-text {
-        font-size: 1.75rem;
+        font-size: 2.75rem;
+        margin-bottom: 1rem;
       }
 
       .features-grid {
@@ -686,7 +697,7 @@
       <div class="nav-logo-mark">
         <svg width="28" height="36" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg"><rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/><rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/><path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/><rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="56" y="90" width="88" height="12" fill="#E8A020"/></svg>
       </div>
-      <span>Vedetta</span>
+      <span>Ved<span class="accent-e">e</span>tta</span>
     </a>
     <ul class="nav-menu">
       <li><a href="#features">Features</a></li>
@@ -717,20 +728,18 @@
           <div class="radar-ring"></div>
           <div class="radar-ring"></div>
         </div>
-        <div class="logo">
-          <div class="logo-mark">
-            <svg width="72" height="94" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg"><rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/><rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/><path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/><rect x="62" y="108" width="76" height="14" fill="#0B1426" opacity="0.2"/><rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="56" y="90" width="88" height="12" fill="#E8A020"/><rect x="84" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/><rect x="114" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/></svg>
-          </div>
-          <div class="logo-text">Vedetta</div>
+        <div class="logo-mark">
+          <svg width="120" height="156" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg"><rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/><rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/><path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/><rect x="62" y="108" width="76" height="14" fill="#0B1426" opacity="0.2"/><rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="56" y="90" width="88" height="12" fill="#E8A020"/><rect x="84" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/><rect x="114" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/></svg>
         </div>
       </div>
+      <div class="logo-text">Ved<span class="accent-e">e</span>tta</div>
 
       <div class="badge">
         <span class="badge-dot"></span>
         In active development
       </div>
 
-      <h1>Network security <span>for everyone</span></h1>
+      <h1>Network security <span>for <span class="accent-e">e</span>veryone</span></h1>
 
       <p class="subtitle">
         Open-source SIEM and threat intelligence for home networks and small businesses.
