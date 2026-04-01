@@ -87,8 +87,14 @@ func (e *Enricher) Enrich(event *models.Event) {
 	var descriptions []string
 	meta := &detectionMeta{}
 
+	// Skip DGA, tunnel, and beaconing analysis for reverse DNS (PTR) lookups
+	// of private IPs. macOS Bonjour/mDNS does periodic PTR sweeps of the local
+	// subnet which triggers false alerts. Reversed IP octets also look like
+	// random strings to the entropy/bigram scorers.
+	isPrivatePTR := isPrivateReverseDNS(event.Domain)
+
 	// 1. DGA detection on the domain
-	if event.Domain != "" {
+	if event.Domain != "" && !isPrivatePTR {
 		dgaResult := ScoreDGA(event.Domain)
 		if dgaResult.IsDGA {
 			event.Tags = appendUnique(event.Tags, "dga_candidate")
@@ -109,7 +115,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	}
 
 	// 2. DNS tunnel detection
-	if event.Domain != "" {
+	if event.Domain != "" && !isPrivatePTR {
 		tunnelResult := ScoreTunnel(event.Domain)
 		if tunnelResult.IsTunnel {
 			event.Tags = appendUnique(event.Tags, "dns_tunnel")
@@ -133,7 +139,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	}
 
 	// 3. Beaconing detection
-	if event.Domain != "" && event.SourceHash != "" {
+	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR {
 		beaconResult := e.Beacon.RecordAndScore(event.SourceHash, event.Domain, event.Timestamp)
 		if beaconResult.IsBeaconing {
 			event.Tags = appendUnique(event.Tags, "beaconing")
@@ -292,4 +298,38 @@ func appendUnique(slice []string, val string) []string {
 		}
 	}
 	return append(slice, val)
+}
+
+// isPrivateReverseDNS returns true if the domain is a PTR lookup (in-addr.arpa)
+// for an RFC 1918 private IP address. These are normal network housekeeping
+// queries (Bonjour/mDNS, ARP cache maintenance, etc.) and should be exempt
+// from beaconing, DGA, and tunnel detection.
+//
+// Covers: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 (link-local)
+func isPrivateReverseDNS(domain string) bool {
+	if !strings.HasSuffix(strings.ToLower(domain), ".in-addr.arpa") {
+		return false
+	}
+	// Reverse DNS format: D.C.B.A.in-addr.arpa → IP is A.B.C.D
+	parts := strings.Split(strings.TrimSuffix(strings.ToLower(domain), ".in-addr.arpa"), ".")
+	if len(parts) != 4 {
+		return false
+	}
+	// Reconstruct forward IP
+	a, b := parts[3], parts[2]
+	switch {
+	case a == "10":
+		return true // 10.0.0.0/8
+	case a == "172":
+		n := 0
+		for _, c := range b {
+			n = n*10 + int(c-'0')
+		}
+		return n >= 16 && n <= 31 // 172.16.0.0/12
+	case a == "192" && b == "168":
+		return true // 192.168.0.0/16
+	case a == "169" && b == "254":
+		return true // 169.254.0.0/16 (link-local)
+	}
+	return false
 }
