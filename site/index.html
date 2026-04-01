@@ -9,22 +9,28 @@
   <meta property="og:description" content="Monitor, detect, and protect your home network with open-source threat intelligence.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://vedettas.com">
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23f59e0b'/><text x='16' y='22' font-size='18' font-weight='bold' text-anchor='middle' fill='white' font-family='system-ui'>V</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg width='32' height='32' viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3CradialGradient id='g' cx='50%25' cy='35%25' r='70%25'%3E%3Cstop offset='0%25' stop-color='%23F5B731' stop-opacity='0.85'/%3E%3Cstop offset='45%25' stop-color='%23E8A020' stop-opacity='0.32'/%3E%3Cstop offset='100%25' stop-color='transparent'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect width='512' height='512' rx='108' fill='%230B1426'/%3E%3Crect width='512' height='512' rx='108' fill='url(%23g)'/%3E%3Crect x='135' y='414' width='242' height='34' rx='6' fill='%23070E1A'/%3E%3Cpath d='M172 414 L178 274 L164 252 L164 238 L348 238 L348 252 L334 274 L340 414 Z' fill='%23070E1A'/%3E%3Crect x='164' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='231' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='298' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='164' y='224' width='184' height='18' fill='%23070E1A'/%3E%3C/svg%3E">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg: #030712;
-      --surface: #0a0f1a;
-      --border: #1e293b;
-      --text: #f1f5f9;
-      --muted: #64748b;
-      --accent: #f59e0b;
-      --accent-glow: rgba(245, 158, 11, 0.15);
+      --bg: #070E1A;
+      --surface: #0B1426;
+      --border: #1C2840;
+      --text: #F0F2F7;
+      --muted: #7A879E;
+      --accent: #E8A020;
+      --accent-bright: #F5B731;
+      --accent-glow: rgba(232, 160, 32, 0.15);
+      --font-display: 'Instrument Serif', Georgia, serif;
+      --font-body: 'DM Sans', system-ui, sans-serif;
     }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-family: var(--font-body);
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
@@ -82,14 +88,15 @@
     .nav-logo-mark {
       width: 32px;
       height: 32px;
-      background: var(--accent);
-      border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 700;
-      font-size: 1rem;
-      color: white;
+    }
+
+    .nav-logo span {
+      font-family: var(--font-display);
+      font-size: 1.25rem;
+      font-weight: 400;
     }
 
     .hamburger {
@@ -275,8 +282,8 @@
       border-radius: 50%;
       background: conic-gradient(
         from 0deg,
-        rgba(245, 158, 11, 0.4) 0deg,
-        rgba(245, 158, 11, 0.2) 45deg,
+        rgba(232, 160, 32, 0.4) 0deg,
+        rgba(232, 160, 32, 0.2) 45deg,
         transparent 90deg
       );
       animation: rotate-sweep 4s linear infinite;
@@ -296,22 +303,18 @@
     }
 
     .logo-mark {
-      width: 48px;
-      height: 48px;
-      background: var(--accent);
-      border-radius: 12px;
+      width: 72px;
+      height: 94px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 700;
-      font-size: 1.5rem;
-      color: white;
     }
 
     .logo-text {
-      font-size: 2rem;
-      font-weight: 700;
-      letter-spacing: -0.03em;
+      font-family: var(--font-display);
+      font-size: 2.5rem;
+      font-weight: 400;
+      letter-spacing: -0.02em;
     }
 
     .badge {
@@ -341,9 +344,10 @@
     }
 
     h1 {
+      font-family: var(--font-display);
       font-size: clamp(2rem, 5vw, 3.5rem);
-      font-weight: 700;
-      letter-spacing: -0.03em;
+      font-weight: 400;
+      letter-spacing: -0.02em;
       line-height: 1.1;
       max-width: 700px;
       margin-bottom: 1.25rem;
@@ -357,9 +361,10 @@
     }
 
     h2 {
+      font-family: var(--font-display);
       font-size: clamp(1.75rem, 4vw, 2.25rem);
-      font-weight: 700;
-      letter-spacing: -0.02em;
+      font-weight: 400;
+      letter-spacing: -0.01em;
       margin-bottom: 3rem;
       margin-top: 4rem;
     }
@@ -608,9 +613,13 @@
       }
 
       .nav-logo-mark {
-        width: 28px;
-        height: 28px;
-        font-size: 0.875rem;
+        width: 24px;
+        height: 24px;
+      }
+
+      .nav-logo-mark svg {
+        width: 20px;
+        height: 26px;
       }
 
       main {
@@ -633,13 +642,17 @@
       }
 
       .logo-mark {
-        width: 40px;
-        height: 40px;
-        font-size: 1.125rem;
+        width: 56px;
+        height: 72px;
+      }
+
+      .logo-mark svg {
+        width: 56px;
+        height: 72px;
       }
 
       .logo-text {
-        font-size: 1.5rem;
+        font-size: 1.75rem;
       }
 
       .features-grid {
@@ -670,7 +683,9 @@
   <!-- Navigation -->
   <nav>
     <a href="#" class="nav-logo">
-      <div class="nav-logo-mark">V</div>
+      <div class="nav-logo-mark">
+        <svg width="28" height="36" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg"><rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/><rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/><path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/><rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="56" y="90" width="88" height="12" fill="#E8A020"/></svg>
+      </div>
       <span>Vedetta</span>
     </a>
     <ul class="nav-menu">
@@ -703,7 +718,9 @@
           <div class="radar-ring"></div>
         </div>
         <div class="logo">
-          <div class="logo-mark">V</div>
+          <div class="logo-mark">
+            <svg width="72" height="94" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg"><rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/><rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/><path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/><rect x="62" y="108" width="76" height="14" fill="#0B1426" opacity="0.2"/><rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="56" y="90" width="88" height="12" fill="#E8A020"/><rect x="84" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/><rect x="114" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/></svg>
+          </div>
           <div class="logo-text">Vedetta</div>
         </div>
       </div>
