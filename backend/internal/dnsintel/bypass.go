@@ -2,9 +2,77 @@ package dnsintel
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
+
+// KnownPublicResolvers maps public DNS resolver IPs to their providers.
+// These are well-known, legitimate DNS services that devices should not be
+// querying directly if they're behind a local DNS filter (Pi-hole, AdGuard).
+var KnownPublicResolvers = map[string]string{
+	// Google Public DNS
+	"8.8.8.8":                 "Google Public DNS",
+	"8.8.4.4":                 "Google Public DNS",
+	"2001:4860:4860::8888":    "Google Public DNS (IPv6)",
+	"2001:4860:4860::8844":    "Google Public DNS (IPv6)",
+
+	// Cloudflare 1.1.1.1
+	"1.1.1.1":                 "Cloudflare 1.1.1.1",
+	"1.0.0.1":                 "Cloudflare 1.1.1.1",
+	"2606:4700:4700::1111":    "Cloudflare 1.1.1.1 (IPv6)",
+	"2606:4700:4700::1001":    "Cloudflare 1.1.1.1 (IPv6)",
+	"2606:4700:4700::64":      "Cloudflare 1.1.1.1 (IPv6)",
+
+	// Quad9
+	"9.9.9.9":                 "Quad9 DNS",
+	"149.112.112.112":         "Quad9 DNS",
+	"2620:fe::fe":             "Quad9 DNS (IPv6)",
+
+	// OpenDNS
+	"208.67.222.222":          "OpenDNS",
+	"208.67.220.220":          "OpenDNS",
+	"208.67.222.220":          "OpenDNS",
+
+	// NextDNS
+	"45.90.28.0":              "NextDNS",
+	"45.90.30.0":              "NextDNS",
+
+	// AdGuard DNS (public)
+	"94.140.14.14":            "AdGuard DNS",
+	"94.140.15.15":            "AdGuard DNS",
+	"2a10:50c0::ad1:ff":       "AdGuard DNS (IPv6)",
+
+	// Verisign DNS (public)
+	"64.6.64.6":               "Verisign DNS",
+	"64.6.65.6":               "Verisign DNS",
+}
+
+// KnownDNSProviderDomains maps DNS provider domains (used for DoH/DoT) to their providers.
+// Queries to these domains indicate DNS-over-HTTPS or DNS-over-TLS bypass attempts.
+var KnownDNSProviderDomains = map[string]string{
+	// Google DoH/DoT
+	"dns.google":              "Google DNS-over-HTTPS",
+	"dns.google.com":          "Google DNS-over-HTTPS",
+
+	// Cloudflare DoH/DoT
+	"cloudflare-dns.com":      "Cloudflare DNS-over-HTTPS",
+	"1dot1dot1dot1.cloudflare-dns.com": "Cloudflare DNS-over-HTTPS",
+	"one.one.one.one":         "Cloudflare DNS-over-HTTPS",
+
+	// Quad9 DoH/DoT
+	"dns.quad9.net":           "Quad9 DNS-over-HTTPS",
+
+	// OpenDNS DoH/DoT
+	"doh.opendns.com":         "OpenDNS DNS-over-HTTPS",
+
+	// NextDNS DoH/DoT
+	"dns.nextdns.io":          "NextDNS DNS-over-HTTPS",
+
+	// AdGuard DoH/DoT
+	"dns.adguard.com":         "AdGuard DNS-over-HTTPS",
+	"unfiltered.adguard.com":  "AdGuard DNS-over-HTTPS",
+}
 
 // BypassDetector identifies when devices make DNS queries directly to external
 // resolvers, bypassing the local DNS resolver (Pi-hole, AdGuard, or Vedetta).
@@ -139,4 +207,45 @@ func (b *BypassDetector) CleanupStaleAlerts(now time.Time) {
 			delete(b.alerts, source)
 		}
 	}
+}
+
+// DetectPublicResolverBypass checks if an event indicates DNS bypass by querying
+// a well-known public DNS resolver directly. Returns nil if no bypass detected,
+// or a BypassResult with details about the bypass.
+func (b *BypassDetector) DetectPublicResolverBypass(resolvedIP string) (string, string) {
+	if resolvedIP == "" {
+		return "", ""
+	}
+
+	// Check if this IP is a known public DNS resolver
+	if provider, ok := KnownPublicResolvers[resolvedIP]; ok {
+		return resolvedIP, provider
+	}
+
+	return "", ""
+}
+
+// DetectDoHDotBypass checks if a domain indicates DNS-over-HTTPS/TLS bypass.
+// Returns the provider name if found, or empty string otherwise.
+func (b *BypassDetector) DetectDoHDotBypass(domain string) string {
+	if domain == "" {
+		return ""
+	}
+
+	// Normalize domain to lowercase for comparison
+	domainLower := strings.ToLower(domain)
+
+	// Direct exact match
+	if provider, ok := KnownDNSProviderDomains[domainLower]; ok {
+		return provider
+	}
+
+	// Check for subdomains (e.g., "1dot1dot1dot1.cloudflare-dns.com" contains "cloudflare-dns.com")
+	for knownDomain, provider := range KnownDNSProviderDomains {
+		if domainLower == knownDomain || strings.HasSuffix(domainLower, "."+knownDomain) {
+			return provider
+		}
+	}
+
+	return ""
 }

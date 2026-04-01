@@ -191,6 +191,23 @@ func (db *DB) UpdateDeviceMeta(deviceID, customName, notes, segment string) erro
 	return nil
 }
 
+// UpdateDeviceFingerprint updates user-corrected fingerprint fields (device type, OS, model).
+// These corrections take priority over auto-detected values.
+func (db *DB) UpdateDeviceFingerprint(deviceID, deviceType, osFamily, osVersion, model string) error {
+	_, err := db.Exec(`
+		UPDATE devices SET device_type = COALESCE(NULLIF(?, ''), device_type),
+		                    os_family = COALESCE(NULLIF(?, ''), os_family),
+		                    os_version = COALESCE(NULLIF(?, ''), os_version),
+		                    model = COALESCE(NULLIF(?, ''), model),
+		                    discovery_method = 'user_corrected'
+		WHERE device_id = ?`,
+		deviceType, osFamily, osVersion, model, deviceID)
+	if err != nil {
+		return fmt.Errorf("update device fingerprint: %w", err)
+	}
+	return nil
+}
+
 // GetNewDevices returns devices first seen within the given duration.
 func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 	cutoff := time.Now().Add(-since)
