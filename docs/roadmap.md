@@ -564,6 +564,7 @@ These are explicitly out of V1 scope but tracked for planning:
 | GreyNoise IP enrichment | 05 | External IP classification (50 req/day free tier) |
 | OTX pulse subscription | 05 | AlienVault curated threat intelligence |
 | DuckDB embedded analytics | deep-dive-clickhouse | Local node analytics engine |
+| Report false positive (UI + feedback loop) | — | User-initiated FP reporting; feeds back into local whitelist and (post-threat-network) community consensus |
 
 ### Critical path diagram
 
