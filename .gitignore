@@ -12,6 +12,23 @@
 # should never touch a remote.
 /internal/
 
+# ----- Agent / AI Tooling Metadata -----
+# Local instructions, memory files, and agent-specific
+# working notes should stay out of the public repo.
+AGENTS.md
+NOTES.md
+MEMORY.md
+CLAUDE.md
+GEMINI.md
+COPILOT.md
+INSTRUCTIONS.md
+.cursorrules
+.windsurfrules
+.cursor/
+.codex/
+.claude/
+.github/copilot-instructions.md
+
 # ----- Secrets & Credentials -----
 .env
 .env.*
