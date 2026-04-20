@@ -1,228 +1,419 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Vedetta — Your network, under watch.</title>
-<meta name="description" content="Open-source security monitoring for homes and small businesses. The watchtower on your network — approachable on the surface, uncompromising underneath.">
-<meta property="og:title" content="Vedetta — Your network, under watch.">
-<meta property="og:description" content="Open-source security monitoring for homes and small businesses. Enterprise-grade network visibility without the enterprise learning curve.">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://vedettas.com">
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg width='512' height='512' viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3CradialGradient id='g' cx='50%25' cy='34%25' r='70%25'%3E%3Cstop offset='0%25' stop-color='%23F5B731' stop-opacity='0.9'/%3E%3Cstop offset='25%25' stop-color='%23E8A020' stop-opacity='0.55'/%3E%3Cstop offset='55%25' stop-color='%23E8A020' stop-opacity='0.22'/%3E%3Cstop offset='100%25' stop-color='transparent'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect width='512' height='512' rx='108' fill='%230B1426'/%3E%3Crect width='512' height='512' rx='108' fill='url(%23g)'/%3E%3Cpath d='M205 195 L180 0 L332 0 L307 195 Z' fill='%23F5B731' opacity='0.22'/%3E%3Crect x='135' y='414' width='242' height='34' rx='6' fill='%23070E1A'/%3E%3Cpath d='M172 414 L178 274 L164 252 L164 238 L348 238 L348 252 L334 274 L340 414 Z' fill='%23070E1A'/%3E%3Crect x='164' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='231' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='298' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='164' y='224' width='184' height='18' fill='%23070E1A'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Space+Mono:wght@400;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --navy-deep:#070E1A;--navy:#0B1426;--navy-mid:#111D33;
-    --charcoal:#1C2840;--charcoal-light:#253350;--slate:#3A4A6B;
-    --amber:#E8A020;--amber-bright:#F5B731;--amber-dim:#C4872A;
-    --amber-glow:rgba(232,160,32,0.15);--amber-glow-strong:rgba(232,160,32,0.3);
-    --teal:#2EC4A0;--teal-bright:#3EDDB5;--teal-dim:#1E9A7A;--teal-glow:rgba(46,196,160,0.12);
-    --white:#F0F2F7;--white-dim:#C0C8D8;--white-muted:#7A879E;
-    --divider:rgba(240,242,247,0.08);--divider-strong:rgba(240,242,247,0.15);
-    --red-alert:#E85454;--green-safe:#34D399;
-    --font-display:'Instrument Serif',Georgia,serif;
-    --font-body:'DM Sans',system-ui,sans-serif;
-    --font-mono:'Space Mono','Courier New',monospace;
-  }
-  *{margin:0;padding:0;box-sizing:border-box;}
-  body{background:var(--navy-deep);color:var(--white);font-family:var(--font-body);font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;}
-  a{color:var(--amber);text-decoration:none;transition:color 0.2s;}
-  a:hover{color:var(--amber-bright);}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vedetta Docs - current product shape</title>
+  <meta name="description" content="Vedetta documentation landing page: what the product is today, what is optional, and what is still on the roadmap.">
+  <meta property="og:title" content="Vedetta Docs - current product shape">
+  <meta property="og:description" content="The docs landing page for Vedetta's DNS-first security monitoring platform.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://vedettas.com/docs">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&amp;family=Instrument+Serif:ital@0;1&amp;family=Space+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07101d;
+      --surface: rgba(12, 21, 38, 0.92);
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #eef2f8;
+      --muted: #9aa7bf;
+      --accent: #e7a12a;
+      --ok: #3fd0a0;
+      --font-display: "Instrument Serif", Georgia, serif;
+      --font-body: "DM Sans", system-ui, sans-serif;
+      --font-mono: "Space Mono", monospace;
+      --max: 1120px;
+      --shadow: 0 22px 70px rgba(0, 0, 0, 0.34);
+    }
 
-  /* Hero */
-  .hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;position:relative;overflow:hidden;padding:48px 24px;}
-  .hero::before{content:'';position:absolute;top:-300px;left:50%;transform:translateX(-50%);width:1000px;height:1000px;background:radial-gradient(circle,var(--amber-glow) 0%,transparent 65%);pointer-events:none;animation:pulse-glow 6s ease-in-out infinite;}
-  @keyframes pulse-glow{0%,100%{opacity:.4;transform:translateX(-50%) scale(1);}50%{opacity:.8;transform:translateX(-50%) scale(1.1);}}
-  .hero-mark{margin-bottom:32px;filter:drop-shadow(0 0 40px rgba(232,160,32,0.2));}
-  .hero h1{font-family:var(--font-display);font-size:clamp(48px,8vw,96px);font-weight:400;line-height:.95;letter-spacing:-1px;margin-bottom:24px;}
-  .hero h1 em{color:var(--amber);font-style:italic;}
-  .hero-tagline{font-family:var(--font-display);font-size:clamp(20px,3vw,32px);font-style:italic;color:var(--amber);margin-bottom:24px;line-height:1.3;}
-  .hero-sub{font-size:18px;color:var(--white-dim);max-width:600px;line-height:1.8;font-weight:300;margin-bottom:48px;}
-  .hero-actions{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;}
-  .btn{display:inline-flex;align-items:center;gap:8px;padding:14px 28px;border-radius:8px;font-size:15px;font-weight:600;transition:all 0.2s;border:none;cursor:pointer;}
-  .btn-amber{background:var(--amber);color:var(--navy-deep);}
-  .btn-amber:hover{background:var(--amber-bright);color:var(--navy-deep);}
-  .btn-outline{background:transparent;color:var(--white);border:1px solid var(--divider-strong);}
-  .btn-outline:hover{border-color:var(--amber);color:var(--amber);}
-  .hero-code{margin-top:48px;background:var(--navy);border:1px solid var(--divider-strong);border-radius:12px;padding:20px 28px;font-family:var(--font-mono);font-size:13px;color:var(--teal);text-align:left;max-width:560px;width:100%;position:relative;}
-  .hero-code .prompt{color:var(--white-muted);}
-  .hero-code .comment{color:var(--slate);}
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
 
-  /* Features */
-  .features{padding:120px 24px;max-width:1100px;margin:0 auto;}
-  .features-label{font-family:var(--font-mono);font-size:11px;letter-spacing:4px;text-transform:uppercase;color:var(--amber);margin-bottom:16px;text-align:center;}
-  .features-title{font-family:var(--font-display);font-size:clamp(32px,5vw,48px);font-weight:400;text-align:center;margin-bottom:64px;line-height:1.2;}
-  .features-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;background:var(--divider);border:1px solid var(--divider-strong);border-radius:12px;overflow:hidden;}
-  .feature{background:var(--navy);padding:40px 32px;}
-  .feature-icon{width:40px;height:40px;margin-bottom:20px;}
-  .feature h3{font-family:var(--font-display);font-size:22px;margin-bottom:8px;}
-  .feature p{font-size:14px;color:var(--white-muted);line-height:1.7;}
+    body {
+      margin: 0;
+      font-family: var(--font-body);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(231, 161, 42, 0.14), transparent 24rem),
+        linear-gradient(180deg, #07101d 0%, #050a14 100%);
+      line-height: 1.6;
+    }
 
-  /* Install */
-  .install{padding:100px 24px;text-align:center;border-top:1px solid var(--divider);}
-  .install-label{font-family:var(--font-mono);font-size:11px;letter-spacing:4px;text-transform:uppercase;color:var(--amber);margin-bottom:16px;}
-  .install-title{font-family:var(--font-display);font-size:clamp(28px,4vw,40px);font-weight:400;margin-bottom:48px;}
-  .install-steps{display:grid;grid-template-columns:1fr 1fr;gap:24px;max-width:800px;margin:0 auto;text-align:left;}
-  .step{background:var(--navy);border:1px solid var(--divider-strong);border-radius:12px;padding:28px;}
-  .step-num{font-family:var(--font-mono);font-size:11px;letter-spacing:2px;color:var(--amber);margin-bottom:12px;}
-  .step h4{font-size:16px;margin-bottom:8px;}
-  .step p{font-size:13px;color:var(--white-muted);line-height:1.7;margin-bottom:12px;}
-  .step code{display:block;background:var(--navy-deep);border-radius:6px;padding:12px 16px;font-family:var(--font-mono);font-size:12px;color:var(--teal);overflow-x:auto;}
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
 
-  /* Footer */
-  .footer{padding:48px 24px;text-align:center;border-top:1px solid var(--divider);}
-  .footer-links{display:flex;justify-content:center;gap:32px;margin-bottom:16px;}
-  .footer-links a{font-size:14px;color:var(--white-muted);}
-  .footer-links a:hover{color:var(--amber);}
-  .footer-copy{font-family:var(--font-mono);font-size:11px;color:var(--slate);letter-spacing:1px;}
+    .container {
+      width: min(calc(100% - 32px), var(--max));
+      margin: 0 auto;
+    }
 
-  @media(max-width:768px){
-    .features-grid{grid-template-columns:1fr;}
-    .install-steps{grid-template-columns:1fr;}
-    .hero-code{font-size:11px;padding:16px;}
-  }
-</style>
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(5, 10, 20, 0.72);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-inner,
+    .footer-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      padding: 16px 0;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+    }
+
+    .brand span {
+      font-family: var(--font-display);
+      font-size: 1.35rem;
+      font-weight: 400;
+    }
+
+    .brand .accent {
+      color: var(--accent);
+      font-style: italic;
+    }
+
+    .nav-links,
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      color: var(--muted);
+    }
+
+    .nav-links a:hover,
+    .footer-links a:hover {
+      color: var(--accent);
+    }
+
+    .hero {
+      padding: 78px 0 28px;
+    }
+
+    .badge,
+    .eyebrow {
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.76rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+    }
+
+    .badge::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 14px rgba(63, 208, 160, 0.6);
+    }
+
+    h1,
+    h2 {
+      font-family: var(--font-display);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      margin: 0;
+    }
+
+    h1 {
+      margin-top: 18px;
+      font-size: clamp(3rem, 7vw, 5rem);
+      line-height: 0.98;
+      max-width: 11ch;
+    }
+
+    .hero p,
+    .section-copy,
+    .panel p,
+    .panel li {
+      color: var(--muted);
+    }
+
+    .hero p {
+      max-width: 62ch;
+      margin: 14px 0 0;
+      font-size: 1.05rem;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 26px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 13px 18px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      font-weight: 600;
+      transition: 0.2s ease;
+    }
+
+    .button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(231, 161, 42, 0.4);
+    }
+
+    .button.primary {
+      background: var(--accent);
+      color: #11161f;
+      border-color: transparent;
+    }
+
+    section {
+      padding: 28px 0;
+    }
+
+    .section-header {
+      margin-bottom: 16px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+    }
+
+    h2 {
+      font-size: clamp(2rem, 4vw, 3rem);
+      margin-top: 8px;
+    }
+
+    .section-copy {
+      max-width: 66ch;
+      margin: 10px 0 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .panel {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 22px;
+      padding: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel h3 {
+      margin: 10px 0 10px;
+      font-size: 1.08rem;
+    }
+
+    .panel ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .footer {
+      padding: 32px 0 48px;
+      color: var(--muted);
+    }
+
+    .footer-inner {
+      border-top: 1px solid var(--border);
+      padding-top: 22px;
+    }
+
+    @media (max-width: 960px) {
+      .grid,
+      .grid.two {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .nav-inner,
+      .footer-inner {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
 </head>
 <body>
-
-  <!-- HERO -->
-  <section class="hero">
-    <div class="hero-mark">
-      <svg width="80" height="104" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg">
-        <rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/>
-        <rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/>
-        <path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/>
-        <rect x="62" y="108" width="76" height="14" fill="#0B1426" opacity="0.2"/>
-        <rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/>
-        <rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/>
-        <rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/>
-        <rect x="56" y="90" width="88" height="12" fill="#E8A020"/>
-        <rect x="84" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/>
-        <rect x="114" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/>
-      </svg>
-    </div>
-    <h1>Ved<em>e</em>tta</h1>
-    <p class="hero-tagline">Your network, under watch.</p>
-    <p class="hero-sub">Open-source security monitoring for homes and small businesses. Enterprise-grade network visibility without the enterprise learning curve.</p>
-    <div class="hero-actions">
-      <a href="https://github.com/MahdiHedhli/vedetta" class="btn btn-amber">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-        View on GitHub
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="#top">
+        <svg width="26" height="34" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="40" y="220" width="120" height="16" rx="4" fill="#E7A12A"/>
+          <rect x="50" y="210" width="100" height="14" rx="3" fill="#E7A12A"/>
+          <path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E7A12A"/>
+          <rect x="56" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="86" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="116" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="56" y="90" width="88" height="12" fill="#E7A12A"/>
+        </svg>
+        <span>Ved<span class="accent">e</span>tta Docs</span>
       </a>
-      <a href="#install" class="btn btn-outline">Quick Start</a>
+      <div class="nav-links">
+        <a href="#today">Today</a>
+        <a href="#status">Status</a>
+        <a href="#docs">Docs</a>
+        <a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">GitHub</a>
+      </div>
     </div>
-    <div class="hero-code">
-      <span class="comment"># Install in one command</span><br>
-      <span class="prompt">$</span> git clone https://github.com/MahdiHedhli/vedetta.git<br>
-      <span class="prompt">$</span> cd vedetta && docker compose up -d<br>
-      <span class="comment"># Dashboard live at localhost:3107</span>
-    </div>
-  </section>
+  </nav>
 
-  <!-- FEATURES -->
-  <section class="features">
-    <div class="features-label">Why Vedetta</div>
-    <h2 class="features-title">See everything. Understand it simply.</h2>
-    <div class="features-grid">
-      <div class="feature">
-        <svg class="feature-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="20" cy="20" r="4" fill="#E8A020"/>
-          <circle cx="8" cy="8" r="2.5" fill="#2EC4A0" opacity="0.7"/>
-          <circle cx="32" cy="8" r="2.5" fill="#2EC4A0" opacity="0.7"/>
-          <circle cx="8" cy="32" r="2.5" fill="#2EC4A0" opacity="0.7"/>
-          <circle cx="32" cy="32" r="2.5" fill="#2EC4A0" opacity="0.7"/>
-          <line x1="8" y1="8" x2="20" y2="20" stroke="#2EC4A0" stroke-width="0.8" opacity="0.3"/>
-          <line x1="32" y1="8" x2="20" y2="20" stroke="#2EC4A0" stroke-width="0.8" opacity="0.3"/>
-          <line x1="8" y1="32" x2="20" y2="20" stroke="#2EC4A0" stroke-width="0.8" opacity="0.3"/>
-          <line x1="32" y1="32" x2="20" y2="20" stroke="#2EC4A0" stroke-width="0.8" opacity="0.3"/>
-        </svg>
-        <h3>Device Discovery</h3>
-        <p>Automatically find every device on your network — phones, cameras, smart home gear, servers. Know what's connected and when something new shows up.</p>
+  <main id="top">
+    <section class="hero">
+      <div class="container">
+        <div class="badge">Alpha / active development</div>
+        <h1>Docs that match the product we are actually building.</h1>
+        <p>Vedetta is a self-hosted, DNS-first security monitoring platform. Today it is strongest at device discovery, passive DNS visibility, and local threat scoring for homes and small businesses.</p>
+        <p>Pi-hole and AdGuard Home are optional integrations. Router and firewall aggregation is part of the next expansion. The community threat network is future-facing, not the main promise of the current product.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/MahdiHedhli/vedetta/blob/main/README.md" target="_blank" rel="noreferrer">Read the README</a>
+          <a class="button" href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/roadmap.md" target="_blank" rel="noreferrer">Read the roadmap</a>
+          <a class="button" href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security policy</a>
+        </div>
       </div>
-      <div class="feature">
-        <svg class="feature-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M20 5 L35 13 L35 27 C35 33 28 37 20 39 C12 37 5 33 5 27 L5 13 Z" fill="none" stroke="#E8A020" stroke-width="1.5" opacity="0.5"/>
-          <ellipse cx="20" cy="20" rx="8" ry="5" fill="none" stroke="#E8A020" stroke-width="1.5" opacity="0.7"/>
-          <circle cx="20" cy="20" r="2.5" fill="#E8A020"/>
-        </svg>
-        <h3>Community Threat Intel</h3>
-        <p>Opt in to contribute anonymized telemetry to a shared threat network. Every Vedetta instance makes every other instance smarter. Strength in numbers.</p>
-      </div>
-      <div class="feature">
-        <svg class="feature-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="4" y="8" width="32" height="24" rx="3" fill="none" stroke="#2EC4A0" stroke-width="1.5" opacity="0.5"/>
-          <path d="M10 20 L16 26 L30 14" stroke="#34D399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <h3>Runs Anywhere</h3>
-        <p>Deploy on a Raspberry Pi, a NUC, or a Mac Studio. Docker-based Core with native sensors. Five minutes from git clone to full network visibility.</p>
-      </div>
-      <div class="feature">
-        <svg class="feature-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="6" y="4" width="28" height="32" rx="3" fill="none" stroke="#E8A020" stroke-width="1.5" opacity="0.5"/>
-          <line x1="12" y1="14" x2="28" y2="14" stroke="#E8A020" stroke-width="1" opacity="0.4"/>
-          <line x1="12" y1="20" x2="24" y2="20" stroke="#E8A020" stroke-width="1" opacity="0.4"/>
-          <line x1="12" y1="26" x2="20" y2="26" stroke="#E8A020" stroke-width="1" opacity="0.4"/>
-        </svg>
-        <h3>DNS Monitoring</h3>
-        <p>Passive DNS analysis via Pi-hole integration. See where your devices are calling home, catch suspicious domains, and track query patterns over time.</p>
-      </div>
-      <div class="feature">
-        <svg class="feature-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="12" cy="20" r="6" fill="none" stroke="#2EC4A0" stroke-width="1.5" opacity="0.5"/>
-          <circle cx="28" cy="20" r="6" fill="none" stroke="#2EC4A0" stroke-width="1.5" opacity="0.5"/>
-          <line x1="18" y1="20" x2="22" y2="20" stroke="#2EC4A0" stroke-width="1" opacity="0.4"/>
-          <circle cx="12" cy="20" r="2" fill="#2EC4A0" opacity="0.7"/>
-          <circle cx="28" cy="20" r="2" fill="#2EC4A0" opacity="0.7"/>
-        </svg>
-        <h3>Core + Sensor</h3>
-        <p>Core manages the dashboard, database, and intelligence. Sensors are lightweight binaries on each network segment with full L2 fingerprinting.</p>
-      </div>
-      <div class="feature">
-        <svg class="feature-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M8 30 L8 16 L16 16 L16 30" stroke="#E8A020" stroke-width="1.5" opacity="0.5"/>
-          <path d="M16 30 L16 10 L24 10 L24 30" stroke="#E8A020" stroke-width="1.5" opacity="0.7"/>
-          <path d="M24 30 L24 6 L32 6 L32 30" stroke="#E8A020" stroke-width="1.5" opacity="0.9"/>
-          <line x1="4" y1="30" x2="36" y2="30" stroke="#7A879E" stroke-width="1"/>
-        </svg>
-        <h3>Open Source</h3>
-        <p>AGPLv3 licensed. Audit the code, fork it, extend it. No vendor lock-in, no subscriptions. Your network data stays on your hardware.</p>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- INSTALL -->
-  <section class="install" id="install">
-    <div class="install-label">Get Started</div>
-    <h2 class="install-title">Five minutes to full visibility.</h2>
-    <div class="install-steps">
-      <div class="step">
-        <div class="step-num">01 — CORE</div>
-        <h4>Start the watchtower</h4>
-        <p>Clone the repo and spin up Core with Docker Compose. Dashboard and API come up automatically.</p>
-        <code>git clone https://github.com/MahdiHedhli/vedetta.git<br>cd vedetta<br>docker compose up -d</code>
+    <section id="today">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">What Vedetta Is Today</div>
+          <h2>The current product shape in plain language.</h2>
+          <p class="section-copy">Core runs in Docker. A native sensor provides the strongest current visibility. The local deployment should stand on its own, with optional integrations layered on top.</p>
+        </div>
+        <div class="grid">
+          <article class="panel">
+            <div class="eyebrow">Current wedge</div>
+            <h3>DNS-first visibility and detection</h3>
+            <p>Vedetta already captures and scores DNS activity locally, then enriches that data with local threat intelligence.</p>
+          </article>
+          <article class="panel">
+            <div class="eyebrow">Current wedge</div>
+            <h3>Device discovery and inventory</h3>
+            <p>The native sensor finds devices, reports them back to Core, and gives the dashboard a useful local inventory.</p>
+          </article>
+          <article class="panel">
+            <div class="eyebrow">Optional inputs</div>
+            <h3>Pi-hole and AdGuard Home integrations</h3>
+            <p>Both are optional sources if you already run them. They add value, but they are not required to understand Vedetta.</p>
+          </article>
+        </div>
       </div>
-      <div class="step">
-        <div class="step-num">02 — SENSOR</div>
-        <h4>Deploy a sensor</h4>
-        <p>Run the one-liner on any machine on your LAN. It installs dependencies, builds from source, and registers as a persistent service.</p>
-        <code>curl -fsSL https://raw.githubusercontent.com/<br>MahdiHedhli/vedetta/main/sensor/<br>deploy/install.sh | sudo bash -s --<br>--core http://&lt;CORE_IP&gt;:8080</code>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- FOOTER -->
+    <section id="status">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">Status</div>
+          <h2>Shipped work, in-progress work, and next work.</h2>
+          <p class="section-copy">These buckets are the public version of the current reality. They are meant to separate present-tense claims from roadmap direction.</p>
+        </div>
+        <div class="grid">
+          <article class="panel">
+            <div class="eyebrow">Available now</div>
+            <h3>Local product that already stands on its own</h3>
+            <ul>
+              <li>Docker-based Core</li>
+              <li>Native sensor on macOS and Linux</li>
+              <li>Passive DNS capture and device discovery</li>
+              <li>Optional Pi-hole and AdGuard Home pollers</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <div class="eyebrow">In progress</div>
+            <h3>Sharpening the alpha</h3>
+            <ul>
+              <li>Install and onboarding polish</li>
+              <li>Sensor-to-Core hardening</li>
+              <li>Public docs clean-up</li>
+              <li>Turning early connector work into documented workflows</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <div class="eyebrow">Planned next</div>
+            <h3>Broader network visibility</h3>
+            <ul>
+              <li>Router and firewall log aggregation</li>
+              <li>Connectors for UniFi, OpenWRT, pfSense/OPNsense, and MikroTik</li>
+              <li>More passive discovery sources</li>
+              <li>Optional, privacy-conscious community intelligence</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="docs">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">Documentation</div>
+          <h2>The short list of docs that matter first.</h2>
+          <p class="section-copy">These pages were updated to stay aligned with the current repo state and the product's honest near-term direction.</p>
+        </div>
+        <div class="grid two">
+          <article class="panel">
+            <div class="eyebrow">Product shape</div>
+            <h3>What to read first</h3>
+            <ul>
+              <li><a href="https://github.com/MahdiHedhli/vedetta/blob/main/README.md" target="_blank" rel="noreferrer">README</a></li>
+              <li><a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/architecture.md" target="_blank" rel="noreferrer">Architecture</a></li>
+              <li><a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/sensor-architecture.md" target="_blank" rel="noreferrer">Sensor architecture</a></li>
+            </ul>
+          </article>
+          <article class="panel">
+            <div class="eyebrow">Roadmap and trust</div>
+            <h3>What is optional, what is next, what is not shipped</h3>
+            <ul>
+              <li><a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/roadmap.md" target="_blank" rel="noreferrer">Roadmap</a></li>
+              <li><a href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security policy</a></li>
+              <li><a href="https://github.com/MahdiHedhli/vedetta/blob/main/sensor/deploy/install.sh" target="_blank" rel="noreferrer">Sensor installer</a></li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
   <footer class="footer">
-    <div class="footer-links">
-      <a href="https://github.com/MahdiHedhli/vedetta">GitHub</a>
-      <a href="https://github.com/MahdiHedhli/vedetta/wiki">Docs</a>
-      <a href="https://github.com/MahdiHedhli/vedetta/issues">Issues</a>
-      <a href="https://github.com/MahdiHedhli/vedetta/blob/main/LICENSE">License</a>
+    <div class="container footer-inner">
+      <div>Vedetta docs - aligned to the current alpha product shape.</div>
+      <div class="footer-links">
+        <a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/issues" target="_blank" rel="noreferrer">Issues</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security</a>
+      </div>
     </div>
-    <p class="footer-copy">Vedetta &mdash; 42 Holdings, LLC &mdash; 2026</p>
   </footer>
-
 </body>
 </html>

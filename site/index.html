@@ -3,908 +3,626 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vedetta — Open-Source Home Network Security</title>
-  <meta name="description" content="Vedetta is an open-source SIEM and threat intelligence platform for home networks and small businesses. Monitor, detect, and protect.">
-  <meta property="og:title" content="Vedetta — Open-Source Home Network Security">
-  <meta property="og:description" content="Monitor, detect, and protect your home network with open-source threat intelligence.">
+  <title>Vedetta - DNS-first security monitoring</title>
+  <meta name="description" content="Vedetta is a self-hosted, DNS-first security monitoring platform for homes and small businesses. Discover devices, inspect DNS activity, and keep control of your data.">
+  <meta property="og:title" content="Vedetta - DNS-first security monitoring">
+  <meta property="og:description" content="Self-hosted security monitoring for homes and small businesses, with device discovery, passive DNS visibility, and optional integrations.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://vedettas.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg width='32' height='32' viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3CradialGradient id='g' cx='50%25' cy='35%25' r='70%25'%3E%3Cstop offset='0%25' stop-color='%23F5B731' stop-opacity='0.85'/%3E%3Cstop offset='45%25' stop-color='%23E8A020' stop-opacity='0.32'/%3E%3Cstop offset='100%25' stop-color='transparent'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect width='512' height='512' rx='108' fill='%230B1426'/%3E%3Crect width='512' height='512' rx='108' fill='url(%23g)'/%3E%3Crect x='135' y='414' width='242' height='34' rx='6' fill='%23070E1A'/%3E%3Cpath d='M172 414 L178 274 L164 252 L164 238 L348 238 L348 252 L334 274 L340 414 Z' fill='%23070E1A'/%3E%3Crect x='164' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='231' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='298' y='160' width='50' height='80' rx='5' fill='%23070E1A'/%3E%3Crect x='164' y='224' width='184' height='18' fill='%23070E1A'/%3E%3C/svg%3E">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&amp;family=Instrument+Serif:ital@0;1&amp;family=Space+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --bg: #070E1A;
-      --surface: #0B1426;
-      --border: #1C2840;
-      --text: #F0F2F7;
-      --muted: #7A879E;
-      --accent: #E8A020;
-      --accent-bright: #F5B731;
-      --accent-glow: rgba(232, 160, 32, 0.15);
-      --font-display: 'Instrument Serif', Georgia, serif;
-      --font-body: 'DM Sans', system-ui, sans-serif;
+      --bg: #07101d;
+      --surface: rgba(12, 21, 38, 0.9);
+      --surface-strong: #0d1728;
+      --border: rgba(255, 255, 255, 0.09);
+      --text: #eef2f8;
+      --muted: #9aa7bf;
+      --accent: #e7a12a;
+      --accent-soft: rgba(231, 161, 42, 0.14);
+      --ok: #3fd0a0;
+      --font-display: "Instrument Serif", Georgia, serif;
+      --font-body: "DM Sans", system-ui, sans-serif;
+      --font-mono: "Space Mono", monospace;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+      --max: 1180px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
     }
 
     body {
+      margin: 0;
       font-family: var(--font-body);
-      background: var(--bg);
       color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      -webkit-font-smoothing: antialiased;
+      background:
+        radial-gradient(circle at top, rgba(231, 161, 42, 0.14), transparent 26rem),
+        linear-gradient(180deg, #07101d 0%, #050a14 100%);
+      line-height: 1.6;
     }
 
-    .grain {
+    body::before {
+      content: "";
       position: fixed;
       inset: 0;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
       pointer-events: none;
-      z-index: 0;
+      opacity: 0.08;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+      background-size: 40px 40px;
+      mask-image: radial-gradient(circle at center, black, transparent 75%);
     }
 
-    .glow {
-      position: fixed;
-      top: -40%;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 800px;
-      height: 600px;
-      background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    /* Navigation Bar */
-    nav {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      z-index: 100;
-      background: rgba(3, 7, 18, 0.8);
-      backdrop-filter: blur(8px);
-      border-bottom: 1px solid var(--border);
-      padding: 1rem 2rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .nav-logo {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
+    a {
+      color: inherit;
       text-decoration: none;
-      color: var(--text);
-      font-weight: 700;
-      font-size: 1.125rem;
     }
 
-    .nav-logo-mark {
-      width: 32px;
-      height: 32px;
+    .container {
+      width: min(calc(100% - 32px), var(--max));
+      margin: 0 auto;
+    }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(14px);
+      background: rgba(5, 10, 20, 0.72);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-inner {
       display: flex;
       align-items: center;
-      justify-content: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 16px 0;
     }
 
-    .nav-logo span {
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .brand span {
       font-family: var(--font-display);
-      font-size: 1.25rem;
+      font-size: 1.4rem;
       font-weight: 400;
-      letter-spacing: 0.5px;
     }
 
-    .nav-logo .accent-e {
+    .brand .accent {
       color: var(--accent);
       font-style: italic;
     }
 
-    .hamburger {
-      display: none;
-      flex-direction: column;
-      gap: 0.375rem;
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 0.5rem;
-    }
-
-    .hamburger span {
-      width: 24px;
-      height: 2px;
-      background: var(--text);
-      border-radius: 1px;
-      transition: all 0.3s;
-    }
-
-    .hamburger.active span:nth-child(1) {
-      transform: rotate(45deg) translateY(10px);
-    }
-
-    .hamburger.active span:nth-child(2) {
-      opacity: 0;
-    }
-
-    .hamburger.active span:nth-child(3) {
-      transform: rotate(-45deg) translateY(-10px);
-    }
-
-    .nav-menu {
+    .nav-links {
       display: flex;
-      gap: 2rem;
-      list-style: none;
-    }
-
-    .nav-menu a {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 18px;
       color: var(--muted);
-      text-decoration: none;
-      font-size: 0.9375rem;
-      transition: color 0.2s;
+      font-size: 0.95rem;
     }
 
-    .nav-menu a:hover {
+    .nav-links a:hover {
       color: var(--accent);
-    }
-
-    .nav-menu .coming-soon {
-      color: #475569;
-      cursor: not-allowed;
-    }
-
-    .coming-soon-badge {
-      display: inline-flex;
-      align-items: center;
-      background: rgba(100, 116, 139, 0.2);
-      padding: 0.125rem 0.5rem;
-      border-radius: 4px;
-      font-size: 0.625rem;
-      margin-left: 0.375rem;
-      color: #64748b;
-    }
-
-    .mobile-menu {
-      display: none;
-      position: absolute;
-      top: 100%;
-      right: 0;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      margin-top: 0.5rem;
-      margin-right: 2rem;
-      min-width: 180px;
-      flex-direction: column;
-      gap: 0.5rem;
-      padding: 0.75rem 0;
-    }
-
-    .mobile-menu a {
-      padding: 0.75rem 1.5rem;
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.9375rem;
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .mobile-menu a:hover {
-      background: var(--border);
-      color: var(--accent);
-    }
-
-    .mobile-menu a.coming-soon {
-      color: #475569;
-      cursor: not-allowed;
-    }
-
-    .mobile-menu a.coming-soon:hover {
-      background: transparent;
-    }
-
-    @media (max-width: 768px) {
-      .hamburger { display: flex; }
-      .nav-menu { display: none; }
-      .mobile-menu.active { display: flex; }
-    }
-
-    /* Main Content */
-    main {
-      position: relative;
-      z-index: 1;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 6rem 2rem 2rem;
     }
 
     .hero {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      max-width: 900px;
-      margin-bottom: 3rem;
-    }
-
-    .logo-container {
-      position: relative;
-      width: 280px;
-      height: 280px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 1rem;
-    }
-
-    .radar {
-      position: absolute;
-      width: 280px;
-      height: 280px;
-      inset: 0;
-      opacity: 0.35;
-    }
-
-    .radar-ring {
-      position: absolute;
-      border: 1px solid var(--accent);
-      border-radius: 50%;
-      inset: 0;
-      animation: pulse-ring 3s infinite;
-    }
-
-    .radar-ring:nth-child(1) { animation-delay: 0s; }
-    .radar-ring:nth-child(2) { animation-delay: 1s; }
-    .radar-ring:nth-child(3) { animation-delay: 2s; }
-
-    @keyframes pulse-ring {
-      0% {
-        transform: scale(0.3);
-        opacity: 0.35;
-      }
-      50% {
-        opacity: 0.2;
-      }
-      100% {
-        transform: scale(1);
-        opacity: 0;
-      }
-    }
-
-    .radar-sweep {
-      position: absolute;
-      width: 280px;
-      height: 280px;
-      border-radius: 50%;
-      background: conic-gradient(
-        from 0deg,
-        rgba(232, 160, 32, 0.4) 0deg,
-        rgba(232, 160, 32, 0.2) 45deg,
-        transparent 90deg
-      );
-      animation: rotate-sweep 4s linear infinite;
-    }
-
-    @keyframes rotate-sweep {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-
-    .logo-mark {
-      position: relative;
-      z-index: 10;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .logo-text {
-      font-family: var(--font-display);
-      font-size: 3.5rem;
-      font-weight: 400;
-      letter-spacing: 0.5px;
-      text-align: center;
-      margin-bottom: 1.5rem;
-      color: var(--text);
-    }
-
-    .logo-text .accent-e {
-      color: var(--accent);
-      font-style: italic;
+      padding: 88px 0 36px;
     }
 
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 0.375rem;
-      background: var(--surface);
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
       border: 1px solid var(--border);
-      border-radius: 100px;
-      padding: 0.375rem 1rem;
-      font-size: 0.75rem;
+      background: rgba(255, 255, 255, 0.04);
       color: var(--muted);
-      margin-bottom: 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
-    .badge-dot {
-      width: 6px;
-      height: 6px;
+    .badge::before {
+      content: "";
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
-      background: #4ade80;
-      animation: pulse 2s infinite;
+      background: var(--ok);
+      box-shadow: 0 0 14px rgba(63, 208, 160, 0.6);
     }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr;
+      gap: 32px;
+      align-items: end;
+      margin-top: 22px;
     }
 
     h1 {
+      margin: 18px 0 16px;
       font-family: var(--font-display);
-      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-size: clamp(3.1rem, 7vw, 5.4rem);
+      line-height: 0.98;
+      font-weight: 400;
+      letter-spacing: -0.03em;
+      max-width: 12ch;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 62ch;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .hero p + p {
+      margin-top: 12px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 28px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 13px 18px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      font-weight: 600;
+      transition: 0.2s ease;
+    }
+
+    .button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(231, 161, 42, 0.45);
+    }
+
+    .button.primary {
+      background: var(--accent);
+      color: #11161f;
+      border-color: transparent;
+    }
+
+    .hero-panel,
+    .card,
+    .status-panel,
+    .code-card {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-panel {
+      padding: 24px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .hero-panel h2,
+    .section-title {
+      margin: 0;
+      font-family: var(--font-display);
       font-weight: 400;
       letter-spacing: -0.02em;
-      line-height: 1.1;
-      max-width: 700px;
-      margin-bottom: 1.25rem;
     }
 
-    h1 > span {
-      background: linear-gradient(135deg, var(--accent), var(--accent-bright));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+    .hero-panel h2 {
+      margin-top: 10px;
+      font-size: 1.8rem;
     }
 
-    h1 .accent-e {
-      font-style: italic;
-    }
-
-    h2 {
-      font-family: var(--font-display);
-      font-size: clamp(1.75rem, 4vw, 2.25rem);
-      font-weight: 400;
-      letter-spacing: -0.01em;
-      margin-bottom: 3rem;
-      margin-top: 4rem;
-    }
-
-    .subtitle {
-      font-size: 1.125rem;
+    .hero-panel ul,
+    .status-panel ul {
+      margin: 18px 0 0;
+      padding-left: 18px;
       color: var(--muted);
-      max-width: 520px;
-      line-height: 1.6;
-      margin-bottom: 3rem;
     }
 
-    /* Features Grid */
-    #features {
-      width: 100%;
-      padding: 2rem;
+    section {
+      padding: 34px 0;
     }
 
-    .features-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 2rem;
-      max-width: 1200px;
-      margin: 0 auto;
-      width: 100%;
-    }
-
-    .feature-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 2rem;
-      transition: all 0.3s;
+    .section-header {
       display: flex;
       flex-direction: column;
-      gap: 1rem;
+      gap: 10px;
+      margin-bottom: 18px;
     }
 
-    .feature-card:hover {
-      border-color: var(--accent);
-      transform: translateY(-4px);
+    .section-title {
+      font-size: clamp(2rem, 4vw, 3rem);
     }
 
-    .feature-icon {
-      width: 40px;
-      height: 40px;
-      background: var(--accent);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.5rem;
-      color: white;
-    }
-
-    .feature-card h3 {
-      font-size: 1.125rem;
-      font-weight: 600;
-      margin: 0;
-    }
-
-    .feature-card p {
-      font-size: 0.9375rem;
+    .section-copy {
+      max-width: 68ch;
       color: var(--muted);
-      line-height: 1.6;
       margin: 0;
     }
 
-    /* How It Works Section */
-    #how-it-works {
-      width: 100%;
-      padding: 2rem;
-    }
-
-    .steps {
+    .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 2rem;
-      max-width: 1000px;
-      margin: 0 auto;
-      width: 100%;
+      gap: 18px;
     }
 
-    .step {
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
+    .grid.cards {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
-    .step-number {
-      width: 48px;
-      height: 48px;
-      background: var(--accent);
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 1.5rem;
-      color: white;
-      flex-shrink: 0;
+    .card {
+      padding: 22px;
     }
 
-    .step h3 {
-      font-size: 1.125rem;
-      font-weight: 600;
+    .card h3,
+    .status-panel h3,
+    .code-card h3 {
+      margin: 10px 0 10px;
+      font-size: 1.08rem;
+    }
+
+    .card p,
+    .status-panel p,
+    .trust-list,
+    .code-card p {
       margin: 0;
-    }
-
-    .step p {
-      font-size: 0.9375rem;
       color: var(--muted);
-      line-height: 1.6;
-      margin: 0;
     }
 
-    /* Get Started Section */
-    #get-started {
-      width: 100%;
-      padding: 2rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    .trust-list {
+      padding-left: 18px;
     }
 
-    .signup-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 2rem;
-      max-width: 440px;
-      width: 100%;
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
     }
 
-    .signup-box h3 {
-      font-size: 1rem;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
+    .status-panel {
+      padding: 22px;
     }
 
-    .signup-box p {
-      font-size: 0.8125rem;
-      color: var(--muted);
-      margin-bottom: 1.25rem;
+    .status-panel .eyebrow {
+      color: var(--ok);
     }
 
-    .form-row {
-      display: flex;
-      gap: 0.5rem;
-    }
-
-    .form-row input {
-      flex: 1;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.625rem 0.875rem;
-      color: var(--text);
-      font-size: 0.875rem;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    .form-row input:focus {
-      border-color: var(--accent);
-    }
-
-    .form-row input::placeholder {
-      color: #475569;
-    }
-
-    .form-row button {
-      background: var(--accent);
-      color: white;
-      border: none;
-      border-radius: 8px;
-      padding: 0.625rem 1.25rem;
-      font-size: 0.875rem;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.2s;
-    }
-
-    .form-row button:hover {
-      background: #d97706;
-    }
-
-    .form-row button:disabled {
-      background: #1e293b;
-      color: #475569;
-      cursor: not-allowed;
-    }
-
-    .success-msg {
-      display: none;
-      color: #4ade80;
-      font-size: 0.875rem;
-      margin-top: 0.75rem;
-    }
-
-    /* Footer */
-    footer {
-      position: relative;
-      z-index: 1;
-      text-align: center;
-      padding: 2rem;
-      border-top: 1px solid var(--border);
-      margin-top: 2rem;
-    }
-
-    footer p {
-      font-size: 0.75rem;
-      color: #334155;
-    }
-
-    footer a {
-      color: var(--muted);
-      text-decoration: none;
-      transition: color 0.2s;
-    }
-
-    footer a:hover {
+    .status-panel.planned .eyebrow {
       color: var(--accent);
     }
 
-    .links {
+    .code-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .code-card {
+      padding: 22px;
+    }
+
+    pre {
+      margin: 16px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border-radius: 16px;
+      background: var(--surface-strong);
+      color: #d3f9eb;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      line-height: 1.6;
+    }
+
+    .note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .footer {
+      padding: 32px 0 48px;
+      color: var(--muted);
+    }
+
+    .footer-inner {
       display: flex;
-      gap: 1.5rem;
-      justify-content: center;
-      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 18px;
+      padding-top: 22px;
+      border-top: 1px solid var(--border);
     }
 
-    .links a {
-      font-size: 0.8125rem;
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
     }
 
-    /* Responsive */
-    @media (max-width: 768px) {
-      nav {
-        padding: 0.75rem 1rem;
-      }
+    .footer-links a:hover {
+      color: var(--accent);
+    }
 
-      .nav-logo {
-        font-size: 1rem;
+    @media (max-width: 960px) {
+      .hero-grid,
+      .grid.cards,
+      .status-grid,
+      .code-grid {
+        grid-template-columns: 1fr;
       }
+    }
 
-      .nav-logo-mark {
-        width: 24px;
-        height: 24px;
-      }
-
-      .nav-logo-mark svg {
-        width: 20px;
-        height: 26px;
-      }
-
-      main {
-        padding: 5rem 1rem 2rem;
-      }
-
+    @media (max-width: 720px) {
       .hero {
-        margin-bottom: 2rem;
+        padding-top: 56px;
       }
 
-      .logo-container {
-        width: 200px;
-        height: 200px;
-        margin-bottom: 0.75rem;
-      }
-
-      .radar {
-        width: 200px;
-        height: 200px;
-      }
-
-      .radar-sweep {
-        width: 200px;
-        height: 200px;
-      }
-
-      .logo-mark svg {
-        width: 88px;
-        height: 114px;
-      }
-
-      .logo-text {
-        font-size: 2.75rem;
-        margin-bottom: 1rem;
-      }
-
-      .features-grid {
-        grid-template-columns: 1fr;
-        gap: 1rem;
-      }
-
-      .steps {
-        grid-template-columns: 1fr;
-        gap: 1.5rem;
-      }
-
-      .form-row {
+      .nav-inner,
+      .footer-inner {
         flex-direction: column;
-      }
-
-      .links {
-        flex-direction: column;
-        gap: 1rem;
+        align-items: flex-start;
       }
     }
   </style>
 </head>
 <body>
-  <div class="grain"></div>
-  <div class="glow"></div>
-
-  <!-- Navigation -->
-  <nav>
-    <a href="#" class="nav-logo">
-      <div class="nav-logo-mark">
-        <svg width="28" height="36" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg"><rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/><rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/><path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/><rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="56" y="90" width="88" height="12" fill="#E8A020"/></svg>
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="#top" aria-label="Vedetta">
+        <svg width="26" height="34" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="40" y="220" width="120" height="16" rx="4" fill="#E7A12A"/>
+          <rect x="50" y="210" width="100" height="14" rx="3" fill="#E7A12A"/>
+          <path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E7A12A"/>
+          <rect x="56" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="86" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="116" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="56" y="90" width="88" height="12" fill="#E7A12A"/>
+        </svg>
+        <span>Ved<span class="accent">e</span>tta</span>
+      </a>
+      <div class="nav-links">
+        <a href="#today">Today</a>
+        <a href="#status">Status</a>
+        <a href="#trust">Trust</a>
+        <a href="#start">Start</a>
+        <a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">GitHub</a>
       </div>
-      <span>Ved<span class="accent-e">e</span>tta</span>
-    </a>
-    <ul class="nav-menu">
-      <li><a href="#features">Features</a></li>
-      <li><a href="#how-it-works">How It Works</a></li>
-      <li><a href="#get-started">Get Started</a></li>
-      <li><a href="#" class="coming-soon">Threat Network <span class="coming-soon-badge">Coming Soon</span></a></li>
-      <li><a href="https://discord.gg/aubRTSWRyc" target="_blank">Discord</a></li>
-    </ul>
-    <button class="hamburger" id="hamburger">
-      <span></span>
-      <span></span>
-      <span></span>
-    </button>
-    <div class="mobile-menu" id="mobile-menu">
-      <a href="#features">Features</a>
-      <a href="#how-it-works">How It Works</a>
-      <a href="#get-started">Get Started</a>
-      <a href="#" class="coming-soon">Threat Network <span class="coming-soon-badge">Coming Soon</span></a>
-      <a href="https://discord.gg/aubRTSWRyc" target="_blank">Discord</a>
     </div>
   </nav>
 
-  <!-- Hero Section -->
-  <main>
+  <main id="top">
     <section class="hero">
-      <div class="logo-container">
-        <div class="radar">
-          <div class="radar-sweep"></div>
-          <div class="radar-ring"></div>
-          <div class="radar-ring"></div>
-          <div class="radar-ring"></div>
-        </div>
-        <div class="logo-mark">
-          <svg width="120" height="156" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg"><rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/><rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/><path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/><rect x="62" y="108" width="76" height="14" fill="#0B1426" opacity="0.2"/><rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="56" y="90" width="88" height="12" fill="#E8A020"/><rect x="84" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/><rect x="114" y="60" width="2" height="30" fill="#0B1426" opacity="0.12"/></svg>
-        </div>
-      </div>
-      <div class="logo-text">Ved<span class="accent-e">e</span>tta</div>
-
-      <div class="badge">
-        <span class="badge-dot"></span>
-        In active development
-      </div>
-
-      <h1>Network security <span>for <span class="accent-e">e</span>veryone</span></h1>
-
-      <p class="subtitle">
-        Open-source SIEM and threat intelligence for home networks and small businesses.
-        Know every device. Detect every threat. Own your data.
-      </p>
-    </section>
-
-    <!-- Features Section -->
-    <section id="features">
-      <h2>Powerful Features</h2>
-      <div class="features-grid">
-        <div class="feature-card">
-          <div class="feature-icon">🔍</div>
-          <h3>Device Discovery</h3>
-          <p>Automatically find every device on your network: phones, cameras, smart home gear, servers. Know what's connected and when something new shows up.</p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">🤝</div>
-          <h3>Community Threat Intel</h3>
-          <p>Opt in to contribute anonymized telemetry to help build a shared threat network. Every Vedetta instance makes every other instance smarter. Strength in numbers.</p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">🚀</div>
-          <h3>Runs Anywhere</h3>
-          <p>Deploy on a Raspberry Pi, a Windows PC, or a Mac. Docker-based Core with native sensors. Five minutes to full network visibility.</p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">📡</div>
-          <h3>DNS Monitoring</h3>
-          <p>Passive DNS analysis via libpcap and Pi-hole integration. DNSMasq and other options for advanced setups. See where your devices are calling home, catch suspicious domains, and track query patterns over time.</p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">⚙️</div>
-          <h3>Core + Sensor</h3>
-          <p>Core manages the dashboard, database, and intelligence. Sensors are lightweight binaries that can be deployed on each network segment with full L2 fingerprinting.</p>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-icon">🔓</div>
-          <h3>Open Source</h3>
-          <p>AGPLv3 licensed. Audit the code, contribute to it, fork it, extend it. No vendor lock-in, no subscriptions. Your network data stays on your hardware.</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- How It Works Section -->
-    <section id="how-it-works">
-      <h2>How It Works</h2>
-      <div class="steps">
-        <div class="step">
-          <div class="step-number">1</div>
-          <h3>Deploy Core</h3>
-          <p><code>git clone</code> + <code>docker compose up -d</code>. Dashboard live in under a minute.</p>
-        </div>
-
-        <div class="step">
-          <div class="step-number">2</div>
-          <h3>Install Sensors</h3>
-          <p>One-liner install on any host. Auto-detects your network and starts scanning.</p>
-        </div>
-
-        <div class="step">
-          <div class="step-number">3</div>
-          <h3>Monitor & Hunt</h3>
-          <p>Passive DNS capture, threat detection, device fingerprinting. All from your browser.</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- Get Started Section -->
-    <section id="get-started">
-      <div class="signup-box">
-        <h3>Get notified when we launch</h3>
-        <p>No spam. Just a single email when Vedetta is ready.</p>
-        <form id="signup-form" action="https://formspree.io/f/mqegkevy" method="POST">
-          <div class="form-row">
-            <input type="email" name="email" placeholder="you@example.com" required>
-            <button type="submit">Notify me</button>
+      <div class="container hero-grid">
+        <div>
+          <div class="badge">Alpha / active development</div>
+          <h1>DNS-first security monitoring for the networks you actually run.</h1>
+          <p>Vedetta is a self-hosted watchtower for homelabs, technical home users, small businesses, and hands-on operators. Today it is strongest at device discovery, passive DNS visibility, and local threat scoring.</p>
+          <p>Pi-hole and AdGuard Home can plug in if you already use them, but they are optional integrations, not the product identity. The community threat network is a future direction, not the main present-tense promise.</p>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">View the repo</a>
+            <a class="button" href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/roadmap.md" target="_blank" rel="noreferrer">Read the roadmap</a>
+            <a class="button" href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security policy</a>
           </div>
-        </form>
-        <div class="success-msg" id="success">You're on the list. We'll be in touch.</div>
+        </div>
+        <aside class="hero-panel">
+          <div class="eyebrow">Ground Truth</div>
+          <h2>What a visitor should understand in under 20 seconds</h2>
+          <ul>
+            <li>Vedetta is self-hosted and local-first.</li>
+            <li>Core runs in Docker. A native sensor provides the strongest current visibility.</li>
+            <li>DNS is the current wedge, alongside device discovery and inventory.</li>
+            <li>Pi-hole and AdGuard Home are optional sources, not requirements.</li>
+            <li>Router and firewall aggregation is part of the next expansion.</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <section id="today">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">What Vedetta Is Today</div>
+          <h2 class="section-title">A practical network watchtower, not a pretend appliance.</h2>
+          <p class="section-copy">The strongest current value is lightweight, self-hosted visibility. Vedetta is already useful locally without a cloud dependency, and it gets richer when you connect more signal sources over time.</p>
+        </div>
+        <div class="grid cards">
+          <article class="card">
+            <div class="eyebrow">Today</div>
+            <h3>Device discovery and inventory</h3>
+            <p>Vedetta uses a native sensor to discover what is on your network, keep a device inventory, and surface new or changed devices quickly.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Today</div>
+            <h3>Passive DNS visibility</h3>
+            <p>The current sensor captures DNS activity directly and feeds it into the local scoring pipeline for a DNS-first detection workflow.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Today</div>
+            <h3>Local threat scoring</h3>
+            <p>Vedetta already scores DGA-like domains, beaconing, tunneling, rebinding, and DNS bypass patterns, then enriches them with local threat intelligence.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Optional</div>
+            <h3>Pi-hole and AdGuard Home integrations</h3>
+            <p>If you already run Pi-hole or AdGuard Home, Vedetta can pull value from those logs too. They are integrations, not prerequisites.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Expansion</div>
+            <h3>Router and firewall coverage</h3>
+            <p>Early connector groundwork exists in the repo, with UniFi work started and OpenWRT, pfSense/OPNsense, and MikroTik on the near-term expansion path.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Trust</div>
+            <h3>Local ownership first</h3>
+            <p>The local deployment is the product. Telemetry is optional, and the future community threat network should stay opt-in and privacy-conscious.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="status">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">Status</div>
+          <h2 class="section-title">Clear lines between shipped work and roadmap work.</h2>
+          <p class="section-copy">Vedetta is in active development. These buckets are the honest version of the product state right now.</p>
+        </div>
+        <div class="status-grid">
+          <article class="status-panel">
+            <div class="eyebrow">Available now</div>
+            <h3>Local monitoring that already stands on its own</h3>
+            <ul>
+              <li>Docker-based Core with API, UI, and local storage</li>
+              <li>Native sensor for macOS and Linux workflows</li>
+              <li>Passive DNS capture and device discovery</li>
+              <li>Optional Pi-hole and AdGuard Home pollers</li>
+            </ul>
+          </article>
+          <article class="status-panel">
+            <div class="eyebrow">In progress</div>
+            <h3>Sharpening the alpha product</h3>
+            <ul>
+              <li>Install and onboarding polish</li>
+              <li>Stronger sensor-to-Core hardening</li>
+              <li>More durable docs and setup guidance</li>
+              <li>Turning early connector code into testable workflows</li>
+            </ul>
+          </article>
+          <article class="status-panel planned">
+            <div class="eyebrow">Planned next</div>
+            <h3>Broader network visibility layers</h3>
+            <ul>
+              <li>Router and firewall log aggregation</li>
+              <li>Connectors for UniFi, OpenWRT, pfSense/OPNsense, and MikroTik</li>
+              <li>Additional passive discovery sources such as ARP, DHCP, mDNS, and SSDP</li>
+              <li>An optional, privacy-conscious community threat network</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="trust">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">Who It Is For</div>
+          <h2 class="section-title">Grounded fit, honest install, explicit trust model.</h2>
+          <p class="section-copy">Vedetta is being built for small environments that want real visibility without pretending they already have a full SOC.</p>
+        </div>
+        <div class="grid cards">
+          <article class="card">
+            <div class="eyebrow">Audience</div>
+            <h3>Who Vedetta fits today</h3>
+            <ul class="trust-list">
+              <li>Homelab users</li>
+              <li>Technical home users</li>
+              <li>Small businesses without a full security team</li>
+              <li>Consultants, MSPs, and security practitioners helping tiny environments</li>
+            </ul>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Required vs optional</div>
+            <h3>Core plus sensor is the current model</h3>
+            <p>Required today: Vedetta Core and at least one native sensor. Optional today: Pi-hole, AdGuard Home, telemetry, and early connector experimentation.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Install reality</div>
+            <h3>Alpha, homelab-friendly, not plug-and-play</h3>
+            <p>The current path uses Docker for Core and a native sensor install with elevated local access. That is honest alpha software, not a fake frictionless setup story.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Privacy and trust</div>
+            <h3>Self-hosted first</h3>
+            <p>The local deployment should stay useful with no cloud dependency. Telemetry is optional, off by default, and the community intelligence layer is future-facing.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Pi-hole positioning</div>
+            <h3>Not a Pi-hole companion product</h3>
+            <p>Pi-hole and AdGuard Home are useful if you already run them. Vedetta is being built to ingest useful security signals from multiple DNS and network data sources over time.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Security note</div>
+            <h3>Local-first alpha means explicit boundaries</h3>
+            <p>Sensor-to-Core hardening is underway. The current product should be treated as LAN-first alpha software, not as hardened public internet infrastructure.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="start">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">Start</div>
+          <h2 class="section-title">Two moving parts, by design.</h2>
+          <p class="section-copy">Core is the dashboard and data plane. The sensor is the local network-side view. That split is where the current product gets its value.</p>
+        </div>
+        <div class="code-grid">
+          <article class="code-card">
+            <div class="eyebrow">1. Core</div>
+            <h3>Start Vedetta Core</h3>
+            <p>Core runs locally with Docker Compose.</p>
+            <pre><code>git clone https://github.com/MahdiHedhli/vedetta.git
+cd vedetta
+docker compose up -d</code></pre>
+          </article>
+          <article class="code-card">
+            <div class="eyebrow">2. Sensor</div>
+            <h3>Install the native sensor</h3>
+            <p>The current public installer supports macOS and Linux. Review the script before running it.</p>
+            <pre><code>curl -fsSL -o /tmp/vedetta-sensor-install.sh \
+  https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
+
+sudo bash /tmp/vedetta-sensor-install.sh \
+  --core http://&lt;CORE_IP&gt;:8080</code></pre>
+          </article>
+        </div>
+        <p class="note">If you want the longer operational details, the repo README and roadmap go deeper on what is available now, what is optional, and what is still next.</p>
       </div>
     </section>
   </main>
 
-  <!-- Footer -->
-  <footer>
-    <div class="links">
-      <a href="https://github.com/MahdiHedhli/vedetta" target="_blank">GitHub</a>
-      <a href="https://discord.gg/aubRTSWRyc" target="_blank">Discord</a>
-      <a href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank">Security</a>
-      <a href="mailto:security@vedettas.com">Contact</a>
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div>Vedetta - open-source security monitoring for homes and small businesses.</div>
+      <div class="footer-links">
+        <a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/README.md" target="_blank" rel="noreferrer">README</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/architecture.md" target="_blank" rel="noreferrer">Architecture</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/roadmap.md" target="_blank" rel="noreferrer">Roadmap</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security</a>
+      </div>
     </div>
-    <p>&copy; 2026 Vedetta. All rights reserved.</p>
   </footer>
-
-  <script>
-    // Mobile menu toggle
-    const hamburger = document.getElementById('hamburger');
-    const mobileMenu = document.getElementById('mobile-menu');
-
-    hamburger.addEventListener('click', () => {
-      hamburger.classList.toggle('active');
-      mobileMenu.classList.toggle('active');
-    });
-
-    // Close menu when a link is clicked
-    const mobileMenuLinks = mobileMenu.querySelectorAll('a');
-    mobileMenuLinks.forEach(link => {
-      link.addEventListener('click', () => {
-        hamburger.classList.remove('active');
-        mobileMenu.classList.remove('active');
-      });
-    });
-
-    // Smooth scroll for anchor links
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-      anchor.addEventListener('click', function(e) {
-        const href = this.getAttribute('href');
-        if (href !== '#') {
-          e.preventDefault();
-          const element = document.querySelector(href);
-          if (element) {
-            element.scrollIntoView({ behavior: 'smooth' });
-          }
-        }
-      });
-    });
-
-    // Form handling
-    const form = document.getElementById('signup-form');
-    const success = document.getElementById('success');
-
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = form.querySelector('button');
-      const email = form.querySelector('input');
-      btn.disabled = true;
-      btn.textContent = 'Sending...';
-
-      try {
-        const res = await fetch(form.action, {
-          method: 'POST',
-          body: new FormData(form),
-          headers: { 'Accept': 'application/json' }
-        });
-
-        if (res.ok) {
-          form.style.display = 'none';
-          success.style.display = 'block';
-        } else {
-          btn.textContent = 'Try again';
-          btn.disabled = false;
-        }
-      } catch {
-        btn.textContent = 'Try again';
-        btn.disabled = false;
-      }
-    });
-  </script>
 </body>
 </html>

@@ -1,54 +1,103 @@
 # Vedetta
 
-**Your network, under watch.** Open-source security monitoring for homes and small businesses.
+**Your network, under watch.** DNS-first security monitoring for homes and small businesses.
 
-Vedetta is the watchtower on your network — it sees everything and explains it simply. Install in one command, run on a Raspberry Pi, and get enterprise-grade network visibility without the enterprise learning curve.
+Vedetta is a lightweight, self-hosted security monitoring platform. Today it is strongest at device discovery, passive DNS visibility, and local threat scoring. The current product stands on its own locally, can optionally pull value from existing DNS infrastructure such as Pi-hole or AdGuard Home, and is still best described as alpha software for homelabs, technical home users, small businesses, and hands-on operators.
 
-### What's included
+## What Vedetta Is Today
 
-- **DNS threat hunting** with 5 detection engines: DGA detection (Shannon entropy), beaconing detection (callback patterns), DNS tunneling, DNS rebinding, and DNS bypass detection
-- **Passive DNS capture** via libpcap — zero-config, no DNS proxy needed
-- **Pi-hole integration** for DNS event enrichment
-- **Device discovery** via nmap + OUI lookup and hostname fingerprinting
-- **Community threat intelligence** (planned) — shared, anonymized threat feeds
-- **Known-traffic whitelist** with 20 default rules (Apple, mDNS, cloud services, OS updates, etc.)
-- **Event management** — acknowledge, suppress, bulk manage, and deduplicate threats
+- **Vedetta Core** runs in Docker Compose and provides the API, dashboard, local storage, and ingest pipeline.
+- **Vedetta Sensor** runs natively on the network you want to inspect and handles device discovery plus passive DNS capture.
+- **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
+- **Threat enrichment** is local-first and backed by downloaded threat intelligence feeds.
+- **Optional DNS integrations** include Pi-hole and AdGuard Home if you already run them.
+- **Router and firewall work** has started in code, but broader log aggregation and connector coverage still belong in the roadmap.
+
+## Who It Is For Today
+
+Vedetta currently fits best for:
+
+- homelab users
+- technical home users
+- small businesses without a full SOC
+- consultants, MSPs, and security practitioners helping very small environments
+
+Vedetta is not yet a plug-and-play consumer appliance. The current install path assumes Docker, a native sensor, local network access, and some comfort with `sudo`.
+
+## Required Vs Optional
+
+### Required today
+
+- Vedetta Core
+- at least one sensor on the network segment you want to inspect
+
+### Optional today
+
+- Pi-hole integration
+- AdGuard Home integration
+- telemetry and future community sharing
+- early router and firewall connector experimentation
+
+Pi-hole and AdGuard Home are **optional integrations**, not the product identity. Vedetta is being built to ingest useful signals from multiple DNS and network sources over time.
+
+## Status
+
+### Available now
+
+- Docker-based Core with dashboard, API, and SQLite-backed storage
+- native sensor for macOS and Linux install paths
+- passive DNS capture plus nmap-based device discovery
+- DNS-first threat scoring and local enrichment
+- optional Pi-hole and AdGuard Home pollers
+- device inventory, scan targets, whitelist, suppression, and activity logging
+
+### In progress
+
+- install and onboarding polish for alpha users
+- stronger sensor-to-Core hardening
+- turning early router and firewall groundwork into documented workflows
+- better public docs that separate shipped functionality from roadmap direction
+
+### Planned next
+
+- router and firewall log aggregation for common platforms:
+  UniFi, OpenWRT, pfSense/OPNsense, and MikroTik
+- more passive discovery sources:
+  ARP, DHCP, mDNS, and SSDP/UPnP
+- more local DNS collection options for advanced deployments
+- an optional, privacy-conscious community threat network
 
 ## Quick Start
 
 ### 1. Start Vedetta Core
 
 ```bash
-git clone https://github.com/vedetta-network/vedetta.git
+git clone https://github.com/MahdiHedhli/vedetta.git
 cd vedetta
 docker compose up -d
 ```
 
 Dashboard: [http://localhost:3107](http://localhost:3107)
-API: [http://localhost:8080/api/v1/status](http://localhost:8080/api/v1/status)
+API status: [http://localhost:8080/api/v1/status](http://localhost:8080/api/v1/status)
 
-### 2. Update Vedetta
+### 2. Deploy A Sensor
 
-```bash
-# Update all services (pull latest code + rebuild)
-./scripts/update-all.sh
-
-# Or update individual components
-./scripts/update-core.sh     # Core services only
-./scripts/update-sensor.sh   # Sensor binary only
-```
-
-### 3. Deploy a Sensor
-
-Sensors are lightweight native binaries that run on your LAN hosts and push device discovery data back to Core. You need at least one sensor to start discovering devices.
-
-**One-liner install** (macOS and Linux — installs nmap, Go, builds the sensor, and sets up a persistent service):
+Review the installer, then run it against your Core instance:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core http://<CORE_IP>:8080
+curl -fsSL -o /tmp/vedetta-sensor-install.sh \
+  https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
+
+sudo bash /tmp/vedetta-sensor-install.sh --core http://<CORE_IP>:8080
 ```
 
-Or install manually:
+Current public install path:
+
+- macOS and Linux
+- installs dependencies, builds the sensor from source, and can register a persistent service
+- uses elevated privileges for the strongest local visibility
+
+If you prefer to build manually:
 
 ```bash
 cd sensor
@@ -56,231 +105,84 @@ go build -o vedetta-sensor ./cmd/vedetta-sensor
 sudo ./vedetta-sensor --core http://<CORE_IP>:8080
 ```
 
-The sensor auto-detects the local subnet, registers with Core, and begins scanning on a 5-minute cycle. Use `sudo` for ARP-based MAC address and vendor discovery.
+### 3. Update Vedetta
 
-See [Deploying Sensors](#deploying-sensors) for remote deployment, service management, and multi-NIC configurations.
-
-## Features
-
-### DNS Threat Detection
-
-Five detection engines analyze DNS traffic in real-time:
-
-- **DGA Detection** — Shannon entropy scoring to identify algorithmically generated domains
-- **Beaconing Detection** — Recognizes regular callback patterns indicating command & control
-- **DNS Tunnel Detection** — Detects subdomain exfiltration and data tunneling attempts
-- **DNS Rebinding Detection** — Identifies public→private IP transitions that could bypass firewalls
-- **DNS Bypass Detection** — Catches hardcoded resolver queries and DNS-over-HTTPS tunnels
-
-### Multi-Source DNS Capture
-
-- **Tier 1:** Passive libpcap sniffing via gopacket (zero-config, enabled by default)
-- **Tier 2:** Pi-hole REST API polling (60-second intervals)
-- **Tier 3:** Embedded DNS resolver (planned)
-- **Tier 4:** iptables DNAT intercept (planned, Linux router mode)
-
-### Device Discovery & Fingerprinting
-
-Active nmap scanning with OUI lookup, hostname pattern matching, and multi-signal fusion scoring (confidence 0.2–0.95).
-
-### Threat Intelligence
-
-abuse.ch feeds (URLhaus, Feodo Tracker, SSLBL) with Bloom filter for O(1) lookups. All detection works offline — no external API calls required for threat matching.
-
-### Event Management
-
-- Acknowledge or suppress individual events or in bulk
-- Suppression rules — auto-hide matching future events
-- Known-traffic whitelist with 20 default rules
-- Event grouping and deduplication
-
-### Dashboard
-
-React + Tailwind dark-theme UI featuring device inventory, threat events with severity filtering, sensor management, scan target configuration, and activity logging.
+```bash
+./scripts/update-all.sh
+./scripts/update-core.sh
+./scripts/update-sensor.sh
+```
 
 ## Architecture
 
-Vedetta uses a **Core + Sensor** architecture. Core is the watchtower — it runs as a set of Docker containers (API, database, dashboard, log collector) and gives you a single pane of glass across your entire network. Sensors are lightweight native binaries that run on host machines with direct LAN access, scanning for devices, capturing DNS traffic passively, and reporting back to Core.
+Vedetta uses a **Core + Sensor** model:
 
-```
-vedetta/
-├── backend/          Go API server (Core)
-├── frontend/         React + Tailwind dashboard
-├── sensor/           Native network sensor binary
-│   └── deploy/       systemd service file
-├── collector/        Fluent Bit log collection & normalization
-├── telemetry/        Opt-in anonymized telemetry daemon
-├── siem/             SIEM storage layer, schema, migrations
-├── threat-network/   Central threat intelligence backend
-├── docs/             Architecture & schema documentation
-└── docker-compose.yml
-```
+- **Core** is the Docker-based control plane: API, UI, storage, enrichment, and ingestion
+- **Sensor** is the native network-side component: discovery, passive DNS capture, and scan execution
+
+This split is deliberate. The local network is the strongest source of truth Vedetta has today, and native sensor access is more reliable than relying on containers alone for that visibility.
 
 ## Services
 
-| Service | Port | Description |
-|---------|------|-------------|
-| Backend | 8080 | Go API — device storage, scan coordination, event ingest |
-| Frontend | 3107 | React dashboard (configurable via `VEDETTA_FRONTEND_PORT`) |
-| Sensor | — | Native binary — nmap-based device discovery, passive DNS capture, pushes to Core |
-| Collector | 5140/udp | Fluent Bit — ingests firewall syslog (DNS now captured directly by sensor) |
-| Telemetry | — | Opt-in daemon — PII-stripped event batching to threat network |
-| Threat Network | 9090 | Central threat intel backend |
+| Service | Port | Purpose |
+| --- | --- | --- |
+| Backend | 8080 | API, device/event storage, enrichment, scan coordination |
+| Frontend | 3107 | Dashboard UI |
+| Collector | 5140/udp | Syslog and normalized log ingestion path |
+| Telemetry | - | Optional outbound sharing path, still scaffolded |
+| Threat Network | 9090 | Future-facing community backend, still scaffolded |
 
-## Hardware Requirements
+## Hardware And Platform Notes
 
-- **Core:** Raspberry Pi 4 (4GB RAM) or better. Docker + Docker Compose required.
-- **Sensor:** Any Linux, macOS, or Windows (planned) host on the target network segment. Requires nmap.
+- **Core:** Raspberry Pi 4 (4 GB RAM) or a small x86 box is a reasonable target for alpha deployments.
+- **Sensor:** macOS or Linux host with `nmap` on the network segment you want to inspect.
+- **Windows:** not yet a supported public install path.
 
-## Deploying Sensors
+## Router And Firewall Integrations
 
-### Automated Install (Recommended)
+Vedetta is not just a Pi-hole companion. DNS is the current wedge, but the product is being expanded to pull value from multiple visibility layers.
 
-The install script detects your OS, installs dependencies (nmap, Go), builds the sensor from source, and registers it as a persistent service — launchd on macOS, systemd on Linux.
+Current state:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core http://<CORE_IP>:8080
-```
+- connector framework exists in `backend/internal/firewall/`
+- early UniFi connector code exists
+- collector exposes a syslog path on UDP 5140
 
-#### Install script options
+Planned next:
 
-| Option | Description |
-|--------|-------------|
-| `--core <url>` | **(Required)** Vedetta Core API URL |
-| `--cidr <cidr>` | Override auto-detected subnet |
-| `--interval <dur>` | Scan interval (default: 5m) |
-| `--ports` | Enable top-100 port scanning |
-| `--primary` | Register as the primary sensor |
-| `--no-service` | Install binary only, skip service setup |
-| `--uninstall` | Remove sensor binary and service |
+1. UniFi hardening and documentation
+2. OpenWRT
+3. pfSense / OPNsense
+4. MikroTik
 
-#### Supported platforms
+These should be described honestly as early or planned until they are documented and proven in the public workflow.
 
-- **macOS** (Intel and Apple Silicon) — installs via Homebrew, service via launchd
-- **Debian / Ubuntu / Pop!_OS / Linux Mint** — installs via apt
-- **Fedora / RHEL / Rocky / AlmaLinux** — installs via dnf/yum
-- **Alpine** — installs via apk
-- **Arch / Manjaro** — installs via pacman
-- **Windows** (planned)
+## Privacy And Trust
 
-### Manual Install
+- **Self-hosted first.** The local deployment is the product.
+- **Local value first.** Device discovery, DNS visibility, and local detections should remain useful without cloud dependency.
+- **Telemetry is optional.** It is off by default.
+- **Community threat sharing is future-facing.** It is not the main present-tense promise and should remain opt-in and privacy-conscious.
 
-#### Prerequisites
+## Known Alpha Limits
 
-The sensor host needs `nmap` and a Go toolchain (to build from source), or you can cross-compile and copy the binary.
+- Core plus native sensor is still the real deployment model.
+- Install still assumes Docker, a native sensor, and some comfort with local networking and `sudo`.
+- Sensor-to-Core hardening is not fully complete yet.
+- Threat-network and telemetry services are still scaffolded and should not be marketed as production-ready today.
 
-- **macOS:** `brew install nmap`
-- **Debian/Ubuntu:** `sudo apt install nmap`
-- **Alpine:** `sudo apk add nmap`
-
-#### Build
-
-```bash
-cd sensor
-go build -o vedetta-sensor ./cmd/vedetta-sensor
-```
-
-Or cross-compile for a remote Linux host:
-
-```bash
-GOOS=linux GOARCH=amd64 go build -o vedetta-sensor ./cmd/vedetta-sensor
-# then scp vedetta-sensor to the target machine
-```
-
-#### Run
-
-```bash
-sudo ./vedetta-sensor --core http://<CORE_IP>:8080
-```
-
-#### Sensor flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--core` | `http://localhost:8080` | Vedetta Core API URL |
-| `--cidr` | `auto` | CIDR to scan (`auto` detects the local subnet) |
-| `--interval` | `5m` | Scan cycle interval |
-| `--ports` | `false` | Include top-100 port scan |
-| `--primary` | `false` | Register as the primary sensor |
-| `--once` | `false` | Run a single scan cycle and exit |
-| `--dns` | `true` | Enable DNS capture via packet sniffing |
-| `--dns-iface` | `auto` | Network interface for DNS capture (auto-detect if not specified) |
-
-### Service Management
-
-#### macOS (launchd)
-
-```bash
-# Status
-sudo launchctl list | grep vedetta
-
-# Logs
-tail -f /usr/local/var/log/vedetta-sensor.log
-
-# Stop
-sudo launchctl bootout system/com.vedetta.sensor
-
-# Start
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.vedetta.sensor.plist
-
-# Uninstall
-curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --uninstall
-```
-
-#### Linux (systemd)
-
-```bash
-# Status
-sudo systemctl status vedetta-sensor
-
-# Logs
-journalctl -u vedetta-sensor -f
-
-# Restart
-sudo systemctl restart vedetta-sensor
-
-# Uninstall
-curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --uninstall
-```
-
-Template service files are provided in `sensor/deploy/`.
-
-### Multi-NIC / Multi-Segment Hosts
-
-If the sensor host has NICs on multiple network segments (e.g. both your primary LAN and an IoT VLAN), a single sensor instance handles all of them. The sensor polls Core for enabled scan targets each cycle and uses the OS routing table to send traffic through the correct interface per subnet. No special configuration is needed — just add each network as a Scan Target in the Vedetta dashboard and the sensor will scan them all.
-
-### Network Discovery Limitations
-
-Device fingerprinting (MAC address, vendor, hostname) relies on ARP, which is a Layer 2 protocol and only works on the local subnet. If a sensor scans a remote subnet it is not directly connected to, devices will be discovered by IP but without MAC addresses or vendor identification.
-
-For full fingerprinting on every segment, deploy a sensor on each network — or use a host with NICs on all segments you want to monitor.
-
-## Firewall Integration
-
-### Planned Integrations
-
-Firewall log ingestion is coming in a future release. Planned targets (in priority order):
-
-1. UniFi (REST API)
-2. OpenWRT (ubus JSON-RPC)
-3. pfSense / OPNsense (syslog + REST API)
-4. MikroTik (RouterOS API)
-
-Fluent Bit syslog input is already configured on UDP port 5140.
-
-## Community
-
-Join the Vedetta community on Discord for support, feature discussion, and threat intel sharing.
-
-**[Discord](https://discord.gg/aubRTSWRyc)** · **[Community Guide](COMMUNITY.md)**
-
-## Documentation Links
+## Documentation
 
 - [Architecture Reference](docs/architecture.md)
 - [Project Roadmap](docs/roadmap.md)
-- [Event Schema](docs/schema.md)
 - [Sensor Architecture](docs/sensor-architecture.md)
+- [Security Policy](SECURITY.md)
+
+## Community
+
+- [Discord](https://discord.gg/aubRTSWRyc)
+- [Community Guide](COMMUNITY.md)
 
 ## License
 
-AGPLv3 — see [LICENSE](LICENSE) for details.
+AGPLv3 - see [LICENSE](LICENSE) for details.
