@@ -163,4 +163,4 @@ Tags are freeform strings, but the following are recognized by Vedetta's detecti
 
 ## Schema Versioning
 
-The schema version is tracked as an integer, starting at `1`. Every breaking change increments the version. The threat network backend rejects batches with mismatched schema versions, ensuring forward compatibility without breaking existing nodes.
+The schema version is tracked as an integer, starting at `1`. Every breaking change increments the version. The future community threat-network path is expected to enforce schema compatibility when that backend is fully implemented.

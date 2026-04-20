@@ -2,8 +2,9 @@
 #
 # Vedetta Sensor — Install Script
 #
-# One-liner:
-#   curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core http://<CORE_IP>:8080
+# Quick install (macOS/Linux today):
+#   curl -fsSL -o /tmp/vedetta-sensor-install.sh https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
+#   sudo bash /tmp/vedetta-sensor-install.sh --core http://<CORE_IP>:8080
 #
 # What it does:
 #   1. Detects OS (macOS / Debian / Ubuntu / Alpine / RHEL / Fedora / Arch)
@@ -70,8 +71,9 @@ Examples:
   # IoT-focused sensor with port scanning
   sudo bash install.sh --core http://10.0.0.5:8080 --cidr 10.0.107.0/24 --ports
 
-  # Remote install via curl
-  curl -fsSL https://raw.githubusercontent.com/vedetta-network/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core http://10.0.0.5:8080
+  # Download, review, and install
+  curl -fsSL -o /tmp/vedetta-sensor-install.sh https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
+  sudo bash /tmp/vedetta-sensor-install.sh --core http://10.0.0.5:8080
 EOF
     exit 0
 }
@@ -325,7 +327,7 @@ install_service_linux() {
     cat > "$UNIT" <<UNIT
 [Unit]
 Description=Vedetta Network Sensor
-Documentation=https://github.com/vedetta-network/vedetta
+Documentation=https://github.com/MahdiHedhli/vedetta
 After=network-online.target
 Wants=network-online.target
 
