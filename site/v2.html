@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vedetta - Your network watchtower</title>
+  <meta name="description" content="Vedetta is a self-hosted network watchtower for homes and small businesses. Discover devices, inspect DNS activity, and keep control of your data.">
+  <meta property="og:title" content="Vedetta - Your network watchtower">
+  <meta property="og:description" content="Practical security visibility for homes and small businesses, with device discovery, passive DNS visibility, and optional integrations.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://vedettas.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&amp;family=Instrument+Serif:ital@0;1&amp;family=Space+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07101d;
+      --surface: rgba(12, 21, 38, 0.9);
+      --surface-strong: #0d1728;
+      --border: rgba(255, 255, 255, 0.09);
+      --text: #eef2f8;
+      --muted: #9aa7bf;
+      --accent: #e7a12a;
+      --accent-soft: rgba(231, 161, 42, 0.14);
+      --ok: #3fd0a0;
+      --font-display: "Instrument Serif", Georgia, serif;
+      --font-body: "DM Sans", system-ui, sans-serif;
+      --font-mono: "Space Mono", monospace;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+      --max: 1180px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--font-body);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(231, 161, 42, 0.14), transparent 26rem),
+        linear-gradient(180deg, #07101d 0%, #050a14 100%);
+      line-height: 1.6;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.08;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+      background-size: 40px 40px;
+      mask-image: radial-gradient(circle at center, black, transparent 75%);
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .container {
+      width: min(calc(100% - 32px), var(--max));
+      margin: 0 auto;
+    }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(14px);
+      background: rgba(5, 10, 20, 0.72);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 16px 0;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .brand span {
+      font-family: var(--font-display);
+      font-size: 1.4rem;
+      font-weight: 400;
+    }
+
+    .brand .accent {
+      color: var(--accent);
+      font-style: italic;
+    }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .nav-links a:hover {
+      color: var(--accent);
+    }
+
+    .hero {
+      padding: 88px 0 36px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .badge::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 14px rgba(63, 208, 160, 0.6);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr;
+      gap: 32px;
+      align-items: end;
+      margin-top: 22px;
+    }
+
+    .hero-side {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 20px;
+    }
+
+    h1 {
+      margin: 18px 0 16px;
+      font-family: var(--font-display);
+      font-size: clamp(3.1rem, 7vw, 5.4rem);
+      line-height: 0.98;
+      font-weight: 400;
+      letter-spacing: -0.03em;
+      max-width: 12ch;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 62ch;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .hero p + p {
+      margin-top: 12px;
+    }
+
+    .hero-lead {
+      color: var(--text);
+      font-size: 1.18rem;
+      max-width: 30ch;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 28px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 13px 18px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      font-weight: 600;
+      transition: 0.2s ease;
+    }
+
+    .button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(231, 161, 42, 0.45);
+    }
+
+    .button.primary {
+      background: var(--accent);
+      color: #11161f;
+      border-color: transparent;
+    }
+
+    .hero-panel,
+    .card,
+    .status-panel,
+    .code-card {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-panel {
+      padding: 24px;
+    }
+
+    .hero-radar {
+      position: relative;
+      width: min(100%, 320px);
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-right: 26px;
+    }
+
+    .radar {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      opacity: 0.38;
+      background:
+        radial-gradient(circle at center, rgba(231, 161, 42, 0.08) 0%, rgba(231, 161, 42, 0.02) 42%, transparent 70%),
+        linear-gradient(rgba(231, 161, 42, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(231, 161, 42, 0.08) 1px, transparent 1px);
+      background-size: auto, 25% 25%, 25% 25%;
+      box-shadow: inset 0 0 0 1px rgba(231, 161, 42, 0.14);
+      overflow: hidden;
+    }
+
+    .radar::before,
+    .radar::after {
+      content: "";
+      position: absolute;
+      background: rgba(231, 161, 42, 0.18);
+    }
+
+    .radar::before {
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 1px;
+      transform: translateY(-0.5px);
+    }
+
+    .radar::after {
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 1px;
+      transform: translateX(-0.5px);
+    }
+
+    .radar-ring {
+      position: absolute;
+      inset: 0;
+      border: 1px solid rgba(231, 161, 42, 0.55);
+      border-radius: 50%;
+      animation: pulse-ring 3.8s infinite;
+    }
+
+    .radar-ring:nth-child(2) {
+      animation-delay: 1.2s;
+    }
+
+    .radar-ring:nth-child(3) {
+      animation-delay: 2.4s;
+    }
+
+    @keyframes pulse-ring {
+      0% {
+        transform: scale(0.3);
+        opacity: 0.35;
+      }
+
+      60% {
+        opacity: 0.16;
+      }
+
+      100% {
+        transform: scale(1);
+        opacity: 0;
+      }
+    }
+
+    .radar-sweep {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      background: conic-gradient(
+        from 0deg,
+        rgba(231, 161, 42, 0.42) 0deg,
+        rgba(231, 161, 42, 0.18) 48deg,
+        transparent 92deg
+      );
+      animation: rotate-sweep 5s linear infinite;
+      transform-origin: center;
+    }
+
+    @keyframes rotate-sweep {
+      0% {
+        transform: rotate(0deg);
+      }
+
+      100% {
+        transform: rotate(360deg);
+      }
+    }
+
+    .hero-rook {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 124px;
+      height: 162px;
+      filter: drop-shadow(0 12px 36px rgba(231, 161, 42, 0.22));
+    }
+
+    .hero-rook svg {
+      width: 100%;
+      height: auto;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .hero-panel h2,
+    .section-title {
+      margin: 0;
+      font-family: var(--font-display);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+    }
+
+    .hero-panel h2 {
+      margin-top: 10px;
+      font-size: 1.8rem;
+    }
+
+    .hero-panel ul,
+    .status-panel ul {
+      margin: 18px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }
+
+    section {
+      padding: 34px 0;
+    }
+
+    .section-header {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .section-title {
+      font-size: clamp(2rem, 4vw, 3rem);
+    }
+
+    .section-copy {
+      max-width: 68ch;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .grid.cards {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      padding: 22px;
+    }
+
+    .card h3,
+    .status-panel h3,
+    .code-card h3 {
+      margin: 10px 0 10px;
+      font-size: 1.08rem;
+    }
+
+    .card p,
+    .status-panel p,
+    .trust-list,
+    .code-card p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .trust-list {
+      padding-left: 18px;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .status-panel {
+      padding: 22px;
+    }
+
+    .status-panel .eyebrow {
+      color: var(--ok);
+    }
+
+    .status-panel.planned .eyebrow {
+      color: var(--accent);
+    }
+
+    .code-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .code-card {
+      padding: 22px;
+    }
+
+    pre {
+      margin: 16px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border-radius: 16px;
+      background: var(--surface-strong);
+      color: #d3f9eb;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      line-height: 1.6;
+    }
+
+    .note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .footer {
+      padding: 32px 0 48px;
+      color: var(--muted);
+    }
+
+    .footer-inner {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 18px;
+      padding-top: 22px;
+      border-top: 1px solid var(--border);
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .footer-links a:hover {
+      color: var(--accent);
+    }
+
+    @media (max-width: 960px) {
+      .hero-grid,
+      .grid.cards,
+      .status-grid,
+      .code-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-side {
+        align-items: center;
+      }
+
+      .hero-radar {
+        margin-right: 0;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .hero {
+        padding-top: 56px;
+      }
+
+      .hero-radar {
+        width: min(100%, 240px);
+      }
+
+      .nav-inner,
+      .footer-inner {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="#top" aria-label="Vedetta">
+        <svg width="26" height="34" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="40" y="220" width="120" height="16" rx="4" fill="#E7A12A"/>
+          <rect x="50" y="210" width="100" height="14" rx="3" fill="#E7A12A"/>
+          <path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E7A12A"/>
+          <rect x="56" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="86" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="116" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="56" y="90" width="88" height="12" fill="#E7A12A"/>
+        </svg>
+        <span>Ved<span class="accent">e</span>tta</span>
+      </a>
+      <div class="nav-links">
+        <a href="#today">Today</a>
+        <a href="#status">Status</a>
+        <a href="#trust">Trust</a>
+        <a href="#start">Start</a>
+        <a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <div class="badge">Alpha / active development</div>
+          <h1>Your network watchtower.</h1>
+          <p class="hero-lead">Practical security visibility for the networks you actually run.</p>
+          <p>Vedetta is a self-hosted watchtower for homelabs, technical home users, small businesses, and hands-on operators. Core runs in Docker, the native sensor handles local visibility, and the current product is strongest at device discovery, passive DNS visibility, and local threat scoring.</p>
+          <p>You can get to useful local visibility quickly, but the current path still assumes Docker, a native sensor, local network access, and some comfort with <code>sudo</code>. Pi-hole and AdGuard Home remain optional integrations, not the product identity.</p>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">View the repo</a>
+            <a class="button" href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/roadmap.md" target="_blank" rel="noreferrer">Read the roadmap</a>
+            <a class="button" href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security policy</a>
+          </div>
+        </div>
+        <div class="hero-side">
+          <div class="hero-radar" aria-hidden="true">
+            <div class="radar">
+              <div class="radar-sweep"></div>
+              <div class="radar-ring"></div>
+              <div class="radar-ring"></div>
+              <div class="radar-ring"></div>
+            </div>
+            <div class="hero-rook">
+              <svg viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg">
+                <rect x="40" y="220" width="120" height="16" rx="4" fill="#E7A12A"/>
+                <rect x="50" y="210" width="100" height="14" rx="3" fill="#E7A12A"/>
+                <path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E7A12A"/>
+                <rect x="62" y="108" width="76" height="14" fill="#0D1728" opacity="0.2"/>
+                <rect x="56" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+                <rect x="86" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+                <rect x="116" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+                <rect x="56" y="90" width="88" height="12" fill="#E7A12A"/>
+                <rect x="84" y="60" width="2" height="30" fill="#0D1728" opacity="0.12"/>
+                <rect x="114" y="60" width="2" height="30" fill="#0D1728" opacity="0.12"/>
+              </svg>
+            </div>
+          </div>
+          <aside class="hero-panel">
+            <div class="eyebrow">Ground Truth</div>
+            <h2>What a visitor should understand in under 20 seconds</h2>
+            <ul>
+              <li>Vedetta is self-hosted and local-first.</li>
+              <li>Core runs in Docker. A native sensor provides the strongest current visibility.</li>
+              <li>Device discovery and passive DNS are today’s strongest visibility layers.</li>
+              <li>Pi-hole and AdGuard Home are optional sources, not requirements.</li>
+              <li>Router and firewall aggregation is part of the next expansion.</li>
+            </ul>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="today">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">What Vedetta Is Today</div>
+          <h2 class="section-title">A practical network watchtower, not a pretend appliance.</h2>
+          <p class="section-copy">The strongest current value is lightweight, self-hosted visibility. Vedetta is already useful locally without a cloud dependency, and it gets richer when you connect more signal sources over time.</p>
+        </div>
+        <div class="grid cards">
+          <article class="card">
+            <div class="eyebrow">Today</div>
+            <h3>Device discovery and inventory</h3>
+            <p>Vedetta uses a native sensor to discover what is on your network, keep a device inventory, and surface new or changed devices quickly.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Today</div>
+            <h3>Passive DNS and local network signals</h3>
+            <p>The current sensor captures DNS activity directly and complements it with ARP, DHCP, mDNS, and SSDP/UPnP observations for a practical local detection workflow.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Today</div>
+            <h3>Local threat scoring</h3>
+            <p>Vedetta already scores DGA-like domains, beaconing, tunneling, rebinding, and DNS bypass patterns, then enriches them with local threat intelligence.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Optional</div>
+            <h3>Pi-hole and AdGuard Home integrations</h3>
+            <p>If you already run Pi-hole or AdGuard Home, Vedetta can pull value from those logs too. They are integrations, not prerequisites.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Expansion</div>
+            <h3>Router and firewall coverage</h3>
+            <p>Early connector groundwork exists in the repo, with UniFi work started and OpenWRT, pfSense/OPNsense, and MikroTik on the near-term expansion path.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Trust</div>
+            <h3>Local ownership first</h3>
+            <p>The local deployment is the product. Telemetry is optional, and the future community threat network should stay opt-in and privacy-conscious.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="status">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">Status</div>
+          <h2 class="section-title">Clear lines between shipped work and roadmap work.</h2>
+          <p class="section-copy">Vedetta is in active development. These buckets are the honest version of the product state right now.</p>
+        </div>
+        <div class="status-grid">
+          <article class="status-panel">
+            <div class="eyebrow">Available now</div>
+            <h3>Local monitoring that already stands on its own</h3>
+            <ul>
+              <li>Docker-based Core with API, UI, and local storage</li>
+              <li>Native sensor for macOS and Linux workflows</li>
+              <li>Passive DNS capture plus active and passive device discovery</li>
+              <li>Local DNS scoring and enrichment</li>
+              <li>Optional Pi-hole and AdGuard Home pollers</li>
+            </ul>
+          </article>
+          <article class="status-panel">
+            <div class="eyebrow">In progress</div>
+            <h3>Sharpening the alpha product</h3>
+            <ul>
+              <li>Install and onboarding polish</li>
+              <li>Token rotation and broader admin/dashboard auth hardening</li>
+              <li>More durable docs and setup guidance</li>
+              <li>Turning early connector code into testable workflows</li>
+            </ul>
+          </article>
+          <article class="status-panel planned">
+            <div class="eyebrow">Planned next</div>
+            <h3>Broader network visibility layers</h3>
+            <ul>
+              <li>Router and firewall log aggregation</li>
+              <li>Connectors for UniFi, OpenWRT, pfSense/OPNsense, and MikroTik</li>
+              <li>Better correlation and multi-network handling across ARP, DHCP, mDNS, and SSDP/UPnP signals</li>
+              <li>An optional, privacy-conscious community threat network</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="trust">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">Who It Is For</div>
+          <h2 class="section-title">Grounded fit, honest install, explicit trust model.</h2>
+          <p class="section-copy">Vedetta is being built for small environments that want real visibility without pretending they already have a full SOC.</p>
+        </div>
+        <div class="grid cards">
+          <article class="card">
+            <div class="eyebrow">Audience</div>
+            <h3>Who Vedetta fits today</h3>
+            <ul class="trust-list">
+              <li>Homelab users</li>
+              <li>Technical home users</li>
+              <li>Small businesses without a full security team</li>
+              <li>Consultants, MSPs, and security practitioners helping tiny environments</li>
+            </ul>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Required vs optional</div>
+            <h3>Core plus sensor is the current model</h3>
+            <p>Required today: Vedetta Core and at least one native sensor. Optional today: Pi-hole, AdGuard Home, telemetry, and early connector experimentation.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Install reality</div>
+            <h3>Alpha, homelab-friendly, not plug-and-play</h3>
+            <p>The current path uses Docker for Core and a native sensor install with elevated local access. That is honest alpha software, not a fake frictionless setup story.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Privacy and trust</div>
+            <h3>Self-hosted first</h3>
+            <p>The local deployment should stay useful with no cloud dependency. Telemetry is optional, off by default, and the community intelligence layer is future-facing.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Pi-hole positioning</div>
+            <h3>Not a Pi-hole companion product</h3>
+            <p>Pi-hole and AdGuard Home are useful if you already run them. Vedetta is being built to ingest useful security signals from multiple DNS and network data sources over time.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Security note</div>
+            <h3>Local-first alpha means explicit boundaries</h3>
+            <p>Machine-to-machine sensor auth is in place. Token rotation and broader admin/dashboard hardening are still ahead, and the current product should still be treated as LAN-first alpha software, not hardened public internet infrastructure.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="start">
+      <div class="container">
+        <div class="section-header">
+          <div class="eyebrow">Start</div>
+          <h2 class="section-title">Two moving parts, by design.</h2>
+          <p class="section-copy">Core is the dashboard and data plane. The sensor is the local network-side view. That split is where the current product gets its value.</p>
+        </div>
+        <div class="code-grid">
+          <article class="code-card">
+            <div class="eyebrow">1. Core</div>
+            <h3>Start Vedetta Core</h3>
+            <p>Core runs locally with Docker Compose.</p>
+            <pre><code>git clone https://github.com/MahdiHedhli/vedetta.git
+cd vedetta
+docker compose up -d</code></pre>
+          </article>
+          <article class="code-card">
+            <div class="eyebrow">2. Sensor</div>
+            <h3>Install the native sensor</h3>
+            <p>The current public installer supports macOS and Linux. Review the script before running it.</p>
+            <pre><code>curl -fsSL -o /tmp/vedetta-sensor-install.sh \
+  https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
+
+sudo bash /tmp/vedetta-sensor-install.sh \
+  --core http://&lt;CORE_IP&gt;:8080</code></pre>
+          </article>
+        </div>
+        <p class="note">If you want the longer operational details, the repo README and roadmap go deeper on what is available now, what is optional, and what is still next.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div>Vedetta - open-source security monitoring for homes and small businesses.</div>
+      <div class="footer-links">
+        <a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/README.md" target="_blank" rel="noreferrer">README</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/architecture.md" target="_blank" rel="noreferrer">Architecture</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/roadmap.md" target="_blank" rel="noreferrer">Roadmap</a>
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
