@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vedetta — Open-Source Home Network Security</title>
+  <title>Your Network Watchtower</title>
   <meta name="description" content="Vedetta is an open-source SIEM and threat intelligence platform for home networks and small businesses. Monitor, detect, and protect.">
-  <meta property="og:title" content="Vedetta — Open-Source Home Network Security">
+  <meta property="og:title" content="Your Network Watchtower">
   <meta property="og:description" content="Monitor, detect, and protect your home network with open-source threat intelligence.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://vedettas.com">
@@ -59,50 +59,64 @@
       z-index: 0;
     }
 
-    /* Navigation Bar */
-    nav {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      z-index: 100;
-      background: rgba(3, 7, 18, 0.8);
-      backdrop-filter: blur(8px);
-      border-bottom: 1px solid var(--border);
-      padding: 1rem 2rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .nav-logo {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
+    a {
+      color: inherit;
       text-decoration: none;
-      color: var(--text);
-      font-weight: 700;
-      font-size: 1.125rem;
     }
 
-    .nav-logo-mark {
-      width: 32px;
-      height: 32px;
+    .container {
+      width: min(calc(100% - 32px), 1180px);
+      margin: 0 auto;
+    }
+
+    /* Navigation Bar */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(14px);
+      background: rgba(5, 10, 20, 0.72);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-inner {
       display: flex;
       align-items: center;
-      justify-content: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 16px 0;
     }
 
-    .nav-logo span {
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .brand span {
       font-family: var(--font-display);
-      font-size: 1.25rem;
+      font-size: 1.4rem;
       font-weight: 400;
-      letter-spacing: 0.5px;
     }
 
-    .nav-logo .accent-e {
+    .brand .accent {
       color: var(--accent);
       font-style: italic;
+    }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .nav-links a:hover {
+      color: var(--accent);
     }
 
     .hamburger {
@@ -135,39 +149,6 @@
       transform: rotate(-45deg) translateY(-10px);
     }
 
-    .nav-menu {
-      display: flex;
-      gap: 2rem;
-      list-style: none;
-    }
-
-    .nav-menu a {
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.9375rem;
-      transition: color 0.2s;
-    }
-
-    .nav-menu a:hover {
-      color: var(--accent);
-    }
-
-    .nav-menu .coming-soon {
-      color: #475569;
-      cursor: not-allowed;
-    }
-
-    .coming-soon-badge {
-      display: inline-flex;
-      align-items: center;
-      background: rgba(100, 116, 139, 0.2);
-      padding: 0.125rem 0.5rem;
-      border-radius: 4px;
-      font-size: 0.625rem;
-      margin-left: 0.375rem;
-      color: #64748b;
-    }
-
     .mobile-menu {
       display: none;
       position: absolute;
@@ -177,17 +158,17 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       margin-top: 0.5rem;
-      margin-right: 2rem;
-      min-width: 180px;
+      margin-right: 1rem;
+      min-width: 220px;
       flex-direction: column;
       gap: 0.5rem;
       padding: 0.75rem 0;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
     }
 
     .mobile-menu a {
       padding: 0.75rem 1.5rem;
       color: var(--muted);
-      text-decoration: none;
       font-size: 0.9375rem;
       transition: all 0.2s;
       display: flex;
@@ -198,21 +179,6 @@
     .mobile-menu a:hover {
       background: var(--border);
       color: var(--accent);
-    }
-
-    .mobile-menu a.coming-soon {
-      color: #475569;
-      cursor: not-allowed;
-    }
-
-    .mobile-menu a.coming-soon:hover {
-      background: transparent;
-    }
-
-    @media (max-width: 768px) {
-      .hamburger { display: flex; }
-      .nav-menu { display: none; }
-      .mobile-menu.active { display: flex; }
     }
 
     /* Main Content */
@@ -443,137 +409,94 @@
       margin: 0;
     }
 
-    /* How It Works Section */
-    #how-it-works {
-      width: 100%;
-      padding: 2rem;
+    .section-copy {
+      font-size: 1rem;
+      color: var(--muted);
+      line-height: 1.7;
+      max-width: 780px;
+      margin: -1.5rem auto 2rem;
+      text-align: center;
     }
 
-    .steps {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 2rem;
-      max-width: 1000px;
-      margin: 0 auto;
-      width: 100%;
-    }
-
-    .step {
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
-
-    .step-number {
-      width: 48px;
-      height: 48px;
-      background: var(--accent);
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    .feature-kicker {
+      font-size: 0.75rem;
       font-weight: 700;
-      font-size: 1.5rem;
-      color: white;
-      flex-shrink: 0;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
     }
 
-    .step h3 {
-      font-size: 1.125rem;
-      font-weight: 600;
+    .feature-list {
       margin: 0;
+      padding-left: 1.125rem;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 0.9375rem;
     }
 
-    .step p {
+    .feature-list li + li {
+      margin-top: 0.375rem;
+    }
+
+    .feature-note {
       font-size: 0.9375rem;
       color: var(--muted);
-      line-height: 1.6;
-      margin: 0;
+      line-height: 1.7;
+      margin: 1.25rem auto 0;
+      max-width: 900px;
+      text-align: center;
     }
 
-    /* Get Started Section */
-    #get-started {
+    .feature-code {
+      display: block;
       width: 100%;
-      padding: 2rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .signup-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 2rem;
-      max-width: 440px;
-      width: 100%;
-    }
-
-    .signup-box h3 {
-      font-size: 1rem;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
-    }
-
-    .signup-box p {
-      font-size: 0.8125rem;
-      color: var(--muted);
-      margin-bottom: 1.25rem;
-    }
-
-    .form-row {
-      display: flex;
-      gap: 0.5rem;
-    }
-
-    .form-row input {
-      flex: 1;
       background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.625rem 0.875rem;
+      border-radius: 12px;
+      padding: 1rem;
+      font-size: 0.875rem;
       color: var(--text);
-      font-size: 0.875rem;
-      outline: none;
-      transition: border-color 0.2s;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      overflow-x: auto;
     }
 
-    .form-row input:focus {
-      border-color: var(--accent);
+    .feature-code-wrap {
+      position: relative;
+      margin-top: 1rem;
     }
 
-    .form-row input::placeholder {
-      color: #475569;
-    }
-
-    .form-row button {
-      background: var(--accent);
-      color: white;
-      border: none;
-      border-radius: 8px;
-      padding: 0.625rem 1.25rem;
-      font-size: 0.875rem;
-      font-weight: 600;
+    .copy-trigger {
+      position: absolute;
+      top: 0.875rem;
+      right: 1rem;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
       cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.2s;
+      transition: color 0.2s ease;
     }
 
-    .form-row button:hover {
-      background: #d97706;
+    .copy-trigger:hover,
+    .copy-trigger:focus-visible {
+      color: var(--accent);
+      outline: none;
     }
 
-    .form-row button:disabled {
-      background: #1e293b;
-      color: #475569;
-      cursor: not-allowed;
+    .copy-trigger.is-copied {
+      color: var(--accent);
     }
 
-    .success-msg {
-      display: none;
-      color: #4ade80;
-      font-size: 0.875rem;
-      margin-top: 0.75rem;
+    /* Additional Sections */
+    #status,
+    #who-it-is-for,
+    #start {
+      width: 100%;
+      padding: 2rem;
     }
 
     /* Footer */
@@ -614,22 +537,20 @@
 
     /* Responsive */
     @media (max-width: 768px) {
-      nav {
-        padding: 0.75rem 1rem;
+      .nav-inner {
+        padding: 14px 0;
       }
 
-      .nav-logo {
-        font-size: 1rem;
+      .nav-links {
+        display: none;
       }
 
-      .nav-logo-mark {
-        width: 24px;
-        height: 24px;
+      .hamburger {
+        display: flex;
       }
 
-      .nav-logo-mark svg {
-        width: 20px;
-        height: 26px;
+      .mobile-menu.active {
+        display: flex;
       }
 
       main {
@@ -671,15 +592,6 @@
         gap: 1rem;
       }
 
-      .steps {
-        grid-template-columns: 1fr;
-        gap: 1.5rem;
-      }
-
-      .form-row {
-        flex-direction: column;
-      }
-
       .links {
         flex-direction: column;
         gap: 1rem;
@@ -692,34 +604,44 @@
   <div class="glow"></div>
 
   <!-- Navigation -->
-  <nav>
-    <a href="#" class="nav-logo">
-      <div class="nav-logo-mark">
-        <svg width="28" height="36" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg"><rect x="40" y="220" width="120" height="16" rx="4" fill="#E8A020"/><rect x="50" y="210" width="100" height="14" rx="3" fill="#E8A020"/><path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E8A020"/><rect x="56" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="86" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="116" y="60" width="28" height="42" rx="3" fill="#E8A020"/><rect x="56" y="90" width="88" height="12" fill="#E8A020"/></svg>
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="#top" aria-label="Vedetta">
+        <svg width="26" height="34" viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="40" y="220" width="120" height="16" rx="4" fill="#E7A12A"/>
+          <rect x="50" y="210" width="100" height="14" rx="3" fill="#E7A12A"/>
+          <path d="M58 210 L62 120 L56 110 L56 100 L144 100 L144 110 L138 120 L142 210 Z" fill="#E7A12A"/>
+          <rect x="56" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="86" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="116" y="60" width="28" height="42" rx="3" fill="#E7A12A"/>
+          <rect x="56" y="90" width="88" height="12" fill="#E7A12A"/>
+        </svg>
+        <span>Ved<span class="accent">e</span>tta</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#status">Status</a>
+        <a href="#who-it-is-for">Who It Is For</a>
+        <a href="#start">Start</a>
+        <a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">GitHub</a>
       </div>
-      <span>Ved<span class="accent-e">e</span>tta</span>
-    </a>
-    <ul class="nav-menu">
-      <li><a href="#features">Features</a></li>
-      <li><a href="#how-it-works">How It Works</a></li>
-      <li><a href="#get-started">Get Started</a></li>
-      <li><a href="#" class="coming-soon">Threat Network <span class="coming-soon-badge">Coming Soon</span></a></li>
-    </ul>
-    <button class="hamburger" id="hamburger">
-      <span></span>
-      <span></span>
-      <span></span>
-    </button>
+      <button class="hamburger" id="hamburger" aria-label="Open navigation menu" aria-expanded="false" aria-controls="mobile-menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </div>
     <div class="mobile-menu" id="mobile-menu">
       <a href="#features">Features</a>
-      <a href="#how-it-works">How It Works</a>
-      <a href="#get-started">Get Started</a>
-      <a href="#" class="coming-soon">Threat Network <span class="coming-soon-badge">Coming Soon</span></a>
+      <a href="#status">Status</a>
+      <a href="#who-it-is-for">Who It Is For</a>
+      <a href="#start">Start</a>
+      <a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">GitHub</a>
     </div>
   </nav>
 
   <!-- Hero Section -->
-  <main>
+  <main id="top">
     <section class="hero">
       <div class="logo-container">
         <div class="radar">
@@ -739,11 +661,11 @@
         In active development
       </div>
 
-      <h1>Network security <span>for <span class="accent-e">e</span>veryone</span></h1>
+      <h1>A Network Watchtower <span>for <span class="accent-e">e</span>veryone</span></h1>
 
       <p class="subtitle">
-        Open-source SIEM and threat intelligence for home networks and small businesses.
-        Know every device. Detect every threat. Own your data.
+        Vedetta is practical security visibility for your networks. <br>
+        Open-source SIEM and threat intelligence for home networks and small businesses. Know every device. Detect Threats. Own your data.
       </p>
     </section>
 
@@ -789,43 +711,124 @@
       </div>
     </section>
 
-    <!-- How It Works Section -->
-    <section id="how-it-works">
-      <h2>How It Works</h2>
-      <div class="steps">
-        <div class="step">
-          <div class="step-number">1</div>
-          <h3>Deploy Core</h3>
-          <p><code>git clone</code> + <code>docker compose up -d</code>. Dashboard live in under a minute.</p>
+    <section id="status">
+      <h2>Status</h2>
+      <p class="section-copy">Clear lines between shipped work and roadmap work.<br>Vedetta is in active development. These buckets are the honest version of the product state right now.</p>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-kicker">Available Now</div>
+          <h3>Local monitoring that already stands on its own</h3>
+          <ul class="feature-list">
+            <li>Docker-based Core with API, UI, and local storage</li>
+            <li>Native sensor for macOS and Linux workflows</li>
+            <li>Passive DNS capture plus active and passive device discovery</li>
+            <li>Local DNS scoring and enrichment</li>
+            <li>Optional Pi-hole and AdGuard Home pollers</li>
+          </ul>
         </div>
 
-        <div class="step">
-          <div class="step-number">2</div>
-          <h3>Install Sensors</h3>
-          <p>One-liner install on any host. Auto-detects your network and starts scanning.</p>
+        <div class="feature-card">
+          <div class="feature-kicker">In Progress</div>
+          <h3>Sharpening the alpha product</h3>
+          <ul class="feature-list">
+            <li>Install and onboarding polish</li>
+            <li>Token rotation and broader admin/dashboard auth hardening</li>
+            <li>More durable docs and setup guidance</li>
+            <li>Turning early connector code into testable workflows</li>
+          </ul>
         </div>
 
-        <div class="step">
-          <div class="step-number">3</div>
-          <h3>Monitor & Hunt</h3>
-          <p>Passive DNS capture, threat detection, device fingerprinting. All from your browser.</p>
+        <div class="feature-card">
+          <div class="feature-kicker">Planned Next</div>
+          <h3>Broader network visibility layers</h3>
+          <ul class="feature-list">
+            <li>Router and firewall log aggregation</li>
+            <li>Connectors for UniFi, OpenWRT, pfSense/OPNsense, and MikroTik</li>
+            <li>Better correlation and multi-network handling across ARP, DHCP, mDNS, and SSDP/UPnP signals</li>
+            <li>An optional, privacy-conscious community threat network</li>
+          </ul>
         </div>
       </div>
     </section>
 
-    <!-- Get Started Section -->
-    <section id="get-started">
-      <div class="signup-box">
-        <h3>Get notified when we launch</h3>
-        <p>No spam. Just a single email when Vedetta is ready.</p>
-        <form id="signup-form" action="https://formspree.io/f/mqegkevy" method="POST">
-          <div class="form-row">
-            <input type="email" name="email" placeholder="you@example.com" required>
-            <button type="submit">Notify me</button>
-          </div>
-        </form>
-        <div class="success-msg" id="success">You're on the list. We'll be in touch.</div>
+    <section id="who-it-is-for">
+      <h2>Who It Is For</h2>
+      <p class="section-copy">Grounded fit, honest install, explicit trust model.<br>Vedetta is being built for small environments that want real visibility without pretending they already have a full SOC.</p>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-kicker">Audience</div>
+          <h3>Who Vedetta fits today</h3>
+          <ul class="feature-list">
+            <li>Homelab users</li>
+            <li>Technical home users</li>
+            <li>Small businesses without a full security team</li>
+            <li>Consultants, MSPs, and security practitioners helping tiny environments</li>
+          </ul>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-kicker">Required Vs Optional</div>
+          <h3>Core plus sensor is the current model</h3>
+          <p>Required today: Vedetta Core and at least one native sensor. Optional today: Pi-hole, AdGuard Home, telemetry, and early connector experimentation.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-kicker">Install Reality</div>
+          <h3>Alpha, homelab-friendly, not plug-and-play</h3>
+          <p>The current path uses Docker for Core and a native sensor install with elevated local access. That is honest alpha software, not a fake frictionless setup story.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-kicker">Privacy And Trust</div>
+          <h3>Self-hosted first</h3>
+          <p>The local deployment should stay useful with no cloud dependency. Telemetry is optional, off by default, and the community intelligence layer is future-facing.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-kicker">Pi-hole Positioning</div>
+          <h3>Not a Pi-hole companion product</h3>
+          <p>Pi-hole and AdGuard Home are useful if you already run them. Vedetta is being built to ingest useful security signals from multiple DNS and network data sources over time.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-kicker">Security Note</div>
+          <h3>Local-first alpha means explicit boundaries</h3>
+          <p>Machine-to-machine sensor auth is in place. Token rotation and broader admin/dashboard hardening are still ahead, and the current product should still be treated as LAN-first alpha software, not hardened public internet infrastructure.</p>
+        </div>
       </div>
+    </section>
+
+    <section id="start">
+      <h2>Start</h2>
+      <p class="section-copy">Two moving parts, by design.<br>Core is the dashboard and data plane. The sensor is the local network-side view. That split is where the current product gets its value.</p>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-kicker">1. Core</div>
+          <h3>Start Vedetta Core</h3>
+          <p>Core runs locally with Docker Compose.</p>
+          <div class="feature-code-wrap">
+            <button class="copy-trigger" type="button" data-copy-target="core-install">Copy</button>
+            <pre class="feature-code" id="core-install"><code>git clone https://github.com/MahdiHedhli/vedetta.git
+cd vedetta
+docker compose up -d</code></pre>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-kicker">2. Sensor</div>
+          <h3>Install the native sensor</h3>
+          <p>The current public installer supports macOS and Linux. Review the script before running it.</p>
+          <div class="feature-code-wrap">
+            <button class="copy-trigger" type="button" data-copy-target="sensor-install">Copy</button>
+            <pre class="feature-code" id="sensor-install"><code>curl -fsSL -o /tmp/vedetta-sensor-install.sh \
+  https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
+
+sudo bash /tmp/vedetta-sensor-install.sh \
+  --core http://&lt;CORE_IP&gt;:8080</code></pre>
+          </div>
+        </div>
+      </div>
+      <p class="feature-note">If you want the longer operational details, the repo README and roadmap go deeper on what is available now, what is optional, and what is still next.</p>
     </section>
   </main>
 
@@ -844,19 +847,22 @@
     const hamburger = document.getElementById('hamburger');
     const mobileMenu = document.getElementById('mobile-menu');
 
-    hamburger.addEventListener('click', () => {
-      hamburger.classList.toggle('active');
-      mobileMenu.classList.toggle('active');
-    });
-
-    // Close menu when a link is clicked
-    const mobileMenuLinks = mobileMenu.querySelectorAll('a');
-    mobileMenuLinks.forEach(link => {
-      link.addEventListener('click', () => {
-        hamburger.classList.remove('active');
-        mobileMenu.classList.remove('active');
+    if (hamburger && mobileMenu) {
+      hamburger.addEventListener('click', () => {
+        const expanded = hamburger.classList.toggle('active');
+        mobileMenu.classList.toggle('active');
+        hamburger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
       });
-    });
+
+      const mobileMenuLinks = mobileMenu.querySelectorAll('a');
+      mobileMenuLinks.forEach(link => {
+        link.addEventListener('click', () => {
+          hamburger.classList.remove('active');
+          mobileMenu.classList.remove('active');
+          hamburger.setAttribute('aria-expanded', 'false');
+        });
+      });
+    }
 
     // Smooth scroll for anchor links
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
@@ -872,36 +878,33 @@
       });
     });
 
-    // Form handling
-    const form = document.getElementById('signup-form');
-    const success = document.getElementById('success');
-
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = form.querySelector('button');
-      const email = form.querySelector('input');
-      btn.disabled = true;
-      btn.textContent = 'Sending...';
-
-      try {
-        const res = await fetch(form.action, {
-          method: 'POST',
-          body: new FormData(form),
-          headers: { 'Accept': 'application/json' }
-        });
-
-        if (res.ok) {
-          form.style.display = 'none';
-          success.style.display = 'block';
-        } else {
-          btn.textContent = 'Try again';
-          btn.disabled = false;
+    // Copy install commands
+    document.querySelectorAll('.copy-trigger').forEach(trigger => {
+      trigger.addEventListener('click', async () => {
+        const targetId = trigger.getAttribute('data-copy-target');
+        const target = targetId ? document.getElementById(targetId) : null;
+        if (!target) {
+          return;
         }
-      } catch {
-        btn.textContent = 'Try again';
-        btn.disabled = false;
-      }
+
+        const commandText = target.textContent || '';
+        const previousText = trigger.textContent;
+
+        try {
+          await navigator.clipboard.writeText(commandText);
+          trigger.textContent = 'Copied';
+          trigger.classList.add('is-copied');
+        } catch (error) {
+          trigger.textContent = 'Press Cmd+C';
+        }
+
+        window.setTimeout(() => {
+          trigger.textContent = previousText;
+          trigger.classList.remove('is-copied');
+        }, 1800);
+      });
     });
+
   </script>
 </body>
 </html>
