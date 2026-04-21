@@ -60,6 +60,9 @@ Options:
   --interval <dur>    Scan interval (default: 5m)
   --ports             Enable top-100 port scanning
   --primary           Register as the primary sensor
+  --dns-iface <iface> Pin DNS capture to a specific interface
+  --passive-iface <iface>
+                      Pin passive discovery to a specific interface
   --no-service        Build and install binary only, skip service setup
   --uninstall         Remove sensor binary and service
   -h, --help          Show this help
@@ -87,6 +90,8 @@ while [[ $# -gt 0 ]]; do
         --interval)   SENSOR_FLAGS="$SENSOR_FLAGS --interval $2"; shift 2 ;;
         --ports)      SENSOR_FLAGS="$SENSOR_FLAGS --ports"; shift ;;
         --primary)    SENSOR_FLAGS="$SENSOR_FLAGS --primary"; shift ;;
+        --dns-iface)  SENSOR_FLAGS="$SENSOR_FLAGS --dns-iface $2"; shift 2 ;;
+        --passive-iface) SENSOR_FLAGS="$SENSOR_FLAGS --passive-iface $2"; shift 2 ;;
         --no-service) SKIP_SERVICE=true; shift ;;
         --uninstall)  UNINSTALL=true; shift ;;
         -h|--help)    usage ;;
@@ -355,6 +360,19 @@ UNIT
     info "Logs: journalctl -u vedetta-sensor -f"
 }
 
+print_capture_preflight() {
+    info "Capture interface preflight..."
+
+    local output
+    if output=$(as_user bash -c "'${INSTALL_DIR}/${SENSOR_BIN}' --core '${CORE_URL}' ${SENSOR_FLAGS} --print-capture-plan" 2>&1); then
+        printf "%s\n" "$output"
+    else
+        warn "Could not determine capture interfaces automatically."
+        warn "$output"
+        warn "You can pin interfaces later with --dns-iface <iface> and --passive-iface <iface>."
+    fi
+}
+
 # --- Main ---
 
 main() {
@@ -379,6 +397,7 @@ main() {
     install_nmap
     install_go
     build_sensor
+    print_capture_preflight
 
     if [[ "$SKIP_SERVICE" == true ]]; then
         info "Skipping service install (--no-service)."
@@ -393,6 +412,7 @@ main() {
     echo ""
     info "Installation complete!"
     info "The sensor will auto-detect your subnet and begin scanning."
+    info "If the capture recommendation looks wrong on this host, re-run with --dns-iface <iface> and/or --passive-iface <iface>."
     info "Add additional networks via the Vedetta dashboard → Scan Targets."
     echo ""
 }

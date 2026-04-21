@@ -14,6 +14,7 @@ import (
 	"github.com/vedetta-network/vedetta/sensor/internal/dnscap"
 	"github.com/vedetta-network/vedetta/sensor/internal/netinfo"
 	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
+	"github.com/vedetta-network/vedetta/sensor/internal/passive"
 )
 
 var (
@@ -30,6 +31,13 @@ func main() {
 	oneshot := flag.Bool("once", false, "Run a single scan and exit")
 	dnsEnabled := flag.Bool("dns", true, "Enable passive DNS capture")
 	dnsIface := flag.String("dns-iface", "auto", "Network interface for DNS capture (or 'auto')")
+	passiveEnabled := flag.Bool("passive-discovery", true, "Enable passive device discovery")
+	passiveIface := flag.String("passive-iface", "auto", "Network interface for passive device discovery (or 'auto')")
+	passiveARP := flag.Bool("passive-arp", true, "Enable passive ARP discovery")
+	passiveDHCP := flag.Bool("passive-dhcp", true, "Enable passive DHCP discovery")
+	passiveMDNS := flag.Bool("passive-mdns", true, "Enable passive mDNS discovery")
+	passiveSSDP := flag.Bool("passive-ssdp", true, "Enable passive SSDP/UPnP discovery")
+	printCapturePlan := flag.Bool("print-capture-plan", false, "Print the recommended DNS/passive capture interfaces and exit")
 	showVersion := flag.Bool("version", false, "Show version")
 	flag.Parse()
 
@@ -45,11 +53,20 @@ func main() {
 	scanCIDR := *cidr
 	if scanCIDR == "" || scanCIDR == "auto" {
 		detected := netscan.BestSubnet("")
-		if detected == "" {
+		if detected == "" && !*printCapturePlan {
 			log.Fatal("Could not auto-detect LAN subnet. Use --cidr to specify one.")
 		}
 		scanCIDR = detected
-		log.Printf("Auto-detected LAN subnet: %s", scanCIDR)
+		if scanCIDR != "" {
+			log.Printf("Auto-detected LAN subnet: %s", scanCIDR)
+		}
+	}
+
+	if *printCapturePlan {
+		if err := printCaptureRecommendations(*coreURL, scanCIDR, *dnsIface, *passiveIface); err != nil {
+			log.Fatalf("Could not print capture plan: %v", err)
+		}
+		return
 	}
 
 	// Verify nmap is available
@@ -60,7 +77,13 @@ func main() {
 	log.Printf("nmap found: %s", scanner.BinaryPath)
 
 	// Set up Core API client
-	core := client.New(*coreURL)
+	core, err := client.New(*coreURL)
+	if err != nil {
+		log.Fatalf("Could not initialize Core client: %v", err)
+	}
+	if core.TokenConfigured() {
+		log.Printf("Loaded persisted sensor token from %s", core.TokenPath)
+	}
 
 	// Enumerate local network interfaces
 	interfaces, err := netinfo.ListInterfaces()
@@ -87,12 +110,16 @@ func main() {
 	// Set up passive DNS capture (if enabled)
 	var wg sync.WaitGroup
 	var capturer *dnscap.Capturer
+	var passiveCapturer *passive.Capturer
+	var passiveHosts chan netscan.DiscoveredHost
 
 	if *dnsEnabled {
 		dnsQueries := make(chan dnscap.Query, 100)
 
 		capturer, err = dnscap.NewCapturer(dnscap.Config{
 			Interface:    *dnsIface,
+			CoreURL:      *coreURL,
+			CIDR:         scanCIDR,
 			BatchSize:    100,
 			BatchTimeout: 10 * time.Second,
 			OnQuery: func(q dnscap.Query) {
@@ -110,7 +137,7 @@ func main() {
 			if err := capturer.Start(); err != nil {
 				log.Printf("WARNING: Failed to start DNS capture: %v", err)
 			} else {
-				log.Printf("Passive DNS capture active on interface %s", *dnsIface)
+				log.Printf("Passive DNS capture active on interface %s", capturer.Interface())
 
 				// Start DNS batch push goroutine
 				wg.Add(1)
@@ -122,12 +149,49 @@ func main() {
 		}
 	}
 
+	if *passiveEnabled {
+		passiveHosts = make(chan netscan.DiscoveredHost, 200)
+		passiveCapturer, err = passive.NewCapturer(passive.Config{
+			Interface:  *passiveIface,
+			CoreURL:    *coreURL,
+			CIDR:       scanCIDR,
+			EnableARP:  *passiveARP,
+			EnableDHCP: *passiveDHCP,
+			EnableMDNS: *passiveMDNS,
+			EnableSSDP: *passiveSSDP,
+			OnHost: func(host netscan.DiscoveredHost) {
+				select {
+				case passiveHosts <- host:
+				default:
+				}
+			},
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to initialize passive discovery: %v", err)
+		} else if err := passiveCapturer.Start(); err != nil {
+			log.Printf("WARNING: Failed to start passive discovery: %v", err)
+		} else {
+			log.Printf("Passive discovery active on interface %s (arp=%v dhcp=%v mdns=%v ssdp=%v)", passiveCapturer.Interface(), *passiveARP, *passiveDHCP, *passiveMDNS, *passiveSSDP)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pushPassiveHosts(core, scanCIDR, passiveHosts)
+			}()
+		}
+	}
+
 	// Run first scan immediately
 	runScan(scanner, core, scanCIDR, *scanPorts)
 
 	if *oneshot {
 		if capturer != nil {
 			capturer.Stop()
+		}
+		if passiveCapturer != nil {
+			passiveCapturer.Stop()
+		}
+		if passiveHosts != nil {
+			close(passiveHosts)
 		}
 		wg.Wait()
 		return
@@ -149,10 +213,44 @@ func main() {
 			if capturer != nil {
 				capturer.Stop()
 			}
+			if passiveCapturer != nil {
+				passiveCapturer.Stop()
+			}
+			if passiveHosts != nil {
+				close(passiveHosts)
+			}
 			wg.Wait()
 			return
 		}
 	}
+}
+
+func printCaptureRecommendations(coreURL, scanCIDR, dnsIface, passiveIface string) error {
+	dnsSelection, err := netinfo.SelectCaptureInterface(netinfo.CaptureSelectionOptions{
+		Preferred: dnsIface,
+		CoreURL:   coreURL,
+		ScanCIDR:  scanCIDR,
+		Purpose:   "dns capture",
+	})
+	if err != nil {
+		return err
+	}
+
+	passiveSelection, err := netinfo.SelectCaptureInterface(netinfo.CaptureSelectionOptions{
+		Preferred: passiveIface,
+		CoreURL:   coreURL,
+		ScanCIDR:  scanCIDR,
+		Purpose:   "passive discovery",
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(netinfo.FormatCaptureSelection(dnsSelection, "dns capture"))
+	fmt.Println()
+	fmt.Println(netinfo.FormatCaptureSelection(passiveSelection, "passive discovery"))
+
+	return nil
 }
 
 func runScan(scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR string, withPorts bool) {
@@ -256,13 +354,13 @@ func pushDNSQueries(core *client.CoreClient, queries chan dnscap.Query) {
 			}
 
 			batch = append(batch, dnscap.DNSQuery{
-				Timestamp:  q.Timestamp.Unix(),
-				Domain:     q.Domain,
-				QueryType:  q.QueryType,
-				ClientIP:   q.ClientIP,
-				ServerIP:   q.ServerIP,
-				Blocked:    q.Blocked,
-				Source:     q.Source,
+				Timestamp: q.Timestamp.Unix(),
+				Domain:    q.Domain,
+				QueryType: q.QueryType,
+				ClientIP:  q.ClientIP,
+				ServerIP:  q.ServerIP,
+				Blocked:   q.Blocked,
+				Source:    q.Source,
 			})
 
 			// Send if batch is full
@@ -287,8 +385,8 @@ func pushBatch(core *client.CoreClient, queries []dnscap.DNSQuery) {
 	}
 
 	req := struct {
-		SensorID string              `json:"sensor_id"`
-		Queries  []dnscap.DNSQuery   `json:"queries"`
+		SensorID string            `json:"sensor_id"`
+		Queries  []dnscap.DNSQuery `json:"queries"`
 	}{
 		SensorID: core.SensorID,
 		Queries:  queries,
@@ -299,4 +397,86 @@ func pushBatch(core *client.CoreClient, queries []dnscap.DNSQuery) {
 	} else {
 		log.Printf("Pushed %d DNS queries to Core", len(queries))
 	}
+}
+
+func pushPassiveHosts(core *client.CoreClient, cidr string, observations chan netscan.DiscoveredHost) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	pending := make(map[string]netscan.DiscoveredHost)
+
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+
+		hosts := make([]netscan.DiscoveredHost, 0, len(pending))
+		for _, host := range pending {
+			hosts = append(hosts, host)
+		}
+
+		result := &netscan.ScanResult{
+			Hosts:    hosts,
+			ScanTime: time.Now(),
+			Duration: 0,
+		}
+		if err := core.PushDevices(result, cidr, "default"); err != nil {
+			log.Printf("Failed to push %d passive discovery hosts to Core: %v", len(hosts), err)
+		} else {
+			log.Printf("Pushed %d passive discovery hosts to Core", len(hosts))
+		}
+
+		clear(pending)
+	}
+
+	for {
+		select {
+		case host, ok := <-observations:
+			if !ok {
+				flush()
+				return
+			}
+			if host.IPAddress == "" {
+				continue
+			}
+
+			key := host.MACAddress
+			if key == "" {
+				key = host.IPAddress
+			}
+			if key == "" {
+				continue
+			}
+
+			pending[key] = mergePassiveHost(pending[key], host)
+			if len(pending) >= 50 {
+				flush()
+			}
+
+		case <-ticker.C:
+			flush()
+		}
+	}
+}
+
+func mergePassiveHost(existing, observed netscan.DiscoveredHost) netscan.DiscoveredHost {
+	if existing.IPAddress == "" && existing.MACAddress == "" && existing.Hostname == "" && existing.Vendor == "" && existing.Status == "" && len(existing.OpenPorts) == 0 {
+		return observed
+	}
+	if existing.IPAddress == "" {
+		existing.IPAddress = observed.IPAddress
+	}
+	if existing.MACAddress == "" {
+		existing.MACAddress = observed.MACAddress
+	}
+	if existing.Hostname == "" {
+		existing.Hostname = observed.Hostname
+	}
+	if existing.Vendor == "" {
+		existing.Vendor = observed.Vendor
+	}
+	if existing.Status == "" {
+		existing.Status = observed.Status
+	}
+	return existing
 }

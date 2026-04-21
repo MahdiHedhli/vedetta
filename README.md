@@ -2,12 +2,12 @@
 
 **Your network, under watch.** DNS-first security monitoring for homes and small businesses.
 
-Vedetta is a lightweight, self-hosted security monitoring platform. Today it is strongest at device discovery, passive DNS visibility, and local threat scoring. The current product stands on its own locally, can optionally pull value from existing DNS infrastructure such as Pi-hole or AdGuard Home, and is still best described as alpha software for homelabs, technical home users, small businesses, and hands-on operators.
+Vedetta is a lightweight, self-hosted security monitoring platform. Today it is strongest at DNS-first visibility and detection, active and passive device discovery, and local threat scoring. The current product stands on its own locally, can optionally pull value from existing DNS infrastructure such as Pi-hole or AdGuard Home, and is still best described as alpha software for homelabs, technical home users, small businesses, and hands-on operators.
 
 ## What Vedetta Is Today
 
 - **Vedetta Core** runs in Docker Compose and provides the API, dashboard, local storage, and ingest pipeline.
-- **Vedetta Sensor** runs natively on the network you want to inspect and handles device discovery plus passive DNS capture.
+- **Vedetta Sensor** runs natively on the network you want to inspect and handles active device discovery, passive ARP/DHCP/mDNS/SSDP visibility, and passive DNS capture.
 - **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
 - **Threat enrichment** is local-first and backed by downloaded threat intelligence feeds.
 - **Optional DNS integrations** include Pi-hole and AdGuard Home if you already run them.
@@ -46,7 +46,7 @@ Pi-hole and AdGuard Home are **optional integrations**, not the product identity
 
 - Docker-based Core with dashboard, API, and SQLite-backed storage
 - native sensor for macOS and Linux install paths
-- passive DNS capture plus nmap-based device discovery
+- passive DNS capture plus active and passive device discovery
 - DNS-first threat scoring and local enrichment
 - optional Pi-hole and AdGuard Home pollers
 - device inventory, scan targets, whitelist, suppression, and activity logging
@@ -54,7 +54,7 @@ Pi-hole and AdGuard Home are **optional integrations**, not the product identity
 ### In progress
 
 - install and onboarding polish for alpha users
-- stronger sensor-to-Core hardening
+- broader dashboard/admin auth hardening plus sensor token rotation
 - turning early router and firewall groundwork into documented workflows
 - better public docs that separate shipped functionality from roadmap direction
 
@@ -62,8 +62,7 @@ Pi-hole and AdGuard Home are **optional integrations**, not the product identity
 
 - router and firewall log aggregation for common platforms:
   UniFi, OpenWRT, pfSense/OPNsense, and MikroTik
-- more passive discovery sources:
-  ARP, DHCP, mDNS, and SSDP/UPnP
+- better correlation and labeling across the new passive discovery sources
 - more local DNS collection options for advanced deployments
 - an optional, privacy-conscious community threat network
 
@@ -96,6 +95,7 @@ Current public install path:
 - macOS and Linux
 - installs dependencies, builds the sensor from source, and can register a persistent service
 - uses elevated privileges for the strongest local visibility
+- prints a capture-interface recommendation during install and supports `--dns-iface` / `--passive-iface` if auto-selection needs to be pinned
 
 If you prefer to build manually:
 
@@ -104,6 +104,14 @@ cd sensor
 go build -o vedetta-sensor ./cmd/vedetta-sensor
 sudo ./vedetta-sensor --core http://<CORE_IP>:8080
 ```
+
+Useful sensor diagnostics:
+
+```bash
+./vedetta-sensor --core http://<CORE_IP>:8080 --cidr 10.0.0.0/24 --print-capture-plan
+```
+
+That command prints the recommended DNS and passive-discovery interfaces, explains why they were chosen, and shows the override flags if you need to pin a different interface on a laptop, VPN client, or multi-homed host.
 
 ### 3. Update Vedetta
 
@@ -118,7 +126,7 @@ sudo ./vedetta-sensor --core http://<CORE_IP>:8080
 Vedetta uses a **Core + Sensor** model:
 
 - **Core** is the Docker-based control plane: API, UI, storage, enrichment, and ingestion
-- **Sensor** is the native network-side component: discovery, passive DNS capture, and scan execution
+- **Sensor** is the native network-side component: active and passive discovery, passive DNS capture, and scan execution
 
 This split is deliberate. The local network is the strongest source of truth Vedetta has today, and native sensor access is more reliable than relying on containers alone for that visibility.
 
@@ -168,11 +176,12 @@ These should be described honestly as early or planned until they are documented
 
 - Core plus native sensor is still the real deployment model.
 - Install still assumes Docker, a native sensor, and some comfort with local networking and `sudo`.
-- Sensor-to-Core hardening is not fully complete yet.
+- Sensor bearer auth is in place, but broader dashboard/admin auth hardening is still in progress.
 - Threat-network and telemetry services are still scaffolded and should not be marketed as production-ready today.
 
 ## Documentation
 
+- [Working Backlog](docs/backlog.md)
 - [Architecture Reference](docs/architecture.md)
 - [Project Roadmap](docs/roadmap.md)
 - [Sensor Architecture](docs/sensor-architecture.md)

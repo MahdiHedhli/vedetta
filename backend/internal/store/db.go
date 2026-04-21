@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -63,6 +64,10 @@ func (db *DB) migrate() error {
 		"/app/siem/migrations",
 		"siem/migrations",
 		"../siem/migrations",
+		"../../siem/migrations",
+	}
+	if _, sourceFile, _, ok := runtime.Caller(0); ok {
+		candidates = append(candidates, filepath.Join(filepath.Dir(sourceFile), "..", "..", "siem", "migrations"))
 	}
 	for _, dir := range candidates {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
@@ -158,6 +163,7 @@ CREATE TABLE IF NOT EXISTS events (
     timestamp      TIMESTAMP NOT NULL,
     event_type     TEXT NOT NULL,
     source_hash    TEXT NOT NULL,
+    source_ip      TEXT,
     domain         TEXT,
     query_type     TEXT,
     resolved_ip    TEXT,
@@ -166,7 +172,12 @@ CREATE TABLE IF NOT EXISTS events (
     tags           TEXT DEFAULT '[]',
     geo            TEXT,
     device_vendor  TEXT,
-    network_segment TEXT DEFAULT 'default'
+    network_segment TEXT DEFAULT 'default',
+    dns_source     TEXT DEFAULT '',
+    threat_desc    TEXT DEFAULT '',
+    metadata       TEXT DEFAULT '{}',
+    acknowledged   BOOLEAN NOT NULL DEFAULT FALSE,
+    ack_reason     TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_type      ON events (event_type);
@@ -180,7 +191,15 @@ CREATE TABLE IF NOT EXISTS devices (
     hostname     TEXT,
     vendor       TEXT,
     open_ports   TEXT DEFAULT '[]',
-    segment      TEXT DEFAULT 'default'
+    segment      TEXT DEFAULT 'default',
+    device_type  TEXT DEFAULT '',
+    os_family    TEXT DEFAULT '',
+    os_version   TEXT DEFAULT '',
+    model        TEXT DEFAULT '',
+    discovery_method TEXT DEFAULT 'nmap_active',
+    fingerprint_confidence REAL NOT NULL DEFAULT 0.0,
+    custom_name  TEXT DEFAULT '',
+    notes        TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_devices_mac  ON devices (mac_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last ON devices (last_seen);
@@ -200,7 +219,9 @@ CREATE TABLE IF NOT EXISTS scan_targets (
     scan_ports  BOOLEAN NOT NULL DEFAULT FALSE,
     enabled     BOOLEAN NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMP NOT NULL,
-    last_scan   TIMESTAMP
+    last_scan   TIMESTAMP,
+    dns_capture BOOLEAN NOT NULL DEFAULT FALSE,
+    dns_interface TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_scan_targets_enabled ON scan_targets (enabled);
 
@@ -214,8 +235,24 @@ CREATE TABLE IF NOT EXISTS sensors (
     first_seen  TIMESTAMP NOT NULL,
     last_seen   TIMESTAMP NOT NULL,
     status      TEXT NOT NULL DEFAULT 'online',
-    is_primary  BOOLEAN NOT NULL DEFAULT FALSE
+    is_primary  BOOLEAN NOT NULL DEFAULT FALSE,
+    interfaces  TEXT DEFAULT '[]'
 );
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    token_id     TEXT PRIMARY KEY,
+    token_hash   TEXT NOT NULL UNIQUE,
+    scope        TEXT NOT NULL DEFAULT 'sensor',
+    sensor_id    TEXT,
+    label        TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used    TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked      INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (sensor_id) REFERENCES sensors(sensor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_sensor ON api_tokens(sensor_id);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_revoked ON api_tokens(revoked);
 
 CREATE TABLE IF NOT EXISTS threat_indicators (
     indicator  TEXT NOT NULL,

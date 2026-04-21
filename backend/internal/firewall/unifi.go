@@ -16,16 +16,16 @@ import (
 // UniFiConnector is a firewall connector for Ubiquiti UniFi Network Application.
 // Supports both UDM/UDR (UniFi OS with proxy) and standalone controllers.
 type UniFiConnector struct {
-	cfg           ConnectorConfig
-	client        *http.Client
-	baseURL       string
-	isUniFiOS     bool // true if UDM/UDR, false if standalone controller
-	connected     bool
-	lastPoll      time.Time
-	lastError     string
-	eventCount    int64
-	connectTime   time.Time
-	mu            sync.RWMutex
+	cfg         ConnectorConfig
+	client      *http.Client
+	baseURL     string
+	isUniFiOS   bool // true if UDM/UDR, false if standalone controller
+	connected   bool
+	lastPoll    time.Time
+	lastError   string
+	eventCount  int64
+	connectTime time.Time
+	mu          sync.RWMutex
 }
 
 // NewUniFiConnector creates a new UniFi firewall connector.
@@ -39,7 +39,7 @@ func NewUniFiConnector(cfg ConnectorConfig) *UniFiConnector {
 	}
 
 	// Create cookie jar for session management
-	jar, _ := cookiejar.New()
+	jar, _ := cookiejar.New(nil)
 
 	client := &http.Client{
 		Transport: transport,
@@ -282,10 +282,10 @@ func (uc *UniFiConnector) getSystemInfo(ctx context.Context) (*FirewallInfo, err
 	selfData := data[0].(map[string]interface{})
 
 	info := &FirewallInfo{
-		Model:      getStringField(selfData, "model"),
-		Firmware:   getStringField(selfData, "firmware"),
-		Hostname:   getStringField(selfData, "hostname"),
-		Features:   []string{"ips", "dpi"},
+		Model:    getStringField(selfData, "model"),
+		Firmware: getStringField(selfData, "firmware"),
+		Hostname: getStringField(selfData, "hostname"),
+		Features: []string{"ips", "dpi"},
 	}
 
 	return info, nil
@@ -395,13 +395,13 @@ func (uc *UniFiConnector) parseAlarmEvent(data map[string]interface{}) *Firewall
 	}
 
 	event := &FirewallEvent{
-		Timestamp:  time.Unix(int64(getFloatField(data, "timestamp")), 0),
-		Action:     "alert",
-		Protocol:   "",
-		Interface:  "wan",
-		Direction:  "in",
-		Rule:       alarmType,
-		RawLog:     formatRawLog(data),
+		Timestamp: time.Unix(int64(getFloatField(data, "timestamp")), 0),
+		Action:    "alert",
+		Protocol:  "",
+		Interface: "wan",
+		Direction: "in",
+		Rule:      alarmType,
+		RawLog:    formatRawLog(data),
 	}
 
 	return event
