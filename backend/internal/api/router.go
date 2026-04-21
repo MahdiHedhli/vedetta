@@ -36,6 +36,7 @@ type Server struct {
 // NewRouter creates the main API router with all routes mounted.
 func NewRouter(srv *Server) http.Handler {
 	r := chi.NewRouter()
+	sensorRegistrationLimiter := newIPRateLimiter(5, time.Minute)
 
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -103,14 +104,19 @@ func NewRouter(srv *Server) http.Handler {
 		})
 
 		// Sensor ingest (native sensors push data to Core)
-		// Apply auth middleware to sensor routes
 		r.Route("/sensor", func(r chi.Router) {
-			r.Use(auth.RequireAuth(srv.DB))
-			r.Post("/register", srv.handleSensorRegister)
-			r.Post("/devices", srv.handleSensorDevices)
-			r.Post("/dns", srv.handleSensorDNS)
+			r.With(sensorRegistrationLimiter.Middleware).Post("/register", srv.handleSensorRegister)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireStrictAuth(srv.DB))
+				r.Use(auth.RequireExactScope(auth.ScopeSensor))
+				r.Post("/devices", srv.handleSensorDevices)
+				r.Post("/dns", srv.handleSensorDNS)
+				r.Get("/work", srv.handleSensorWork)
+			})
+
+			// These routes are still used by the dashboard and will move under admin auth
+			// as part of the broader UI authentication rollout.
 			r.Get("/list", srv.handleSensorList)
-			r.Get("/work", srv.handleSensorWork)
 			r.Put("/{sensorID}/primary", srv.handleSetPrimarySensor)
 		})
 
@@ -171,11 +177,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // Allowed event types (matches the CHECK constraint in 001_init.sql).
 var allowedEventTypes = map[string]bool{
-	"dns_query":             true,
+	"dns_query":              true,
 	"encrypted_dns_detected": true,
-	"nmap_discovery":        true,
-	"firewall_log":          true,
-	"anomaly":               true,
+	"nmap_discovery":         true,
+	"firewall_log":           true,
+	"anomaly":                true,
 }
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -571,12 +577,12 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name          string `json:"name"`
-		CIDR          string `json:"cidr"`
-		Segment       string `json:"segment"`
-		ScanPorts     bool   `json:"scan_ports"`
-		DNSCapture    bool   `json:"dns_capture"`
-		DNSInterface  string `json:"dns_interface"`
+		Name         string `json:"name"`
+		CIDR         string `json:"cidr"`
+		Segment      string `json:"segment"`
+		ScanPorts    bool   `json:"scan_ports"`
+		DNSCapture   bool   `json:"dns_capture"`
+		DNSInterface string `json:"dns_interface"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
@@ -716,6 +722,34 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	existingToken, err := s.DB.HasActiveSensorToken(body.SensorID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to check sensor token state"})
+		return
+	}
+
+	var presentedToken *auth.Token
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authHeader != "" {
+		presentedToken, err = auth.ValidateAuthorizationHeader(s.DB, authHeader)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+			return
+		}
+		if presentedToken.Scope != auth.ScopeSensor {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "sensor scope required"})
+			return
+		}
+		if presentedToken.SensorID != body.SensorID {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "token does not match sensor_id"})
+			return
+		}
+	}
+	if existingToken && presentedToken == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "sensor already registered; present the existing sensor token to update registration"})
+		return
+	}
+
 	// Store interfaces as JSON string
 	interfacesStr := ""
 	if len(body.Interfaces) > 0 {
@@ -738,27 +772,29 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate a sensor-scoped authentication token
-	rawToken, token, err := auth.GenerateToken(auth.ScopeSensor, body.SensorID, "auto-generated-registration")
-	if err != nil {
-		log.Printf("Warning: failed to generate token for sensor %s: %v", body.SensorID, err)
-		// Continue anyway — sensor can still function but won't have auth
-	} else if err := s.DB.CreateToken(token); err != nil {
-		log.Printf("Warning: failed to store token for sensor %s: %v", body.SensorID, err)
-		// Continue anyway — sensor can still function but won't have auth
-	} else {
+	response := sensorRegistrationResponse{
+		Status:   "registered",
+		SensorID: body.SensorID,
+	}
+	if !existingToken {
+		rawToken, token, err := auth.GenerateToken(auth.ScopeSensor, body.SensorID, "auto-generated-registration")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to generate sensor auth token"})
+			return
+		}
+		if err := s.DB.CreateToken(token); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to store sensor auth token"})
+			return
+		}
+
+		response.AuthToken = rawToken
+		response.TokenID = token.TokenID
+		response.TokenWarning = "save this token now — it will not be displayed again"
 		log.Printf("Sensor token generated: %s (label: %s)", token.TokenID, token.Label)
 	}
 
 	log.Printf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR)
 	s.logInfo("sensor", fmt.Sprintf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR))
-
-	response := map[string]any{"status": "registered", "sensor_id": body.SensorID}
-	if rawToken != "" {
-		response["token"] = rawToken
-		response["token_id"] = token.TokenID
-		response["token_warning"] = "save this token now — it will not be displayed again"
-	}
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -785,6 +821,11 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
 		return
 	}
+	sensorID, ok := s.requireAuthenticatedSensorID(w, r, body.SensorID, r.Header.Get("X-Sensor-ID"))
+	if !ok {
+		return
+	}
+	body.SensorID = sensorID
 
 	if body.Segment == "" {
 		body.Segment = "default"
@@ -845,7 +886,10 @@ func (s *Server) handleSensorList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSensorWork(w http.ResponseWriter, r *http.Request) {
-	sensorID := r.Header.Get("X-Sensor-ID")
+	sensorID, ok := s.requireAuthenticatedSensorID(w, r, r.Header.Get("X-Sensor-ID"))
+	if !ok {
+		return
+	}
 	response := map[string]any{
 		"scan_queue": []ScanRequest{},
 		"targets":    []models.ScanTarget{},
@@ -1012,8 +1056,6 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sensorID := r.Header.Get("X-Sensor-ID")
-
 	var body struct {
 		SensorID string `json:"sensor_id"`
 		Queries  []struct {
@@ -1032,6 +1074,11 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
 		return
 	}
+	sensorID, ok := s.requireAuthenticatedSensorID(w, r, body.SensorID, r.Header.Get("X-Sensor-ID"))
+	if !ok {
+		return
+	}
+	body.SensorID = sensorID
 
 	if len(body.Queries) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"accepted": 0})

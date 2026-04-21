@@ -1,6 +1,6 @@
 # Vedetta Sensor Architecture
 
-> Last updated: 2026-04-20
+> Last updated: 2026-04-21
 > Status: Alpha
 
 ## Why Vedetta Has A Native Sensor
@@ -20,6 +20,7 @@ This is especially important on macOS and Windows, where Docker commonly runs in
 The current sensor is strongest at:
 
 - active device discovery with `nmap`
+- passive device discovery from ARP, DHCP, mDNS, and SSDP/UPnP traffic
 - passive DNS capture on a selected interface
 - scan-target execution driven by Core
 - reporting devices and DNS events back to Core
@@ -29,6 +30,7 @@ The current sensor is strongest at:
 - **Public install path:** macOS and Linux
 - **Current installer:** builds from source, installs dependencies, and can register a persistent service
 - **Privileges:** current best visibility still assumes elevated local access
+- **Capture preflight:** installer prints a recommended DNS/passive capture interface and the sensor supports explicit `--dns-iface` / `--passive-iface` overrides
 - **Windows:** not yet a supported public install path
 
 ## What Is Required Vs Optional
@@ -48,14 +50,20 @@ The current sensor is strongest at:
 
 ```text
 vedetta-sensor
-  |- device discovery
-  |- passive DNS capture
-  `- scan target execution
+  |- first bootstrap:
+  |    POST /api/v1/sensor/register
+  |    receives one-time auth_token
+  |    stores token in ~/.vedetta/sensor-token (0600)
+  |
+  |- ongoing device discovery
+  |- ongoing passive DNS capture
+  `- ongoing scan target execution
           |
           v
-POST /api/v1/sensor/register
+Authorization: Bearer <sensor token>
 POST /api/v1/sensor/devices
 POST /api/v1/sensor/dns
+GET  /api/v1/sensor/work
           |
           v
 vedetta-core
@@ -77,17 +85,44 @@ The current sensor is not yet the final shape of the product. Public copy should
 
 The next sensor milestones are meant to broaden local visibility without changing Vedetta's current identity:
 
-- ARP, DHCP, mDNS, and SSDP passive discovery
+- better passive correlation across the new ARP, DHCP, mDNS, and SSDP signals
 - better multi-network and connector-aware workflows
-- tighter sensor-to-Core authentication and request hardening
+- token rotation and deeper sensor-to-Core trust hardening
 - cleaner installation and upgrade paths for alpha users
+
+## Capture Interface Selection
+
+Vedetta now chooses packet-capture interfaces at runtime instead of relying on a one-time install guess.
+
+- explicit `--dns-iface` and `--passive-iface` overrides always win
+- if no override is set, the sensor prefers the interface whose IP matches the scan CIDR
+- route-to-Core is used as a secondary hint, not the only signal
+- tunnel, VPN, loopback, and side-channel interfaces such as `utun*`, `awdl*`, `llw*`, and `ap*` are strongly de-prioritized in auto mode
+
+This matters most on laptops and developer machines where Wi-Fi, Ethernet, Docker, and VPN interfaces can all coexist.
+
+For diagnostics:
+
+```bash
+./vedetta-sensor --core http://<CORE_IP>:8080 --cidr 10.0.0.0/24 --print-capture-plan
+```
+
+That command prints the chosen DNS and passive interfaces, the reasons they won, and the next-best candidates.
 
 ## Security Note
 
-This is the most important operational caveat today:
+The sensor auth loop is now closed for the machine-to-machine path:
 
-- Core can mint sensor tokens during registration
-- the current sensor flow does not yet use that token path end to end
-- the deployment should still be treated as LAN-first alpha software
+- the first registration call can bootstrap a new sensor and returns a one-time `auth_token`
+- the sensor persists that token locally with user-only permissions
+- every later `devices`, `dns`, and `work` call uses `Authorization: Bearer <sensor token>`
+- once a sensor already has an active token, registration updates must present that token instead of silently minting a second one
+- initial registration is rate-limited per source IP to reduce unauthenticated abuse on local networks
+
+Threat-model note:
+
+- this hardening is designed for self-hosted, LAN-first alpha deployments, not exposed internet infrastructure
+- local value does not depend on any cloud service
+- there is still broader admin/dashboard auth work to finish around human-facing management routes
 
 If you are documenting or deploying Vedetta publicly, do not position the current sensor path as fully hardened remote infrastructure. The right framing today is self-hosted, local-first, and still under active hardening.

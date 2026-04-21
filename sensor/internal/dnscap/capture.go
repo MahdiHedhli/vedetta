@@ -9,6 +9,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/vedetta-network/vedetta/sensor/internal/netinfo"
 )
 
 // Capturer performs passive DNS query capture using libpcap.
@@ -27,18 +28,20 @@ type Capturer struct {
 
 // Query represents a captured DNS query.
 type Query struct {
-	Timestamp  time.Time
-	Domain     string
-	QueryType  string
-	ClientIP   string
-	ServerIP   string
-	Blocked    bool
-	Source     string // e.g., "passive_capture"
+	Timestamp time.Time
+	Domain    string
+	QueryType string
+	ClientIP  string
+	ServerIP  string
+	Blocked   bool
+	Source    string // e.g., "passive_capture"
 }
 
 // Config contains settings for DNS capture.
 type Config struct {
 	Interface    string        // Network interface to capture on (or "auto" for best match)
+	CoreURL      string        // Vedetta Core URL used as a route hint
+	CIDR         string        // Scan CIDR used to prefer the local LAN interface
 	Filter       string        // BPF filter string (optional, overrides default)
 	BatchSize    int           // Number of queries to batch before sending
 	BatchTimeout time.Duration // Max time to wait before sending a batch
@@ -49,11 +52,17 @@ type Config struct {
 func NewCapturer(cfg Config) (*Capturer, error) {
 	iface := cfg.Interface
 	if iface == "" || iface == "auto" {
-		var err error
-		iface, err = autoDetectInterface()
+		selection, err := netinfo.SelectCaptureInterface(netinfo.CaptureSelectionOptions{
+			Preferred: cfg.Interface,
+			CoreURL:   cfg.CoreURL,
+			ScanCIDR:  cfg.CIDR,
+			Purpose:   "dns capture",
+		})
 		if err != nil {
 			return nil, fmt.Errorf("auto-detect interface: %w", err)
 		}
+		iface = selection.Name
+		log.Printf("dnscap: %s", netinfo.FormatCaptureSelection(selection, "dns capture"))
 	}
 
 	filter := cfg.Filter
@@ -106,6 +115,11 @@ func (c *Capturer) Start() error {
 	go c.run()
 	log.Printf("dnscap: Capturer started on interface %s", c.iface)
 	return nil
+}
+
+// Interface returns the active capture interface.
+func (c *Capturer) Interface() string {
+	return c.iface
 }
 
 // Stop gracefully stops packet capture.
@@ -243,26 +257,4 @@ func (c *Capturer) sendBatch(batch []Query) {
 	for _, q := range batch {
 		c.onQuery(q)
 	}
-}
-
-// autoDetectInterface finds the best network interface for DNS capture.
-func autoDetectInterface() (string, error) {
-	devices, err := pcap.FindAllDevs()
-	if err != nil {
-		return "", fmt.Errorf("list devices: %w", err)
-	}
-
-	if len(devices) == 0 {
-		return "", fmt.Errorf("no network devices found")
-	}
-
-	// Prefer non-loopback devices with up status
-	for _, dev := range devices {
-		if dev.Name != "lo" && dev.Name != "lo0" {
-			return dev.Name, nil
-		}
-	}
-
-	// Fallback to first device
-	return devices[0].Name, nil
 }

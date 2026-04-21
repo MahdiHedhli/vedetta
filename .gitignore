@@ -27,7 +27,11 @@
 credentials.*
 secrets.*
 *secret*
-*token*
+*.token
+*.tokens
+token.txt
+token.json
+auth-token.txt
 !*_test.go
 service-account*.json
 gcp-credentials*.json

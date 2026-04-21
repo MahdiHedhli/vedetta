@@ -1,6 +1,6 @@
 # Vedetta Roadmap
 
-> Last updated: 2026-04-20
+> Last updated: 2026-04-21
 > Status: Alpha / active development
 
 ## What Vedetta is today
@@ -15,7 +15,7 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 ## Current product shape
 
 - **Vedetta Core** runs in Docker Compose and provides the API, dashboard, local storage, and ingestion pipeline.
-- **Vedetta Sensor** runs natively on the network you want to watch. Today it supports macOS and Linux install paths and performs nmap-based discovery plus passive DNS capture.
+- **Vedetta Sensor** runs natively on the network you want to watch. Today it supports macOS and Linux install paths and combines nmap-based discovery with passive DNS, ARP, DHCP, mDNS, and SSDP/UPnP visibility.
 - **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
 - **Threat enrichment** uses local abuse.ch-backed intelligence so the local product keeps value without cloud dependence.
 - **Optional DNS sources** include Pi-hole and AdGuard Home pollers.
@@ -26,7 +26,7 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 ### Available now
 
 - Docker-based Core with local API, UI, and SQLite-backed storage
-- Native sensor for device discovery and passive DNS capture
+- Native sensor for active and passive device discovery plus passive DNS capture
 - DNS-first threat scoring and local event enrichment
 - Optional Pi-hole integration
 - Optional AdGuard Home integration
@@ -35,7 +35,7 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 ### In progress
 
 - Install and onboarding polish for alpha users
-- Stronger sensor-to-Core hardening and cleaner setup flow
+- Broader auth hardening, token rotation, and cleaner setup flow
 - Turning router and firewall ingestion into documented, testable workflows
 - Better public docs that separate shipped features from roadmap items
 
@@ -43,8 +43,7 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 
 - Router and firewall log aggregation for common platforms:
   UniFi, OpenWRT, pfSense/OPNsense, and MikroTik
-- More passive discovery sources:
-  ARP, DHCP, mDNS, and SSDP/UPnP
+- Better passive discovery correlation, labeling, and multi-network handling
 - Better local DNS collection options for advanced deployments
 - An optional, privacy-conscious community threat network
 
@@ -88,7 +87,7 @@ Vedetta is not yet positioned as a mass-market consumer appliance. The current i
 - The sensor install path is currently oriented around macOS and Linux. Windows is not yet a supported public install path.
 - Router and firewall coverage is not mature yet. The connector framework exists, and UniFi groundwork is in the repo, but broader connector support is still ahead.
 - The threat-network and telemetry services are still scaffolded. They should be described as upcoming, not shipped.
-- Sensor-to-Core hardening is only partially complete. Core can mint sensor tokens during registration, but the full sensor flow is not yet using that path end to end. Treat public internet exposure as unsupported for now.
+- Sensor bearer auth is now in place for registration follow-up, device reports, DNS ingest, and work fetches. Broader dashboard/admin auth hardening is still incomplete, and public internet exposure remains unsupported.
 
 ## Near-Term Roadmap Themes
 
@@ -107,4 +106,4 @@ Vedetta is not yet positioned as a mass-market consumer appliance. The current i
 - document optional vs required integrations clearly
 - improve alpha install guidance for Core plus native sensor
 - move router/firewall work from "interesting code in repo" to honest experimental support
-- finish the next round of sensor security hardening
+- finish the next round of dashboard/admin and sensor security hardening

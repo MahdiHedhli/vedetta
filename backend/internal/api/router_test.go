@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vedetta-network/vedetta/backend/internal/auth"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 )
@@ -22,6 +23,59 @@ func setupTestServer(t *testing.T) (*Server, *store.DB) {
 	t.Cleanup(func() { db.Close() })
 	srv := &Server{DB: db}
 	return srv, db
+}
+
+func registerTestSensor(t *testing.T, router http.Handler, sensorID string) string {
+	t.Helper()
+
+	body := map[string]any{
+		"sensor_id": sensorID,
+		"hostname":  "sensor-host",
+		"os":        "linux",
+		"arch":      "amd64",
+		"cidr":      "192.168.1.0/24",
+		"version":   "test",
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal register body: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.10:12345"
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("register sensor: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	if resp.AuthToken == "" {
+		t.Fatal("expected bootstrap auth token in registration response")
+	}
+
+	return resp.AuthToken
+}
+
+func createTestToken(t *testing.T, db *store.DB, scope auth.TokenScope, sensorID string) string {
+	t.Helper()
+
+	rawToken, token, err := auth.GenerateToken(scope, sensorID, "test-token")
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	if err := db.CreateToken(token); err != nil {
+		t.Fatalf("store token: %v", err)
+	}
+
+	return rawToken
 }
 
 // --- Ingest Endpoint Tests ---
@@ -257,5 +311,133 @@ func TestHandleStatus(t *testing.T) {
 	// event_count should be present
 	if _, ok := resp["event_count"]; !ok {
 		t.Error("expected event_count in status response")
+	}
+}
+
+func TestHandleSensorRegister_RequiresExistingTokenForReRegistration(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	router := NewRouter(srv)
+
+	authToken := registerTestSensor(t, router, "sensor-reregister")
+
+	body := []byte(`{"sensor_id":"sensor-reregister","hostname":"sensor-host","os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"test"}`)
+
+	req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.10:12345"
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated re-registration, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.RemoteAddr = "192.0.2.10:12345"
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for authenticated re-registration, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode re-registration response: %v", err)
+	}
+	if resp.AuthToken != "" {
+		t.Fatal("expected re-registration to avoid issuing a second bootstrap token")
+	}
+}
+
+func TestHandleSensorDevices_AuthenticatedDeviceReportSucceeds(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	router := NewRouter(srv)
+	authToken := registerTestSensor(t, router, "sensor-devices")
+
+	body := []byte(`{
+		"sensor_id":"sensor-devices",
+		"cidr":"192.168.1.0/24",
+		"hosts":[
+			{
+				"ip_address":"192.168.1.10",
+				"mac_address":"aa:bb:cc:dd:ee:ff",
+				"hostname":"printer",
+				"status":"up"
+			}
+		]
+	}`)
+
+	req := httptest.NewRequest("POST", "/api/v1/sensor/devices", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("X-Sensor-ID", "sensor-devices")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSensorDevices_RequiresAuthentication(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	router := NewRouter(srv)
+
+	body := []byte(`{
+		"sensor_id":"sensor-devices",
+		"cidr":"192.168.1.0/24",
+		"hosts":[
+			{
+				"ip_address":"192.168.1.11",
+				"mac_address":"aa:bb:cc:dd:ee:01",
+				"hostname":"camera",
+				"status":"up"
+			}
+		]
+	}`)
+
+	req := httptest.NewRequest("POST", "/api/v1/sensor/devices", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Sensor-ID", "sensor-devices")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSensorDevices_WrongScopeTokenRejected(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	adminToken := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	body := []byte(`{
+		"sensor_id":"sensor-devices",
+		"cidr":"192.168.1.0/24",
+		"hosts":[
+			{
+				"ip_address":"192.168.1.12",
+				"mac_address":"aa:bb:cc:dd:ee:02",
+				"hostname":"tv",
+				"status":"up"
+			}
+		]
+	}`)
+
+	req := httptest.NewRequest("POST", "/api/v1/sensor/devices", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("X-Sensor-ID", "sensor-devices")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
