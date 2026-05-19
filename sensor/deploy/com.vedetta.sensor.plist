@@ -9,7 +9,11 @@
     <array>
         <string>/usr/local/bin/vedetta-sensor</string>
         <string>--core</string>
-        <string>http://CORE_IP:8080</string>
+        <string>http://YOUR-CORE-IP:8080</string>
+        <string>--cidr</string>
+        <string>auto</string>
+        <string>--dns</string>
+        <string>--passive-discovery</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -19,10 +23,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/usr/local/var/log/vedetta-sensor.log</string>
+    <string>/var/log/vedetta-sensor.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/usr/local/var/log/vedetta-sensor.log</string>
+    <string>/var/log/vedetta-sensor.log</string>
 
     <key>ThrottleInterval</key>
     <integer>10</integer>

@@ -41,6 +41,45 @@ func RequireStrictAuth(tv TokenValidator) func(next http.Handler) http.Handler {
 	return requireAuth(tv, false)
 }
 
+// RequireAdmin returns middleware suitable for dashboard / human admin routes.
+// - If no tokens exist yet (fresh install / bootstrap), all requests pass through.
+// - Once any token exists, a valid Bearer token with ScopeAdmin is required.
+// This is the recommended middleware for all UI-facing management endpoints.
+func RequireAdmin(tv TokenValidator) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			tokenCount, err := tv.CountTokens()
+			if err != nil {
+				http.Error(w, "auth: failed to check token store", http.StatusInternalServerError)
+				return
+			}
+
+			if tokenCount == 0 {
+				// Bootstrap mode: allow initial setup (including creation of first admin token)
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Auth is configured — require a valid admin token
+			token, err := ValidateAuthorizationHeader(tv, r.Header.Get("Authorization"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+
+			if token.Scope != ScopeAdmin {
+				http.Error(w, "admin scope required", http.StatusForbidden)
+				return
+			}
+
+			// Populate context for handlers that want it
+			ctx := context.WithValue(r.Context(), ContextKeyToken, token)
+			ctx = context.WithValue(ctx, ContextKeyScope, token.Scope)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 func requireAuth(tv TokenValidator, allowBootstrapBypass bool) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

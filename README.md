@@ -1,5 +1,7 @@
 # Vedetta
 
+[![Deploy Public Site](https://github.com/MahdiHedhli/vedetta/actions/workflows/pages.yml/badge.svg)](https://github.com/MahdiHedhli/vedetta/actions/workflows/pages.yml)
+
 **Your network, under watch.** DNS-first security monitoring for homes and small businesses.
 
 Vedetta is a lightweight, self-hosted security monitoring platform. Today it is strongest at DNS-first visibility and detection, active and passive device discovery, and local threat scoring. The current product stands on its own locally, can optionally pull value from existing DNS infrastructure such as Pi-hole or AdGuard Home, and is still best described as alpha software for homelabs, technical home users, small businesses, and hands-on operators.
@@ -10,6 +12,7 @@ Vedetta is a lightweight, self-hosted security monitoring platform. Today it is 
 - **Vedetta Sensor** runs natively on the network you want to inspect and handles active device discovery, passive ARP/DHCP/mDNS/SSDP visibility, and passive DNS capture.
 - **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
 - **Threat enrichment** is local-first and backed by downloaded threat intelligence feeds.
+- **EOL Router & Camera Detection** — Detects specific end-of-life and vulnerable router and camera models listed in the [FBI IC3 FLASH 2026-03-12 advisory](https://www.ic3.gov/CSA/2026/260312.pdf) (AVrecon malware / SocksEscort) and applies elevated risk scoring when they exhibit suspicious behavior.
 - **Optional DNS integrations** include Pi-hole and AdGuard Home if you already run them.
 - **Router and firewall work** has started in code, but broader log aggregation and connector coverage still belong in the roadmap.
 
@@ -48,6 +51,7 @@ Pi-hole and AdGuard Home are **optional integrations**, not the product identity
 - native sensor for macOS and Linux install paths
 - passive DNS capture plus active and passive device discovery
 - DNS-first threat scoring and local enrichment
+- EOL Router & Camera Detection (models from FBI IC3 2026-03-12 advisory)
 - optional Pi-hole and AdGuard Home pollers
 - device inventory, scan targets, whitelist, suppression, and activity logging
 

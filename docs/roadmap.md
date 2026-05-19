@@ -1,6 +1,6 @@
 # Vedetta Roadmap
 
-> Last updated: 2026-04-21
+> Last updated: 2026-05-19
 > Status: Alpha / active development
 
 ## What Vedetta is today
@@ -18,6 +18,7 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 - **Vedetta Sensor** runs natively on the network you want to watch. Today it supports macOS and Linux install paths and combines nmap-based discovery with passive DNS, ARP, DHCP, mDNS, and SSDP/UPnP visibility.
 - **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
 - **Threat enrichment** uses local abuse.ch-backed intelligence so the local product keeps value without cloud dependence.
+- **EOL Router & Camera Risk Detection** — Detects specific end-of-life and vulnerable router and camera models listed in the [FBI IC3 FLASH 2026-03-12 advisory](https://www.ic3.gov/CSA/2026/260312.pdf) (AVrecon / SocksEscort) and applies elevated risk scoring when they exhibit suspicious behavior.
 - **Optional DNS sources** include Pi-hole and AdGuard Home pollers.
 - **Router and firewall work** has started in code, with a connector framework and UniFi connector groundwork, but broader coverage is still roadmap work.
 
@@ -28,6 +29,7 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 - Docker-based Core with local API, UI, and SQLite-backed storage
 - Native sensor for active and passive device discovery plus passive DNS capture
 - DNS-first threat scoring and local event enrichment
+- EOL Router & Camera Detection (FBI IC3 2026-03-12 advisory models)
 - Optional Pi-hole integration
 - Optional AdGuard Home integration
 - Device inventory, scan targets, whitelist/suppression, and basic onboarding flow

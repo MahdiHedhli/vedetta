@@ -318,23 +318,37 @@ func TestHandleSensorRegister_RequiresExistingTokenForReRegistration(t *testing.
 	srv, _ := setupTestServer(t)
 	router := NewRouter(srv)
 
-	authToken := registerTestSensor(t, router, "sensor-reregister")
+	originalToken := registerTestSensor(t, router, "sensor-reregister")
 
 	body := []byte(`{"sensor_id":"sensor-reregister","hostname":"sensor-host","os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"test"}`)
 
+	// 1. Unauthenticated re-registration (simulates `vedetta-sensor --reset`)
+	//    → Recovery mode: must succeed and return a fresh token.
 	req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.10:12345"
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for unauthenticated re-registration, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (recovery) for unauthenticated re-registration, got %d: %s", w.Code, w.Body.String())
 	}
+	var recoveryResp struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&recoveryResp); err != nil {
+		t.Fatalf("decode recovery response: %v", err)
+	}
+	if recoveryResp.AuthToken == "" {
+		t.Fatal("expected recovery re-registration to return a fresh auth token")
+	}
+	newToken := recoveryResp.AuthToken
 
+	// 2. Authenticated re-registration using the *new* token from recovery
+	//    → Should succeed and NOT issue yet another token (we already have one).
 	req = httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("Authorization", "Bearer "+newToken)
 	req.RemoteAddr = "192.0.2.10:12345"
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -350,7 +364,18 @@ func TestHandleSensorRegister_RequiresExistingTokenForReRegistration(t *testing.
 		t.Fatalf("decode re-registration response: %v", err)
 	}
 	if resp.AuthToken != "" {
-		t.Fatal("expected re-registration to avoid issuing a second bootstrap token")
+		t.Fatal("expected authenticated re-registration to reuse existing token (no new one issued)")
+	}
+
+	// Also verify the very old original token is now revoked (recovery deleted it)
+	req = httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+originalToken)
+	req.RemoteAddr = "192.0.2.10:12345"
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected original token to be revoked after recovery, got %d", w.Code)
 	}
 }
 

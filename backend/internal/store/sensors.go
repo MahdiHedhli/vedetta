@@ -71,6 +71,7 @@ func (db *DB) ListSensors() ([]models.Sensor, error) {
 		}
 		sensors = append(sensors, s)
 	}
+
 	return sensors, rows.Err()
 }
 

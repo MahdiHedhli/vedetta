@@ -238,6 +238,14 @@ func (db *DB) CountEvents() (int, error) {
 	return count, err
 }
 
+// CountEventsByType returns the count of events of a specific type (e.g. "dns_query").
+// Useful for collection health monitoring during long-running sensor runs.
+func (db *DB) CountEventsByType(eventType string) (int, error) {
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM events WHERE event_type = ?", eventType).Scan(&count)
+	return count, err
+}
+
 // DeleteEventsOlderThan removes events older than the given timestamp.
 // Returns the number of deleted rows.
 func (db *DB) DeleteEventsOlderThan(cutoff time.Time) (int64, error) {

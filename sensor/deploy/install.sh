@@ -1,420 +1,178 @@
-#!/usr/bin/env bash
+#!/bin/bash
 #
-# Vedetta Sensor — Install Script
+# Vedetta Sensor Easy Installer
+# For home users and small networks
 #
-# Quick install (macOS/Linux today):
-#   curl -fsSL -o /tmp/vedetta-sensor-install.sh https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
-#   sudo bash /tmp/vedetta-sensor-install.sh --core http://<CORE_IP>:8080
+# Usage:
+#   curl -fsSL ... | bash -s -- --core http://192.168.1.50:8080
+#   or
+#   sudo ./install.sh --core http://192.168.1.50:8080
 #
-# What it does:
-#   1. Detects OS (macOS / Debian / Ubuntu / Alpine / RHEL / Fedora / Arch)
-#   2. Installs nmap if missing
-#   3. Installs Go if missing (needed to build from source)
-#   4. Builds the sensor binary
-#   5. Installs it as a persistent service (launchd on macOS, systemd on Linux)
-#
-set -euo pipefail
 
-VEDETTA_VERSION="0.1.0-dev"
-INSTALL_DIR="/usr/local/bin"
-REPO_URL="https://github.com/MahdiHedhli/vedetta.git"
-SENSOR_BIN="vedetta-sensor"
+set -e
+
 CORE_URL=""
-SENSOR_FLAGS=""
-SKIP_SERVICE=false
-UNINSTALL=false
-
-# On macOS, Homebrew and Go must not run as root.
-# Capture the real (non-root) user so we can drop privileges for those commands.
-REAL_USER="${SUDO_USER:-$USER}"
-REAL_HOME=$(eval echo "~${REAL_USER}")
-
-# Run a command as the real (non-root) user
-as_user() {
-    if [[ "$(id -u)" -eq 0 && "$REAL_USER" != "root" ]]; then
-        sudo -u "$REAL_USER" -- "$@"
-    else
-        "$@"
-    fi
-}
-
-# --- Helpers ---
-
-info()  { printf "\033[1;34m[vedetta]\033[0m %s\n" "$*"; }
-warn()  { printf "\033[1;33m[vedetta]\033[0m %s\n" "$*"; }
-error() { printf "\033[1;31m[vedetta]\033[0m %s\n" "$*" >&2; }
-die()   { error "$*"; exit 1; }
-
-usage() {
-    cat <<EOF
-Vedetta Sensor Installer v${VEDETTA_VERSION}
-
-Usage:
-  sudo bash install.sh --core http://<CORE_IP>:8080 [OPTIONS]
-
-Required:
-  --core <url>        Vedetta Core API URL (e.g. http://10.0.0.5:8080)
-
-Options:
-  --cidr <cidr>       Override auto-detected subnet (e.g. 10.0.107.0/24)
-  --interval <dur>    Scan interval (default: 5m)
-  --ports             Enable top-100 port scanning
-  --primary           Register as the primary sensor
-  --dns-iface <iface> Pin DNS capture to a specific interface
-  --passive-iface <iface>
-                      Pin passive discovery to a specific interface
-  --no-service        Build and install binary only, skip service setup
-  --uninstall         Remove sensor binary and service
-  -h, --help          Show this help
-
-Examples:
-  # Basic install — auto-detect subnet, 5min scan cycle
-  sudo bash install.sh --core http://10.0.0.5:8080
-
-  # IoT-focused sensor with port scanning
-  sudo bash install.sh --core http://10.0.0.5:8080 --cidr 10.0.107.0/24 --ports
-
-  # Download, review, and install
-  curl -fsSL -o /tmp/vedetta-sensor-install.sh https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
-  sudo bash /tmp/vedetta-sensor-install.sh --core http://10.0.0.5:8080
-EOF
-    exit 0
-}
-
-# --- Parse args ---
+RESET=false
 
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --core)       CORE_URL="$2"; shift 2 ;;
-        --cidr)       SENSOR_FLAGS="$SENSOR_FLAGS --cidr $2"; shift 2 ;;
-        --interval)   SENSOR_FLAGS="$SENSOR_FLAGS --interval $2"; shift 2 ;;
-        --ports)      SENSOR_FLAGS="$SENSOR_FLAGS --ports"; shift ;;
-        --primary)    SENSOR_FLAGS="$SENSOR_FLAGS --primary"; shift ;;
-        --dns-iface)  SENSOR_FLAGS="$SENSOR_FLAGS --dns-iface $2"; shift 2 ;;
-        --passive-iface) SENSOR_FLAGS="$SENSOR_FLAGS --passive-iface $2"; shift 2 ;;
-        --no-service) SKIP_SERVICE=true; shift ;;
-        --uninstall)  UNINSTALL=true; shift ;;
-        -h|--help)    usage ;;
-        *)            die "Unknown option: $1 (use --help for usage)" ;;
-    esac
+  case $1 in
+    --core)
+      CORE_URL="$2"
+      shift 2
+      ;;
+    --reset)
+      RESET=true
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
 done
 
-# --- Detect OS ---
+if [ -z "$CORE_URL" ]; then
+  echo "Usage: $0 --core http://YOUR-CORE-IP:8080 [--reset]"
+  exit 1
+fi
 
-detect_os() {
-    OS="$(uname -s)"
-    ARCH="$(uname -m)"
+echo "==> Vedetta Sensor Installer"
+echo "    Core: $CORE_URL"
+echo ""
 
-    case "$OS" in
-        Darwin) PLATFORM="macos" ;;
-        Linux)  PLATFORM="linux" ;;
-        *)      die "Unsupported OS: $OS" ;;
-    esac
+# Detect OS
+OS="$(uname -s)"
+ARCH="$(uname -m)"
 
-    # Detect Linux distro
-    DISTRO="unknown"
-    if [[ "$PLATFORM" == "linux" ]]; then
-        if [[ -f /etc/os-release ]]; then
-            . /etc/os-release
-            DISTRO="${ID:-unknown}"
-        elif [[ -f /etc/alpine-release ]]; then
-            DISTRO="alpine"
-        fi
-    fi
+echo "==> Detected: $OS on $ARCH"
 
-    info "Detected: $PLATFORM ($DISTRO) $ARCH"
-}
-
-# --- Uninstall ---
-
-do_uninstall() {
-    info "Uninstalling Vedetta Sensor..."
-
-    if [[ "$PLATFORM" == "macos" ]]; then
-        if launchctl list | grep -q com.vedetta.sensor 2>/dev/null; then
-            info "Stopping launchd service..."
-            launchctl bootout system/com.vedetta.sensor 2>/dev/null || true
-        fi
-        rm -f /Library/LaunchDaemons/com.vedetta.sensor.plist
-    else
-        if systemctl is-active --quiet vedetta-sensor 2>/dev/null; then
-            info "Stopping systemd service..."
-            systemctl stop vedetta-sensor
-        fi
-        systemctl disable vedetta-sensor 2>/dev/null || true
-        rm -f /etc/systemd/system/vedetta-sensor.service
-        systemctl daemon-reload 2>/dev/null || true
-    fi
-
-    rm -f "${INSTALL_DIR}/${SENSOR_BIN}"
-    info "Vedetta Sensor uninstalled."
-    exit 0
-}
-
-# --- Install dependencies ---
-
+# Install dependencies
 install_nmap() {
-    if command -v nmap &>/dev/null; then
-        info "nmap found: $(command -v nmap)"
-        return
-    fi
+  if command -v nmap >/dev/null 2>&1; then
+    echo "==> nmap is already installed"
+    return
+  fi
 
-    info "Installing nmap..."
-    case "$PLATFORM" in
-        macos)
-            if as_user command -v brew &>/dev/null; then
-                as_user brew install nmap
-            else
-                die "nmap not found. Install Homebrew (https://brew.sh) then run: brew install nmap"
-            fi
-            ;;
-        linux)
-            case "$DISTRO" in
-                ubuntu|debian|pop|linuxmint)
-                    apt-get update -qq && apt-get install -y -qq nmap ;;
-                alpine)
-                    apk add --no-cache nmap ;;
-                fedora)
-                    dnf install -y nmap ;;
-                centos|rhel|rocky|almalinux)
-                    yum install -y nmap ;;
-                arch|manjaro)
-                    pacman -S --noconfirm nmap ;;
-                *)
-                    die "Unsupported distro '$DISTRO'. Install nmap manually, then re-run this script." ;;
-            esac
-            ;;
-    esac
-    info "nmap installed."
-}
+  echo "==> Installing nmap (required for active scanning)..."
 
-install_go() {
-    # Check both root and user PATH for Go
-    if command -v go &>/dev/null; then
-        info "Go found: $(go version)"
-        return
-    fi
-    if as_user command -v go &>/dev/null; then
-        info "Go found (user): $(as_user go version)"
-        return
-    fi
-
-    info "Installing Go..."
-    case "$PLATFORM" in
-        macos)
-            if as_user command -v brew &>/dev/null; then
-                as_user brew install go
-            else
-                die "Go not found. Install Homebrew (https://brew.sh) then run: brew install go"
-            fi
-            ;;
-        linux)
-            # Install latest Go from official tarball
-            GO_VERSION="1.22.5"
-            GO_ARCH="$ARCH"
-            [[ "$GO_ARCH" == "x86_64" ]] && GO_ARCH="amd64"
-            [[ "$GO_ARCH" == "aarch64" ]] && GO_ARCH="arm64"
-
-            GO_TAR="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
-            info "Downloading Go ${GO_VERSION} for ${GO_ARCH}..."
-            curl -fsSL "https://go.dev/dl/${GO_TAR}" -o "/tmp/${GO_TAR}"
-            rm -rf /usr/local/go
-            tar -C /usr/local -xzf "/tmp/${GO_TAR}"
-            rm "/tmp/${GO_TAR}"
-            export PATH="/usr/local/go/bin:$PATH"
-            ;;
-    esac
-    info "Go installed."
-}
-
-# --- Build sensor ---
-
-build_sensor() {
-    # Check if we're running from inside a local copy of the repo
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    LOCAL_SENSOR_DIR="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)/sensor"
-
-    if [[ -f "$LOCAL_SENSOR_DIR/cmd/vedetta-sensor/main.go" ]]; then
-        # Build from local repo — no clone needed
-        info "Building sensor from local repo ($LOCAL_SENSOR_DIR)..."
-        BUILD_TMP="$(as_user mktemp -d 2>/dev/null || mktemp -d)"
-        chown -R "$REAL_USER" "$BUILD_TMP" 2>/dev/null || true
-
-        as_user bash -c "cd '$LOCAL_SENSOR_DIR' && go build -o '$BUILD_TMP/${SENSOR_BIN}' ./cmd/vedetta-sensor"
+  if [ "$OS" = "Darwin" ]; then
+    if command -v brew >/dev/null 2>&1; then
+      brew install nmap
+    elif command -v port >/dev/null 2>&1; then
+      sudo port install nmap
     else
-        # Clone from remote
-        BUILD_TMP="$(as_user mktemp -d 2>/dev/null || mktemp -d)"
-        chown -R "$REAL_USER" "$BUILD_TMP" 2>/dev/null || true
-
-        info "Cloning Vedetta repo..."
-        as_user git clone --depth 1 --quiet "$REPO_URL" "$BUILD_TMP/vedetta"
-
-        info "Building sensor..."
-        as_user bash -c "cd '$BUILD_TMP/vedetta/sensor' && go build -o '$BUILD_TMP/${SENSOR_BIN}' ./cmd/vedetta-sensor"
+      echo "Please install Homebrew or MacPorts, then run: brew install nmap"
+      exit 1
     fi
-
-    info "Installing binary to ${INSTALL_DIR}/${SENSOR_BIN}"
-    cp "$BUILD_TMP/${SENSOR_BIN}" "${INSTALL_DIR}/${SENSOR_BIN}"
-    chmod +x "${INSTALL_DIR}/${SENSOR_BIN}"
-
-    rm -rf "$BUILD_TMP"
-    info "Sensor binary installed."
+  elif [ "$OS" = "Linux" ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+      sudo apt-get update -qq && sudo apt-get install -y nmap
+    elif command -v dnf >/dev/null 2>&1; then
+      sudo dnf install -y nmap
+    elif command -v pacman >/dev/null 2>&1; then
+      sudo pacman -S --noconfirm nmap
+    else
+      echo "Please install nmap manually for your distribution."
+      exit 1
+    fi
+  fi
 }
 
-# --- Install service ---
+install_nmap
 
-install_service_macos() {
-    PLIST="/Library/LaunchDaemons/com.vedetta.sensor.plist"
-    LOG_DIR="/usr/local/var/log"
-    mkdir -p "$LOG_DIR"
+# Build the sensor
+echo "==> Building vedetta-sensor (this may take a minute)..."
+cd "$(dirname "$0")/../.."
+go build -o /tmp/vedetta-sensor ./sensor/cmd/vedetta-sensor
 
-    info "Installing launchd service..."
+echo "==> Installing binary to /usr/local/bin..."
+sudo mkdir -p /usr/local/bin
+sudo cp /tmp/vedetta-sensor /usr/local/bin/vedetta-sensor
+sudo chmod +x /usr/local/bin/vedetta-sensor
 
-    # Build a PATH that includes Homebrew (varies by arch) and standard dirs
-    BREW_PREFIX="$(/opt/homebrew/bin/brew --prefix 2>/dev/null || /usr/local/bin/brew --prefix 2>/dev/null || echo "/opt/homebrew")"
-    LAUNCH_PATH="${BREW_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Handle token reset
+if [ "$RESET" = true ]; then
+  echo "==> Resetting sensor authentication..."
+  sudo rm -f /root/.vedetta/sensor-token 2>/dev/null || true
+  rm -f "$HOME/.vedetta/sensor-token" 2>/dev/null || true
+fi
 
-    cat > "$PLIST" <<PLIST
+# Set up as a service
+echo "==> Setting up as a background service..."
+
+if [ "$OS" = "Darwin" ]; then
+  # macOS - launchd
+  PLIST="/Library/LaunchDaemons/com.vedetta.sensor.plist"
+  sudo tee "$PLIST" > /dev/null <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.vedetta.sensor</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>${LAUNCH_PATH}</string>
-    </dict>
     <key>ProgramArguments</key>
     <array>
-        <string>${INSTALL_DIR}/${SENSOR_BIN}</string>
+        <string>/usr/local/bin/vedetta-sensor</string>
         <string>--core</string>
-        <string>${CORE_URL}</string>
-PLIST
-
-    # Append any extra flags as individual array elements
-    for flag in $SENSOR_FLAGS; do
-        echo "        <string>${flag}</string>" >> "$PLIST"
-    done
-
-    cat >> "$PLIST" <<PLIST
+        <string>$CORE_URL</string>
+        <string>--cidr</string>
+        <string>auto</string>
+        <string>--dns</string>
+        <string>--passive-discovery</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${LOG_DIR}/vedetta-sensor.log</string>
+    <string>/var/log/vedetta-sensor.log</string>
     <key>StandardErrorPath</key>
-    <string>${LOG_DIR}/vedetta-sensor.log</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <string>/var/log/vedetta-sensor.log</string>
 </dict>
 </plist>
-PLIST
+EOF
 
-    # Stop existing service if running
-    launchctl bootout system/com.vedetta.sensor 2>/dev/null || true
+  sudo launchctl unload "$PLIST" 2>/dev/null || true
+  sudo launchctl load -w "$PLIST"
+  echo "==> Sensor installed as a LaunchDaemon (will start on boot)"
 
-    # Load and start
-    launchctl bootstrap system "$PLIST"
-
-    info "Sensor service started (launchd)."
-    info "Logs: tail -f ${LOG_DIR}/vedetta-sensor.log"
-}
-
-install_service_linux() {
-    UNIT="/etc/systemd/system/vedetta-sensor.service"
-
-    info "Installing systemd service..."
-
-    cat > "$UNIT" <<UNIT
+else
+  # Linux - systemd
+  SERVICE="/etc/systemd/system/vedetta-sensor.service"
+  sudo tee "$SERVICE" > /dev/null <<EOF
 [Unit]
-Description=Vedetta Network Sensor
-Documentation=https://github.com/MahdiHedhli/vedetta
-After=network-online.target
-Wants=network-online.target
+Description=Vedetta Sensor
+After=network.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/${SENSOR_BIN} --core ${CORE_URL}${SENSOR_FLAGS:+ $SENSOR_FLAGS}
+ExecStart=/usr/local/bin/vedetta-sensor --core $CORE_URL --cidr auto --dns --passive-discovery
 Restart=always
 RestartSec=10
 User=root
 
-NoNewPrivileges=no
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
-ReadWritePaths=/tmp
-
 [Install]
 WantedBy=multi-user.target
-UNIT
+EOF
 
-    systemctl daemon-reload
-    systemctl enable --now vedetta-sensor
+  sudo systemctl daemon-reload
+  sudo systemctl enable vedetta-sensor
+  sudo systemctl restart vedetta-sensor
+  echo "==> Sensor installed as a systemd service"
+fi
 
-    info "Sensor service started (systemd)."
-    info "Logs: journalctl -u vedetta-sensor -f"
-}
-
-print_capture_preflight() {
-    info "Capture interface preflight..."
-
-    local output
-    if output=$(as_user bash -c "'${INSTALL_DIR}/${SENSOR_BIN}' --core '${CORE_URL}' ${SENSOR_FLAGS} --print-capture-plan" 2>&1); then
-        printf "%s\n" "$output"
-    else
-        warn "Could not determine capture interfaces automatically."
-        warn "$output"
-        warn "You can pin interfaces later with --dns-iface <iface> and --passive-iface <iface>."
-    fi
-}
-
-# --- Main ---
-
-main() {
-    detect_os
-
-    if [[ "$UNINSTALL" == true ]]; then
-        do_uninstall
-    fi
-
-    if [[ -z "$CORE_URL" ]]; then
-        die "Missing required --core <url>. Example: --core http://10.0.0.5:8080"
-    fi
-
-    # Check for root/sudo
-    if [[ "$(id -u)" -ne 0 ]]; then
-        die "This script must be run as root (use sudo)"
-    fi
-
-    info "Installing Vedetta Sensor v${VEDETTA_VERSION}"
-    info "Core URL: ${CORE_URL}"
-
-    install_nmap
-    install_go
-    build_sensor
-    print_capture_preflight
-
-    if [[ "$SKIP_SERVICE" == true ]]; then
-        info "Skipping service install (--no-service)."
-        info "Run manually: sudo ${INSTALL_DIR}/${SENSOR_BIN} --core ${CORE_URL}"
-    else
-        case "$PLATFORM" in
-            macos) install_service_macos ;;
-            linux) install_service_linux ;;
-        esac
-    fi
-
-    echo ""
-    info "Installation complete!"
-    info "The sensor will auto-detect your subnet and begin scanning."
-    info "If the capture recommendation looks wrong on this host, re-run with --dns-iface <iface> and/or --passive-iface <iface>."
-    info "Add additional networks via the Vedetta dashboard → Scan Targets."
-    echo ""
-}
-
-main
+echo ""
+echo "==> ✅ Installation complete!"
+echo ""
+echo "Sensor is now running and will start automatically on boot."
+echo ""
+echo "Useful commands:"
+echo "  sudo systemctl status vedetta-sensor     # Linux"
+echo "  sudo launchctl list | grep vedetta       # macOS"
+echo "  sudo tail -f /var/log/vedetta-sensor.log"
+echo ""
+echo "To reset authentication in the future, run:"
+echo "  sudo /usr/local/bin/vedetta-sensor --reset"
+echo ""
+echo "Dashboard: http://YOUR-CORE-IP:3107"
+echo ""

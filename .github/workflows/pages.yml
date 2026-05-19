@@ -1,4 +1,14 @@
-name: Deploy site to GitHub Pages
+name: Deploy Public Site
+
+# This workflow deploys ONLY the contents of the `site/` directory to GitHub Pages.
+# It is intentionally scoped to `site/` only:
+#   - `site/` = Public website (https://vedettas.com)
+#   - `docs/` and root markdown files = GitHub repository documentation (not part of the public site)
+#
+# This separation keeps the public site lean and prevents unrelated doc changes
+# from triggering unnecessary deployments.
+#
+# Manual deployments are also supported via the "Run workflow" button.
 
 on:
   push:
@@ -22,10 +32,17 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site/ artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: site
-      - id: deployment
+
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4

@@ -617,6 +617,7 @@
               <li>Vedetta is self-hosted and local-first.</li>
               <li>Core runs in Docker. A native sensor provides the strongest current visibility.</li>
               <li>Device discovery and passive DNS are today’s strongest visibility layers.</li>
+              <li>EOL Router &amp; Camera risk detection (see <a href="https://www.ic3.gov/CSA/2026/260312.pdf" target="_blank" rel="noopener">FBI IC3 advisory</a>).</li>
               <li>Pi-hole and AdGuard Home are optional sources, not requirements.</li>
               <li>Router and firewall aggregation is part of the next expansion.</li>
             </ul>
@@ -646,7 +647,12 @@
           <article class="card">
             <div class="eyebrow">Today</div>
             <h3>Local threat scoring</h3>
-            <p>Vedetta already scores DGA-like domains, beaconing, tunneling, rebinding, and DNS bypass patterns, then enriches them with local threat intelligence.</p>
+            <p>Vedetta scores DGA-like domains, beaconing, tunneling, rebinding, and DNS bypass patterns, then enriches them with local threat intelligence and device risk context.</p>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Today</div>
+            <h3>EOL Router &amp; Camera Risk Detection</h3>
+            <p>Detects specific end-of-life and vulnerable router and camera models listed in the <a href="https://www.ic3.gov/CSA/2026/260312.pdf" target="_blank" rel="noopener">FBI IC3 FLASH 2026-03-12 advisory</a> (AVrecon / SocksEscort) and applies elevated risk scoring when they show suspicious behavior.</p>
           </article>
           <article class="card">
             <div class="eyebrow">Optional</div>
@@ -683,6 +689,7 @@
               <li>Native sensor for macOS and Linux workflows</li>
               <li>Passive DNS capture plus active and passive device discovery</li>
               <li>Local DNS scoring and enrichment</li>
+              <li>EOL Router &amp; Camera Detection (FBI IC3 advisory models)</li>
               <li>Optional Pi-hole and AdGuard Home pollers</li>
             </ul>
           </article>

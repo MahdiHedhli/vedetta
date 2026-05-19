@@ -88,7 +88,7 @@ func New(baseURL string) (*CoreClient, error) {
 	hostname, _ := os.Hostname()
 	sensorID := fmt.Sprintf("%s-%s-%s", hostname, runtime.GOOS, runtime.GOARCH)
 
-	tokenPath, err := defaultTokenPath()
+	tokenPath, err := DefaultTokenPath()
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +271,7 @@ func (c *CoreClient) persistToken(rawToken string) error {
 	return nil
 }
 
-func defaultTokenPath() (string, error) {
+func DefaultTokenPath() (string, error) {
 	if override := strings.TrimSpace(os.Getenv("VEDETTA_SENSOR_TOKEN_FILE")); override != "" {
 		return override, nil
 	}
