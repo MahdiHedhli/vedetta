@@ -56,9 +56,9 @@ type BeaconResult struct {
 func NewBeaconDetector() *BeaconDetector {
 	return &BeaconDetector{
 		entries:     make(map[beaconKey]*beaconEntry),
-		MinSamples:  6,
+		MinSamples:  8,  // Increased from 6 → fewer false beacons from short regular bursts
 		WindowSize:  32,
-		CVThreshold: 0.15,
+		CVThreshold: 0.13, // Slightly stricter than 0.15
 		EntryTTL:    2 * time.Hour,
 	}
 }

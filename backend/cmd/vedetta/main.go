@@ -51,7 +51,15 @@ func main() {
 		log.Printf("Threat intel DB init failed (non-fatal): %v", err)
 	}
 
-	enricher := dnsintel.NewEnricher(threatDB)
+	// Wire whitelist checking into the enricher for early noise suppression.
+	// This is critical for signal-to-noise: whitelisted domains should never
+	// generate high anomaly scores.
+	enricher := dnsintel.NewEnricherWithWhitelist(threatDB, func(domain string) bool {
+		if db == nil {
+			return false
+		}
+		return db.IsDomainWhitelisted(domain)
+	})
 	stopEviction := enricher.StartEviction()
 	defer stopEviction()
 

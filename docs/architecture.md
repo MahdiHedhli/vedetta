@@ -127,6 +127,19 @@ That makes Vedetta a good fit today for homelabs, technical home users, consulta
 - telemetry is optional and off by default
 - future community sharing should remain opt-in and privacy-conscious
 
+## Auth Model (Alpha)
+
+Vedetta uses a simple bearer-token system with two scopes:
+
+- `admin` — for human operators using the dashboard (created via `POST /auth/tokens`)
+- `sensor` — least-privilege machine tokens for vedetta-sensor (auto-minted during registration)
+
+**Bootstrap mode**: While zero tokens exist in the database, almost all routes are open (enables first-run setup without friction). Once the first admin token is created, `RequireAdmin` middleware enforces admin scope on all management routes.
+
+Sensor ingest paths (`/sensor/devices`, `/dns`, `/work`) always require a valid sensor-scoped token (`RequireStrictAuth` + `RequireExactScope`).
+
+See `backend/internal/auth/middleware.go` (`RequireAdmin`, `RequireAuth`) and the implementation plan in `docs/auth-hardening-plan.md`.
+
 ## Security Status
 
 The most important current security note is around sensor-to-Core trust:

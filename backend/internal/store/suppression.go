@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -92,4 +93,62 @@ func (db *DB) DeleteSuppressionRule(ruleID string) error {
 		return fmt.Errorf("delete suppression rule: %w", err)
 	}
 	return nil
+}
+
+// FindMatchingSuppressionRule checks if an event (with its device context) matches any active suppression rule.
+// It supports standard tags as well as special `vendor:xxx` and `segment:xxx` tags.
+func (db *DB) FindMatchingSuppressionRule(domain, sourceIP, deviceVendor, networkSegment string, eventTags []string) (*models.SuppressionRule, error) {
+	rules, err := db.ListSuppressionRules()
+	if err != nil {
+		return nil, err
+	}
+
+	lowerVendor := strings.ToLower(deviceVendor)
+	lowerSegment := strings.ToLower(networkSegment)
+
+	for _, rule := range rules {
+		if !rule.Active {
+			continue
+		}
+		if rule.Domain != "" && rule.Domain != domain {
+			continue
+		}
+		if rule.SourceIP != "" && rule.SourceIP != sourceIP {
+			continue
+		}
+		if rule.Tags != nil && len(rule.Tags) > 0 {
+			match := true
+			for _, tag := range rule.Tags {
+				if strings.HasPrefix(tag, "vendor:") {
+					if lowerVendor != strings.ToLower(strings.TrimPrefix(tag, "vendor:")) {
+						match = false
+						break
+					}
+				} else if strings.HasPrefix(tag, "segment:") {
+					if lowerSegment != strings.ToLower(strings.TrimPrefix(tag, "segment:")) {
+						match = false
+						break
+					}
+				} else {
+					// Normal tag
+					found := false
+					for _, et := range eventTags {
+						if et == tag {
+							found = true
+							break
+						}
+					}
+					if !found {
+						match = false
+						break
+					}
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		return &rule, nil
+	}
+	return nil, nil
 }

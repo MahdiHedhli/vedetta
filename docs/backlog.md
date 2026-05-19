@@ -1,6 +1,6 @@
 # Vedetta Backlog
 
-> Last updated: 2026-04-21
+> Last updated: 2026-05-19
 > Purpose: day-to-day project management, task assignment, and working coordination
 
 This document is the working task tracker for Vedetta. It is intentionally different from the product roadmap:
@@ -43,7 +43,8 @@ This document is the working task tracker for Vedetta. It is intentionally diffe
 | VED-003 | Write an alpha install and troubleshooting guide for Core + Sensor | Docs / DX | P1 | Ready | Unassigned | Keep install messaging aligned with the current Docker + native sensor reality |
 | VED-004 | Decide whether to standardize repo and Go module naming | Repo / Build | P1 | Inbox | Unassigned | Public repo uses `MahdiHedhli/vedetta`, while code still uses `github.com/vedetta-network/...` imports |
 | VED-005 | Define the first supportable router/firewall ingestion path | Connectors / PM | P1 | Inbox | Unassigned | Likely starts with UniFi or pfSense/OPNsense before broader connector claims |
-| VED-007 | Move dashboard-facing sensor management routes under admin auth | Security / UI | P0 | Ready | Unassigned | `/api/v1/sensor/list` and `PUT /api/v1/sensor/{id}/primary` still rely on the broader dashboard auth rollout |
+| VED-007 | Move dashboard-facing sensor management routes under admin auth | Security / UI | P0 | Done (2026-04) | Grok (autonomous) | Added `RequireAdmin` middleware + protected `/sensor/list`, `/sensor/*/primary`, token mgmt, suppression, whitelist, scan targets, device writes, logs, etc. Frontend now has full admin token creation + recovery flow via localStorage + authFetch wrapper. |
+| VED-008 | Build the opt-in threat-intel MVP contract and Cloudflare PoC | Threat Network / Security | P1 | Ready | Unassigned | Start from `docs/threat-intel-mvp.md`; keep export privacy-reduced, advisory-only, and off by default |
 
 ## Done
 
@@ -52,3 +53,4 @@ This document is the working task tracker for Vedetta. It is intentionally diffe
 | VED-000 | Align public site and README messaging with current product state | 2026-04-20 | Clarified DNS-first wedge, optional integrations, current install shape, and future-facing threat-network positioning |
 | VED-001 | Finish end-to-end sensor authentication flow | 2026-04-21 | Sensor bootstrap now returns a one-time `auth_token`, the sensor persists it locally, and later device/DNS/work calls require bearer auth |
 | VED-006 | Expand passive discovery beyond current DNS capture and nmap scanning | 2026-04-21 | Sensor now captures ARP, DHCP, mDNS, and SSDP/UPnP observations and batches them back to Core as device reports |
+| VED-009 | Add EOL router & camera risk detection (IC3 2026-03-12 AVrecon models) | 2026-05 | Fingerprinting, device flagging (`eol_risk`), scoring boost, UI badges, and context-aware suppression for known high-risk EOL devices |

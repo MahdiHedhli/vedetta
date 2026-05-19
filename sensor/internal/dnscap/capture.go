@@ -226,6 +226,11 @@ func (c *Capturer) parsePacket(packet gopacket.Packet) *Query {
 	}
 
 	dns := dnsLayer.(*layers.DNS)
+	if dns.QR {
+		// Responses repeat the original question with the resolver as source,
+		// which makes the resolver look like a noisy client.
+		return nil
+	}
 	if len(dns.Questions) == 0 {
 		return nil
 	}
