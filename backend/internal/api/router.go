@@ -62,43 +62,57 @@ func NewRouter(srv *Server) http.Handler {
 		r.Get("/events/timeline", srv.handleEventTimeline)
 		r.Post("/ingest", srv.handleIngest)
 
-		// Device discovery
+		// Device discovery (reads are public for convenience during alpha; writes protected)
 		r.Get("/devices", srv.handleListDevices)
 		r.Get("/devices/new", srv.handleNewDevices)
-		r.Put("/devices/{deviceID}", srv.handleUpdateDevice)
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAdmin(srv.DB))
+			r.Put("/devices/{deviceID}", srv.handleUpdateDevice)
+		})
 
-		// Event acknowledgment and suppression
-		r.Put("/events/{eventID}/ack", srv.handleAckEvent)
-		r.Delete("/events/{eventID}/ack", srv.handleUnackEvent)
-		r.Get("/suppression", srv.handleListSuppression)
-		r.Post("/suppression", srv.handleCreateSuppression)
-		r.Delete("/suppression/{ruleID}", srv.handleDeleteSuppression)
+		// Event acknowledgment and suppression — protected (user intent / configuration)
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAdmin(srv.DB))
+			r.Put("/events/{eventID}/ack", srv.handleAckEvent)
+			r.Delete("/events/{eventID}/ack", srv.handleUnackEvent)
+			r.Get("/suppression", srv.handleListSuppression)
+			r.Post("/suppression", srv.handleCreateSuppression)
+			r.Delete("/suppression/{ruleID}", srv.handleDeleteSuppression)
+		})
 
-		// Known-traffic whitelist
-		r.Get("/whitelist", srv.handleListWhitelist)
-		r.Post("/whitelist", srv.handleCreateWhitelist)
-		r.Put("/whitelist/{ruleID}", srv.handleToggleWhitelist)
-		r.Delete("/whitelist/{ruleID}", srv.handleDeleteWhitelist)
-		r.Post("/whitelist/seed", srv.handleSeedWhitelist)
+		// Known-traffic whitelist — protected (user configuration)
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAdmin(srv.DB))
+			r.Get("/whitelist", srv.handleListWhitelist)
+			r.Post("/whitelist", srv.handleCreateWhitelist)
+			r.Put("/whitelist/{ruleID}", srv.handleToggleWhitelist)
+			r.Delete("/whitelist/{ruleID}", srv.handleDeleteWhitelist)
+			r.Post("/whitelist/seed", srv.handleSeedWhitelist)
+		})
 
-		// Scanning
-		r.Post("/scan", srv.handleTriggerScan)
+		// Scanning & scan targets — protected (active scanning + configuration)
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAdmin(srv.DB))
+			r.Post("/scan", srv.handleTriggerScan)
+			r.Put("/scan/cidr", srv.handleSetDefaultCIDR)
+			r.Get("/scan/targets", srv.handleListTargets)
+			r.Post("/scan/targets", srv.handleCreateTarget)
+			r.Delete("/scan/targets/{targetID}", srv.handleDeleteTarget)
+			r.Put("/scan/targets/{targetID}/toggle", srv.handleToggleTarget)
+			r.Post("/scan/targets/{targetID}/scan", srv.handleScanTarget)
+		})
+		// Read-only scan status and subnet detection remain public for convenience
 		r.Get("/scan/status", srv.handleScanStatus)
 		r.Get("/scan/subnets", srv.handleDetectSubnets)
-		r.Put("/scan/cidr", srv.handleSetDefaultCIDR)
-
-		// Custom scan targets
-		r.Get("/scan/targets", srv.handleListTargets)
-		r.Post("/scan/targets", srv.handleCreateTarget)
-		r.Delete("/scan/targets/{targetID}", srv.handleDeleteTarget)
-		r.Put("/scan/targets/{targetID}/toggle", srv.handleToggleTarget)
-		r.Post("/scan/targets/{targetID}/scan", srv.handleScanTarget)
 
 		// Authentication and token management
 		r.Get("/auth/setup-status", srv.handleSetupStatus)
 		r.Post("/auth/tokens", srv.handleCreateToken)
+
+		// Token management (list/revoke) requires admin scope once auth is configured.
+		// Bootstrap mode allows the first admin token to be created via POST above.
 		r.Route("/auth", func(r chi.Router) {
-			r.Use(auth.RequireAuth(srv.DB))
+			r.Use(auth.RequireAdmin(srv.DB))
 			r.Get("/tokens", srv.handleListTokens)
 			r.Delete("/tokens/{tokenID}", srv.handleRevokeToken)
 		})
@@ -114,21 +128,127 @@ func NewRouter(srv *Server) http.Handler {
 				r.Get("/work", srv.handleSensorWork)
 			})
 
-			// These routes are still used by the dashboard and will move under admin auth
-			// as part of the broader UI authentication rollout.
-			r.Get("/list", srv.handleSensorList)
-			r.Put("/{sensorID}/primary", srv.handleSetPrimarySensor)
+			// Dashboard-facing sensor management routes — now protected with admin auth.
+			// In bootstrap mode (no tokens yet) they remain open for first-run setup.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireAdmin(srv.DB))
+				r.Get("/list", srv.handleSensorList)
+				r.Put("/{sensorID}/primary", srv.handleSetPrimarySensor)
+			})
 		})
 
-		// Activity log
-		r.Get("/logs", srv.handleLogs)
+		// Activity log (protected — can contain operational details)
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAdmin(srv.DB))
+			r.Get("/logs", srv.handleLogs)
+		})
+
+		// Simulation endpoints temporarily disabled while fixing sensor auth (will re-enable later)
+		// if os.Getenv("VEDETTA_ALLOW_SIMULATION") == "true" { ... }
 	})
 
-	// Static file server for the React frontend
-	fileServer := http.FileServer(http.Dir(frontendDir))
-	r.Handle("/*", fileServer)
-
 	return r
+}
+
+// --- Simulation Handlers (only active when VEDETTA_ALLOW_SIMULATION=true) ---
+
+type SimulateDNSRequest struct {
+	Queries []struct {
+		Domain      string `json:"domain"`
+		QueryType   string `json:"query_type"`
+		ClientIP    string `json:"client_ip"`
+		ResponseIP  string `json:"response_ip"`
+		Blocked     bool   `json:"blocked"`
+		DeviceVendor string `json:"device_vendor,omitempty"`
+		NetworkSegment string `json:"network_segment,omitempty"`
+	} `json:"queries"`
+}
+
+func (s *Server) handleSimulateDNS(w http.ResponseWriter, r *http.Request) {
+	var req SimulateDNSRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	var events []models.Event
+	now := time.Now().UTC()
+
+	for _, q := range req.Queries {
+		event := models.Event{
+			EventID:        uuid.New().String(),
+			Timestamp:      now,
+			EventType:      "dns_query",
+			SourceHash:     "simulated-" + q.ClientIP,
+			SourceIP:       q.ClientIP,
+			Domain:         q.Domain,
+			QueryType:      q.QueryType,
+			ResolvedIP:     q.ResponseIP,
+			Blocked:        q.Blocked,
+			AnomalyScore:   0,
+			Tags:           []string{},
+			DeviceVendor:   q.DeviceVendor,
+			NetworkSegment: q.NetworkSegment,
+			DNSSource:      "simulation",
+		}
+		events = append(events, event)
+	}
+
+	if s.Enricher != nil {
+		for i := range events {
+			s.Enricher.Enrich(&events[i])
+		}
+	}
+
+	inserted, err := s.DB.InsertEvents(events)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "insert failed", "details": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted": inserted,
+		"events":   events,
+	})
+}
+
+type SimulateDevicesRequest struct {
+	Devices []struct {
+		IPAddress  string `json:"ip_address"`
+		MACAddress string `json:"mac_address"`
+		Hostname   string `json:"hostname"`
+		Vendor     string `json:"vendor"`
+		Segment    string `json:"segment"`
+	} `json:"devices"`
+}
+
+func (s *Server) handleSimulateDevices(w http.ResponseWriter, r *http.Request) {
+	var req SimulateDevicesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+
+	now := time.Now().UTC()
+	inserted := 0
+
+	for _, d := range req.Devices {
+		host := discovery.DiscoveredHost{
+			IPAddress:  d.IPAddress,
+			MACAddress: d.MACAddress,
+			Hostname:   d.Hostname,
+			Vendor:     d.Vendor,
+		}
+		_, err := s.DB.UpsertDevice(host, now, d.Segment)
+		if err == nil {
+			inserted++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted": inserted,
+		"total":    len(req.Devices),
+	})
 }
 
 // --- Status ---
@@ -137,12 +257,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	deviceCount := 0
 	sensorCount := 0
 	eventCount := 0
+	dnsEventCount := 0
 	if s.DB != nil {
 		deviceCount, _ = s.DB.CountDevices()
 		eventCount, _ = s.DB.CountEvents()
 		if sensors, err := s.DB.ListSensors(); err == nil {
 			sensorCount = len(sensors)
 		}
+		// Collection health for long-running sensor validation
+		dnsEventCount, _ = s.DB.CountEventsByType("dns_query")
 	}
 
 	scanStatus := discovery.ScanStatus{}
@@ -161,15 +284,41 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Collection health summary for long-running sensor validation
+	collectionHealth := map[string]any{
+		"dns_events_received": dnsEventCount,
+		"has_data":            dnsEventCount > 0,
+	}
+
+	// Real device inventory stats (for SNR / real-data monitoring)
+	if s.DB != nil {
+		new48h, _ := s.DB.CountDevicesNewSince(48 * time.Hour)
+		iotCount, _ := s.DB.CountDevicesBySegment("iot")
+		lastDevUpdate, _ := s.DB.GetLastDeviceUpdate()
+		collectionHealth["device_count"] = deviceCount
+		collectionHealth["new_devices_48h"] = new48h
+		collectionHealth["iot_devices"] = iotCount
+		if !lastDevUpdate.IsZero() {
+			collectionHealth["last_device_update"] = lastDevUpdate.UTC().Format(time.RFC3339)
+			collectionHealth["device_baseline_age_hours"] = time.Since(lastDevUpdate).Hours()
+		}
+	}
+
+	// Beaconing detector state (for SNR observability during real collection)
+	if s.Enricher != nil {
+		collectionHealth["beacon_tracked_pairs"] = s.Enricher.BeaconEntryCount()
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":       "ok",
-		"version":      "0.1.0-dev",
-		"service":      "vedetta-core",
-		"device_count": deviceCount,
-		"event_count":  eventCount,
-		"sensor_count": sensorCount,
-		"scan":         scanStatus,
-		"default_cidr": defaultCIDR,
+		"status":            "ok",
+		"version":           "0.1.0-dev",
+		"service":           "vedetta-core",
+		"device_count":      deviceCount,
+		"event_count":       eventCount,
+		"sensor_count":      sensorCount,
+		"scan":              scanStatus,
+		"default_cidr":      defaultCIDR,
+		"collection_health": collectionHealth,
 	})
 }
 
@@ -746,8 +895,11 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if existingToken && presentedToken == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "sensor already registered; present the existing sensor token to update registration"})
-		return
+		// Recovery mode: user ran --reset on sensor side.
+		// Revoke old tokens and force generation of a new one.
+		log.Printf("Sensor %s re-registering without token (recovery mode) — revoking old tokens and issuing new one", body.SensorID)
+		_ = s.DB.DeleteTokensBySensor(body.SensorID)
+		existingToken = false  // force new token generation
 	}
 
 	// Store interfaces as JSON string
@@ -836,6 +988,8 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 		s.DB.TouchSensor(body.SensorID)
 	}
 
+	log.Printf("Sensor %s reported %d devices", body.SensorID, len(body.Hosts))
+
 	// Upsert each discovered host
 	now := time.Now()
 	newCount := 0
@@ -890,6 +1044,9 @@ func (s *Server) handleSensorWork(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// Keep sensor last_seen fresh on work requests
+	s.DB.TouchSensor(sensorID)
 	response := map[string]any{
 		"scan_queue": []ScanRequest{},
 		"targets":    []models.ScanTarget{},
@@ -1080,6 +1237,11 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 	}
 	body.SensorID = sensorID
 
+	// Keep sensor last_seen fresh on DNS data (important for long-running collection observability)
+	s.DB.TouchSensor(sensorID)
+
+	log.Printf("Sensor %s sent %d DNS queries", sensorID, len(body.Queries))
+
 	if len(body.Queries) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"accepted": 0})
 		return
@@ -1123,6 +1285,67 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 			NetworkSegment: "default",
 			DNSSource:      q.Source,
 		}
+
+		// SNR-05: Enrich with passive device discovery context.
+		// This adds high-value signal (vendor, device type, segment) to DNS events,
+		// dramatically helping reduce false positive noise ("beaconing from new IoT device"
+		// is very different from "from my laptop").
+		if dev, err := s.DB.GetDeviceByIP(q.ClientIP); err == nil && dev != nil {
+			if dev.Vendor != "" {
+				event.DeviceVendor = dev.Vendor
+			}
+			if dev.Segment != "" {
+				event.NetworkSegment = dev.Segment
+			}
+
+			// SNR-11: Detect new devices (first seen in last 48 hours)
+			// Suspicious DNS from brand new devices is higher risk.
+			if !dev.FirstSeen.IsZero() {
+				age := time.Since(dev.FirstSeen)
+				if age < 48*time.Hour {
+					found := false
+					for _, t := range event.Tags {
+						if t == "new_device" {
+							found = true
+							break
+						}
+					}
+					if !found {
+						event.Tags = append(event.Tags, "new_device")
+					}
+				}
+				if age < 1*time.Hour {
+					// Extra tag for extremely new devices (< 1 hour)
+					found := false
+					for _, t := range event.Tags {
+						if t == "very_new_device" {
+							found = true
+							break
+						}
+					}
+					if !found {
+						event.Tags = append(event.Tags, "very_new_device")
+					}
+				}
+			}
+
+			// EOL router / high-risk device (IC3 2026-03-12 AVrecon advisory)
+			// These devices are actively exploited as residential proxies and C2 relays.
+			// Any anomalous DNS from them is much higher priority.
+			if dev.EOLRisk {
+				found := false
+				for _, t := range event.Tags {
+					if t == "eol_router" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					event.Tags = append(event.Tags, "eol_router")
+				}
+			}
+		}
+
 		events = append(events, event)
 	}
 

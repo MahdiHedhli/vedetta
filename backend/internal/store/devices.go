@@ -59,10 +59,11 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 		id := uuid.New().String()
 		_, err := db.Exec(`
 			INSERT INTO devices (device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, open_ports, segment,
-			                      device_type, os_family, os_version, model, discovery_method, fingerprint_confidence)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                      device_type, os_family, os_version, model, discovery_method, fingerprint_confidence, eol_risk, eol_model)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, scanTime, scanTime, host.IPAddress, host.MACAddress, host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
 			fpResult.DeviceType, fpResult.OSFamily, fpResult.OSVersion, fpResult.Model, fpResult.DiscoveryMethod, fpResult.FingerprintConfidence,
+			boolToInt(fpResult.EOLRisk), fpResult.EOLModel,
 		)
 		if err != nil {
 			return false, fmt.Errorf("insert device: %w", err)
@@ -92,13 +93,13 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 			hostname = COALESCE(NULLIF(?, ''), hostname),
 			vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?,
 			device_type = ?, os_family = ?, os_version = ?, model = ?,
-			discovery_method = ?, fingerprint_confidence = ?
+			discovery_method = ?, fingerprint_confidence = ?, eol_risk = ?, eol_model = ?
 			WHERE device_id = ?`,
 			scanTime, host.IPAddress,
 			host.MACAddress, host.MACAddress,
 			host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
 			fpResult.DeviceType, fpResult.OSFamily, fpResult.OSVersion, fpResult.Model,
-			fpResult.DiscoveryMethod, fpResult.FingerprintConfidence, existingID,
+			fpResult.DiscoveryMethod, fpResult.FingerprintConfidence, boolToInt(fpResult.EOLRisk), fpResult.EOLModel, existingID,
 		)
 	} else {
 		// Update without fingerprinting (preserve higher confidence match)
@@ -128,7 +129,8 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
 		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
 		       COALESCE(fingerprint_confidence, 0.0),
-		       COALESCE(custom_name, ''), COALESCE(notes, '')
+		       COALESCE(custom_name, ''), COALESCE(notes, ''),
+		       COALESCE(eol_risk, 0), COALESCE(eol_model, '')
 		FROM devices ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query devices: %w", err)
@@ -143,7 +145,7 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 			&d.DiscoveryMethod, &d.FingerprintConfidence,
-			&d.CustomName, &d.Notes)
+			&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
@@ -163,13 +165,14 @@ func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
 		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
 		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
 		       COALESCE(fingerprint_confidence, 0.0),
-		       COALESCE(custom_name, ''), COALESCE(notes, '')
+		       COALESCE(custom_name, ''), COALESCE(notes, ''),
+		       COALESCE(eol_risk, 0), COALESCE(eol_model, '')
 		FROM devices WHERE ip_address = ? ORDER BY last_seen DESC LIMIT 1`, ip).Scan(
 		&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
 		&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 		&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 		&d.DiscoveryMethod, &d.FingerprintConfidence,
-		&d.CustomName, &d.Notes)
+		&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -217,7 +220,8 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
 		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
 		       COALESCE(fingerprint_confidence, 0.0),
-		       COALESCE(custom_name, ''), COALESCE(notes, '')
+		       COALESCE(custom_name, ''), COALESCE(notes, ''),
+		       COALESCE(eol_risk, 0), COALESCE(eol_model, '')
 		FROM devices WHERE first_seen > ? ORDER BY first_seen DESC`, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("query new devices: %w", err)
@@ -232,7 +236,7 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 			&d.DiscoveryMethod, &d.FingerprintConfidence,
-			&d.CustomName, &d.Notes)
+			&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
@@ -247,4 +251,60 @@ func (db *DB) CountDevices() (int, error) {
 	var count int
 	err := db.QueryRow("SELECT COUNT(*) FROM devices").Scan(&count)
 	return count, err
+}
+
+// CountDevicesNewSince returns count of devices first seen within the given duration.
+func (db *DB) CountDevicesNewSince(d time.Duration) (int, error) {
+	var count int
+	cutoff := time.Now().UTC().Add(-d)
+	err := db.QueryRow("SELECT COUNT(*) FROM devices WHERE first_seen > ?", cutoff).Scan(&count)
+	return count, err
+}
+
+// CountDevicesBySegment returns count of devices in a specific segment (e.g. "iot").
+func (db *DB) CountDevicesBySegment(segment string) (int, error) {
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM devices WHERE segment = ?", segment).Scan(&count)
+	return count, err
+}
+
+// GetLastDeviceUpdate returns the most recent last_seen timestamp across all devices.
+// Used for SNR monitoring to show freshness of the device context baseline
+// (e.g. "frozen since end of 10h collection run" vs actively updating during real capture).
+func (db *DB) GetLastDeviceUpdate() (time.Time, error) {
+	// Prefer TEXT scan + parse (SQLite often surfaces TIMESTAMP as string for aggregates)
+	var lastStr string
+	err := db.QueryRow("SELECT MAX(last_seen) FROM devices").Scan(&lastStr)
+	if err == nil && lastStr != "" {
+		layouts := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999-07:00",
+			"2006-01-02 15:04:05",
+		}
+		for _, layout := range layouts {
+			if t, perr := time.Parse(layout, lastStr); perr == nil {
+				return t, nil
+			}
+		}
+		// If none matched but we have a value, return zero (caller treats as missing)
+		return time.Time{}, nil
+	}
+	if err == sql.ErrNoRows || lastStr == "" {
+		return time.Time{}, nil
+	}
+	// Try direct time scan as last resort (works if driver parses it)
+	var ts time.Time
+	if err2 := db.QueryRow("SELECT MAX(last_seen) FROM devices").Scan(&ts); err2 == nil && !ts.IsZero() {
+		return ts, nil
+	}
+	return time.Time{}, err
+}
+
+// boolToInt converts bool to 0/1 for SQLite INTEGER columns (no native bool).
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

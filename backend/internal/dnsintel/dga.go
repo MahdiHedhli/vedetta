@@ -31,6 +31,14 @@ const DGAThreshold = 0.65
 func ScoreDGA(domain string) DGAResult {
 	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 
+	// Skip known-benign high-entropy domains (CDNs, major CDNs, update infra)
+	// These are extremely common sources of DGA false positives.
+	for _, benign := range knownBenignHighEntropyDomains {
+		if strings.HasSuffix(domain, benign) {
+			return DGAResult{Label: effectiveLabel(domain)}
+		}
+	}
+
 	label := effectiveLabel(domain)
 	if label == "" || len(label) < 4 {
 		return DGAResult{Label: label}
@@ -211,6 +219,40 @@ var multiPartTLDs = map[string]bool{
 	"com.cn": true, "com.mx": true, "com.tr": true, "com.sg": true,
 	"org.uk": true, "net.au": true, "ac.uk": true, "gov.uk": true,
 	"edu.au": true, "or.jp": true, "ne.jp": true, "ac.jp": true,
+}
+
+// knownBenignHighEntropyDomains contains patterns that frequently produce
+// high-entropy labels but are known legitimate (CDNs, update services, etc.).
+// These are excluded from DGA flagging to reduce false positives.
+var knownBenignHighEntropyDomains = []string{
+	"cloudfront.net",
+	"akamaiedge.net",
+	"akamai.net",
+	"fastly.net",
+	"fastlylb.net",
+	"cloudflare.net",
+	"cloudflare.com",
+	"amazonaws.com",
+	"amazon.com",
+	"googleusercontent.com",
+	"googlevideo.com",
+	"doubleclick.net",
+	"googleapis.com",
+	"edgekey.net",
+	"edgesuite.net",
+	"akadns.net",
+	"cdn.cloudflare.net",
+	"cdn.jsdelivr.net",
+	"unpkg.com",
+	// Live-observed during VALIDATE-REAL on real home LAN (high-entropy Azure / edge / WAF / storage subdomains
+	// that legitimately produce random-looking labels but are benign Microsoft/Cloud infra, CDNs, and telemetry).
+	// Added based on real 0.65 DGA FPs from primary client (github, discord, OneDrive, Azure Front Door, etc.).
+	"blob.core.windows.net",
+	"azureedge.net",
+	"azureedge.us",
+	"protechts.net",
+	"discordapp.com",
+	"discord.com",
 }
 
 func isMultiPartTLD(tld string) bool {
