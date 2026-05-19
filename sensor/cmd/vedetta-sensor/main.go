@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ func main() {
 	scanPorts := flag.Bool("ports", false, "Include top-100 port scan")
 	primary := flag.Bool("primary", false, "Register as the primary sensor")
 	oneshot := flag.Bool("once", false, "Run a single scan and exit")
+	reset := flag.Bool("reset", false, "Reset sensor authentication (clears local token so you can re-register cleanly)")
 	dnsEnabled := flag.Bool("dns", true, "Enable passive DNS capture")
 	dnsIface := flag.String("dns-iface", "auto", "Network interface for DNS capture (or 'auto')")
 	passiveEnabled := flag.Bool("passive-discovery", true, "Enable passive device discovery")
@@ -48,6 +50,17 @@ func main() {
 
 	log.SetPrefix("[vedetta-sensor] ")
 	log.SetFlags(log.Ldate | log.Ltime)
+
+	// Handle --reset flag (very important for home users when auth gets into a bad state)
+	if *reset {
+		tokenPath, err := client.DefaultTokenPath()
+		if err == nil {
+			_ = os.Remove(tokenPath)
+		}
+		log.Println("Sensor authentication token has been cleared.")
+		log.Println("You can now restart the sensor normally to perform a fresh registration.")
+		os.Exit(0)
+	}
 
 	// Resolve scan target
 	scanCIDR := *cidr
@@ -135,7 +148,11 @@ func main() {
 			log.Printf("WARNING: Failed to initialize DNS capture: %v", err)
 		} else {
 			if err := capturer.Start(); err != nil {
-				log.Printf("WARNING: Failed to start DNS capture: %v", err)
+				if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "operation not permitted") {
+					log.Printf("WARNING: Failed to start DNS capture on %s (permission denied). Run with sudo for packet capture: sudo %s --core %s --dns-iface %s", *dnsIface, os.Args[0], *coreURL, *dnsIface)
+				} else {
+					log.Printf("WARNING: Failed to start DNS capture: %v", err)
+				}
 			} else {
 				log.Printf("Passive DNS capture active on interface %s", capturer.Interface())
 
@@ -169,7 +186,11 @@ func main() {
 		if err != nil {
 			log.Printf("WARNING: Failed to initialize passive discovery: %v", err)
 		} else if err := passiveCapturer.Start(); err != nil {
-			log.Printf("WARNING: Failed to start passive discovery: %v", err)
+			if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "operation not permitted") {
+				log.Printf("WARNING: Failed to start passive discovery on %s (permission denied). Run with sudo for packet capture: sudo %s --core %s --passive-iface %s", *passiveIface, os.Args[0], *coreURL, *passiveIface)
+			} else {
+				log.Printf("WARNING: Failed to start passive discovery: %v", err)
+			}
 		} else {
 			log.Printf("Passive discovery active on interface %s (arp=%v dhcp=%v mdns=%v ssdp=%v)", passiveCapturer.Interface(), *passiveARP, *passiveDHCP, *passiveMDNS, *passiveSSDP)
 			wg.Add(1)

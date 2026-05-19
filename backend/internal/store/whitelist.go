@@ -2,6 +2,8 @@ package store
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,7 +88,48 @@ func (db *DB) DeleteWhitelistRule(ruleID string) error {
 	return nil
 }
 
-// SeedDefaultWhitelistRules inserts default whitelist rules if none exist with is_default=TRUE.
+// IsDomainWhitelisted checks if a domain matches any enabled whitelist rule.
+// This is used by the Enricher to avoid scoring known-good traffic.
+func (db *DB) IsDomainWhitelisted(domain string) bool {
+	if domain == "" {
+		return false
+	}
+	domain = strings.ToLower(strings.TrimSpace(domain))
+
+	rows, err := db.Query(`
+		SELECT domain_pattern 
+		FROM whitelist_rules 
+		WHERE enabled = TRUE AND domain_pattern != ''
+	`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var pattern string
+		if err := rows.Scan(&pattern); err != nil {
+			continue
+		}
+		if matchesDomainPattern(domain, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesDomainPattern supports simple wildcard matching (* and ?).
+func matchesDomainPattern(domain, pattern string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	if pattern == "" {
+		return false
+	}
+	// Convert simple glob to Go's path.Match style
+	replacer := strings.NewReplacer("*", ".*", "?", ".")
+	re := "^" + replacer.Replace(regexp.QuoteMeta(pattern)) + "$"
+	matched, _ := regexp.MatchString(re, domain)
+	return matched
+}
 func (db *DB) SeedDefaultWhitelistRules() error {
 	// Check if any default rules already exist
 	var count int
