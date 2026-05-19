@@ -3,6 +3,7 @@ package dnsintel
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -15,10 +16,60 @@ import (
 // pipeline. For each event, it runs applicable detectors and updates the
 // event's anomaly_score and tags in place.
 type Enricher struct {
-	Beacon    *BeaconDetector
-	ThreatDB  *threatintel.ThreatIntelDB
-	Rebinding *RebindingDetector
-	Bypass    *BypassDetector
+	Beacon           *BeaconDetector
+	ThreatDB         *threatintel.ThreatIntelDB
+	Rebinding        *RebindingDetector
+	Bypass           *BypassDetector
+	IsWhitelisted    func(domain string) bool // optional, for early noise suppression
+}
+
+// knownGoodUpdateDomains contains domains that are known to produce
+// regular "beaconing" or high-entropy subdomains as part of legitimate
+// software update/telemetry mechanisms. These are excluded from DGA
+// and Beaconing detection to reduce false positives.
+var knownGoodUpdateDomains = []string{
+	// Apple
+	"apple.com", "icloud.com", "cdn-apple.com", "swcdn.apple.com", "mzstatic.com",
+	// Google / Android
+	"googleapis.com", "gstatic.com", "google.com", "googlevideo.com", "doubleclick.net",
+	"android.com", "googleusercontent.com",
+	// Microsoft / Windows
+	"microsoft.com", "windowsupdate.com", "msftncsi.com", "msftconnecttest.com",
+	"azureedge.net", "microsoftonline.com",
+	// CDNs and common infra
+	"akamaiedge.net", "cloudfront.net", "fastly.net", "cloudflare.com", "akamaitechnologies.com",
+	// Samsung
+	"samsung.com", "samsungapps.com", "samsungcloud.com", "smartthings.com",
+	// LG
+	"lge.com", "lgtvsdp.com",
+	// Other common IoT / Smart TV
+	"roku.com", "netflix.com", "hulu.com", "disneyplus.com",
+	"spotify.com", "sonos.com", "nest.com", "ring.com",
+	// Amazon / Echo / AWS devices (very common in homes, high-entropy subdomains for updates/telemetry)
+	"amazon.com", "amazonaws.com",
+	// Philips Hue, TP-Link, Ubiquiti/Unifi (common smart home / SMB)
+	"philips-hue.com", "meethue.com", "tplinkcloud.com", "ubnt.com", "ui.com", "ubiquiti.com",
+	// Common telemetry / error reporting (high entropy but benign)
+	"sentry.io", "segment.io", "mixpanel.com", "newrelic.com",
+	// Additional from real network data (LIFX, Koogeek, CyberPower power devices)
+	"lifx.com", "koogeek.com", "cyberpower.com",
+	// Tuya IoT cloud (very common for cheap Espressif/Realtek/Mediatek smart plugs, bulbs, sensors on real home networks;
+	// these frequently produce high-entropy subdomains + regular telemetry that would otherwise trigger DGA/beacon false positives)
+	"tuya.com", "tuyaus.com", "tuyacn.com", "tuya-cloud.com",
+	// TP-Link / Kasa (common in home LANs with routers + IoT)
+	"tplink.com", "kasa.com",
+	// Other frequent IoT ecosystems (robotic mowers, cameras, locks seen in real device scans)
+	"mammotion.com", "eufylife.com",
+	// Netatmo (security cameras like Welcome, weather stations - observed in real scans as Netatmo-Welcome-*)
+	"netatmo.com", "netatmo.net",
+	// PiKVM (open-source IP-KVM device - observed in 10h real device collection run)
+	"pikvm.org",
+	// Ultra-common developer / consumer domains that frequently produce noisy single-signal "known_bad" hits
+	// in abuse feeds (urlhaus etc.) during live VALIDATE-REAL on real home traffic. Pure feed match on these
+	// (especially from primary machines) is almost always FP. Real threats will still score via other signals
+	// or high-risk device context (EOL, new, IoT).
+	"github.com", "raw.githubusercontent.com",
+	"discordapp.com", "discord.com", "cdn.discordapp.com",
 }
 
 // NewEnricher creates an Enricher with the default BeaconDetector,
@@ -33,15 +84,32 @@ func NewEnricher(threatDB *threatintel.ThreatIntelDB) *Enricher {
 	}
 }
 
+// NewEnricherWithWhitelist is like NewEnricher but also accepts a whitelist
+// checker function. This allows the Enricher to skip scoring on known-good
+// domains early, dramatically improving signal-to-noise.
+func NewEnricherWithWhitelist(threatDB *threatintel.ThreatIntelDB, isWhitelisted func(string) bool) *Enricher {
+	e := NewEnricher(threatDB)
+	e.IsWhitelisted = isWhitelisted
+	return e
+}
+
 // detectionMeta captures structured output from each detection algorithm
 // for storage as JSON in the event's metadata field.
 type detectionMeta struct {
-	DGA       *dgaMeta       `json:"dga,omitempty"`
-	Tunnel    *tunnelMeta    `json:"tunnel,omitempty"`
-	Beacon    *beaconMeta    `json:"beacon,omitempty"`
-	Rebinding *rebindingMeta `json:"rebinding,omitempty"`
-	Bypass    *bypassMeta    `json:"bypass,omitempty"`
-	ThreatDB  *threatDBMeta  `json:"threat_db,omitempty"`
+	DGA            *dgaMeta            `json:"dga,omitempty"`
+	Tunnel         *tunnelMeta         `json:"tunnel,omitempty"`
+	Beacon         *beaconMeta         `json:"beacon,omitempty"`
+	Rebinding      *rebindingMeta      `json:"rebinding,omitempty"`
+	Bypass         *bypassMeta         `json:"bypass,omitempty"`
+	ThreatDB       *threatDBMeta       `json:"threat_db,omitempty"`
+	DeviceContext  *deviceContextMeta  `json:"device_context,omitempty"`
+}
+
+type deviceContextMeta struct {
+	Segment    string `json:"segment,omitempty"`
+	Vendor     string `json:"vendor,omitempty"`
+	IsNew      bool   `json:"is_new,omitempty"`
+	Boosts     []string `json:"boosts,omitempty"` // e.g., ["iot_segment", "new_device", "bypass"]
 }
 
 type dgaMeta struct {
@@ -90,6 +158,24 @@ func (e *Enricher) Enrich(event *models.Event) {
 		return
 	}
 
+	// Early exit for whitelisted domains — this is one of the highest-impact
+	// changes for signal-to-noise. Known-good traffic should never generate
+	// high anomaly scores.
+	if e.IsWhitelisted != nil && e.IsWhitelisted(event.Domain) {
+		return
+	}
+
+	// Early exit for known-good update/telemetry domains (SNR-20)
+	// These produce regular beaconing, high-entropy subdomains, and sometimes
+	// long subdomains that can look like tunneling, all legitimately.
+	// Use proper domain suffix matching (dot + base) to preserve detection power
+	// on lookalike domains while still excluding legitimate subdomains (e.g. foo.tuya.com).
+	for _, good := range knownGoodUpdateDomains {
+		if event.Domain == good || strings.HasSuffix(event.Domain, "."+good) {
+			return
+		}
+	}
+
 	var scores []float64
 	var descriptions []string
 	meta := &detectionMeta{}
@@ -116,7 +202,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 				dgaResult.Label, dgaResult.Entropy, dgaResult.BigramScore*100,
 			))
 		}
-		if dgaResult.Score > 0.3 {
+		if dgaResult.IsDGA {
 			scores = append(scores, dgaResult.Score)
 		}
 	}
@@ -135,12 +221,12 @@ func (e *Enricher) Enrich(event *models.Event) {
 				strings.Join(tunnelResult.Signals, ", "),
 			))
 		}
-		if tunnelResult.Score > 0.3 {
+		if tunnelResult.IsTunnel {
 			scores = append(scores, tunnelResult.Score)
 		}
 
 		// TXT query bonus for tunnel detection
-		if IsTXTTunnelCandidate(event.QueryType) && tunnelResult.Score > 0.2 {
+		if IsTXTTunnelCandidate(event.QueryType) && tunnelResult.IsTunnel {
 			scores = append(scores, 0.3)
 		}
 	}
@@ -161,7 +247,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 				beaconResult.MeanInterval.Seconds(), beaconResult.SampleCount, beaconResult.CV*100,
 			))
 		}
-		if beaconResult.Score > 0.3 {
+		if beaconResult.IsBeaconing {
 			scores = append(scores, beaconResult.Score)
 		}
 	}
@@ -180,6 +266,24 @@ func (e *Enricher) Enrich(event *models.Event) {
 				rebindResult.PublicIP, rebindResult.PrivateIP,
 			))
 			scores = append(scores, 0.4)
+		}
+
+		// Extra boost for rebinding to high-risk devices (SNR-15)
+		if rebindResult != nil && rebindResult.IsRebinding {
+			isHighRiskDevice := containsTag(event.Tags, "new_device") || containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "eol_router")
+
+			if event.DeviceVendor != "" {
+				lowerVendor := strings.ToLower(event.DeviceVendor)
+				if strings.Contains(lowerVendor, "espressif") || strings.Contains(lowerVendor, "realtek") || strings.Contains(lowerVendor, "mediatek") {
+					isHighRiskDevice = true
+				}
+			}
+
+			if isHighRiskDevice {
+				scores = append(scores, 0.25) // Additional boost
+				descriptions = append(descriptions, "This rebinding targets a high-risk device (new or IoT/embedded hardware), which is particularly dangerous.")
+				log.Printf("SNR: +0.25 rebinding boost for high-risk device (domain=%s, vendor=%s, segment=%s)", event.Domain, event.DeviceVendor, event.NetworkSegment)
+			}
 		}
 	}
 
@@ -263,7 +367,152 @@ func (e *Enricher) Enrich(event *models.Event) {
 	// 7. Threat intel IP lookup
 	e.enrichIP(event)
 
-	// Composite anomaly score
+	// === Device Context Scoring Adjustments (SNR-09) ===
+	// Use passive discovery data (now attached to the event) to improve signal quality.
+	// IoT/guest devices doing suspicious DNS are higher risk.
+	// Known consumer devices on the main network are lower risk for the same signals.
+
+	// Populate device context metadata for UI and analysis
+	if containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device_context") || containsTag(event.Tags, "dns_bypass") || containsTag(event.Tags, "eol_router") {
+		if meta.DeviceContext == nil {
+			meta.DeviceContext = &deviceContextMeta{}
+		}
+		meta.DeviceContext.Segment = event.NetworkSegment
+		meta.DeviceContext.Vendor = event.DeviceVendor
+		meta.DeviceContext.IsNew = containsTag(event.Tags, "new_device")
+
+		boosts := []string{}
+		if containsTag(event.Tags, "iot_context") { boosts = append(boosts, "iot_segment") }
+		if containsTag(event.Tags, "new_device_context") { boosts = append(boosts, "new_device") }
+		if containsTag(event.Tags, "eol_router") || containsTag(event.Tags, "eol_device_context") { boosts = append(boosts, "eol_router") }
+		if containsTag(event.Tags, "dns_bypass") && (containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device")) {
+			boosts = append(boosts, "bypass_high_risk")
+		}
+		meta.DeviceContext.Boosts = boosts
+	}
+	if event.NetworkSegment == "iot" || event.NetworkSegment == "guest" {
+		if event.AnomalyScore > 0.25 {
+			event.AnomalyScore = math.Min(1.0, event.AnomalyScore+0.12)
+			if !containsTag(event.Tags, "iot_context") {
+				event.Tags = appendUnique(event.Tags, "iot_context")
+			}
+			log.Printf("SNR: +0.12 boost for iot/guest segment device (domain=%s, segment=%s, score=%.2f)", event.Domain, event.NetworkSegment, event.AnomalyScore)
+		}
+	}
+
+	if event.DeviceVendor != "" {
+		lowerVendor := strings.ToLower(event.DeviceVendor)
+		iotLike := strings.Contains(lowerVendor, "espressif") ||
+			strings.Contains(lowerVendor, "realtek") ||
+			strings.Contains(lowerVendor, "mediatek") ||
+			strings.Contains(lowerVendor, "broadcom")
+
+		if iotLike && event.AnomalyScore > 0.2 {
+			event.AnomalyScore = math.Min(1.0, event.AnomalyScore+0.10)
+		}
+	} else if event.AnomalyScore > 0.3 {
+		// Unknown vendor + suspicious activity = slight boost (common for compromised or cheap IoT)
+		event.AnomalyScore = math.Min(1.0, event.AnomalyScore+0.08)
+	}
+
+	// Conservative adjustment for known good consumer devices on the main network
+	if event.NetworkSegment == "default" && event.DeviceVendor != "" {
+		lowerVendor := strings.ToLower(event.DeviceVendor)
+		knownGood := strings.Contains(lowerVendor, "apple") ||
+			strings.Contains(lowerVendor, "samsung") ||
+			strings.Contains(lowerVendor, "dell") ||
+			strings.Contains(lowerVendor, "lenovo") ||
+			strings.Contains(lowerVendor, "asus") ||
+			strings.Contains(lowerVendor, "hp ") ||
+			strings.Contains(lowerVendor, "intel") ||
+			strings.Contains(lowerVendor, "microsoft") ||
+			strings.Contains(lowerVendor, "ubiquiti") ||
+			strings.Contains(lowerVendor, "ubnt") ||
+			strings.Contains(lowerVendor, "sonos")
+
+		if knownGood && event.AnomalyScore > 0.4 {
+			// Slightly lower suspicion for known good vendors on the main LAN
+			event.AnomalyScore = event.AnomalyScore * 0.9
+		}
+	}
+
+	// New device boost (SNR-11): Brand new devices doing suspicious DNS are higher risk.
+	// Skip for pure beaconing (common legitimate behavior from new IoT devices on real networks);
+	// keep full boost for DGA/tunnel/rebind/bypass (high-risk signals).
+	isPureBeaconing := containsTag(event.Tags, "beaconing") &&
+		!containsTag(event.Tags, "dga") &&
+		!containsTag(event.Tags, "dns_tunneling") &&
+		!containsTag(event.Tags, "dns_rebinding") &&
+		!containsTag(event.Tags, "dns_bypass")
+	if containsTag(event.Tags, "new_device") && event.AnomalyScore > 0.25 && !isPureBeaconing {
+		event.AnomalyScore = math.Min(1.0, event.AnomalyScore+0.15)
+		if !containsTag(event.Tags, "new_device_context") {
+			event.Tags = appendUnique(event.Tags, "new_device_context")
+			descriptions = append(descriptions, "This activity originated from a device that was first discovered on the network very recently (within the last 48 hours), which significantly increases suspicion.")
+		}
+		log.Printf("SNR: +0.15 boost for new_device (domain=%s, vendor=%s, score=%.2f)", event.Domain, event.DeviceVendor, event.AnomalyScore)
+	}
+
+	// Very new device boost (< 1 hour): Even higher risk
+	if containsTag(event.Tags, "very_new_device") && event.AnomalyScore > 0.2 {
+		event.AnomalyScore = math.Min(1.0, event.AnomalyScore+0.10)
+		log.Printf("SNR: +0.10 boost for very_new_device (<1h) (domain=%s, score=%.2f)", event.Domain, event.AnomalyScore)
+	}
+
+	// EOL Router / High-Risk Device boost (new feature for IC3 2026-03-12 AVrecon advisory)
+	// Devices matching known EOL models (D-Link DIR-8xx, TP-Link WR8xx, Netgear R7000/DGN, Zyxel VMG etc.)
+	// are frequently compromised and turned into residential proxies / C2 relays.
+	// Any suspicious DNS activity (DGA/tunnel/rebind/bypass) from them is very high priority.
+	if containsTag(event.Tags, "eol_router") && event.AnomalyScore > 0.15 {
+		boost := 0.22
+		event.AnomalyScore = math.Min(1.0, event.AnomalyScore+boost)
+		if !containsTag(event.Tags, "eol_device_context") {
+			event.Tags = appendUnique(event.Tags, "eol_device_context")
+			descriptions = append(descriptions, "This activity originated from an End-of-Life (EOL) router or IoT device matching models known to be heavily exploited by AVrecon malware (FBI IC3 FLASH 2026-03-12). These devices rarely receive security updates and are commonly sold as residential proxies.")
+		}
+		log.Printf("SNR: +%.2f boost for EOL router/device (domain=%s, vendor=%s, score=%.2f)", boost, event.Domain, event.DeviceVendor, event.AnomalyScore)
+	}
+
+	// Extra boost for DNS bypass from high-risk devices (SNR-13)
+	// A new or IoT device bypassing local DNS (public resolver or DoH) is a strong signal.
+	if containsTag(event.Tags, "dns_bypass") {
+		isHighRiskDevice := containsTag(event.Tags, "new_device") || containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "eol_router")
+
+		if event.DeviceVendor != "" {
+			lowerVendor := strings.ToLower(event.DeviceVendor)
+			if strings.Contains(lowerVendor, "espressif") || strings.Contains(lowerVendor, "realtek") || strings.Contains(lowerVendor, "mediatek") {
+				isHighRiskDevice = true
+			}
+		}
+
+		if isHighRiskDevice && event.AnomalyScore > 0.2 {
+			event.AnomalyScore = math.Min(1.0, event.AnomalyScore+0.12)
+			log.Printf("SNR: +0.12 bypass boost for high-risk device (domain=%s, vendor=%s, segment=%s, score=%.2f)", event.Domain, event.DeviceVendor, event.NetworkSegment, event.AnomalyScore)
+		}
+	}
+
+	// Consolidated device context explanation (cleaner threat descriptions)
+	contextReasons := []string{}
+	if containsTag(event.Tags, "iot_context") {
+		contextReasons = append(contextReasons, fmt.Sprintf("on a %s network segment", event.NetworkSegment))
+	}
+	if containsTag(event.Tags, "new_device_context") {
+		contextReasons = append(contextReasons, "from a device first seen in the last 48 hours")
+	}
+	if containsTag(event.Tags, "eol_device_context") || containsTag(event.Tags, "eol_router") {
+		contextReasons = append(contextReasons, "from an EOL/vulnerable router (high exploitation risk per IC3 advisory)")
+	}
+	if event.DeviceVendor != "" && (containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device_context") || containsTag(event.Tags, "eol_device_context")) {
+		contextReasons = append(contextReasons, fmt.Sprintf("vendor: %s", event.DeviceVendor))
+	}
+
+	if len(contextReasons) > 0 {
+		descriptions = append(descriptions, fmt.Sprintf("This activity came from a high-risk device (%s).", strings.Join(contextReasons, ", ")))
+	}
+
+	// Composite anomaly score - CONSERVATIVE VERSION for better signal-to-noise
+	// Goal: Isolated weird domains (common source of false positives) should not
+	// easily exceed ~0.65 unless they have corroborating signals.
 	if len(scores) > 0 {
 		maxScore := 0.0
 		for _, s := range scores {
@@ -278,12 +527,25 @@ func (e *Enricher) Enrich(event *models.Event) {
 				signalCount++
 			}
 		}
-		boost := float64(signalCount-1) * 0.05
-		if boost < 0 {
-			boost = 0
+
+		// New conservative logic:
+		// - Single signal (no corroboration): cap at 0.65
+		// - Two signals: allow up to ~0.85
+		// - Three+ signals or strong threat intel: allow up to 1.0
+		var composite float64
+
+		if signalCount <= 1 {
+			// Single signal — be conservative (biggest false positive reducer)
+			composite = math.Min(0.65, maxScore)
+		} else if signalCount == 2 {
+			boost := 0.12
+			composite = math.Min(0.88, maxScore+boost)
+		} else {
+			// 3+ signals — real threats usually look like this
+			boost := 0.18
+			composite = math.Min(1.0, maxScore+boost)
 		}
 
-		composite := math.Min(1.0, maxScore+boost)
 		if composite > event.AnomalyScore {
 			event.AnomalyScore = composite
 		}
@@ -339,6 +601,17 @@ func (e *Enricher) StartEviction() func() {
 	return func() { close(done) }
 }
 
+// BeaconEntryCount returns how many (source_hash, domain) pairs are currently
+// being tracked by the beaconing detector. Useful for observability during
+// long-running real traffic collection (helps tune MinSamples / understand
+// state for FP analysis in the SNR project).
+func (e *Enricher) BeaconEntryCount() int {
+	if e == nil || e.Beacon == nil {
+		return 0
+	}
+	return e.Beacon.EntryCount()
+}
+
 func appendUnique(slice []string, val string) []string {
 	for _, s := range slice {
 		if s == val {
@@ -346,6 +619,15 @@ func appendUnique(slice []string, val string) []string {
 		}
 	}
 	return append(slice, val)
+}
+
+func containsTag(tags []string, tag string) bool {
+	for _, t := range tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // isPrivateReverseDNS returns true if the domain is a PTR lookup (in-addr.arpa)

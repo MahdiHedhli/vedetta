@@ -45,6 +45,10 @@ type Device struct {
 	FingerprintConfidence float64   `json:"fingerprint_confidence" db:"fingerprint_confidence"`
 	CustomName            string    `json:"custom_name,omitempty" db:"custom_name"`
 	Notes                 string    `json:"notes,omitempty" db:"notes"`
+	// EOLRisk and EOLModel flag devices matching known EOL/vulnerable models from
+	// FBI IC3 FLASH 2026-03-12 (AVrecon / SocksEscort). These receive elevated risk scoring.
+	EOLRisk  bool   `json:"eol_risk" db:"eol_risk"`
+	EOLModel string `json:"eol_model,omitempty" db:"eol_model"`
 }
 
 // SuppressionRule defines a user-created filter to auto-hide matching events.

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { authFetch, authFetchJSON, getAdminToken, setAdminToken, clearAdminToken, hasAdminToken } from './lib/api';
 
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
@@ -59,8 +60,73 @@ export default function App() {
   const [suppressionRules, setSuppressionRules] = useState([]);
   const [whitelistRules, setWhitelistRules] = useState([]);
 
+  // Admin auth state (localStorage-backed via lib/api)
+  const [adminToken, setAdminTokenState] = useState(() => getAdminToken());
+  const [showTokenPrompt, setShowTokenPrompt] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  // Keep local state in sync with the lib (in case of external clear)
+  const updateAdminToken = useCallback((token) => {
+    setAdminToken(token);
+    setAdminTokenState(token || '');
+    setAuthError('');
+  }, []);
+
+  // Create the very first admin token (only works in bootstrap mode)
+  const createInitialAdminToken = async () => {
+    setAuthError('');
+    try {
+      const res = await fetch('/api/v1/auth/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'admin', label: 'Initial Admin (created from UI)' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to create admin token');
+      }
+      if (data.token) {
+        updateAdminToken(data.token);
+        // Show the token one last time in an alert-style modal (user must copy it now)
+        alert(
+          'ADMIN TOKEN CREATED (shown only once):\n\n' +
+          data.token + '\n\n' +
+          'Copy this token and store it safely. It will not be shown again.\n' +
+          'You can always create additional admin tokens from the Settings page if you have an active session.'
+        );
+        // Refresh data now that we are authenticated
+        fetchStatus();
+        fetchSensors();
+      }
+    } catch (e) {
+      setAuthError(e.message || 'Failed to create admin token');
+    }
+  };
+
+  // Allow user to paste an existing admin token (recovery / multi-device)
+  const submitPastedToken = () => {
+    const t = tokenInput.trim();
+    if (!t) {
+      setAuthError('Please paste a valid admin token');
+      return;
+    }
+    updateAdminToken(t);
+    setTokenInput('');
+    setShowTokenPrompt(false);
+    setAuthError('');
+    // Re-fetch everything with the new token
+    setTimeout(() => {
+      fetchStatus();
+      fetchSensors();
+      fetchDevices();
+      fetchTargets();
+      fetchThreatData();
+    }, 50);
+  };
+
   const fetchStatus = useCallback(() => {
-    fetch('/api/v1/status')
+    authFetch('/api/v1/status')
       .then((r) => r.json())
       .then((data) => {
         setStatus(data);
@@ -71,21 +137,21 @@ export default function App() {
   }, []);
 
   const fetchDevices = useCallback(() => {
-    fetch('/api/v1/devices')
+    authFetch('/api/v1/devices')
       .then((r) => r.json())
       .then((data) => setDevices(data.devices || []))
       .catch(() => {});
   }, []);
 
   const fetchTargets = useCallback(() => {
-    fetch('/api/v1/scan/targets')
+    authFetch('/api/v1/scan/targets')
       .then((r) => r.json())
       .then((data) => setTargets(data.targets || []))
       .catch(() => {});
   }, []);
 
   const fetchSensors = useCallback(() => {
-    fetch('/api/v1/sensor/list')
+    authFetch('/api/v1/sensor/list')
       .then((r) => r.json())
       .then((data) => setSensors(data.sensors || []))
       .catch(() => {});
@@ -121,6 +187,18 @@ export default function App() {
     });
     setSensorInterfaces(ifaces);
   }, [sensors]);
+
+  // Global 401 handler — show token recovery prompt when backend rejects our admin token
+  useEffect(() => {
+    const onUnauthorized = () => {
+      if (hasAdminToken()) {
+        setAuthError('Your admin token is no longer valid. Please re-enter it.');
+        setShowTokenPrompt(true);
+      }
+    };
+    window.addEventListener('vedetta:auth:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('vedetta:auth:unauthorized', onUnauthorized);
+  }, []);
 
   useEffect(() => {
     fetchStatus();
@@ -201,6 +279,59 @@ export default function App() {
         <SensorSetupDialog onDismiss={() => setShowSetup(false)} />
       )}
 
+      {/* Admin Token Prompt / Recovery Modal */}
+      {showTokenPrompt && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">Admin Access</h3>
+              <button onClick={() => { setShowTokenPrompt(false); setAuthError(''); }} className="text-gray-400 hover:text-white">✕</button>
+            </div>
+
+            {!adminToken && (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-400">
+                  No admin token found in this browser. Create one (first time only) or paste an existing one.
+                </p>
+                <button
+                  onClick={createInitialAdminToken}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-lg font-medium transition-colors"
+                >
+                  Create Initial Admin Token
+                </button>
+                <div className="text-center text-xs text-gray-500">— or —</div>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="text-xs text-gray-400 block">Paste admin token (recovery / other device)</label>
+              <input
+                type="text"
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitPastedToken(); }}
+                placeholder="64-character hex token..."
+                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-amber-500"
+              />
+              <button
+                onClick={submitPastedToken}
+                className="w-full bg-gray-800 hover:bg-gray-700 text-white py-2 rounded-lg text-sm transition-colors"
+              >
+                Use This Token
+              </button>
+            </div>
+
+            {authError && (
+              <div className="text-sm text-red-400 bg-red-950/50 border border-red-900 rounded p-2">{authError}</div>
+            )}
+
+            <p className="text-[10px] text-gray-500">
+              Tokens are stored only in your browser (localStorage). Create additional admin tokens from the Settings view after logging in.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="border-b border-gray-800 px-6 py-4">
         <div className="flex items-center justify-between max-w-7xl mx-auto">
@@ -210,6 +341,26 @@ export default function App() {
             <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded font-mono">v0.1.0-dev</span>
           </div>
           <div className="flex items-center gap-4">
+            {/* Admin auth status badge */}
+            <div className="flex items-center gap-2 text-xs">
+              {adminToken ? (
+                <span
+                  onClick={() => setShowTokenPrompt(true)}
+                  className="px-2 py-0.5 bg-emerald-900/50 text-emerald-400 rounded cursor-pointer hover:bg-emerald-900"
+                  title="Click to manage or recover admin token"
+                >
+                  Admin ✓
+                </span>
+              ) : (
+                <button
+                  onClick={() => setShowTokenPrompt(true)}
+                  className="px-2 py-0.5 bg-amber-900/50 text-amber-400 rounded hover:bg-amber-900"
+                >
+                  No admin token
+                </button>
+              )}
+            </div>
+
             <nav className="flex gap-1">
               {['dashboard', 'devices', 'threats', 'sensors', 'scan targets'].map((v) => (
                 <button
@@ -431,6 +582,7 @@ function AddWhitelistRule({ onAdd, onError }) {
 
 function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionRules, whitelistRules, onNavigate }) {
   const [severityFilter, setSeverityFilter] = useState('all');
+  const [contextFilter, setContextFilter] = useState('all'); // 'all' | 'new_device' | 'iot'
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [showSuppressed, setShowSuppressed] = useState(false);
   const [hideWhitelisted, setHideWhitelisted] = useState(true);
@@ -455,9 +607,24 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       if (!rule.active) return false;
       if (rule.domain && rule.domain !== event.domain) return false;
       if (rule.source_ip && rule.source_ip !== event.source_ip) return false;
+
       if (rule.tags && rule.tags.length > 0) {
         const eventTags = event.tags || [];
-        if (!rule.tags.every(t => eventTags.includes(t))) return false;
+        const deviceVendor = (event.device_vendor || '').toLowerCase();
+        const networkSegment = (event.network_segment || '').toLowerCase();
+
+        for (const tag of rule.tags) {
+          if (tag.startsWith('vendor:')) {
+            const requiredVendor = tag.substring(7);
+            if (deviceVendor !== requiredVendor) return false;
+          } else if (tag.startsWith('segment:')) {
+            const requiredSegment = tag.substring(8);
+            if (networkSegment !== requiredSegment) return false;
+          } else {
+            // Normal tag
+            if (!eventTags.includes(tag)) return false;
+          }
+        }
       }
       return true;
     }) || null;
@@ -491,23 +658,35 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
 
   const whitelistedCount = events.filter(e => isWhitelisted(e)).length;
 
-  // Group duplicate events (same domain + source_ip + tags within 5 min)
-  // Now stores full event objects, not just IDs
+  // Group duplicate events — improved for SNR (behavioral clustering)
+  // Now groups more aggressively by device + detection type over a longer window.
+  // This dramatically reduces visual noise ("same device doing DGA-like queries" appears as one item).
   const groupEvents = (eventList) => {
     const groups = [];
     const used = new Set();
+    const GROUP_WINDOW_MS = 30 * 60 * 1000; // Increased from 5 min to 30 min for better noise reduction
+
     for (let i = 0; i < eventList.length; i++) {
       if (used.has(i)) continue;
       const e = eventList[i];
       const group = { lead: e, count: 1, members: [e] };
       const eTime = new Date(e.timestamp).getTime();
-      const eTagKey = (e.tags || []).sort().join(',');
+      const ePrimaryTag = (e.tags && e.tags[0]) || '';
+      const eSourceKey = e.source_ip + '|' + (e.network_segment || 'default');
+
       for (let j = i + 1; j < eventList.length; j++) {
         if (used.has(j)) continue;
         const o = eventList[j];
         const oTime = new Date(o.timestamp).getTime();
-        const oTagKey = (o.tags || []).sort().join(',');
-        if (e.domain === o.domain && e.source_ip === o.source_ip && eTagKey === oTagKey && Math.abs(eTime - oTime) < 5 * 60 * 1000) {
+        const oPrimaryTag = (o.tags && o.tags[0]) || '';
+        const oSourceKey = o.source_ip + '|' + (o.network_segment || 'default');
+
+        // Group if same device/segment + same primary detection tag + within time window
+        // This creates behavioral clusters ("this device is showing repeated DGA behavior")
+        const sameBehavioralSource = eSourceKey === oSourceKey;
+        const samePrimaryBehavior = ePrimaryTag !== '' && ePrimaryTag === oPrimaryTag;
+
+        if (sameBehavioralSource && samePrimaryBehavior && Math.abs(eTime - oTime) < GROUP_WINDOW_MS) {
           group.count++;
           group.members.push(o);
           used.add(j);
@@ -519,11 +698,16 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     return groups;
   };
 
-  // Filter: severity, ack/suppressed
+  // Filter: severity + context (new_device / iot)
   const baseFiltered = events.filter(e => {
     const score = e.anomaly_score || 0;
-    if (severityFilter === 'critical') return score > 0.7;
-    if (severityFilter === 'warning') return score >= 0.3 && score <= 0.7;
+    if (severityFilter === 'critical' && score <= 0.7) return false;
+    if (severityFilter === 'warning' && (score < 0.3 || score > 0.7)) return false;
+
+    if (contextFilter === 'new_device' && !e.tags?.includes('new_device_context')) return false;
+    if (contextFilter === 'iot' && !e.tags?.includes('iot_context')) return false;
+    if (contextFilter === 'eol' && !e.tags?.includes('eol_router') && !e.tags?.includes('eol_device_context')) return false;
+
     return true;
   });
 
@@ -533,6 +717,38 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const displayEvents = showSuppressed ? suppressedEvents : visibleEvents;
   const grouped = groupEvents(displayEvents);
   const paginatedGroups = grouped.slice(0, visibleCount);
+
+  // Counts for contextual quick suppression buttons (SNR-23)
+  const iotContextCount = displayEvents.filter(e => e.tags?.includes('iot_context')).length;
+  const newDeviceContextCount = displayEvents.filter(e => e.tags?.includes('new_device_context')).length;
+  const eolContextCount = displayEvents.filter(e => e.tags?.includes('eol_router') || e.tags?.includes('eol_device_context')).length;
+
+  // Per-rule match counts for the Active Suppression Rules Summary (SNR-28)
+  const activeRules = (suppressionRules || []).filter(r => r.active);
+  const ruleMatchCounts = {};
+  activeRules.forEach(rule => {
+    ruleMatchCounts[rule.rule_id] = displayEvents.filter(e => {
+      // Simplified check: use the existing findMatchingRule logic but for a single rule
+      if (!rule.active) return false;
+      if (rule.domain && rule.domain !== e.domain) return false;
+      if (rule.source_ip && rule.source_ip !== e.source_ip) return false;
+      if (rule.tags && rule.tags.length > 0) {
+        const eventTags = e.tags || [];
+        const deviceVendor = (e.device_vendor || '').toLowerCase();
+        const networkSegment = (e.network_segment || '').toLowerCase();
+        for (const tag of rule.tags) {
+          if (tag.startsWith('vendor:')) {
+            if (deviceVendor !== tag.substring(7)) return false;
+          } else if (tag.startsWith('segment:')) {
+            if (networkSegment !== tag.substring(8)) return false;
+          } else {
+            if (!eventTags.includes(tag)) return false;
+          }
+        }
+      }
+      return true;
+    }).length;
+  });
 
   const toggleRowExpanded = (eventId) => {
     const newSet = new Set(expandedRows);
@@ -556,6 +772,12 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     dns_rebinding: 'bg-pink-500/20 text-pink-300',
     known_bad: 'bg-red-600/20 text-red-200',
     dns_bypass: 'bg-yellow-500/20 text-yellow-300',
+    // Contextual tags (device/environment) - distinct styling
+    iot_context: 'bg-teal-500/20 text-teal-300',
+    new_device_context: 'bg-cyan-500/20 text-cyan-300',
+    very_new_device: 'bg-red-600/30 text-red-400 font-bold', // Strong visual for <1h devices
+    eol_router: 'bg-red-500/20 text-red-300 border border-red-500/40',
+    eol_device_context: 'bg-red-500/20 text-red-300 border border-red-500/40 font-semibold',
   };
 
   const tagLabel = (tag) => {
@@ -566,6 +788,12 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       dns_rebinding: 'Rebinding',
       known_bad: 'Threat Intel',
       dns_bypass: 'DNS Bypass',
+      // Contextual labels
+      iot_context: 'IoT Segment',
+      new_device_context: 'New Device',
+      very_new_device: 'Very New (<1h)',
+      eol_router: 'EOL Router',
+      eol_device_context: 'EOL Device (High Risk)',
     };
     return labels[tag] || tag;
   };
@@ -914,6 +1142,65 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
         </div>
       )}
 
+      {/* Active Context Filter Indicator (SNR-24) + Reset */}
+      {(contextFilter !== 'all' || severityFilter !== 'all') && (
+        <div className="mb-2 flex items-center gap-2">
+          {contextFilter !== 'all' && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-400 border border-teal-500/30">
+              Active filter: {contextFilter === 'new_device' ? 'New Devices only' : 'IoT Segment only'}
+            </span>
+          )}
+          {severityFilter !== 'all' && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">
+              Severity: {severityFilter}
+            </span>
+          )}
+          <button
+            onClick={() => { setSeverityFilter('all'); setContextFilter('all'); }}
+            className="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-300 hover:bg-gray-600 border border-gray-600 transition-colors"
+          >
+            Reset All Filters
+          </button>
+        </div>
+      )}
+
+      {/* SNR Impact Summary */}
+      <div className="flex items-center gap-4 mb-3 text-xs text-gray-400">
+        <span>
+          {suppressedEvents.length} events suppressed by rules
+        </span>
+        {whitelistedCount > 0 && (
+          <span>
+            {whitelistedCount} events hidden by whitelist
+          </span>
+        )}
+        <span className="text-gray-500">•</span>
+        <span>
+          Showing {displayEvents.length} active threats
+        </span>
+      </div>
+
+      {/* Active Suppression Rules Summary (SNR-25 + SNR-28) */}
+      {activeRules.length > 0 && (
+        <div className="mb-3 text-xs">
+          <span className="text-gray-500">Active suppression rules: </span>
+          {activeRules.slice(0, 3).map((rule) => (
+            <span key={rule.rule_id} className="inline-block bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded mr-1">
+              {rule.reason || 'Unnamed rule'} <span className="text-teal-400">({ruleMatchCounts[rule.rule_id] || 0})</span>
+            </span>
+          ))}
+          {activeRules.length > 3 && (
+            <span className="text-gray-500">+{activeRules.length - 3} more</span>
+          )}
+          <button
+            onClick={() => setShowSuppressed(true)}
+            className="ml-2 text-teal-400 hover:text-teal-300 underline"
+          >
+            View all suppressed
+          </button>
+        </div>
+      )}
+
       {/* Severity Filter + Suppressed Toggle */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-2">
@@ -926,6 +1213,25 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
               }`}
             >
               {sev === 'all' ? 'All' : sev === 'critical' ? 'Critical (>0.7)' : 'Warning (0.3-0.7)'}
+            </button>
+          ))}
+
+          {/* Contextual risk filters (SNR-16) */}
+          <div className="w-px bg-gray-700 mx-1" />
+          {[
+            { key: 'all', label: 'All Contexts' },
+            { key: 'new_device', label: 'New Devices' },
+            { key: 'iot', label: 'IoT Segment' },
+            { key: 'eol', label: 'EOL Routers' },
+          ].map((ctx) => (
+            <button
+              key={ctx.key}
+              onClick={() => setContextFilter(ctx.key)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                contextFilter === ctx.key ? 'bg-teal-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
+              }`}
+            >
+              {ctx.label}
             </button>
           ))}
         </div>
@@ -1006,6 +1312,10 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                               >
                                 <span className="font-medium text-amber-300">{deviceName || device.ip_address}</span>
                                 {device.mac_address && <span className="text-xs text-gray-500 ml-1.5">{device.mac_address.slice(-8)}</span>}
+                                {event.network_segment && event.network_segment !== 'default' && (
+                                  <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-gray-700 text-gray-400">{event.network_segment}</span>
+                                )}
+                                {event.device_vendor && <span className="ml-1 text-[10px] text-gray-500">({event.device_vendor})</span>}
                               </button>
                             ) : (
                               <span className="font-mono text-gray-200">{event.source_ip || '—'}</span>
@@ -1102,6 +1412,110 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                   <p className="text-sm text-gray-300 leading-relaxed">{event.threat_desc}</p>
                                 </div>
                               )}
+
+                              {/* Quick Suppression - high impact for SNR */}
+                              <div className="bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                                <div className="text-xs uppercase tracking-wider text-teal-400 font-medium mb-2">Quick Noise Reduction</div>
+                                <div className="flex flex-wrap gap-2">
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); handleCreateSuppression(event, `Suppressed ${event.domain} for ${event.source_ip}`); }}
+                                    className="text-xs px-3 py-1.5 bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border border-teal-500/30 rounded transition-colors"
+                                  >
+                                    Suppress this domain for this device
+                                  </button>
+
+                                  {/* Prefer contextual tags for suppression (high SNR value) */}
+                                  {event.tags && event.tags.includes('iot_context') && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetch('/api/v1/suppression', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ domain: '', source_ip: '', tags: ['iot_context'], reason: 'Suppressed all IoT segment activity' })
+                                        }).then(r => { if (r.ok) onRefresh(); });
+                                      }}
+                                      className="text-xs px-3 py-1.5 bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border border-teal-500/30 rounded transition-colors"
+                                    >
+                                      Suppress all from IoT Segment {iotContextCount > 0 ? `(${iotContextCount})` : ''}
+                                    </button>
+                                  )}
+                                  {event.tags && event.tags.includes('new_device_context') && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetch('/api/v1/suppression', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ domain: '', source_ip: '', tags: ['new_device_context'], reason: 'Suppressed all new device activity' })
+                                        }).then(r => { if (r.ok) onRefresh(); });
+                                      }}
+                                      className="text-xs px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 rounded transition-colors"
+                                    >
+                                      Suppress all from New Devices {newDeviceContextCount > 0 ? `(${newDeviceContextCount})` : ''}
+                                    </button>
+                                  )}
+                                  {(event.tags && (event.tags.includes('eol_router') || event.tags.includes('eol_device_context'))) && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetch('/api/v1/suppression', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ domain: '', source_ip: '', tags: ['eol_router'], reason: 'Suppressed all EOL router high-risk device activity' })
+                                        }).then(r => { if (r.ok) onRefresh(); });
+                                      }}
+                                      className="text-xs px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 rounded transition-colors"
+                                    >
+                                      Suppress all from EOL Routers {eolContextCount > 0 ? `(${eolContextCount})` : ''}
+                                    </button>
+                                  )}
+
+                                  {/* Vendor + Segment suppression for IoT noise */}
+                                  {event.device_vendor && event.network_segment && event.network_segment !== 'default' && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetch('/api/v1/suppression', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({
+                                            domain: '',
+                                            source_ip: '',
+                                            tags: [`vendor:${event.device_vendor.toLowerCase()}`, `segment:${event.network_segment}`],
+                                            reason: `Suppressed all ${event.device_vendor} on ${event.network_segment}`
+                                          })
+                                        }).then(r => { if (r.ok) onRefresh(); });
+                                      }}
+                                      className="text-xs px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded transition-colors"
+                                    >
+                                      Suppress all {event.device_vendor} on {event.network_segment}
+                                    </button>
+                                  )}
+
+                                  {/* Fallback to first non-contextual tag */}
+                                  {event.tags && event.tags.length > 0 && !event.tags.includes('iot_context') && !event.tags.includes('new_device_context') && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetch('/api/v1/suppression', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({
+                                            domain: '',
+                                            source_ip: event.source_ip,
+                                            tags: [event.tags[0]],
+                                            reason: `Suppressed ${event.tags[0]} for device`
+                                          })
+                                        }).then(r => { if (r.ok) onRefresh(); });
+                                      }}
+                                      className="text-xs px-3 py-1.5 bg-orange-500/10 hover:bg-orange-500/20 text-orange-300 border border-orange-500/30 rounded transition-colors"
+                                    >
+                                      Suppress "{tagLabel(event.tags[0])}" for this device
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
 
                               {/* Device info card (if matched) */}
                               {device && (
@@ -1213,6 +1627,18 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                         <div className="mt-1 text-gray-300 space-y-1">
                                           <div>Public IP: <span className="font-mono">{meta.rebinding.public_ip}</span></div>
                                           <div>Private IP: <span className="font-mono">{meta.rebinding.private_ip}</span></div>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {meta.device_context && meta.device_context.boosts && meta.device_context.boosts.length > 0 && (
+                                      <div className="bg-gray-800/50 rounded p-3">
+                                        <span className="text-teal-400 font-medium text-xs">Device Context Boosts</span>
+                                        <div className="mt-1 text-gray-300 space-y-1">
+                                          <div>Segment: <span className="font-mono">{meta.device_context.segment || '—'}</span></div>
+                                          <div>Vendor: <span className="font-mono">{meta.device_context.vendor || '—'}</span></div>
+                                          <div>Boosts: {meta.device_context.boosts.map((b, i) => (
+                                            <span key={i} className="inline-block bg-teal-500/10 text-teal-300 text-xs px-1.5 py-0.5 rounded mr-1 mt-1">{b}</span>
+                                          ))}</div>
                                         </div>
                                       </div>
                                     )}
@@ -1935,6 +2361,17 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                 <span className="text-xs text-gray-500 block">First Seen</span>
                 <span className="text-sm">{timeAgo(selectedDevice.first_seen)}</span>
               </div>
+              {selectedDevice.eol_risk && (
+                <div className="col-span-2 md:col-span-3 mt-2 p-3 bg-red-500/10 border border-red-500/40 rounded-lg">
+                  <div className="flex items-center gap-2 text-red-300 text-sm font-semibold">
+                    ⚠ END-OF-LIFE / HIGH RISK DEVICE
+                  </div>
+                  <div className="text-xs text-red-200 mt-1">
+                    Matches model(s) listed in FBI IC3 FLASH 2026-03-12 (AVrecon malware). These routers/cameras are no longer patched and are actively exploited as residential proxies and C2 infrastructure. Consider replacing.
+                    {selectedDevice.eol_model && <span className="block mt-1 font-mono text-red-300">{selectedDevice.eol_model}</span>}
+                  </div>
+                </div>
+              )}
               {selectedDevice.open_ports && selectedDevice.open_ports.length > 0 && (
                 <div className="col-span-2">
                   <span className="text-xs text-gray-500 block">Open Ports</span>
@@ -2684,8 +3121,61 @@ function SettingsView() {
           </div>
         </div>
 
+        {/* Real Admin Token Management (Phase 1 of auth hardening) */}
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+          <h3 className="text-sm font-medium mb-1 flex items-center gap-2">
+            Admin Access Tokens
+            <span className="text-[10px] px-1.5 py-0.5 bg-emerald-900 text-emerald-400 rounded">LIVE</span>
+          </h3>
+          <p className="text-xs text-gray-500 mb-3">Manage human admin credentials for this Vedetta Core</p>
+
+          <div className="flex flex-wrap gap-2 mb-3">
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/v1/auth/tokens', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ scope: 'admin', label: 'Admin (from Settings)' }),
+                  });
+                  const data = await res.json();
+                  if (data.token) {
+                    setAdminToken(data.token);
+                    alert('New admin token created (shown only once):\n\n' + data.token);
+                    window.location.reload();
+                  } else {
+                    alert(data.error || 'Failed to create token');
+                  }
+                } catch (e) {
+                  alert('Error creating token: ' + e.message);
+                }
+              }}
+              className="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 rounded-lg transition-colors"
+            >
+              Create New Admin Token
+            </button>
+            <button
+              onClick={() => { setShowTokenPrompt(true); setTokenInput(''); }}
+              className="text-xs px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+            >
+              Paste / Recover Token
+            </button>
+            <button
+              onClick={() => { clearAdminToken(); window.location.reload(); }}
+              className="text-xs px-3 py-1.5 bg-gray-800 hover:bg-red-900/60 text-red-400 rounded-lg transition-colors"
+            >
+              Forget Token (this browser)
+            </button>
+          </div>
+
+          <div className="text-[10px] text-gray-500">
+            Tokens are stored only in this browser. Create as many admin tokens as you need.
+            The raw token value is shown only once when created.
+          </div>
+        </div>
+
         <p className="text-xs text-gray-600 text-center pt-2">
-          Settings are read-only placeholders in v0.1.0-dev. Configuration changes coming soon.
+          Some settings are still placeholders in v0.1.0-dev.
         </p>
       </div>
     </>
@@ -2722,6 +3212,11 @@ function DeviceTable({ devices, compact = false, onSelectDevice }) {
                 <span className="w-2 h-2 bg-green-400 rounded-full" />
                 {isNewDevice(device.first_seen) && (
                   <span className="bg-amber-500 text-black text-xs font-bold px-1.5 py-0.5 rounded">NEW</span>
+                )}
+                {device.eol_risk && (
+                  <span className="bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded flex items-center gap-1" title={device.eol_model || 'EOL / vulnerable model per IC3 advisory'}>
+                    ⚠ EOL
+                  </span>
                 )}
               </div>
             </td>
