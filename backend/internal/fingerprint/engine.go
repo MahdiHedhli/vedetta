@@ -15,6 +15,10 @@ type FingerprintResult struct {
 	Vendor                string  `json:"vendor"`
 	FingerprintConfidence float64 `json:"fingerprint_confidence"`
 	DiscoveryMethod       string  `json:"discovery_method"`
+	// EOLRisk / EOLModel populated when device matches known EOL router/camera models
+	// from FBI IC3 advisory (AVrecon malware targeting unpatched SOHO devices).
+	EOLRisk  bool   `json:"eol_risk,omitempty"`
+	EOLModel string `json:"eol_model,omitempty"`
 }
 
 // Engine orchestrates multi-signal device fingerprinting.
@@ -100,6 +104,28 @@ func (e *Engine) Fingerprint(device *models.Device) *FingerprintResult {
 		}
 	}
 
+	// EOL / high-risk router detection (IC3 2026-03-12 AVrecon advisory)
+	// Uses hostname + vendor signals already collected. Specific model matches
+	// get high confidence; broad affected-vendor matches get lower confidence.
+	eol := DetectEOLFromSignals(device.Hostname, result.Vendor, device.Vendor)
+	if eol.IsEOL {
+		result.EOLRisk = true
+		if eol.Model != "" {
+			result.EOLModel = eol.Model
+			// If we have a specific model string, prefer it in the main Model field too
+			if result.Model == "" {
+				result.Model = eol.Model
+			}
+		}
+		if eol.Confidence > result.FingerprintConfidence {
+			result.FingerprintConfidence = eol.Confidence
+		}
+		// Ensure vendor is set from the EOL match when stronger
+		if result.Vendor == "" && eol.Vendor != "" {
+			result.Vendor = eol.Vendor
+		}
+	}
+
 	// Clamp confidence to [0, 1]
 	if result.FingerprintConfidence > 1.0 {
 		result.FingerprintConfidence = 1.0
@@ -116,6 +142,12 @@ func (e *Engine) Fingerprint(device *models.Device) *FingerprintResult {
 		device.Model = result.Model
 		device.Vendor = result.Vendor
 		device.FingerprintConfidence = result.FingerprintConfidence
+		device.EOLRisk = result.EOLRisk
+		device.EOLModel = result.EOLModel
+	} else if device.EOLRisk == false && result.EOLRisk {
+		// Still apply EOL flag even on lower confidence (EOL is safety-relevant, not just typing)
+		device.EOLRisk = result.EOLRisk
+		device.EOLModel = result.EOLModel
 	}
 
 	return result
@@ -154,6 +186,12 @@ func EnrichFromVendor(vendor string) *FingerprintResult {
 	case strings.Contains(vendor, "ubiquiti"):
 		result.Vendor = "Ubiquiti"
 		result.DeviceType = "access_point"
+	}
+
+	// Also run EOL detection on the raw vendor string (catches broad affected manufacturers)
+	if eol := DetectEOLFromSignals("", vendor, ""); eol.IsEOL {
+		result.EOLRisk = true
+		result.EOLModel = eol.Model
 	}
 
 	return result
