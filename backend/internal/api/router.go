@@ -1300,8 +1300,17 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 
 			// SNR-11: Detect new devices (first seen in last 48 hours)
 			// Suspicious DNS from brand new devices is higher risk.
-			if !dev.FirstSeen.IsZero() {
-				age := time.Since(dev.FirstSeen)
+			// Use the minimum first_seen across all records for this IP to avoid
+			// spurious "new_device" tags on established machines that have duplicate
+			// records (with different first_seen values) from mixed discovery sources.
+			effectiveFirstSeen := dev.FirstSeen
+			if s.DB != nil {
+				if minSeen, err := s.DB.GetMinFirstSeenForIP(q.ClientIP); err == nil && !minSeen.IsZero() && minSeen.Before(effectiveFirstSeen) {
+					effectiveFirstSeen = minSeen
+				}
+			}
+			if !effectiveFirstSeen.IsZero() {
+				age := time.Since(effectiveFirstSeen)
 				if age < 48*time.Hour {
 					found := false
 					for _, t := range event.Tags {

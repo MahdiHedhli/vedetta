@@ -70,6 +70,47 @@ var knownGoodUpdateDomains = []string{
 	// or high-risk device context (EOL, new, IoT).
 	"github.com", "raw.githubusercontent.com",
 	"discordapp.com", "discord.com", "cdn.discordapp.com",
+
+	// abuse.ch services (FeodoTracker, URLhaus, MalwareBazaar, etc.)
+	// Operated by a respected defensive security organization. Regular polling of these
+	// public services is expected, legitimate behavior from researchers, SOC teams,
+	// and defensive tooling. They should never trigger detections in isolation.
+	"feodotracker.abuse.ch",
+	"abuse.ch",
+	"urlhaus.abuse.ch",
+	"bazaar.abuse.ch",
+
+	// Recurring Microsoft / Azure infrastructure that frequently produces high-entropy
+	// subdomains and regular telemetry from the primary machines. These are internal
+	// Microsoft services (OneDrive, Azure Front Door, etc.) and are safe to ignore.
+	"onedriveclubproddm20037.blob.core.windows.net",
+	"onedriveclubproddm20048.blob.core.windows.net",
+	"onedriveclubproddm20049.blob.core.windows.net",
+	"onedriveclubproddm20032.blob.core.windows.net",
+	".azurefd.net",
+	".cloudapp.azure.com",
+
+	// Cloudflare public DNS (1.1.1.1). Commonly used for legitimate DNS bypass testing
+	// and DoH/DoT. Regular queries are expected and benign.
+	"one.one.one.one",
+
+	// Internal application updater (antigravity). Observed as regular, low-risk
+	// high-entropy polling from the primary development machine. Safe to suppress.
+	"antigravity-auto-updater-974169037036.us-central1.run.app",
+
+	// Additional recurring Microsoft infrastructure domains still generating
+	// high-entropy DGA-like noise on the primary machines. These are internal
+	// Microsoft services and are safe to ignore in this environment.
+	"onedriveclubproddm20051.blob.core.windows.net",
+	"onedriveclubproddm20032.blob.core.windows.net",
+	"onedriveclubproddm20047.blob.core.windows.net",
+	"194497-ipv4v6fdse.gr.global.aa-rt.sharepoint.com",
+
+	// Specific Radware customer WAF subdomains that appear consistently as
+	// high-entropy infrastructure noise from the primary Mac. These look like
+	// legitimate customer WAF endpoints rather than malicious infrastructure.
+	"c46f66d3abdc4ac1b41d0b76ec8fe974.v1.radwarecloud.net",
+	"f4ee15e5e3904270bf96fe8c018be383.v1.radwarecloud.net",
 }
 
 // NewEnricher creates an Enricher with the default BeaconDetector,
@@ -334,33 +375,47 @@ func (e *Enricher) Enrich(event *models.Event) {
 	if event.Domain != "" && e.ThreatDB != nil {
 		result := e.ThreatDB.Lookup(event.Domain)
 		if result.Found {
-			event.Tags = appendUnique(event.Tags, "known_bad")
-			for _, tag := range result.Indicator.Tags {
-				event.Tags = appendUnique(event.Tags, tag)
+			// Belt-and-suspenders protection: even if a domain somehow reaches here,
+			// skip pure known_bad scoring for ultra-common legitimate infrastructure.
+			// These domains frequently appear in abuse feeds with noisy tags but are
+			// overwhelmingly used for benign purposes (updates, CDNs, dev, etc.).
+			// Real threats using them will still be caught by other detectors + context.
+			isKnownGood := false
+			for _, good := range knownGoodUpdateDomains {
+				if event.Domain == good || strings.HasSuffix(event.Domain, "."+good) {
+					isKnownGood = true
+					break
+				}
 			}
-			meta.ThreatDB = &threatDBMeta{
-				Confidence: result.Confidence,
-				FeedTags:   result.Indicator.Tags,
-				Source:     result.Indicator.Source,
-				Indicator:  result.Indicator.Value,
+			if !isKnownGood {
+				event.Tags = appendUnique(event.Tags, "known_bad")
+				for _, tag := range result.Indicator.Tags {
+					event.Tags = appendUnique(event.Tags, tag)
+				}
+				meta.ThreatDB = &threatDBMeta{
+					Confidence: result.Confidence,
+					FeedTags:   result.Indicator.Tags,
+					Source:     result.Indicator.Source,
+					Indicator:  result.Indicator.Value,
+				}
+
+				// Build description with feed source reference URLs
+				desc := fmt.Sprintf(
+					"This domain appears in threat intelligence feeds (confidence %.0f%%, source: %s). It has been associated with: %s.",
+					result.Confidence*100, result.Indicator.Source, strings.Join(result.Indicator.Tags, ", "),
+				)
+
+				// Add reference URLs based on feed source
+				switch result.Indicator.Source {
+				case "urlhaus":
+					desc += fmt.Sprintf(" Verify: https://urlhaus.abuse.ch/browse.php?search=%s", event.Domain)
+				case "feodotracker":
+					desc += fmt.Sprintf(" Verify: https://feodotracker.abuse.ch/browse/host/%s/", result.Indicator.Value)
+				}
+
+				descriptions = append(descriptions, desc)
+				scores = append(scores, result.Confidence)
 			}
-
-			// Build description with feed source reference URLs
-			desc := fmt.Sprintf(
-				"This domain appears in threat intelligence feeds (confidence %.0f%%, source: %s). It has been associated with: %s.",
-				result.Confidence*100, result.Indicator.Source, strings.Join(result.Indicator.Tags, ", "),
-			)
-
-			// Add reference URLs based on feed source
-			switch result.Indicator.Source {
-			case "urlhaus":
-				desc += fmt.Sprintf(" Verify: https://urlhaus.abuse.ch/browse.php?search=%s", event.Domain)
-			case "feodotracker":
-				desc += fmt.Sprintf(" Verify: https://feodotracker.abuse.ch/browse/host/%s/", result.Indicator.Value)
-			}
-
-			descriptions = append(descriptions, desc)
-			scores = append(scores, result.Confidence)
 		}
 	}
 

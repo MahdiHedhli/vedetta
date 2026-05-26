@@ -31,16 +31,18 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 		portsJSON = []byte("[]")
 	}
 
-	// Choose identity key based on whether MAC is available.
-	// Local-subnet scans get MAC via ARP; cross-subnet scans don't.
+	// Choose identity key.
+	// Prefer MAC when available (stable across DHCP).
+	// Always fall back to IP + segment for local networks, where same IP usually = same device.
+	// This deeper merging strategy prevents creating duplicate records when discovery
+	// sources provide inconsistent MAC presence (common with mDNS/SSDP vs ARP/nmap).
 	var existingID string
 	var err error
 	if host.MACAddress != "" {
-		// Primary lookup: by MAC address (stable across DHCP changes)
 		err = db.QueryRow("SELECT device_id FROM devices WHERE mac_address = ?", host.MACAddress).Scan(&existingID)
-	} else {
-		// Fallback: by IP + segment (best we can do without layer-2 data)
-		err = db.QueryRow("SELECT device_id FROM devices WHERE ip_address = ? AND segment = ? AND (mac_address = '' OR mac_address IS NULL)",
+	}
+	if existingID == "" && host.IPAddress != "" {
+		err = db.QueryRow("SELECT device_id FROM devices WHERE ip_address = ? AND segment = ?",
 			host.IPAddress, seg).Scan(&existingID)
 	}
 
@@ -296,6 +298,42 @@ func (db *DB) GetLastDeviceUpdate() (time.Time, error) {
 	// Try direct time scan as last resort (works if driver parses it)
 	var ts time.Time
 	if err2 := db.QueryRow("SELECT MAX(last_seen) FROM devices").Scan(&ts); err2 == nil && !ts.IsZero() {
+		return ts, nil
+	}
+	return time.Time{}, err
+}
+
+// GetMinFirstSeenForIP returns the earliest first_seen timestamp for any device record
+// matching the given IP. This provides an "effective" first-seen age across duplicate
+// records for the same IP (common after mixed discovery sources), preventing spurious
+// new_device / very_new_device tags on established devices that happen to have multiple
+// records with different first_seen values.
+func (db *DB) GetMinFirstSeenForIP(ip string) (time.Time, error) {
+	if ip == "" {
+		return time.Time{}, nil
+	}
+	var minStr string
+	err := db.QueryRow("SELECT MIN(first_seen) FROM devices WHERE ip_address = ?", ip).Scan(&minStr)
+	if err == nil && minStr != "" {
+		layouts := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999-07:00",
+			"2006-01-02 15:04:05",
+		}
+		for _, layout := range layouts {
+			if t, perr := time.Parse(layout, minStr); perr == nil {
+				return t, nil
+			}
+		}
+		return time.Time{}, nil
+	}
+	if err == sql.ErrNoRows || minStr == "" {
+		return time.Time{}, nil
+	}
+	// Fallback direct scan
+	var ts time.Time
+	if err2 := db.QueryRow("SELECT MIN(first_seen) FROM devices WHERE ip_address = ?", ip).Scan(&ts); err2 == nil && !ts.IsZero() {
 		return ts, nil
 	}
 	return time.Time{}, err

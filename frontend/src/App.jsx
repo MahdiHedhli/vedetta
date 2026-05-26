@@ -718,10 +718,48 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const grouped = groupEvents(displayEvents);
   const paginatedGroups = grouped.slice(0, visibleCount);
 
+  // Pre-severity set (context + whitelist + suppressed, but no severity filter)
+  // Used for correct severity button counts
+  const contextOnly = events.filter(e => {
+    if (contextFilter === 'new_device' && !e.tags?.includes('new_device_context')) return false;
+    if (contextFilter === 'iot' && !e.tags?.includes('iot_context')) return false;
+    if (contextFilter === 'eol' && !e.tags?.includes('eol_router') && !e.tags?.includes('eol_device_context')) return false;
+    return true;
+  });
+  const afterWhitelistContextOnly = hideWhitelisted ? contextOnly.filter(e => !isWhitelisted(e)) : contextOnly;
+  const visibleContextOnly = afterWhitelistContextOnly.filter(e => !e.acknowledged && !isSuppressed(e));
+  const suppressedContextOnly = afterWhitelistContextOnly.filter(e => e.acknowledged || isSuppressed(e));
+  const displayContextOnly = showSuppressed ? suppressedContextOnly : visibleContextOnly;
+
+  // Pre-context set (severity + whitelist + suppressed, but no context filter)
+  // Used for correct context button counts
+  const severityOnly = events.filter(e => {
+    const score = e.anomaly_score || 0;
+    if (severityFilter === 'critical' && score <= 0.7) return false;
+    if (severityFilter === 'warning' && (score < 0.3 || score > 0.7)) return false;
+    return true;
+  });
+  const afterWhitelistSeverityOnly = hideWhitelisted ? severityOnly.filter(e => !isWhitelisted(e)) : severityOnly;
+  const visibleSeverityOnly = afterWhitelistSeverityOnly.filter(e => !e.acknowledged && !isSuppressed(e));
+  const suppressedSeverityOnly = afterWhitelistSeverityOnly.filter(e => e.acknowledged || isSuppressed(e));
+  const displaySeverityOnly = showSuppressed ? suppressedSeverityOnly : visibleSeverityOnly;
+
   // Counts for contextual quick suppression buttons (SNR-23)
-  const iotContextCount = displayEvents.filter(e => e.tags?.includes('iot_context')).length;
-  const newDeviceContextCount = displayEvents.filter(e => e.tags?.includes('new_device_context')).length;
-  const eolContextCount = displayEvents.filter(e => e.tags?.includes('eol_router') || e.tags?.includes('eol_device_context')).length;
+  // Computed from pre-context set so they reflect current severity selection
+  const allContextCount = displaySeverityOnly.length;
+  const iotContextCount = displaySeverityOnly.filter(e => e.tags?.includes('iot_context')).length;
+  const newDeviceContextCount = displaySeverityOnly.filter(e => e.tags?.includes('new_device_context')).length;
+  const eolContextCount = displaySeverityOnly.filter(e => e.tags?.includes('eol_router') || e.tags?.includes('eol_device_context')).length;
+
+  // Severity counts for filter buttons
+  // Computed from pre-severity set (after context + whitelist + suppressed)
+  // so "All" always shows the grand total of the current context, and Critical/Warning show the breakdown
+  const criticalCount = displayContextOnly.filter(e => (e.anomaly_score || 0) > 0.7).length;
+  const warningCount = displayContextOnly.filter(e => {
+    const s = e.anomaly_score || 0;
+    return s >= 0.3 && s <= 0.7;
+  }).length;
+  const allCount = displayContextOnly.length;
 
   // Per-rule match counts for the Active Suppression Rules Summary (SNR-28)
   const activeRules = (suppressionRules || []).filter(r => r.active);
@@ -1147,7 +1185,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
         <div className="mb-2 flex items-center gap-2">
           {contextFilter !== 'all' && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-400 border border-teal-500/30">
-              Active filter: {contextFilter === 'new_device' ? 'New Devices only' : 'IoT Segment only'}
+              Active filter: {contextFilter === 'new_device' ? 'New Devices only' : contextFilter === 'iot' ? 'IoT Segment only' : 'EOL Routers only'}
             </span>
           )}
           {severityFilter !== 'all' && (
@@ -1212,7 +1250,11 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                 severityFilter === sev ? 'bg-amber-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
               }`}
             >
-              {sev === 'all' ? 'All' : sev === 'critical' ? 'Critical (>0.7)' : 'Warning (0.3-0.7)'}
+              {sev === 'all' 
+                ? `All (${allCount})` 
+                : sev === 'critical' 
+                  ? `Critical (>0.7) (${criticalCount})` 
+                  : `Warning (0.3-0.7) (${warningCount})`}
             </button>
           ))}
 
@@ -1231,7 +1273,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                 contextFilter === ctx.key ? 'bg-teal-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
               }`}
             >
-              {ctx.label}
+              {ctx.key === 'all' 
+                ? `All Contexts (${allContextCount})` 
+                : `${ctx.label} (${ctx.key === 'new_device' ? newDeviceContextCount : ctx.key === 'iot' ? iotContextCount : eolContextCount})`}
             </button>
           ))}
         </div>

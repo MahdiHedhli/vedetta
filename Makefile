@@ -180,6 +180,8 @@ collection-health:
 	@echo ""
 	@echo "=== For live beacon_tracked_pairs + device stats + baseline age use: curl -s http://localhost:8080/api/v1/status | jq '.collection_health' (or python one-liner)"
 	@echo "    (includes last_device_update + device_baseline_age_hours to confirm current live vs historical device baseline context)"
+	@echo ""
+	@echo "Tip for VALIDATE-REAL: Re-run 'make collection-health' frequently while the sensor is live to spot new high-score patterns, duplicate devices (post dedup work), and volume trends from real traffic."
 
 # --- Tests ---
 
