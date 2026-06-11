@@ -124,12 +124,25 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("begin tx for %s: %w", filename, err)
 		}
 
-		if _, err := tx.Exec(string(sqlBytes)); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("execute migration %s: %w", filename, err)
+		// Execute the migration SQL.
+		// If it fails because the schema change is already present (duplicate column, table already exists, etc.),
+		// treat it as a no-op for this migration and still record it as applied.
+		// This makes re-running migrations on an already-migrated DB a clean no-op with no "duplicate column" error,
+		// even in cases of partial previous runs (crash after ALTER but before schema_migrations INSERT, etc.).
+		if _, execErr := tx.Exec(string(sqlBytes)); execErr != nil {
+			errStr := strings.ToLower(execErr.Error())
+			if strings.Contains(errStr, "duplicate column name") ||
+				strings.Contains(errStr, "already exists") ||
+				strings.Contains(errStr, "duplicate table") {
+				log.Printf("Migration %s: schema change already present (e.g. column/table exists) — recording as applied to keep runner idempotent", filename)
+			} else {
+				tx.Rollback()
+				return fmt.Errorf("execute migration %s: %w", filename, execErr)
+			}
 		}
 
-		if _, err := tx.Exec("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+		// Record as applied. Use OR IGNORE to be extra safe if the record was partially created.
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)`,
 			filename, time.Now().UTC()); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("record migration %s: %w", filename, err)
@@ -144,19 +157,34 @@ func (db *DB) migrate() error {
 
 	log.Printf("Database migrations complete (%d files)", len(sqlFiles))
 
-// Ensure actionability columns for richer sensor data (post initial schema).
-// server_ip: DNS server / destination side from sensor responses (user-requested source/dest visibility).
-// services: for passive host identification (model/services/discovery_source from mDNS etc.).
-// Both use the same portable pragma + plain ALTER pattern for older sqlite3 CLI compat.
-// Run at every Open so List/loads work immediately after restart (hot-paths in InsertEvents/UpsertDevice also ensure on first write).
-var serverIPColCount int
-if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'server_ip'`).Scan(&serverIPColCount); err == nil && serverIPColCount == 0 {
-	db.Exec(`ALTER TABLE events ADD COLUMN server_ip TEXT DEFAULT ''`)
-}
-var servicesColCount int
-if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'services'`).Scan(&servicesColCount); err == nil && servicesColCount == 0 {
-	db.Exec(`ALTER TABLE devices ADD COLUMN services TEXT DEFAULT '[]'`)
-}
+	// Ensure actionability columns for richer sensor data (post initial schema).
+	// server_ip: DNS server / destination side from sensor responses (user-requested source/dest visibility).
+	// services: for passive host identification (model/services/discovery_source from mDNS etc.).
+	// risk_* : from migration 016.
+	// All use the same portable pragma + plain ALTER pattern for older sqlite3 CLI compat.
+	// Run at every Open so List/loads work immediately after restart (hot-paths in InsertEvents/UpsertDevice also ensure on first write).
+	// These are the safety net for old DBs; migrations (001 + 016) own the declared schema for new DBs.
+	var serverIPColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'server_ip'`).Scan(&serverIPColCount); err == nil && serverIPColCount == 0 {
+		db.Exec(`ALTER TABLE events ADD COLUMN server_ip TEXT DEFAULT ''`)
+	}
+	var servicesColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'services'`).Scan(&servicesColCount); err == nil && servicesColCount == 0 {
+		db.Exec(`ALTER TABLE devices ADD COLUMN services TEXT DEFAULT '[]'`)
+	}
+	// Guarded ensures for the 016 risk columns as well (migrations own them, but runtime belt-and-suspenders for old DBs).
+	var riskCategoryColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'risk_category'`).Scan(&riskCategoryColCount); err == nil && riskCategoryColCount == 0 {
+		db.Exec(`ALTER TABLE devices ADD COLUMN risk_category TEXT DEFAULT ''`)
+	}
+	var riskModelColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'risk_model'`).Scan(&riskModelColCount); err == nil && riskModelColCount == 0 {
+		db.Exec(`ALTER TABLE devices ADD COLUMN risk_model TEXT DEFAULT ''`)
+	}
+	var riskReasonsColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'risk_reasons'`).Scan(&riskReasonsColCount); err == nil && riskReasonsColCount == 0 {
+		db.Exec(`ALTER TABLE devices ADD COLUMN risk_reasons TEXT DEFAULT ''`)
+	}
 
 	return nil
 }
@@ -216,7 +244,10 @@ CREATE TABLE IF NOT EXISTS devices (
     fingerprint_confidence REAL NOT NULL DEFAULT 0.0,
     custom_name  TEXT DEFAULT '',
     notes        TEXT DEFAULT '',
-    services     TEXT DEFAULT '[]'
+    services     TEXT DEFAULT '[]',
+    risk_category TEXT DEFAULT '',
+    risk_model    TEXT DEFAULT '',
+    risk_reasons  TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_devices_mac  ON devices (mac_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last ON devices (last_seen);
