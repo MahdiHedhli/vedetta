@@ -126,3 +126,12 @@ Threat-model note:
 - there is still broader admin/dashboard auth work to finish around human-facing management routes
 
 If you are documenting or deploying Vedetta publicly, do not position the current sensor path as fully hardened remote infrastructure. The right framing today is self-hosted, local-first, and still under active hardening.
+
+## Richer Sensor Payloads for Actionability (L6 additive note)
+
+Core + sensor now carry additional fields (populated by passive discovery and DNS ingest, stored, queryable, and surfaced in UI):
+
+- On events (dns_query primarily): `server_ip` (the DNS server observed), plus `dns_answers` (resolved IPs from responses) and `process` (local process hint when available) — carried in metadata for the current collector shape.
+- On devices: `model`, `services` (list from mDNS/SSDP/DHCP/etc.), `discovery_source` (json "discovery_source", db "discovery_method"; values e.g. passive, mdns, dhcp, arp, nmap_active), plus generalized `risk_category` / `risk_model` / `risk_reasons` (and legacy `eol_risk`/`eol_model` for compat per migration 016).
+
+These enable operator actionability (L5) and are the target for future connectors (e.g. UniFi). The /ingest path and /events filters (json_extract on metadata) exist; normalization of vendor raw logs into structured FirewallEvent fields remains connector-layer responsibility (see connector-guide.md). All additions were made while preserving prior sensor architecture and data flows.
