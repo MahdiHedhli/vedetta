@@ -10,6 +10,7 @@ type Event struct {
 	EventType       string    `json:"event_type" db:"event_type"`           // dns_query | nmap_discovery | firewall_log | anomaly
 	SourceHash      string    `json:"source_hash" db:"source_hash"`         // SHA-256 of local IP + per-install salt
 	SourceIP        string    `json:"source_ip,omitempty" db:"source_ip"`   // Raw client IP (local network only)
+	ServerIP        string    `json:"server_ip,omitempty" db:"server_ip"`   // DNS server queried (for actionability)
 	Domain          string    `json:"domain,omitempty" db:"domain"`         // queried domain (DNS events)
 	QueryType       string    `json:"query_type,omitempty" db:"query_type"` // A | AAAA | MX | TXT
 	ResolvedIP      string    `json:"resolved_ip,omitempty" db:"resolved_ip"`
@@ -41,14 +42,22 @@ type Device struct {
 	OSFamily              string    `json:"os_family,omitempty" db:"os_family"`
 	OSVersion             string    `json:"os_version,omitempty" db:"os_version"`
 	Model                 string    `json:"model,omitempty" db:"model"`
-	DiscoveryMethod       string    `json:"discovery_method,omitempty" db:"discovery_method"`
+	DiscoveryMethod       string    `json:"discovery_source,omitempty" db:"discovery_method"`
 	FingerprintConfidence float64   `json:"fingerprint_confidence" db:"fingerprint_confidence"`
+	Services              []string  `json:"services,omitempty" db:"-"` // from sensor passive discovery for actionability
+
 	CustomName            string    `json:"custom_name,omitempty" db:"custom_name"`
 	Notes                 string    `json:"notes,omitempty" db:"notes"`
-	// EOLRisk and EOLModel flag devices matching known EOL/vulnerable models from
-	// FBI IC3 FLASH 2026-03-12 (AVrecon / SocksEscort). These receive elevated risk scoring.
+	// EOLRisk and EOLModel are retained for backward compatibility with the original
+	// IC3 AVrecon work. New code should prefer the generalized risk fields below.
 	EOLRisk  bool   `json:"eol_risk" db:"eol_risk"`
 	EOLModel string `json:"eol_model,omitempty" db:"eol_model"`
+
+	// Generalized risk categories (see migration 016).
+	// Primary category: "known_exploited", "eol_eos", or "high_risk_iot".
+	RiskCategory string   `json:"risk_category,omitempty" db:"risk_category"`
+	RiskModel    string   `json:"risk_model,omitempty" db:"risk_model"`
+	RiskReasons  []string `json:"risk_reasons,omitempty" db:"-"` // populated from risk_reasons JSON TEXT
 }
 
 // SuppressionRule defines a user-created filter to auto-hide matching events.

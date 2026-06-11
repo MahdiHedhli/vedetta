@@ -13,6 +13,9 @@
 /internal/
 
 # ----- Secrets & Credentials -----
+# .env (and .env.* except .env.example) must stay ignored.
+# This protects files containing GITHUB_PAT and other secrets.
+# Confirmed present before any recovery commits.
 .env
 .env.*
 !.env.example

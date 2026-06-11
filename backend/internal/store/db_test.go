@@ -29,6 +29,20 @@ func TestOpen_InMemory(t *testing.T) {
 			t.Errorf("expected table %q to exist: %v", table, err)
 		}
 	}
+
+	// Recovery actionability columns must be present (added via 001/016 or guarded runtime ensures in migrate()).
+	// Re-migrate must be a no-op (no duplicate column errors).
+	checkCol := func(table, col string) {
+		var c int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, col).Scan(&c); err != nil || c == 0 {
+			t.Errorf("expected recovery column %s.%s to exist (count=%d, err=%v)", table, col, c, err)
+		}
+	}
+	checkCol("events", "server_ip")
+	checkCol("devices", "services")
+	checkCol("devices", "risk_category")
+	checkCol("devices", "risk_model")
+	checkCol("devices", "risk_reasons")
 }
 
 func TestMigrate_SequentialRunner(t *testing.T) {
@@ -84,6 +98,9 @@ func TestMigrate_SequentialRunner(t *testing.T) {
 	if count != 2 {
 		t.Errorf("expected 2 migrations after re-open, got %d", count)
 	}
+
+	// Note: actionability column checks are in TestOpen_InMemory and TestMigrate_InlineFallback
+	// (this test uses a minimal custom migration dir without the real events/devices tables).
 }
 
 func TestMigrate_InlineFallback(t *testing.T) {
@@ -107,4 +124,17 @@ func TestMigrate_InlineFallback(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to insert into sensors: %v", err)
 	}
+
+	// Recovery columns must be present even in inline fallback path.
+	checkCol := func(table, col string) {
+		var c int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, col).Scan(&c); err != nil || c == 0 {
+			t.Errorf("expected recovery column %s.%s in inline fallback (count=%d, err=%v)", table, col, c, err)
+		}
+	}
+	checkCol("events", "server_ip")
+	checkCol("devices", "services")
+	checkCol("devices", "risk_category")
+	checkCol("devices", "risk_model")
+	checkCol("devices", "risk_reasons")
 }
