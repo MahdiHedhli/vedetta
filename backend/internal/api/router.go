@@ -526,14 +526,33 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", "attachment; filename=events.csv")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("event_id,timestamp,event_type,source_hash,source_ip,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment,dns_source,threat_desc\n"))
+		w.Write([]byte("event_id,timestamp,event_type,source_hash,source_ip,server_ip,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment,dns_source,threat_desc,dns_answers,process\n"))
 		for _, e := range result.Events {
 			tagsStr := strings.Join(e.Tags, ";")
+			answersStr := ""
+			processStr := ""
+			if e.Metadata != "" {
+				var m map[string]any
+				if json.Unmarshal([]byte(e.Metadata), &m) == nil {
+					if ans, ok := m["dns_answers"].([]interface{}); ok {
+						strs := []string{}
+						for _, a := range ans {
+							if s, ok := a.(string); ok {
+								strs = append(strs, s)
+							}
+						}
+						answersStr = strings.Join(strs, ";")
+					}
+					if p, ok := m["process"].(string); ok {
+						processStr = p
+					}
+				}
+			}
 			line := strings.Join([]string{
 				e.EventID, e.Timestamp.Format(time.RFC3339), e.EventType, e.SourceHash,
-				e.SourceIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
+				e.SourceIP, e.ServerIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
 				strconv.FormatFloat(e.AnomalyScore, 'f', 4, 64), tagsStr, e.Geo,
-				e.DeviceVendor, e.NetworkSegment, e.DNSSource, e.ThreatDesc,
+				e.DeviceVendor, e.NetworkSegment, e.DNSSource, e.ThreatDesc, answersStr, processStr,
 			}, ",")
 			w.Write([]byte(line + "\n"))
 		}
@@ -967,6 +986,11 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 			Vendor     string `json:"vendor"`
 			OpenPorts  []int  `json:"open_ports"`
 			Status     string `json:"status"`
+			// Extended for actionability (model/services/discovery_source from passive sensor).
+			// These will be populated in JSON decode; copy to DiscoveredHost only after L4 updates the type.
+			Model           string   `json:"model,omitempty"`
+			Services        []string `json:"services,omitempty"`
+			DiscoverySource string   `json:"discovery_source,omitempty"`
 		} `json:"hosts"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -995,12 +1019,15 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 	newCount := 0
 	for _, h := range body.Hosts {
 		host := discovery.DiscoveredHost{
-			IPAddress:  h.IPAddress,
-			MACAddress: h.MACAddress,
-			Hostname:   h.Hostname,
-			Vendor:     h.Vendor,
-			OpenPorts:  h.OpenPorts,
-			Status:     h.Status,
+			IPAddress:       h.IPAddress,
+			MACAddress:      h.MACAddress,
+			Hostname:        h.Hostname,
+			Vendor:          h.Vendor,
+			OpenPorts:       h.OpenPorts,
+			Status:          h.Status,
+			Model:           h.Model,
+			Services:        h.Services,
+			DiscoverySource: h.DiscoverySource,
 		}
 		isNew, err := s.DB.UpsertDevice(host, now, body.Segment)
 		if err != nil {
@@ -1216,14 +1243,16 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SensorID string `json:"sensor_id"`
 		Queries  []struct {
-			Timestamp  int64  `json:"timestamp"`
-			Domain     string `json:"domain"`
-			QueryType  string `json:"query_type"`
-			ClientIP   string `json:"client_ip"`
-			ResponseIP string `json:"response_ip,omitempty"`
-			ServerIP   string `json:"server_ip,omitempty"`
-			Blocked    bool   `json:"blocked"`
-			Source     string `json:"source"`
+			Timestamp  int64    `json:"timestamp"` // unix millis or seconds (auto-detected for compat)
+			Domain     string   `json:"domain"`
+			QueryType  string   `json:"query_type"`
+			ClientIP   string   `json:"client_ip"`
+			ResponseIP string   `json:"response_ip,omitempty"`
+			ServerIP   string   `json:"server_ip,omitempty"`
+			Blocked    bool     `json:"blocked"`
+			Source     string   `json:"source"`
+			Answers    []string `json:"answers,omitempty"` // resolved destinations from sensor (for actionability)
+			Process    string   `json:"process,omitempty"` // originating process hint (if sensor has local visibility)
 		} `json:"queries"`
 	}
 
@@ -1268,12 +1297,21 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 		h.Write([]byte(q.ClientIP))
 		sourceHash := hex.EncodeToString(h.Sum(nil))
 
+		// Timestamp: support millis (preferred for precision) or legacy seconds
+		var ts time.Time
+		if q.Timestamp > 1_000_000_000_000 { // millis
+			ts = time.UnixMilli(q.Timestamp).UTC()
+		} else {
+			ts = time.Unix(q.Timestamp, 0).UTC()
+		}
+
 		event := models.Event{
 			EventID:        eventID,
-			Timestamp:      time.Unix(q.Timestamp, 0).UTC(),
+			Timestamp:      ts,
 			EventType:      "dns_query",
 			SourceHash:     sourceHash,
 			SourceIP:       q.ClientIP,
+			ServerIP:       q.ServerIP,
 			Domain:         q.Domain,
 			QueryType:      q.QueryType,
 			ResolvedIP:     q.ResponseIP,
@@ -1284,6 +1322,34 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 			DeviceVendor:   "",
 			NetworkSegment: "default",
 			DNSSource:      q.Source,
+		}
+
+		// Store answers (resolved destinations) in metadata for actionability.
+		// This helps users see what the query actually resolved to without extra lookups.
+		if len(q.Answers) > 0 {
+			m := map[string]any{}
+			if event.Metadata != "" {
+				_ = json.Unmarshal([]byte(event.Metadata), &m)
+			}
+			m["dns_answers"] = q.Answers
+			if b, err := json.Marshal(m); err == nil {
+				event.Metadata = string(b)
+			}
+			// Also surface first answer in ResolvedIP for backward/ simple views
+			if event.ResolvedIP == "" {
+				event.ResolvedIP = q.Answers[0]
+			}
+		}
+
+		if q.Process != "" {
+			m := map[string]any{}
+			if event.Metadata != "" {
+				_ = json.Unmarshal([]byte(event.Metadata), &m)
+			}
+			m["process"] = q.Process
+			if b, err := json.Marshal(m); err == nil {
+				event.Metadata = string(b)
+			}
 		}
 
 		// SNR-05: Enrich with passive device discovery context.
@@ -1300,8 +1366,17 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 
 			// SNR-11: Detect new devices (first seen in last 48 hours)
 			// Suspicious DNS from brand new devices is higher risk.
-			if !dev.FirstSeen.IsZero() {
-				age := time.Since(dev.FirstSeen)
+			// Use the minimum first_seen across all records for this IP to avoid
+			// spurious "new_device" tags on established machines that have duplicate
+			// records (with different first_seen values) from mixed discovery sources.
+			effectiveFirstSeen := dev.FirstSeen
+			if s.DB != nil {
+				if minSeen, err := s.DB.GetMinFirstSeenForIP(q.ClientIP); err == nil && !minSeen.IsZero() && minSeen.Before(effectiveFirstSeen) {
+					effectiveFirstSeen = minSeen
+				}
+			}
+			if !effectiveFirstSeen.IsZero() {
+				age := time.Since(effectiveFirstSeen)
 				if age < 48*time.Hour {
 					found := false
 					for _, t := range event.Tags {
@@ -1329,19 +1404,39 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// EOL router / high-risk device (IC3 2026-03-12 AVrecon advisory)
-			// These devices are actively exploited as residential proxies and C2 relays.
-			// Any anomalous DNS from them is much higher priority.
-			if dev.EOLRisk {
-				found := false
-				for _, t := range event.Tags {
-					if t == "eol_router" {
-						found = true
-						break
-					}
+			// Risk tagging for known exploitable / EOL / high-risk IoT devices.
+			// Generalized from the original IC3 AVrecon work (migration 016).
+			// We map categories to tags for downstream scoring and UI:
+			//   eol_eos       -> "eol_router" (kept for compat + specific IC3 boost)
+			//   high_risk_iot -> "high_risk_iot"
+			//   known_exploited -> "known_exploited"
+			if dev.EOLRisk || dev.RiskCategory != "" {
+				category := dev.RiskCategory
+				if category == "" && dev.EOLRisk {
+					category = "eol_eos"
 				}
-				if !found {
-					event.Tags = append(event.Tags, "eol_router")
+
+				tag := ""
+				switch category {
+				case "eol_eos":
+					tag = "eol_router"
+				case "high_risk_iot":
+					tag = "high_risk_iot"
+				case "known_exploited":
+					tag = "known_exploited"
+				}
+
+				if tag != "" {
+					found := false
+					for _, t := range event.Tags {
+						if t == tag {
+							found = true
+							break
+						}
+					}
+					if !found {
+						event.Tags = append(event.Tags, tag)
+					}
 				}
 			}
 		}

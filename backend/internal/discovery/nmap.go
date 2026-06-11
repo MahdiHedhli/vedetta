@@ -16,7 +16,7 @@ type NmapResult struct {
 	Duration time.Duration
 }
 
-// DiscoveredHost represents a single host found by nmap.
+// DiscoveredHost represents a single host found by nmap (or passive discovery).
 type DiscoveredHost struct {
 	IPAddress  string
 	MACAddress string
@@ -24,6 +24,12 @@ type DiscoveredHost struct {
 	Vendor     string
 	OpenPorts  []int
 	Status     string // up | down
+
+	// Actionability fields populated by sensor passive discovery (mDNS, DHCP, SSDP, etc.).
+	// These flow through to the Device model and UI for richer context (model, advertised services, discovery source).
+	Model           string
+	Services        []string
+	DiscoverySource string // e.g. "passive_mdns", "passive_ssdp", "nmap_active"
 }
 
 // nmapRun is the top-level XML element from nmap -oX output.

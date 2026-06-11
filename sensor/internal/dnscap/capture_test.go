@@ -26,11 +26,25 @@ func TestParsePacketAcceptsDNSQueries(t *testing.T) {
 	}
 }
 
-func TestParsePacketIgnoresDNSResponses(t *testing.T) {
+func TestParsePacketParsesDNSResponsesForActionability(t *testing.T) {
 	c := &Capturer{}
 
-	if query := c.parsePacket(dnsPacket(t, true)); query != nil {
-		t.Fatalf("expected DNS response to be ignored, got %+v", query)
+	query := c.parsePacket(dnsPacket(t, true))
+	if query == nil {
+		t.Fatal("expected DNS response to be parsed (for answers/destinations)")
+	}
+	if query.Domain != "example.com" {
+		t.Fatalf("expected domain, got %q", query.Domain)
+	}
+	// For responses, client should be the destination of the response packet (original querier)
+	if query.ClientIP != "192.168.1.25" {
+		t.Fatalf("expected client IP (dst of response) to be 192.168.1.25, got %q", query.ClientIP)
+	}
+	if query.ServerIP != "192.168.1.1" {
+		t.Fatalf("expected server IP, got %q", query.ServerIP)
+	}
+	if len(query.Answers) == 0 || query.Answers[0] != "93.184.216.34" {
+		t.Fatalf("expected answers to include resolved IP, got %+v", query.Answers)
 	}
 }
 

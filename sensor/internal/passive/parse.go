@@ -52,9 +52,10 @@ func parseARP(packet gopacket.Packet) []netscan.DiscoveredHost {
 	}
 
 	return []netscan.DiscoveredHost{{
-		IPAddress:  net.IP(arp.SourceProtAddress).String(),
-		MACAddress: normalizeMAC(arp.SourceHwAddress),
-		Status:     "up",
+		IPAddress:       net.IP(arp.SourceProtAddress).String(),
+		MACAddress:      normalizeMAC(arp.SourceHwAddress),
+		Status:          "up",
+		DiscoverySource: "passive_arp",
 	}}
 }
 
@@ -77,9 +78,10 @@ func parseDHCPv4(packet gopacket.Packet) []netscan.DiscoveredHost {
 
 func hostFromDHCPv4(dhcp *layers.DHCPv4, srcIP string) *netscan.DiscoveredHost {
 	host := netscan.DiscoveredHost{
-		IPAddress:  firstNonEmptyIP(dhcp.YourClientIP, dhcp.ClientIP),
-		MACAddress: normalizeMAC(dhcp.ClientHWAddr),
-		Status:     "up",
+		IPAddress:       firstNonEmptyIP(dhcp.YourClientIP, dhcp.ClientIP),
+		MACAddress:      normalizeMAC(dhcp.ClientHWAddr),
+		Status:          "up",
+		DiscoverySource: "passive_dhcp",
 	}
 	if host.IPAddress == "" {
 		host.IPAddress = srcIP
@@ -123,10 +125,52 @@ func hostsFromMDNS(dns *layers.DNS, srcIP string) []netscan.DiscoveredHost {
 				continue
 			}
 			hosts = append(hosts, netscan.DiscoveredHost{
-				IPAddress: ip,
-				Hostname:  trimDNSName(answer.Name),
-				Status:    "up",
+				IPAddress:       ip,
+				Hostname:        trimDNSName(answer.Name),
+				Status:          "up",
+				DiscoverySource: "passive_mdns",
 			})
+		}
+	}
+
+	// Also parse TXT records for model / service info (common in IoT, printers, etc. for actionability)
+	for _, answer := range append(dns.Answers, dns.Additionals...) {
+		if answer.Type == layers.DNSTypeTXT && len(answer.TXT) > 0 {
+			for _, txt := range answer.TXT {
+				lower := strings.ToLower(string(txt))
+				if strings.Contains(lower, "model=") || strings.Contains(lower, "model :") || strings.Contains(lower, "modelname=") || strings.Contains(lower, "mn=") {
+					// extract value for common keys
+					parts := strings.SplitN(string(txt), "=", 2)
+					if len(parts) == 2 {
+						model := strings.TrimSpace(parts[1])
+						if model != "" {
+							if len(hosts) > 0 {
+								if hosts[len(hosts)-1].Model == "" {
+									hosts[len(hosts)-1].Model = model
+								}
+							}
+						}
+					}
+				}
+				if strings.Contains(lower, "manufacturer=") || strings.Contains(lower, "mf=") || strings.Contains(lower, "vendor=") {
+					parts := strings.SplitN(string(txt), "=", 2)
+					if len(parts) == 2 {
+						mf := strings.TrimSpace(parts[1])
+						if mf != "" && len(hosts) > 0 && hosts[len(hosts)-1].Vendor == "" {
+							hosts[len(hosts)-1].Vendor = mf
+						}
+					}
+				}
+			}
+		}
+		if answer.Type == layers.DNSTypePTR {
+			svc := trimDNSName(answer.Name)
+			if svc != "" && strings.HasPrefix(svc, "_") {
+				// service type e.g. _http._tcp.local
+				if len(hosts) > 0 {
+					hosts[len(hosts)-1].Services = append(hosts[len(hosts)-1].Services, svc)
+				}
+			}
 		}
 	}
 
@@ -144,9 +188,10 @@ func hostsFromMDNS(dns *layers.DNS, srcIP string) []netscan.DiscoveredHost {
 		if !strings.HasPrefix(name, "_") {
 			if ip := srcIP; ip != "" {
 				hosts = append(hosts, netscan.DiscoveredHost{
-					IPAddress: ip,
-					Hostname:  name,
-					Status:    "up",
+					IPAddress:       ip,
+					Hostname:        name,
+					Status:          "up",
+					DiscoverySource: "passive_mdns",
 				})
 			}
 		}
@@ -183,8 +228,9 @@ func hostFromSSDPPayload(payload []byte, srcIP string) *netscan.DiscoveredHost {
 	}
 
 	host := netscan.DiscoveredHost{
-		IPAddress: srcIP,
-		Status:    "up",
+		IPAddress:       srcIP,
+		Status:          "up",
+		DiscoverySource: "passive_ssdp",
 	}
 
 	if server := strings.TrimSpace(req.Header.Get("SERVER")); server != "" {
