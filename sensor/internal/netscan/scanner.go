@@ -16,7 +16,7 @@ type ScanResult struct {
 	Duration time.Duration    `json:"duration"`
 }
 
-// DiscoveredHost represents a single host found by nmap.
+// DiscoveredHost represents a single host found by nmap (or passive discovery).
 type DiscoveredHost struct {
 	IPAddress  string `json:"ip_address"`
 	MACAddress string `json:"mac_address"`
@@ -24,6 +24,11 @@ type DiscoveredHost struct {
 	Vendor     string `json:"vendor,omitempty"`
 	OpenPorts  []int  `json:"open_ports,omitempty"`
 	Status     string `json:"status"` // up | down
+
+	// Actionability fields from passive discovery (mDNS/DHCP/SSDP etc).
+	Model           string   `json:"model,omitempty"`
+	Services        []string `json:"services,omitempty"`
+	DiscoverySource string   `json:"discovery_source,omitempty"`
 }
 
 // Scanner wraps nmap execution.
@@ -124,7 +129,7 @@ func parseNmapXML(data []byte, scanTime time.Time, duration time.Duration) (*Sca
 			continue
 		}
 
-		host := DiscoveredHost{Status: h.Status.State}
+		host := DiscoveredHost{Status: h.Status.State, DiscoverySource: "active_nmap"}
 
 		for _, addr := range h.Addresses {
 			switch addr.AddrType {
