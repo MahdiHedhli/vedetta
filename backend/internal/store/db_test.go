@@ -1,6 +1,7 @@
 package store
 
 import (
+	"time"
 	"os"
 	"path/filepath"
 	"testing"
@@ -137,4 +138,25 @@ func TestMigrate_InlineFallback(t *testing.T) {
 	checkCol("devices", "risk_category")
 	checkCol("devices", "risk_model")
 	checkCol("devices", "risk_reasons")
+}
+
+func TestEnforceRetention(t *testing.T) {
+	db := testDB(t)
+
+	oldT := time.Now().AddDate(0, 0, -100).UTC()
+	recentT := time.Now().AddDate(0, 0, -1).UTC()
+	db.Exec(`INSERT INTO events (event_id, timestamp, event_type, source_hash) VALUES ('old', ?, 'dns_query', 'h')`, oldT)
+	db.Exec(`INSERT INTO events (event_id, timestamp, event_type, source_hash) VALUES ('recent', ?, 'dns_query', 'h')`, recentT)
+
+	db.Exec(`INSERT OR REPLACE INTO retention_config (key, value) VALUES ('retention_days', '30')`)
+
+	if err := db.EnforceRetention(); err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+
+	var c int
+	db.QueryRow("SELECT COUNT(*) FROM events").Scan(&c)
+	if c != 1 {
+		t.Errorf("expected 1 after retention, got %d", c)
+	}
 }

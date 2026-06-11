@@ -1,6 +1,7 @@
 package store
 
 import (
+	"log"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -92,6 +93,26 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 	}
 
 	return inserted, nil
+}
+
+// EnforceRetention deletes events older than retention_days (from retention_config, default 90).
+// Daily job; non-blocking (WAL DELETE ok concurrent with inserts). For Pi 4 SD longevity,
+// after bulk deletes run "PRAGMA incremental_vacuum;" (or periodic full VACUUM offline) to
+// reclaim space without heavy IO. See research/02-log-aggregation.md.
+func (db *DB) EnforceRetention() error {
+	var days int
+	err := db.QueryRow("SELECT CAST(value AS INTEGER) FROM retention_config WHERE key='retention_days'").Scan(&days)
+	if err != nil || days <= 0 {
+		days = 90
+	}
+	cutoff := time.Now().AddDate(0, 0, -days).UTC()
+	res, err := db.Exec("DELETE FROM events WHERE timestamp < ?", cutoff)
+	if err != nil {
+		return fmt.Errorf("retention delete: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	log.Printf("Retention: deleted %d events older than %d days", n, days)
+	return nil
 }
 
 // EventQueryParams holds the filtering, sorting, and pagination options
