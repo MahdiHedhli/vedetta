@@ -63,6 +63,21 @@ type FirewallEvent struct {
 	Application string // DPI app name if available
 	RawLog      string // original log line for debugging
 }
+
+// NOTE on current collector behavior (as of the ingest pipeline implementation):
+// The Fluent Bit config for firewall/syslog (parsers.conf + fluent-bit.conf modify filter)
+// only emits event_type=firewall_log, source_hash, and raw_log (the original syslog/filterlog line).
+// Detailed fields (action, protocol, src_ip, dst_ip, src_port, dst_port, interface, direction, rule)
+// remain inside the raw_log CSV string and are NOT automatically extracted to top-level JSON keys
+// or to metadata by the collector (unlike the Pi-hole path which has a dedicated Lua transform).
+// The /ingest handler (after the metadata-lift fix) will preserve any top-level fields the collector
+// does emit into the Event.Metadata JSON so that json_extract-based filters (e.g. ?action=block)
+// can work if/when the collector or a connector layer populates them.
+// Per-vendor parsing of raw_log (or equivalent export) into the structured FirewallEvent fields
+// is a connector-layer responsibility (see research/deep-dive-firewall-connectors.md and UniFi/pfSense plans).
+// This is explicitly tracked as in-scope for the firewall/UniFi connector work (Stage 5).
+// The faithful test uses a synthetic payload with top-level fields to verify the handler's
+// preservation logic (the drop-bug fix); it does not reflect current collector output shape.
 ```
 
 ### ConnectorConfig

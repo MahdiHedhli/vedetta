@@ -47,7 +47,7 @@ func registerTestSensor(t *testing.T, router http.Handler, sensorID string) stri
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusAccepted {
+	if w.Code != http.StatusOK {
 		t.Fatalf("register sensor: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
@@ -99,8 +99,8 @@ func TestHandleIngest_SingleEvent(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]any
@@ -126,8 +126,8 @@ func TestHandleIngest_BatchEvents(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]any
@@ -186,8 +186,8 @@ func TestHandleIngest_AutoGeneratesFields(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Verify the event was stored with auto-generated fields
@@ -468,6 +468,13 @@ func TestHandleSensorDevices_WrongScopeTokenRejected(t *testing.T) {
 }
 
 func TestHandleIngest_FirewallFieldsRoundtrip_FaithfulCollectorShape(t *testing.T) {
+	// Honest note: this test uses a synthetic payload with the listed firewall fields (action, protocol, etc.)
+	// at top-level to verify the handler's preservation of top-level non-Event fields into metadata
+	// (the drop-bug fix from the faithful shape test). It does NOT use the current collector's actual
+	// output shape (which only has event_type/source_hash/raw_log at top-level per fluent-bit.conf
+	// modify filter + rfc3164 parser; details stay inside raw_log CSV). See docs/connector-guide.md
+	// for the documented limitation and that raw_log parsing belongs to the connector layer (Stage 5).
+	// The test confirms that if/when top-level fields are emitted, they reach metadata for PIECE 3 filters.
 	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
 
@@ -499,8 +506,8 @@ func TestHandleIngest_FirewallFieldsRoundtrip_FaithfulCollectorShape(t *testing.
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ingest expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("ingest expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Query with PIECE 3 filter on action (and protocol)
