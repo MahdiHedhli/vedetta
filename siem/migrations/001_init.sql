@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS events (
     timestamp      TIMESTAMP NOT NULL,
     event_type     TEXT NOT NULL CHECK (event_type IN ('dns_query', 'nmap_discovery', 'firewall_log', 'anomaly')),
     source_hash    TEXT NOT NULL,
+    source_ip      TEXT,
+    server_ip      TEXT DEFAULT '',
     domain         TEXT,
     query_type     TEXT CHECK (query_type IN ('A', 'AAAA', 'MX', 'TXT', 'CNAME', 'SRV', 'PTR', NULL)),
     resolved_ip    TEXT,
@@ -15,7 +17,11 @@ CREATE TABLE IF NOT EXISTS events (
     tags           TEXT DEFAULT '[]',  -- JSON array, indexed via generated column or application layer
     geo            TEXT,               -- ISO 3166-1 alpha-2 country code
     device_vendor  TEXT,
-    network_segment TEXT DEFAULT 'default' CHECK (network_segment IN ('default', 'iot', 'guest'))
+    network_segment TEXT DEFAULT 'default' CHECK (network_segment IN ('default', 'iot', 'guest')),
+    dns_source     TEXT DEFAULT '',
+    metadata       TEXT DEFAULT '{}',
+    acknowledged   BOOLEAN NOT NULL DEFAULT FALSE,
+    ack_reason     TEXT DEFAULT ''
 );
 
 -- Indexes: optimized for SIEM-style queries
