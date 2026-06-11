@@ -217,6 +217,18 @@ func main() {
 		defer dnsManager.Stop()
 	}
 
+	// PIECE 4: daily retention enforcement (non-blocking). Config from retention_config.
+	// Documented: use incremental_vacuum or offline VACUUM for Pi 4 SD longevity post-delete.
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		_ = db.EnforceRetention() // initial
+		for range ticker.C {
+			_ = db.EnforceRetention()
+		}
+	}()
+	log.Printf("Retention job started (daily)")
+
 	router := api.NewRouter(srv)
 
 	httpSrv := &http.Server{
