@@ -143,6 +143,21 @@ func (db *DB) migrate() error {
 	}
 
 	log.Printf("Database migrations complete (%d files)", len(sqlFiles))
+
+// Ensure actionability columns for richer sensor data (post initial schema).
+// server_ip: DNS server / destination side from sensor responses (user-requested source/dest visibility).
+// services: for passive host identification (model/services/discovery_source from mDNS etc.).
+// Both use the same portable pragma + plain ALTER pattern for older sqlite3 CLI compat.
+// Run at every Open so List/loads work immediately after restart (hot-paths in InsertEvents/UpsertDevice also ensure on first write).
+var serverIPColCount int
+if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'server_ip'`).Scan(&serverIPColCount); err == nil && serverIPColCount == 0 {
+	db.Exec(`ALTER TABLE events ADD COLUMN server_ip TEXT DEFAULT ''`)
+}
+var servicesColCount int
+if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'services'`).Scan(&servicesColCount); err == nil && servicesColCount == 0 {
+	db.Exec(`ALTER TABLE devices ADD COLUMN services TEXT DEFAULT '[]'`)
+}
+
 	return nil
 }
 
@@ -164,6 +179,7 @@ CREATE TABLE IF NOT EXISTS events (
     event_type     TEXT NOT NULL,
     source_hash    TEXT NOT NULL,
     source_ip      TEXT,
+    server_ip      TEXT DEFAULT '',
     domain         TEXT,
     query_type     TEXT,
     resolved_ip    TEXT,
@@ -199,7 +215,8 @@ CREATE TABLE IF NOT EXISTS devices (
     discovery_method TEXT DEFAULT 'nmap_active',
     fingerprint_confidence REAL NOT NULL DEFAULT 0.0,
     custom_name  TEXT DEFAULT '',
-    notes        TEXT DEFAULT ''
+    notes        TEXT DEFAULT '',
+    services     TEXT DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_devices_mac  ON devices (mac_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last ON devices (last_seen);
