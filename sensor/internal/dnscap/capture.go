@@ -3,6 +3,7 @@ package dnscap
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,7 @@ type Capturer struct {
 	onQuery      func(Query)
 }
 
-// Query represents a captured DNS query.
+// Query represents a captured DNS query (or resolution from response).
 type Query struct {
 	Timestamp time.Time
 	Domain    string
@@ -34,7 +35,9 @@ type Query struct {
 	ClientIP  string
 	ServerIP  string
 	Blocked   bool
-	Source    string // e.g., "passive_capture"
+	Source    string   // e.g., "passive_capture"
+	Answers   []string // resolved destinations from answer records (populated for responses)
+	Process   string   // originating process (future for local agent modes)
 }
 
 // Config contains settings for DNS capture.
@@ -198,20 +201,22 @@ func (c *Capturer) run() {
 }
 
 // parsePacket extracts DNS queries from a captured packet.
+// For responses (QR=true), we attribute to the original client (dst IP of response packet)
+// and collect answer records for destination/actionability info.
 func (c *Capturer) parsePacket(packet gopacket.Packet) *Query {
 	// Get IP layer
 	ipv4, ipv6 := false, false
-	var clientIP, serverIP string
+	var srcIP, dstIP string
 
 	if ip4 := packet.Layer(layers.LayerTypeIPv4); ip4 != nil {
 		ipv4Layer := ip4.(*layers.IPv4)
-		clientIP = ipv4Layer.SrcIP.String()
-		serverIP = ipv4Layer.DstIP.String()
+		srcIP = ipv4Layer.SrcIP.String()
+		dstIP = ipv4Layer.DstIP.String()
 		ipv4 = true
 	} else if ip6 := packet.Layer(layers.LayerTypeIPv6); ip6 != nil {
 		ipv6Layer := ip6.(*layers.IPv6)
-		clientIP = ipv6Layer.SrcIP.String()
-		serverIP = ipv6Layer.DstIP.String()
+		srcIP = ipv6Layer.SrcIP.String()
+		dstIP = ipv6Layer.DstIP.String()
 		ipv6 = true
 	}
 
@@ -226,11 +231,6 @@ func (c *Capturer) parsePacket(packet gopacket.Packet) *Query {
 	}
 
 	dns := dnsLayer.(*layers.DNS)
-	if dns.QR {
-		// Responses repeat the original question with the resolver as source,
-		// which makes the resolver look like a noisy client.
-		return nil
-	}
 	if len(dns.Questions) == 0 {
 		return nil
 	}
@@ -244,14 +244,44 @@ func (c *Capturer) parsePacket(packet gopacket.Packet) *Query {
 
 	queryType := layers.DNSType(q.Type).String()
 
-	return &Query{
+	query := &Query{
 		Timestamp: packet.Metadata().Timestamp,
 		Domain:    domain,
 		QueryType: queryType,
-		ClientIP:  clientIP,
-		ServerIP:  serverIP,
 		Source:    "passive_capture",
+		// Process left empty for pure network pcap capture. Host-local deployments of the sensor
+		// (or additional OS integration) can populate this for full "source process" actionability.
 	}
+
+	if dns.QR {
+		// This is a response packet. The original querier is the destination of this packet.
+		query.ClientIP = dstIP
+		query.ServerIP = srcIP // the resolver that answered
+		// Collect answers for actionability (destination IPs/names)
+		for _, ans := range dns.Answers {
+			if ans.IP != nil && !ans.IP.IsUnspecified() {
+				query.Answers = append(query.Answers, ans.IP.String())
+			} else if len(ans.Name) > 0 {
+				name := strings.TrimSuffix(string(ans.Name), ".")
+				if name != "" {
+					query.Answers = append(query.Answers, name)
+				}
+			}
+		}
+		// Also additionals sometimes carry useful info
+		for _, ans := range dns.Additionals {
+			if ans.IP != nil && !ans.IP.IsUnspecified() {
+				query.Answers = append(query.Answers, ans.IP.String())
+			}
+		}
+	} else {
+		// Query packet: client is source
+		query.ClientIP = srcIP
+		query.ServerIP = dstIP
+		// Queries typically have no answers; answers come in responses
+	}
+
+	return query
 }
 
 // sendBatch calls the callback for each query in the batch.

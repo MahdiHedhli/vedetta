@@ -1019,13 +1019,15 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 	newCount := 0
 	for _, h := range body.Hosts {
 		host := discovery.DiscoveredHost{
-			IPAddress:  h.IPAddress,
-			MACAddress: h.MACAddress,
-			Hostname:   h.Hostname,
-			Vendor:     h.Vendor,
-			OpenPorts:  h.OpenPorts,
-			Status:     h.Status,
-			// Model/Services/DiscoverySource omitted for origin DiscoveredHost compat (L4 will add to type + copy here).
+			IPAddress:       h.IPAddress,
+			MACAddress:      h.MACAddress,
+			Hostname:        h.Hostname,
+			Vendor:          h.Vendor,
+			OpenPorts:       h.OpenPorts,
+			Status:          h.Status,
+			Model:           h.Model,
+			Services:        h.Services,
+			DiscoverySource: h.DiscoverySource,
 		}
 		isNew, err := s.DB.UpsertDevice(host, now, body.Segment)
 		if err != nil {

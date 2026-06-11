@@ -39,9 +39,10 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 	if len(host.OpenPorts) == 0 {
 		portsJSON = []byte("[]")
 	}
-	// services from host.Services (richer passive) when L4 populates DiscoveredHost; for now empty to compile
-	// against origin types. Will carry data once sensor/internal/... and discovery update land.
-	servicesJSON := []byte("[]")
+	servicesJSON, _ := json.Marshal(host.Services)
+	if len(host.Services) == 0 {
+		servicesJSON = []byte("[]")
+	}
 
 	// Choose identity key.
 	// Prefer MAC when available (stable across DHCP).
@@ -129,7 +130,6 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 		// Update without fingerprinting (preserve higher confidence match)
 		// Still enrich model + discovery_source from sensor passive data (mDNS TXT/PTR etc.) for actionability / host ID;
 		// richer passive signals are preferred for model even if fp confidence not higher.
-		// (host.Model / DiscoverySource will be populated once L4 updates DiscoveredHost; use empty for origin compat now)
 		_, err = db.Exec(`
 			UPDATE devices SET last_seen = ?, ip_address = ?,
 			mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
@@ -142,7 +142,7 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 			scanTime, host.IPAddress,
 			host.MACAddress, host.MACAddress,
 			host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
-			"", "", string(servicesJSON), existingID,
+			host.Model, host.DiscoverySource, string(servicesJSON), existingID,
 		)
 	}
 

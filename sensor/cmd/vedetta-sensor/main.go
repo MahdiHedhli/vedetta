@@ -375,13 +375,15 @@ func pushDNSQueries(core *client.CoreClient, queries chan dnscap.Query) {
 			}
 
 			batch = append(batch, dnscap.DNSQuery{
-				Timestamp: q.Timestamp.Unix(),
+				Timestamp: q.Timestamp.UnixMilli(),
 				Domain:    q.Domain,
 				QueryType: q.QueryType,
 				ClientIP:  q.ClientIP,
 				ServerIP:  q.ServerIP,
 				Blocked:   q.Blocked,
 				Source:    q.Source,
+				Answers:   q.Answers,
+				Process:   q.Process,
 			})
 
 			// Send if batch is full
