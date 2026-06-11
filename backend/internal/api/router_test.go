@@ -99,8 +99,8 @@ func TestHandleIngest_SingleEvent(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]any
@@ -126,8 +126,8 @@ func TestHandleIngest_BatchEvents(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]any
@@ -186,8 +186,8 @@ func TestHandleIngest_AutoGeneratesFields(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Verify the event was stored with auto-generated fields
@@ -464,5 +464,73 @@ func TestHandleSensorDevices_WrongScopeTokenRejected(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleIngest_FirewallFieldsRoundtrip_FaithfulCollectorShape(t *testing.T) {
+	// Honest note: this test uses a synthetic payload with the listed firewall fields (action, protocol, etc.)
+	// at top-level to verify the handler's preservation of top-level non-Event fields into metadata
+	// (the drop-bug fix from the faithful shape test). It does NOT use the current collector's actual
+	// output shape (which only has event_type/source_hash/raw_log at top-level per fluent-bit.conf
+	// modify filter + rfc3164 parser; details stay inside raw_log CSV). See docs/connector-guide.md
+	// for the documented limitation and that raw_log parsing belongs to the connector layer (Stage 5).
+	// The test confirms that if/when top-level fields are emitted, they reach metadata for PIECE 3 filters.
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+
+	token := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	// Faithful to collector config for firewall: top-level event_type, source_hash, raw_log (CSV with details inside),
+	// plus parser fields. To directly test the top-level drop concern for the listed fields (action etc),
+	// the payload includes them at top-level as the "if emitted top-level" case (actual collector leaves in raw_log CSV;
+	// see STEP 1). After fix, top-level non-Event go to metadata for filter json_extract.
+	payload := []byte(`{
+		"event_type": "firewall_log",
+		"source_hash": "pfsense-host",
+		"raw_log": "5,16777216,,1000000103,igb1,match,block,in,4,0x10,,128,0,0,none,17,udp,328,198.51.100.1,198.51.100.2,67,68,308",
+		"action": "block",
+		"protocol": "udp",
+		"src_ip": "198.51.100.1",
+		"dst_ip": "198.51.100.2",
+		"src_port": 67,
+		"dst_port": 68,
+		"interface": "igb1",
+		"direction": "in",
+		"rule": "1000000103",
+		"pri": "134",
+		"ident": "filterlog"
+	}`)
+
+	req := httptest.NewRequest("POST", "/api/v1/ingest", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("ingest expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Query with PIECE 3 filter on action (and protocol)
+	req = httptest.NewRequest("GET", "/api/v1/events?action=block&protocol=udp&limit=5", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("query failed: %d", w.Code)
+	}
+
+	var result map[string]any
+	json.NewDecoder(w.Body).Decode(&result)
+	eventsIface, _ := result["events"].([]interface{})
+	if len(eventsIface) < 1 {
+		t.Fatalf("expected >=1 firewall event from ingest, got %d", len(eventsIface))
+	}
+
+	// Check fields are in the returned event's metadata (preserved, filterable)
+	evtMap := eventsIface[0].(map[string]any)
+	metaStr, _ := evtMap["metadata"].(string)
+	var meta map[string]any
+	json.Unmarshal([]byte(metaStr), &meta)
+	if meta["action"] != "block" || meta["protocol"] != "udp" || meta["src_ip"] != "198.51.100.1" || meta["interface"] != "igb1" {
+		t.Errorf("firewall fields not preserved in metadata or not filterable: %+v", meta)
 	}
 }
