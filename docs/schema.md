@@ -25,6 +25,8 @@ Every field must earn its place. The schema is lean and meaningful — no bloat,
 | `device_vendor` | `string` | No | Vendor name from OUI lookup or nmap fingerprint |
 | `network_segment` | `enum` | No | One of: `default`, `iot`, `guest` |
 | `dns_source` | `string` | No | DNS capture method that generated this event: `passive_capture`, `pihole`, `adguard`, `embedded_resolver`, `iptables_intercept` |
+| `server_ip` | `string` | No | DNS server / resolver IP (from sensor response packets for actionability; source/destination identification) |
+| `metadata` | `object` (JSON) | No | Detection details + richer sensor data: `dns_answers` (array of resolved destinations/IPs/names from DNS responses), `process` (originating process hint, future), etc. |
 
 ### Example
 
@@ -42,7 +44,9 @@ Every field must earn its place. The schema is lean and meaningful — no bloat,
   "tags": ["dga_candidate", "newly_registered"],
   "geo": "RU",
   "device_vendor": "Espressif",
-  "network_segment": "iot"
+  "network_segment": "iot",
+  "server_ip": "8.8.8.8",
+  "metadata": { "dns_answers": ["198.51.100.42"], "dga": { "entropy": 4.2 } }
 }
 ```
 
@@ -74,6 +78,9 @@ Tags are freeform strings, but the following are recognized by Vedetta's detecti
 | `vendor` | `string` | No | Vendor from OUI or nmap fingerprint |
 | `open_ports` | `int[]` | No | Currently open TCP ports |
 | `segment` | `enum` | No | Network segment: `default`, `iot`, `guest` |
+| `model` | `string` | No | Device model from passive discovery (mDNS/DHCP/SSDP) or nmap |
+| `services` | `string[]` | No | Advertised services from passive discovery (for actionability) |
+| `discovery_source` | `string` | No | How the device was discovered (e.g. passive_mdns, active_nmap) |
 
 ## Storage
 
