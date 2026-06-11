@@ -47,8 +47,8 @@ func registerTestSensor(t *testing.T, router http.Handler, sensorID string) stri
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("register sensor: expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("register sensor: expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var resp struct {
@@ -99,8 +99,8 @@ func TestHandleIngest_SingleEvent(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]any
@@ -126,8 +126,8 @@ func TestHandleIngest_BatchEvents(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var resp map[string]any
@@ -186,8 +186,8 @@ func TestHandleIngest_AutoGeneratesFields(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Verify the event was stored with auto-generated fields
@@ -214,8 +214,8 @@ func TestHandleEvents_Empty(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d", w.Code)
 	}
 
 	var resp store.EventQueryResult
@@ -271,8 +271,8 @@ func TestHandleEvents_CSVExport(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d", w.Code)
 	}
 	ct := w.Header().Get("Content-Type")
 	if ct != "text/csv" {
@@ -296,8 +296,8 @@ func TestHandleStatus(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d", w.Code)
 	}
 
 	var resp map[string]any
@@ -330,7 +330,7 @@ func TestHandleSensorRegister_RequiresExistingTokenForReRegistration(t *testing.
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusAccepted {
 		t.Fatalf("expected 200 (recovery) for unauthenticated re-registration, got %d: %s", w.Code, w.Body.String())
 	}
 	var recoveryResp struct {
@@ -353,7 +353,7 @@ func TestHandleSensorRegister_RequiresExistingTokenForReRegistration(t *testing.
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusAccepted {
 		t.Fatalf("expected 200 for authenticated re-registration, got %d: %s", w.Code, w.Body.String())
 	}
 
@@ -404,8 +404,8 @@ func TestHandleSensorDevices_AuthenticatedDeviceReportSucceeds(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

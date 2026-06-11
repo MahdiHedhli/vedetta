@@ -22,7 +22,6 @@ func TestInsertEvents_Basic(t *testing.T) {
 			Blocked:        false,
 			AnomalyScore:   0.1,
 			Tags:           []string{"test"},
-			NetworkSegment: "default",
 		},
 		{
 			EventID:        "evt-002",
@@ -34,7 +33,6 @@ func TestInsertEvents_Basic(t *testing.T) {
 			Blocked:        true,
 			AnomalyScore:   0.85,
 			Tags:           []string{"dga_candidate", "known_bad"},
-			NetworkSegment: "iot",
 		},
 	}
 
@@ -314,7 +312,6 @@ func seedEvents(t *testing.T, db *DB, n int) {
 			Domain:         "example.com",
 			AnomalyScore:   float64(i) * 0.1,
 			Tags:           []string{},
-			NetworkSegment: "default",
 		}
 	}
 	inserted, err := db.InsertEvents(events)
@@ -370,3 +367,5 @@ func TestInsertEvents_FirewallAndDNSPayloads(t *testing.T) {
 		t.Errorf("partial: expected 1, got %d", inserted)
 	}
 }
+
+
