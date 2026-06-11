@@ -12,6 +12,14 @@ import (
 // InsertEvents writes a batch of events to the events table.
 // It uses a single transaction with parameterized multi-row insert for performance.
 // Returns the count of successfully inserted events.
+//
+// PIECE 2 extension: supports /ingest payloads including firewall-shaped events (per FirewallEvent
+// in docs/connector-guide.md: action, protocol, src/dst IP/port, interface, direction, rule, raw_log, etc.).
+// Fields without dedicated columns are stored in the metadata JSON (see /ingest handler enrichment
+// which puts collector raw + received_at + extras there). No parallel table. If new columns needed
+// later, use new migration file (e.g. 017_*) with additive ALTER + the guarded-ensure pattern in
+// migrate() (like server_ip/services in recovery), preserving runner idempotency. Current Insert
+// already has the server_ip ensure + insert from recovery. Preserves batch/tx and Pi-4 budget.
 func (db *DB) InsertEvents(events []models.Event) (int, error) {
 	if len(events) == 0 {
 		return 0, nil

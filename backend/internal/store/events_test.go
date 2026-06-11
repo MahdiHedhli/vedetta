@@ -325,3 +325,48 @@ func seedEvents(t *testing.T, db *DB, n int) {
 		t.Fatalf("seedEvents: expected %d inserted, got %d", n, inserted)
 	}
 }
+
+func TestInsertEvents_FirewallAndDNSPayloads(t *testing.T) {
+	db := testDB(t)
+
+	// dns-shaped from collector (pihole transform)
+	dnsEvt := models.Event{
+		EventID:    "dns-1",
+		Timestamp:  time.Now().UTC(),
+		EventType:  "dns_query",
+		SourceHash: "client1",
+		Domain:     "example.com",
+		QueryType:  "A",
+		Blocked:    true,
+		Metadata:   `{"received_at":"2026-01-01T00:00:00Z"}`,
+	}
+	// firewall-shaped (from syslog + modify)
+	fwEvt := models.Event{
+		EventID:    "fw-1",
+		Timestamp:  time.Now().UTC(),
+		EventType:  "firewall_log",
+		SourceHash: "pfsense",
+		Metadata:   `{"raw_log":"...filterlog...","action":"block","protocol":"tcp","src_ip":"1.2.3.4","dst_ip":"5.6.7.8","src_port":12345,"dst_port":80,"interface":"wan","direction":"in","rule":"block-bad","received_at":"2026-01-01T00:00:00Z"}`,
+	}
+
+	inserted, err := db.InsertEvents([]models.Event{dnsEvt, fwEvt})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if inserted != 2 {
+		t.Errorf("expected 2 inserted, got %d", inserted)
+	}
+
+	// empty
+	_, err = db.InsertEvents(nil)
+	if err != nil {
+		t.Error("empty batch should not error")
+	}
+
+	// partial (one bad)
+	bad := models.Event{EventType: "invalid"}
+	inserted, _ = db.InsertEvents([]models.Event{fwEvt, bad})
+	if inserted != 1 {
+		t.Errorf("partial: expected 1, got %d", inserted)
+	}
+}
