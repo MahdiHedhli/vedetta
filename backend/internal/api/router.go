@@ -376,9 +376,39 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, raw := range rawArray {
-			// Try as a normal event object
+			// To preserve ALL top-level fields from the collector record (e.g. raw_log, and any action/protocol/src_ip etc
+			// if the collector or future filters emit them at top level), unmarshal the record to map first.
+			// Then lift non-Event (or all collector) keys into metadata so PIECE 3 json_extract filters can find them.
+			// Known Event fields are still populated via the struct unmarshal for compatibility.
+			record := map[string]any{}
+			_ = json.Unmarshal(raw, &record)
+
+			// Try as normal event object (for the known fields)
 			var evt models.Event
 			if err := json.Unmarshal(raw, &evt); err == nil && evt.EventType != "" {
+				// Lift top-level non-Event / collector fields into metadata
+				if evt.Metadata == "" {
+					evt.Metadata = "{}"
+				}
+				var meta map[string]any
+				if json.Unmarshal([]byte(evt.Metadata), &meta) != nil || meta == nil {
+					meta = map[string]any{}
+				}
+				for k, v := range record {
+					if k == "metadata" {
+						// merge any existing metadata sub-object
+						if sub, ok := v.(map[string]any); ok {
+							for sk, sv := range sub {
+								meta[sk] = sv
+							}
+						}
+						continue
+					}
+					// lift the top-level key (raw_log, action, protocol, src_ip, etc if present at top)
+					meta[k] = v
+				}
+				b, _ := json.Marshal(meta)
+				evt.Metadata = string(b)
 				events = append(events, evt)
 				continue
 			}
@@ -386,19 +416,64 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			// Try as Fluent Bit [timestamp, record] pair
 			var pair []json.RawMessage
 			if err := json.Unmarshal(raw, &pair); err == nil && len(pair) == 2 {
+				recMap := map[string]any{}
+				_ = json.Unmarshal(pair[1], &recMap)
 				var evt models.Event
 				if err := json.Unmarshal(pair[1], &evt); err == nil && evt.EventType != "" {
+					if evt.Metadata == "" {
+						evt.Metadata = "{}"
+					}
+					var meta map[string]any
+					if json.Unmarshal([]byte(evt.Metadata), &meta) != nil || meta == nil {
+						meta = map[string]any{}
+					}
+					for k, v := range recMap {
+						if k == "metadata" {
+							if sub, ok := v.(map[string]any); ok {
+								for sk, sv := range sub {
+									meta[sk] = sv
+								}
+							}
+							continue
+						}
+						meta[k] = v
+					}
+					b, _ := json.Marshal(meta)
+					evt.Metadata = string(b)
 					events = append(events, evt)
 				}
 			}
 		}
 	} else if trimmed[0] == '{' {
 		// Single event object
+		recMap := map[string]any{}
+		_ = json.Unmarshal(body, &recMap)
 		var evt models.Event
 		if err := json.Unmarshal(body, &evt); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON object"})
 			return
 		}
+		// Lift top-level collector fields to metadata
+		if evt.Metadata == "" {
+			evt.Metadata = "{}"
+		}
+		var meta map[string]any
+		if json.Unmarshal([]byte(evt.Metadata), &meta) != nil || meta == nil {
+			meta = map[string]any{}
+		}
+		for k, v := range recMap {
+			if k == "metadata" {
+				if sub, ok := v.(map[string]any); ok {
+					for sk, sv := range sub {
+						meta[sk] = sv
+					}
+				}
+				continue
+			}
+			meta[k] = v
+		}
+		b, _ := json.Marshal(meta)
+		evt.Metadata = string(b)
 		events = append(events, evt)
 	} else {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "expected JSON object or array"})
