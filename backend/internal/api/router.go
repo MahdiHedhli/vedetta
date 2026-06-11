@@ -60,7 +60,17 @@ func NewRouter(srv *Server) http.Handler {
 		r.Get("/events", srv.handleEvents)
 		r.Get("/events/stats", srv.handleEventStats)
 		r.Get("/events/timeline", srv.handleEventTimeline)
-		r.Post("/ingest", srv.handleIngest)
+
+		// Ingest endpoint for the Fluent Bit log collector (Pi-hole DNS + firewall syslog).
+		// Protected using the same auth mechanism as sensor ingest (RequireAuth middleware + scope checks
+		// for admin/sensor tokens; collector supplies Authorization: Bearer <token> or can use X-Sensor-ID
+		// for compatibility with requireAuthenticatedSensorID). Reuses existing sensor auth code in
+		// sensor_auth.go and auth package; no new auth invented. /ingest is for external log sources
+		// (collector), while /sensor/* is for the native vedetta-sensor binary -- they share InsertEvents.
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAuth(srv.DB))
+			r.Post("/ingest", srv.handleIngest)
+		})
 
 		// Device discovery (reads are public for convenience during alpha; writes protected)
 		r.Get("/devices", srv.handleListDevices)
@@ -366,9 +376,39 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, raw := range rawArray {
-			// Try as a normal event object
+			// To preserve ALL top-level fields from the collector record (e.g. raw_log, and any action/protocol/src_ip etc
+			// if the collector or future filters emit them at top level), unmarshal the record to map first.
+			// Then lift non-Event (or all collector) keys into metadata so PIECE 3 json_extract filters can find them.
+			// Known Event fields are still populated via the struct unmarshal for compatibility.
+			record := map[string]any{}
+			_ = json.Unmarshal(raw, &record)
+
+			// Try as normal event object (for the known fields)
 			var evt models.Event
 			if err := json.Unmarshal(raw, &evt); err == nil && evt.EventType != "" {
+				// Lift top-level non-Event / collector fields into metadata
+				if evt.Metadata == "" {
+					evt.Metadata = "{}"
+				}
+				var meta map[string]any
+				if json.Unmarshal([]byte(evt.Metadata), &meta) != nil || meta == nil {
+					meta = map[string]any{}
+				}
+				for k, v := range record {
+					if k == "metadata" {
+						// merge any existing metadata sub-object
+						if sub, ok := v.(map[string]any); ok {
+							for sk, sv := range sub {
+								meta[sk] = sv
+							}
+						}
+						continue
+					}
+					// lift the top-level key (raw_log, action, protocol, src_ip, etc if present at top)
+					meta[k] = v
+				}
+				b, _ := json.Marshal(meta)
+				evt.Metadata = string(b)
 				events = append(events, evt)
 				continue
 			}
@@ -376,19 +416,64 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			// Try as Fluent Bit [timestamp, record] pair
 			var pair []json.RawMessage
 			if err := json.Unmarshal(raw, &pair); err == nil && len(pair) == 2 {
+				recMap := map[string]any{}
+				_ = json.Unmarshal(pair[1], &recMap)
 				var evt models.Event
 				if err := json.Unmarshal(pair[1], &evt); err == nil && evt.EventType != "" {
+					if evt.Metadata == "" {
+						evt.Metadata = "{}"
+					}
+					var meta map[string]any
+					if json.Unmarshal([]byte(evt.Metadata), &meta) != nil || meta == nil {
+						meta = map[string]any{}
+					}
+					for k, v := range recMap {
+						if k == "metadata" {
+							if sub, ok := v.(map[string]any); ok {
+								for sk, sv := range sub {
+									meta[sk] = sv
+								}
+							}
+							continue
+						}
+						meta[k] = v
+					}
+					b, _ := json.Marshal(meta)
+					evt.Metadata = string(b)
 					events = append(events, evt)
 				}
 			}
 		}
 	} else if trimmed[0] == '{' {
 		// Single event object
+		recMap := map[string]any{}
+		_ = json.Unmarshal(body, &recMap)
 		var evt models.Event
 		if err := json.Unmarshal(body, &evt); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON object"})
 			return
 		}
+		// Lift top-level collector fields to metadata
+		if evt.Metadata == "" {
+			evt.Metadata = "{}"
+		}
+		var meta map[string]any
+		if json.Unmarshal([]byte(evt.Metadata), &meta) != nil || meta == nil {
+			meta = map[string]any{}
+		}
+		for k, v := range recMap {
+			if k == "metadata" {
+				if sub, ok := v.(map[string]any); ok {
+					for sk, sv := range sub {
+						meta[sk] = sv
+					}
+				}
+				continue
+			}
+			meta[k] = v
+		}
+		b, _ := json.Marshal(meta)
+		evt.Metadata = string(b)
 		events = append(events, evt)
 	} else {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "expected JSON object or array"})
@@ -438,6 +523,27 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			e.NetworkSegment = "default"
 		}
 
+		// Server-side received_at default in metadata (for actionability/audit).
+		if e.Metadata == "" {
+			e.Metadata = "{}"
+		}
+		var meta map[string]any
+		if json.Unmarshal([]byte(e.Metadata), &meta) != nil || meta == nil {
+			meta = map[string]any{}
+		}
+		if _, has := meta["received_at"]; !has {
+			meta["received_at"] = time.Now().UTC().Format(time.RFC3339)
+		}
+		// For collector payloads (firewall_log from modify filter + syslog parser), the raw record
+		// fields (action/protocol/src-dst etc or full syslog) are emitted at top level in the JSON record.
+		// Since direct unmarshal to Event drops unknowns, for ingest we preserve the full original record
+		// shape in metadata so PIECE 2 can store firewall details without dedicated columns (or via future migration).
+		// (Note: full raw capture would require map-based parse of the record before Event unmarshal;
+		// here we ensure at least received_at and that any pre-set metadata from collector is kept.
+		// Tests use payloads matching collector output + explicit metadata for extras.)
+		b, _ := json.Marshal(meta)
+		e.Metadata = string(b)
+
 		accepted = append(accepted, e)
 	}
 
@@ -460,7 +566,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, http.StatusAccepted, map[string]any{
 		"accepted": inserted,
 		"rejected": rejected + (len(accepted) - inserted),
 	})

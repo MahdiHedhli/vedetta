@@ -247,7 +247,9 @@ CREATE TABLE IF NOT EXISTS devices (
     services     TEXT DEFAULT '[]',
     risk_category TEXT DEFAULT '',
     risk_model    TEXT DEFAULT '',
-    risk_reasons  TEXT DEFAULT ''
+    risk_reasons  TEXT DEFAULT '',
+    eol_risk  INTEGER DEFAULT 0,
+    eol_model TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_devices_mac  ON devices (mac_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last ON devices (last_seen);

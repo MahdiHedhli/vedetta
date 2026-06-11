@@ -1,6 +1,7 @@
 package store
 
 import (
+	"log"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,6 +13,14 @@ import (
 // InsertEvents writes a batch of events to the events table.
 // It uses a single transaction with parameterized multi-row insert for performance.
 // Returns the count of successfully inserted events.
+//
+// PIECE 2 extension: supports /ingest payloads including firewall-shaped events (per FirewallEvent
+// in docs/connector-guide.md: action, protocol, src/dst IP/port, interface, direction, rule, raw_log, etc.).
+// Fields without dedicated columns are stored in the metadata JSON (see /ingest handler enrichment
+// which puts collector raw + received_at + extras there). No parallel table. If new columns needed
+// later, use new migration file (e.g. 017_*) with additive ALTER + the guarded-ensure pattern in
+// migrate() (like server_ip/services in recovery), preserving runner idempotency. Current Insert
+// already has the server_ip ensure + insert from recovery. Preserves batch/tx and Pi-4 budget.
 func (db *DB) InsertEvents(events []models.Event) (int, error) {
 	if len(events) == 0 {
 		return 0, nil
@@ -84,6 +93,26 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 	}
 
 	return inserted, nil
+}
+
+// EnforceRetention deletes events older than retention_days (from retention_config, default 90).
+// Daily job; non-blocking (WAL DELETE ok concurrent with inserts). For Pi 4 SD longevity,
+// after bulk deletes run "PRAGMA incremental_vacuum;" (or periodic full VACUUM offline) to
+// reclaim space without heavy IO. See research/02-log-aggregation.md.
+func (db *DB) EnforceRetention() error {
+	var days int
+	err := db.QueryRow("SELECT CAST(value AS INTEGER) FROM retention_config WHERE key='retention_days'").Scan(&days)
+	if err != nil || days <= 0 {
+		days = 90
+	}
+	cutoff := time.Now().AddDate(0, 0, -days).UTC()
+	res, err := db.Exec("DELETE FROM events WHERE timestamp < ?", cutoff)
+	if err != nil {
+		return fmt.Errorf("retention delete: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	log.Printf("Retention: deleted %d events older than %d days", n, days)
+	return nil
 }
 
 // EventQueryParams holds the filtering, sorting, and pagination options
