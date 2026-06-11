@@ -809,6 +809,19 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     return labels[src] || src || '—';
   };
 
+  // Small label helper for L5 discovery_source (additive, read-only reference from salvage L5)
+  const discoveryLabel = (src) => {
+    const labels = {
+      passive: 'passive',
+      dhcp: 'DHCP',
+      mdns: 'mDNS',
+      ssdp: 'SSDP',
+      arp: 'ARP',
+      nmap_active: 'active scan',
+    };
+    return labels[src] || src || '—';
+  };
+
   const parseMetadata = (metaStr) => {
     if (!metaStr || metaStr === '{}') return null;
     try { return JSON.parse(metaStr); } catch { return null; }
@@ -1316,6 +1329,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                   <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-gray-700 text-gray-400">{event.network_segment}</span>
                                 )}
                                 {event.device_vendor && <span className="ml-1 text-[10px] text-gray-500">({event.device_vendor})</span>}
+                                {event.server_ip && (
+                                  <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-300" title={`Reported via sensor at ${event.server_ip}`}>srv</span>
+                                )}
                               </button>
                             ) : (
                               <span className="font-mono text-gray-200">{event.source_ip || '—'}</span>
@@ -1549,7 +1565,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                               )}
 
                               {/* Detection details grid */}
-                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
                                 <div>
                                   <span className="text-xs text-gray-500 block">Source IP</span>
                                   <span className="text-sm font-mono text-gray-200">{event.source_ip || '—'}</span>
@@ -1582,6 +1598,25 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                   <span className="text-xs text-gray-500 block">Event ID</span>
                                   <span className="text-sm font-mono text-gray-400 text-xs">{event.event_id}</span>
                                 </div>
+                                {/* L5 actionability (additive) */}
+                                {event.server_ip && (
+                                  <div>
+                                    <span className="text-xs text-gray-500 block">Server IP</span>
+                                    <span className="text-sm font-mono text-amber-300">{event.server_ip}</span>
+                                  </div>
+                                )}
+                                {meta && meta.process && (
+                                  <div>
+                                    <span className="text-xs text-gray-500 block">Process</span>
+                                    <span className="text-sm font-mono text-gray-200 text-xs truncate" title={meta.process}>{meta.process.length > 16 ? meta.process.slice(0,16)+'…' : meta.process}</span>
+                                  </div>
+                                )}
+                                {meta && meta.dns_answers && meta.dns_answers.length > 0 && (
+                                  <div>
+                                    <span className="text-xs text-gray-500 block">DNS Answers ({meta.dns_answers.length})</span>
+                                    <span className="text-sm font-mono text-gray-300 text-xs break-all" title={meta.dns_answers.join(', ')}>{meta.dns_answers.slice(0,2).join(', ')}{meta.dns_answers.length > 2 ? '…' : ''}</span>
+                                  </div>
+                                )}
                               </div>
 
                               {/* Algorithm-specific metadata */}
@@ -2237,7 +2272,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
   const filtered = segmentFilter === 'all' ? devices : devices.filter((d) => d.segment === segmentFilter);
 
   const exportCSV = () => {
-    const headers = ['Status', 'IP Address', 'Hostname', 'Vendor', 'Segment', 'MAC Address', 'Open Ports', 'First Seen', 'Last Seen'];
+    const headers = ['Status', 'IP Address', 'Hostname', 'Vendor', 'Segment', 'MAC Address', 'Open Ports', 'First Seen', 'Last Seen', 'Model', 'Discovery Source', 'Services', 'Risk Category'];
     const rows = filtered.map((d) => [
       d.is_online ? 'Online' : 'Offline',
       d.ip_address || '',
@@ -2248,6 +2283,10 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
       (d.open_ports && d.open_ports.length > 0) ? d.open_ports.map((p) => `${p.port}/${p.protocol}`).join('; ') : '',
       d.first_seen ? new Date(d.first_seen).toISOString() : '',
       d.last_seen ? new Date(d.last_seen).toISOString() : '',
+      d.model || '',
+      d.discovery_source || '',
+      (d.services && d.services.length ? d.services.join(';') : ''),
+      d.risk_category || '',
     ]);
     const csvContent = [headers, ...rows]
       .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
@@ -2361,6 +2400,26 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                 <span className="text-xs text-gray-500 block">First Seen</span>
                 <span className="text-sm">{timeAgo(selectedDevice.first_seen)}</span>
               </div>
+              <div>
+                <span className="text-xs text-gray-500 block">Model</span>
+                <span className="text-sm">{selectedDevice.model || '—'}</span>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500 block">Discovered via</span>
+                <span className="text-sm">{selectedDevice.discovery_source || '—'}</span>
+              </div>
+              {selectedDevice.services && selectedDevice.services.length > 0 && (
+                <div>
+                  <span className="text-xs text-gray-500 block">Services</span>
+                  <span className="text-xs text-gray-300">{selectedDevice.services.slice(0, 3).join(', ')}{selectedDevice.services.length > 3 ? '…' : ''}</span>
+                </div>
+              )}
+              {selectedDevice.risk_category && (
+                <div>
+                  <span className="text-xs text-gray-500 block">Risk</span>
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300" title={(selectedDevice.risk_reasons || []).join('; ') || selectedDevice.risk_model || ''}>{selectedDevice.risk_category}{selectedDevice.risk_model ? ' ' + selectedDevice.risk_model : ''}</span>
+                </div>
+              )}
               {selectedDevice.eol_risk && (
                 <div className="col-span-2 md:col-span-3 mt-2 p-3 bg-red-500/10 border border-red-500/40 rounded-lg">
                   <div className="flex items-center gap-2 text-red-300 text-sm font-semibold">
@@ -3218,6 +3277,11 @@ function DeviceTable({ devices, compact = false, onSelectDevice }) {
                     ⚠ EOL
                   </span>
                 )}
+                {device.risk_category && (
+                  <span className="bg-amber-500/20 text-amber-300 text-xs font-medium px-1.5 py-0.5 rounded" title={(device.risk_reasons && device.risk_reasons.length ? device.risk_reasons.join('; ') : '') + (device.risk_model ? ' ' + device.risk_model : '')}>
+                    {device.risk_category}
+                  </span>
+                )}
               </div>
             </td>
             <td className="px-4 py-3">
@@ -3233,7 +3297,12 @@ function DeviceTable({ devices, compact = false, onSelectDevice }) {
               </div>
             </td>
             <td className="px-4 py-3 text-sm">{device.hostname || <span className="text-gray-600">—</span>}</td>
-            <td className="px-4 py-3 text-sm text-gray-400">{device.vendor || '—'}</td>
+            <td className="px-4 py-3 text-sm text-gray-400">
+              {device.vendor || '—'}
+              {device.model && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-gray-800 text-gray-400" title="Model">{device.model}</span>}
+              {device.discovery_source && device.discovery_source !== 'nmap_active' && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-gray-800 text-gray-400" title="Discovery source">{discoveryLabel(device.discovery_source)}</span>}
+              {device.services && device.services.length > 0 && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-gray-800 text-gray-400" title="Passive services">S:{device.services.length}</span>}
+            </td>
             <td className="px-4 py-3"><SegmentBadge segment={device.segment} /></td>
             {!compact && <td className="px-4 py-3 font-mono text-xs text-gray-500">{device.mac_address}</td>}
             {!compact && (
