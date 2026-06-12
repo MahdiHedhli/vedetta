@@ -188,7 +188,7 @@ GROUP BY tags HAVING count > 5 ORDER BY avg_score DESC;
 Added diagnostic logging ("Sensor X sent Y DNS queries") + ensured `last_seen` is touched on every data path (DNS + work + devices). This provides excellent real-time visibility during long-running collection (e.g. the current weekend sensor run) so we can confirm the sensor is healthy and actively sending data.
 
 **This heartbeat (continuation - real data phase):**
-- Confirmed ongoing sensor health: background vedetta-sensor still running (>2.5h+ continuous), actively scanning default+iot segments, pushing fresh device updates (last_seen <1m ago). Real inventory stable at 148 devices (70 on iot, 50 new <48h). Top vendors: Ubiquiti (17), Apple (17), Sonos (4 iot), LIFX, Philips, Koogeek, CyberPower, LG etc. This exercises all device-context paths (iot_context, new_device_context, very_new_device, vendor boosts) in Enricher for future real DNS events.
+- Confirmed ongoing sensor health: background vedetta-sensor still running (>2.5h+ continuous), actively scanning default+iot segments, pushing fresh device updates (last_seen <1m ago). Real inventory stable at e.g. 150 devices (~70 on IoT, ~50 new <48h). Top vendors: Ubiquiti, Apple, Sonos (IoT), LIFX, Philips, Koogeek, etc. This exercises all device-context paths (iot_context, new_device_context, very_new_device, vendor boosts) in Enricher for future real DNS events.
 - **Incremental FP reduction (SNR-KNOWN-GOOD)**: Expanded `knownGoodUpdateDomains` in enricher.go with high-confidence IoT telemetry domains observed or extremely common on real home LANs with 70+ IoT devices:
   - Tuya cloud ("tuya.com", "tuyaus.com", "tuyacn.com", "tuya-cloud.com") — major source of legitimate high-entropy/regular check-in subdomains from cheap Espressif/Realtek smart devices (plugs, bulbs, sensors) that would otherwise false-positive on DGA + Beacon.
   - TP-Link/Kasa ("tplink.com", "kasa.com")
@@ -235,7 +235,7 @@ The project continues to make steady, verifiable progress on the core mandate de
 **Next step (unchanged)**: Run `make enable-test-pcap` in your interactive terminal to grant the temporary bpf permissions, restart the sensor privileged, and start capturing genuine DNS queries from your network. Then the full measurement and any final tuning can happen.
 
 **This heartbeat (long-running collection monitoring + tooling):**
-- Sensor background task has been running continuously for >5.25 hours (18.9k+ seconds), performing repeated active nmap + passive discovery cycles on both segments. It continues to push fresh device updates (last_seen ~12:15, 148 devices / 70 iot / 50 new <48h, ~35-57 hosts per segment per cycle).
+- Sensor background task has been running continuously for >5 hours, performing repeated active nmap + passive discovery cycles on both segments. It continues to push fresh device updates (e.g. ~150 devices / ~70 IoT / ~50 new <48h, dozens of hosts per segment per cycle).
 - Confirmed via `make collection-health` and `/status`: beacon_tracked_pairs still 0 (expected until real passive DNS queries arrive), device inventory stable and actively refreshed.
 - Small DX improvement: Enhanced `make collection-health` target with a reminder to use the live `/api/v1/status` for the new `beacon_tracked_pairs` metric (and device stats) alongside the DB health output. This makes monitoring the SNR-relevant state (beacon detector load + device context) trivial once the user enables pcap.
 - No new major vendors in the latest device data (same top: Ubiquiti, Apple, Sonos + many Unknown with hostnames consistent with previously added known-good domains).
@@ -246,9 +246,9 @@ The pcap permission gate remains the only thing blocking real passive DNS events
 
 **This heartbeat (6h+ real collection + targeted FP addition):**
 - Sensor background task now at **6 hours continuous** (21600s+), still actively scanning default + iot segments (~35-57 hosts/cycle), pushing fresh device updates (last_seen ~13:01, stable 148 devices / 70 iot / 50 new <48h).
-- **New targeted FP reduction from real data**: Added "netatmo.com", "netatmo.net" to knownGoodUpdateDomains after observing "Netatmo-Welcome-*" security camera hostname on the IoT segment. Netatmo devices produce regular telemetry/check-ins that can look like beaconing or high-entropy subdomains; early exit now protects against FPs from this real device while preserving full detection power for actual threats.
+- **New targeted FP reduction from real data**: Added "netatmo.com", "netatmo.net" to knownGoodUpdateDomains after observing e.g. "Netatmo-Welcome-*" security camera hostnames on an IoT segment. Such devices produce regular telemetry/check-ins that can look like beaconing or high-entropy subdomains; early exit now protects against FPs from this class of real device while preserving full detection power for actual threats.
 - Verified: full `go build ./... && go test ./... -short` (dnsintel etc.) → green. Docker backend rebuild launched to deploy the live Enricher update.
-- Confirmed via queries: device inventory stable, many IoT hostnames (LIFX, Koogeek, Netatmo, Ring, Ubiquiti, etc.) now covered by the expanded known-good list.
+- Confirmed via queries: device inventory stable, many IoT hostnames (e.g. LIFX, Koogeek, Netatmo, Ring, Ubiquiti) now covered by the expanded known-good list.
 - The `make collection-health` reminder for beacon_tracked_pairs + device stats remains useful for the upcoming real DNS phase.
 - Updated plan and todos (new SNR-NETATMO item).
 
@@ -548,14 +548,14 @@ All changes are conservative, backward-compatible, and follow the established pa
 **This heartbeat (first deep VALIDATE-REAL on live 45k+ real events — 169 devices, primary Mac FP analysis + targeted hardening):**
 
 **Live state captured via `make collection-health` + direct DB queries + /status:**
-- 45,391 real (non-simulation) passive DNS events.
-- 169 devices (73 IoT, 21 new <48h), actively updating (baseline age ~0.007h, beacon_tracked_pairs: 351).
+- 45k+ real (non-simulation) passive DNS events.
+- e.g. 170 devices (~73 IoT, ~20 new <48h), actively updating (baseline age low, beacon_tracked_pairs in hundreds).
 - Clean live capture (0 sim events remaining).
 - Device inventory healthy (Apple, Ubiquiti dominant on default; many real IoT on iot segment with good hostnames).
 
-**Key FP patterns observed on real traffic (especially from primary client 10.0.0.182 "Mac" Apple on default):**
+**Key FP patterns observed on real traffic (especially from a primary client on the default segment, e.g. a recent Mac):**
 - Multiple 0.65 (single-signal cap) hits driven by:
-  - `new_device` tag (the Mac's device record first_seen 2026-05-18; also prior duplicate "Unknown" records on sensor restarts have historically reset perceived age).
+  - `new_device` tag (a primary client's device record first_seen recently; also prior duplicate "Unknown" records on sensor restarts have historically reset perceived age).
   - Noisy threat-intel `known_bad` matches on extremely common legitimate domains: github.com (malware_distribution / loader tags from urlhaus), cdn.discordapp.com (phantomstealer etc.).
   - Pure DGA on high-entropy but benign infrastructure subdomains: *.blob.core.windows.net (OneDrive), *.azureedge.* (Azure Front Door / WAF / edge), protechts.net collectors, aksroxy.azureedge.us etc.
 - The Huawei WAF subdomain case from earlier threat hunt was one instance of this exact pattern (DGA + new_device boost on a WAF/edge domain during normal activity).

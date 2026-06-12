@@ -27,7 +27,7 @@ var hostnamePatterns = []struct {
 	// Apple devices
 	{regexp.MustCompile(`(?i)^iPhone`), "phone", "Apple", "iOS", "", 0.7},
 	{regexp.MustCompile(`(?i)^iPad`), "tablet", "Apple", "iPadOS", "", 0.7},
-	{regexp.MustCompile(`(?i)^MacBook|^Mahdi.*MacBook`), "computer", "Apple", "macOS", "", 0.7},
+	{regexp.MustCompile(`(?i)^MacBook|^UserMacBook`), "computer", "Apple", "macOS", "", 0.7},
 	{regexp.MustCompile(`(?i)^iMac`), "computer", "Apple", "macOS", "", 0.7},
 	{regexp.MustCompile(`(?i)^Mac.*`), "computer", "Apple", "macOS", "", 0.6},
 
