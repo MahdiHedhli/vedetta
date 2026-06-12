@@ -1,5 +1,5 @@
 -- Add user-editable device fields and event acknowledgment system.
--- custom_name: user-assigned device label (e.g., "Mahdi's MacBook Pro")
+-- custom_name: user-assigned device label (e.g., "User's MacBook Pro")
 -- notes: freeform notes about the device
 -- Events: acknowledged flag and suppression rules for filtering
 
