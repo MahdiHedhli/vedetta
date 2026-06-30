@@ -38,7 +38,7 @@ Vedetta M5 targets two firewall integrations for V1: **UniFi** (REST API polling
 
 ### 1.1 API Surface (Validated via Live MCP)
 
-We have a live UniFi MCP connected to the test network (<GATEWAY_MODEL>, firmware 5.0.12). The following data was confirmed available via the UniFi Network Controller REST API:
+We have a live UniFi MCP connected to the test network (<GATEWAY_MODEL>, firmware <FIRMWARE_VERSION>). The following data was confirmed available via the UniFi Network Controller REST API:
 
 #### Available Data Categories (86 tools confirmed)
 
@@ -74,7 +74,7 @@ EVT_DPI_  — Deep Packet Inspection events
 ```json
 {
   "mac": "<CLIENT_MAC>",
-  "name": "Philips Hue Controller",
+  "name": "Example Smart Home Controller",
   "hostname": "<CLIENT_HOSTNAME>",
   "ip": "<CLIENT_IP>",
   "connection_type": "Wired",

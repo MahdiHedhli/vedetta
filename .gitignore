@@ -146,3 +146,8 @@ INSTRUCTIONS.md
 .codex/
 .claude/
 .github/copilot-instructions.md
+
+# Agent / analysis scratch (environment data must never be tracked)
+analysis-notes/
+agent-scratch/
+scratch/
