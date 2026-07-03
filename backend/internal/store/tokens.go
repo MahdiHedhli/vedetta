@@ -126,6 +126,22 @@ func (db *DB) HasActiveSensorToken(sensorID string) (bool, error) {
 	return count > 0, nil
 }
 
+// HasActiveIngestToken returns true when at least one non-revoked ingest-scoped
+// token exists. Used to decide whether ingest auth enforcement is possible
+// (spec 001, FR-8).
+func (db *DB) HasActiveIngestToken() (bool, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM api_tokens
+		WHERE scope = ? AND revoked = 0
+	`, auth.ScopeIngest).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // DeleteTokensBySensor revokes all tokens associated with a sensor.
 func (db *DB) DeleteTokensBySensor(sensorID string) error {
 	_, err := db.Exec(`UPDATE api_tokens SET revoked = 1 WHERE sensor_id = ?`, sensorID)

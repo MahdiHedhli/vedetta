@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS sensors (
 CREATE TABLE IF NOT EXISTS api_tokens (
     token_id     TEXT PRIMARY KEY,
     token_hash   TEXT NOT NULL UNIQUE,
-    scope        TEXT NOT NULL DEFAULT 'sensor',
+    scope        TEXT NOT NULL DEFAULT 'sensor' CHECK(scope IN ('sensor', 'admin', 'ingest')),
     sensor_id    TEXT,
     label        TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
@@ -316,4 +316,19 @@ CREATE TABLE IF NOT EXISTS threat_indicators (
     PRIMARY KEY (indicator, source)
 );
 CREATE INDEX IF NOT EXISTS idx_ti_indicator ON threat_indicators(indicator);
+
+CREATE TABLE IF NOT EXISTS whitelist_rules (
+    rule_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    domain_pattern TEXT DEFAULT '',
+    source_ip_pattern TEXT DEFAULT '',
+    tag_match TEXT DEFAULT '',
+    category TEXT DEFAULT 'custom',
+    is_default BOOLEAN DEFAULT FALSE,
+    enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_whitelist_enabled ON whitelist_rules (enabled);
+CREATE INDEX IF NOT EXISTS idx_whitelist_category ON whitelist_rules (category);
 `

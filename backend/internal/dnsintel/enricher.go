@@ -16,11 +16,16 @@ import (
 // pipeline. For each event, it runs applicable detectors and updates the
 // event's anomaly_score and tags in place.
 type Enricher struct {
-	Beacon           *BeaconDetector
-	ThreatDB         *threatintel.ThreatIntelDB
-	Rebinding        *RebindingDetector
-	Bypass           *BypassDetector
-	IsWhitelisted    func(domain string) bool // optional, for early noise suppression
+	Beacon        *BeaconDetector
+	ThreatDB      *threatintel.ThreatIntelDB
+	Rebinding     *RebindingDetector
+	Bypass        *BypassDetector
+	IsWhitelisted func(domain string) bool // optional, for early noise suppression
+
+	// Firewall (spec 001) — used only for event_type == "firewall_log".
+	FirewallSeen        *FirewallFirstSeen                                  // first-seen (src,dst,rule) tracker
+	FirewallWhitelisted func(tags []string, sourceIP string) (string, bool) // tag/source-IP whitelist check
+	DeviceByIP          func(ip string) *models.Device                      // device inventory cross-ref
 }
 
 // knownGoodUpdateDomains contains domains that are known to produce
@@ -77,10 +82,11 @@ var knownGoodUpdateDomains = []string{
 // (can be nil if feeds haven't loaded yet).
 func NewEnricher(threatDB *threatintel.ThreatIntelDB) *Enricher {
 	return &Enricher{
-		Beacon:    NewBeaconDetector(),
-		ThreatDB:  threatDB,
-		Rebinding: NewRebindingDetector(24 * time.Hour),
-		Bypass:    NewBypassDetector(nil, []string{}, 1*time.Hour),
+		Beacon:       NewBeaconDetector(),
+		ThreatDB:     threatDB,
+		Rebinding:    NewRebindingDetector(24 * time.Hour),
+		Bypass:       NewBypassDetector(nil, []string{}, 1*time.Hour),
+		FirewallSeen: NewFirewallFirstSeen(24 * time.Hour),
 	}
 }
 
@@ -96,20 +102,20 @@ func NewEnricherWithWhitelist(threatDB *threatintel.ThreatIntelDB, isWhitelisted
 // detectionMeta captures structured output from each detection algorithm
 // for storage as JSON in the event's metadata field.
 type detectionMeta struct {
-	DGA            *dgaMeta            `json:"dga,omitempty"`
-	Tunnel         *tunnelMeta         `json:"tunnel,omitempty"`
-	Beacon         *beaconMeta         `json:"beacon,omitempty"`
-	Rebinding      *rebindingMeta      `json:"rebinding,omitempty"`
-	Bypass         *bypassMeta         `json:"bypass,omitempty"`
-	ThreatDB       *threatDBMeta       `json:"threat_db,omitempty"`
-	DeviceContext  *deviceContextMeta  `json:"device_context,omitempty"`
+	DGA           *dgaMeta           `json:"dga,omitempty"`
+	Tunnel        *tunnelMeta        `json:"tunnel,omitempty"`
+	Beacon        *beaconMeta        `json:"beacon,omitempty"`
+	Rebinding     *rebindingMeta     `json:"rebinding,omitempty"`
+	Bypass        *bypassMeta        `json:"bypass,omitempty"`
+	ThreatDB      *threatDBMeta      `json:"threat_db,omitempty"`
+	DeviceContext *deviceContextMeta `json:"device_context,omitempty"`
 }
 
 type deviceContextMeta struct {
-	Segment    string `json:"segment,omitempty"`
-	Vendor     string `json:"vendor,omitempty"`
-	IsNew      bool   `json:"is_new,omitempty"`
-	Boosts     []string `json:"boosts,omitempty"` // e.g., ["iot_segment", "new_device", "bypass"]
+	Segment string   `json:"segment,omitempty"`
+	Vendor  string   `json:"vendor,omitempty"`
+	IsNew   bool     `json:"is_new,omitempty"`
+	Boosts  []string `json:"boosts,omitempty"` // e.g., ["iot_segment", "new_device", "bypass"]
 }
 
 type dgaMeta struct {
@@ -153,6 +159,10 @@ type bypassMeta struct {
 // modifies it in place (tags, anomaly_score, threat_desc, metadata).
 // This is called during ingest, before the event is written to the database.
 func (e *Enricher) Enrich(event *models.Event) {
+	if event.EventType == "firewall_log" {
+		e.enrichFirewall(event)
+		return
+	}
 	if event.EventType != "dns_query" {
 		e.enrichIP(event)
 		return
@@ -382,9 +392,15 @@ func (e *Enricher) Enrich(event *models.Event) {
 		meta.DeviceContext.IsNew = containsTag(event.Tags, "new_device")
 
 		boosts := []string{}
-		if containsTag(event.Tags, "iot_context") { boosts = append(boosts, "iot_segment") }
-		if containsTag(event.Tags, "new_device_context") { boosts = append(boosts, "new_device") }
-		if containsTag(event.Tags, "eol_router") || containsTag(event.Tags, "eol_device_context") { boosts = append(boosts, "eol_router") }
+		if containsTag(event.Tags, "iot_context") {
+			boosts = append(boosts, "iot_segment")
+		}
+		if containsTag(event.Tags, "new_device_context") {
+			boosts = append(boosts, "new_device")
+		}
+		if containsTag(event.Tags, "eol_router") || containsTag(event.Tags, "eol_device_context") {
+			boosts = append(boosts, "eol_router")
+		}
 		if containsTag(event.Tags, "dns_bypass") && (containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device")) {
 			boosts = append(boosts, "bypass_high_risk")
 		}
@@ -593,6 +609,9 @@ func (e *Enricher) StartEviction() func() {
 			select {
 			case <-ticker.C:
 				e.Beacon.EvictStale(time.Now())
+				if e.FirewallSeen != nil {
+					e.FirewallSeen.EvictStale(time.Now())
+				}
 			case <-done:
 				return
 			}

@@ -26,20 +26,25 @@ type FirewallEvent struct {
 	BytesRecv   int64
 	Application string // DPI app name if available
 	RawLog      string // original log line for debugging
+
+	// IPS marks an intrusion-prevention/detection event from the REST connector
+	// (dialect "rest"); Severity is the UniFi 1/2/3 severity used for scoring.
+	IPS      bool
+	Severity int
 }
 
 // ConnectorConfig holds common configuration for all firewall connectors.
 type ConnectorConfig struct {
-	Name         string        // human-readable name (e.g. "My UniFi Gateway")
-	Type         string        // unifi | openwrt | pfsense | mikrotik
-	Host         string        // hostname or IP of the firewall
-	Port         int           // API/management port
-	Username     string        // API username
-	Password     string        // API password
-	APIKey       string        // API key (alternative to username/password)
-	TLSSkipVerify bool        // skip TLS cert verification (self-signed certs)
-	PollInterval time.Duration // how often to poll for new events
-	Enabled      bool
+	Name          string        // human-readable name (e.g. "My UniFi Gateway")
+	Type          string        // unifi | openwrt | pfsense | mikrotik
+	Host          string        // hostname or IP of the firewall
+	Port          int           // API/management port
+	Username      string        // API username
+	Password      string        // API password
+	APIKey        string        // API key (alternative to username/password)
+	TLSSkipVerify bool          // skip TLS cert verification (self-signed certs)
+	PollInterval  time.Duration // how often to poll for new events
+	Enabled       bool
 }
 
 // Connector is the interface all firewall integrations implement.
@@ -68,21 +73,21 @@ type Connector interface {
 
 // FirewallInfo describes a discovered firewall.
 type FirewallInfo struct {
-	Model       string
-	Firmware    string
-	Hostname    string
-	WanIP       string
-	LanSubnets  []string
-	Features    []string // ips, dpi, vpn, etc.
+	Model      string
+	Firmware   string
+	Hostname   string
+	WanIP      string
+	LanSubnets []string
+	Features   []string // ips, dpi, vpn, etc.
 }
 
 // ConnectorHealth reports the health of a firewall connector.
 type ConnectorHealth struct {
-	Connected    bool
-	LastPoll     time.Time
-	LastError    string
-	EventCount   int64 // total events received since connect
-	Uptime       time.Duration
+	Connected  bool          `json:"connected"`
+	LastPoll   time.Time     `json:"last_poll"`
+	LastError  string        `json:"last_error"`
+	EventCount int64         `json:"event_count"` // total events received since connect
+	Uptime     time.Duration `json:"uptime"`
 }
 
 // mustJSON is a helper that marshals a value to JSON string.
@@ -95,10 +100,25 @@ func mustJSON(v interface{}) string {
 	return string(data)
 }
 
-// ToEvent converts a FirewallEvent to a Vedetta Event.
+// ToEvent converts a FirewallEvent (from the optional REST connector poll) to a
+// normalized Vedetta firewall_log Event matching the spec 001 contract: tags
+// source:unifi / fw:<action> / dir:<dir>, and structured firewall fields in the
+// metadata JSON. IPS events additionally carry the "ips" tag, ips_severity, and
+// dialect "rest" so the enricher scores them by severity.
 func (fe *FirewallEvent) ToEvent(sourceHash string) models.Event {
-	tags := []string{"firewall"}
-	if fe.Action == "block" || fe.Action == "drop" || fe.Action == "reject" {
+	blocked := fe.Action == "block" || fe.Action == "drop" || fe.Action == "reject"
+
+	tags := []string{"source:unifi"}
+	if fe.Action != "" {
+		tags = append(tags, "fw:"+fe.Action)
+	}
+	if fe.Direction != "" {
+		tags = append(tags, "dir:"+fe.Direction)
+	}
+	if fe.IPS {
+		tags = append(tags, "ips")
+	}
+	if blocked {
 		tags = append(tags, "blocked")
 	}
 
@@ -110,14 +130,35 @@ func (fe *FirewallEvent) ToEvent(sourceHash string) models.Event {
 		desc += " (rule: " + fe.Rule + ")"
 	}
 
+	meta := map[string]any{
+		"action":    fe.Action,
+		"protocol":  fe.Protocol,
+		"src_ip":    fe.SrcIP,
+		"src_port":  fe.SrcPort,
+		"dst_ip":    fe.DstIP,
+		"dst_port":  fe.DstPort,
+		"interface": fe.Interface,
+		"direction": fe.Direction,
+		"rule":      fe.Rule,
+		"dialect":   "rest",
+		"raw_log":   fe.RawLog,
+	}
+	if fe.Application != "" {
+		meta["application"] = fe.Application
+	}
+	if fe.IPS {
+		meta["ips_severity"] = fe.Severity
+	}
+
 	return models.Event{
 		EventID:    uuid.New().String(),
 		Timestamp:  fe.Timestamp,
 		EventType:  "firewall_log",
 		SourceHash: sourceHash,
 		SourceIP:   fe.SrcIP,
+		Blocked:    blocked,
 		Tags:       tags,
 		ThreatDesc: desc,
-		Metadata:   mustJSON(fe),
+		Metadata:   mustJSON(meta),
 	}
 }

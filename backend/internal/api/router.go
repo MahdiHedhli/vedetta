@@ -20,6 +20,7 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
+	"github.com/vedetta-network/vedetta/backend/internal/firewall"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 )
@@ -31,6 +32,7 @@ type Server struct {
 	Enricher    *dnsintel.Enricher
 	ScanQueue   *ScanQueue
 	ActivityLog *ActivityLog
+	Firewall    *firewall.Manager
 }
 
 // NewRouter creates the main API router with all routes mounted.
@@ -151,6 +153,8 @@ func NewRouter(srv *Server) http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAdmin(srv.DB))
 			r.Get("/logs", srv.handleLogs)
+			// Firewall connector health (spec 001, T4.4) — admin-only.
+			r.Get("/connectors", srv.handleListConnectors)
 		})
 
 		// Simulation endpoints temporarily disabled while fixing sensor auth (will re-enable later)
@@ -164,12 +168,12 @@ func NewRouter(srv *Server) http.Handler {
 
 type SimulateDNSRequest struct {
 	Queries []struct {
-		Domain      string `json:"domain"`
-		QueryType   string `json:"query_type"`
-		ClientIP    string `json:"client_ip"`
-		ResponseIP  string `json:"response_ip"`
-		Blocked     bool   `json:"blocked"`
-		DeviceVendor string `json:"device_vendor,omitempty"`
+		Domain         string `json:"domain"`
+		QueryType      string `json:"query_type"`
+		ClientIP       string `json:"client_ip"`
+		ResponseIP     string `json:"response_ip"`
+		Blocked        bool   `json:"blocked"`
+		DeviceVendor   string `json:"device_vendor,omitempty"`
 		NetworkSegment string `json:"network_segment,omitempty"`
 	} `json:"queries"`
 }
@@ -343,10 +347,38 @@ var allowedEventTypes = map[string]bool{
 	"anomaly":                true,
 }
 
+// maxEventsPerIngest caps how many events a single ingest request may carry, on
+// top of the 10MB body cap. Overflow returns 413 so the collector retries with a
+// smaller flush (spec 001, plan.md Decision 3).
+const maxEventsPerIngest = 5000
+
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if s.DB == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
 		return
+	}
+
+	// Optional ingest auth (spec 001, FR-8). Enforced ONLY when an ingest-scoped
+	// token exists AND VEDETTA_REQUIRE_INGEST_AUTH=1. Otherwise the endpoint stays
+	// open, preserving already-deployed collectors that push without a token.
+	if os.Getenv("VEDETTA_REQUIRE_INGEST_AUTH") == "1" {
+		hasIngestToken, err := s.DB.HasActiveIngestToken()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to check ingest token state"})
+			return
+		}
+		if hasIngestToken {
+			token, err := auth.ValidateAuthorizationHeader(s.DB, r.Header.Get("Authorization"))
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+				return
+			}
+			// Admin tokens may also ingest; otherwise require the ingest scope exactly.
+			if token.Scope != auth.ScopeIngest && token.Scope != auth.ScopeAdmin {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "ingest scope required"})
+				return
+			}
+		}
 	}
 
 	// Read body (limit to 10MB to prevent abuse)
@@ -477,6 +509,17 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		events = append(events, evt)
 	} else {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "expected JSON object or array"})
+		return
+	}
+
+	// Per-request event cap (on top of the 10MB body cap). Overflow → 413 so the
+	// collector retries with a smaller flush (spec 001, plan.md Decision 3).
+	if len(events) > maxEventsPerIngest {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+			"error": "too many events in one request",
+			"count": len(events),
+			"max":   maxEventsPerIngest,
+		})
 		return
 	}
 
@@ -1024,7 +1067,7 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		// Revoke old tokens and force generation of a new one.
 		log.Printf("Sensor %s re-registering without token (recovery mode) — revoking old tokens and issuing new one", body.SensorID)
 		_ = s.DB.DeleteTokensBySensor(body.SensorID)
-		existingToken = false  // force new token generation
+		existingToken = false // force new token generation
 	}
 
 	// Store interfaces as JSON string
@@ -1594,6 +1637,19 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"logs": entries})
+}
+
+// handleListConnectors returns the health of all registered firewall connectors
+// (spec 001, T4.4). Admin-only; used by the setup guide's verification step.
+func (s *Server) handleListConnectors(w http.ResponseWriter, r *http.Request) {
+	connectors := []firewall.NamedHealth{}
+	if s.Firewall != nil {
+		connectors = s.Firewall.ListNamed()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"connectors": connectors,
+		"total":      len(connectors),
+	})
 }
 
 // logActivity is a nil-safe helper.
