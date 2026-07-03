@@ -1,6 +1,6 @@
 # Vedetta Roadmap
 
-> Last updated: 2026-05-19
+> Last updated: 2026-07-03
 > Status: Alpha / active development
 
 ## What Vedetta is today
@@ -19,8 +19,20 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 - **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
 - **Threat enrichment** uses local abuse.ch-backed intelligence so the local product keeps value without cloud dependence.
 - **EOL Router & Camera Risk Detection** — Detects specific end-of-life and vulnerable router and camera models listed in the [FBI IC3 FLASH 2026-03-12 advisory](https://www.ic3.gov/CSA/2026/260312.pdf) (AVrecon / SocksEscort) and applies elevated risk scoring when they exhibit suspicious behavior.
+- **Device risk categories** classify inventory against primary sources: `known_exploited` (CISA KEV-listed gear), `eol_eos` (end-of-life/end-of-support), and `high_risk_iot`.
 - **Optional DNS sources** include Pi-hole and AdGuard Home pollers.
-- **Router and firewall work** has started in code, with a connector framework and UniFi connector groundwork, but broader coverage is still roadmap work.
+- **Log ingestion pipeline** is live: `POST /api/v1/ingest` accepts single events, arrays, and Fluent Bit pair payloads, enriches them, and batch-inserts into local storage. Events are queryable via `GET /api/v1/events`, `/stats`, and `/timeline`. A Fluent Bit collector config with a UDP 5140 syslog input feeds the endpoint.
+- **Router and firewall work** has started in code, with a connector framework and UniFi connector groundwork. Turning UniFi syslog into a complete, tuned workflow is specced ([specs/001-unifi-log-ingestion/](../specs/001-unifi-log-ingestion/spec.md)) but not yet claimed as supported.
+
+## Spec-Driven Development
+
+Vedetta has adopted the GitHub Spec Kit workflow: major features get a `spec.md` → `plan.md` → `tasks.md` under `specs/` before implementation, validated against the [project constitution](../.specify/memory/constitution.md). Current specs:
+
+- [specs/001-unifi-log-ingestion/](../specs/001-unifi-log-ingestion/) — UniFi syslog as the first supported router/firewall source
+- [specs/002-telemetry-service/](../specs/002-telemetry-service/) — opt-in, privacy-conscious telemetry service
+- [specs/003-threat-network/](../specs/003-threat-network/) — optional community threat network
+- [specs/004-passive-discovery-correlation/](../specs/004-passive-discovery-correlation/) — passive discovery correlation and labeling
+- [specs/005-broader-firewall-connectors/](../specs/005-broader-firewall-connectors/) — OpenWRT, pfSense/OPNsense, MikroTik connectors
 
 ## Status Snapshot
 
@@ -29,6 +41,9 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 - Docker-based Core with local API, UI, and SQLite-backed storage
 - Native sensor for active and passive device discovery plus passive DNS capture
 - DNS-first threat scoring and local event enrichment
+- Log ingestion pipeline: `POST /api/v1/ingest` (single / array / Fluent Bit pairs), events query API (`/api/v1/events`, `/stats`, `/timeline`), sequential migration runner with `schema_migrations` tracking, and a daily retention enforcer (90-day default)
+- Device risk categories: `known_exploited`, `eol_eos`, and `high_risk_iot` classification on the device inventory
+- Sensor actionability payloads: DNS events carry `dns_answers` and `server_ip`, device reports carry observed `services` and `discovery_source`, so alerts arrive with enough context to act on
 - EOL Router & Camera Detection (FBI IC3 2026-03-12 advisory models)
 - Optional Pi-hole integration
 - Optional AdGuard Home integration
@@ -38,16 +53,17 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 
 - Install and onboarding polish for alpha users
 - Broader auth hardening, token rotation, and cleaner setup flow
-- Turning router and firewall ingestion into documented, testable workflows
+- UniFi log ingestion as the first complete, tuned router/firewall workflow ([specs/001-unifi-log-ingestion/](../specs/001-unifi-log-ingestion/))
 - Better public docs that separate shipped features from roadmap items
 
 ### Planned next
 
-- Router and firewall log aggregation for common platforms:
-  UniFi, OpenWRT, pfSense/OPNsense, and MikroTik
-- Better passive discovery correlation, labeling, and multi-network handling
+- Specced, not yet implemented (see [Spec-Driven Development](#spec-driven-development)):
+  - Optional, privacy-conscious telemetry service (specs/002)
+  - Optional community threat network (specs/003)
+  - Passive discovery correlation, labeling, and multi-network handling (specs/004)
+  - Broader router/firewall connectors: OpenWRT, pfSense/OPNsense, MikroTik (specs/005) — one source at a time, after UniFi is complete
 - Better local DNS collection options for advanced deployments
-- An optional, privacy-conscious community threat network
 
 ## Required Vs Optional
 
@@ -87,8 +103,8 @@ Vedetta is not yet positioned as a mass-market consumer appliance. The current i
 
 - The recommended Core path still uses Docker Compose.
 - The sensor install path is currently oriented around macOS and Linux. Windows is not yet a supported public install path.
-- Router and firewall coverage is not mature yet. The connector framework exists, and UniFi groundwork is in the repo, but broader connector support is still ahead.
-- The threat-network and telemetry services are still scaffolded. They should be described as upcoming, not shipped.
+- Router and firewall coverage is not mature yet. The ingest pipeline and connector framework exist, and UniFi groundwork is in the repo, but no router/firewall source is a complete, tuned workflow yet (UniFi is specced in specs/001; broader connectors in specs/005).
+- The threat-network and telemetry services are still stubs with TODOs. Their designs are specced (specs/002, specs/003) but they should be described as upcoming, not shipped.
 - Sensor bearer auth is now in place for registration follow-up, device reports, DNS ingest, and work fetches. Broader dashboard/admin auth hardening is still incomplete, and public internet exposure remains unsupported.
 
 ## Near-Term Roadmap Themes

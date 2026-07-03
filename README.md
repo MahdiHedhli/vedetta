@@ -12,7 +12,7 @@ Vedetta is a lightweight, self-hosted security monitoring platform. Today it is 
 - **Vedetta Sensor** runs natively on the network you want to inspect and handles active device discovery, passive ARP/DHCP/mDNS/SSDP visibility, and passive DNS capture.
 - **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
 - **Threat enrichment** is local-first and backed by downloaded threat intelligence feeds.
-- **EOL Router & Camera Detection** — Detects specific end-of-life and vulnerable router and camera models listed in the [FBI IC3 FLASH 2026-03-12 advisory](https://www.ic3.gov/CSA/2026/260312.pdf) (AVrecon malware / SocksEscort) and applies elevated risk scoring when they exhibit suspicious behavior.
+- **Device Risk Categories** — Classifies risky devices as `known_exploited` (models named in the [FBI IC3 FLASH 2026-03-12 advisory](https://www.ic3.gov/CSA/2026/260312.pdf), AVrecon malware / SocksEscort), `eol_eos` (end-of-life/end-of-support gear), or `high_risk_iot`, and applies elevated risk scoring when those devices exhibit suspicious behavior.
 - **Optional DNS integrations** include Pi-hole and AdGuard Home if you already run them.
 - **Router and firewall work** has started in code, but broader log aggregation and connector coverage still belong in the roadmap.
 
@@ -51,22 +51,22 @@ Pi-hole and AdGuard Home are **optional integrations**, not the product identity
 - native sensor for macOS and Linux install paths
 - passive DNS capture plus active and passive device discovery
 - DNS-first threat scoring and local enrichment
-- EOL Router & Camera Detection (models from FBI IC3 2026-03-12 advisory)
+- device risk categories: `known_exploited` (FBI IC3 2026-03-12 known-exploited models), `eol_eos`, and `high_risk_iot`, with elevated risk scoring
 - optional Pi-hole and AdGuard Home pollers
 - device inventory, scan targets, whitelist, suppression, and activity logging
 - Richer sensor payloads for actionability: server_ip and dns_answers (resolved destinations from responses), plus model/services/discovery_source from passive mDNS/DHCP/SSDP/ARP — surfaced in events list (Server/Ans columns with hover for full destinations), device table, host details, and CSV exports.
 
 ### In progress
 
+- UniFi log ingestion: fully specced ([specs/001-unifi-log-ingestion/](specs/001-unifi-log-ingestion/)) and next up for implementation, building on the existing ingest endpoint, collector syslog path, and connector groundwork
 - install and onboarding polish for alpha users
 - broader dashboard/admin auth hardening plus sensor token rotation
-- turning early router and firewall groundwork into documented workflows
 - better public docs that separate shipped functionality from roadmap direction
 
 ### Planned next
 
-- router and firewall log aggregation for common platforms:
-  UniFi, OpenWRT, pfSense/OPNsense, and MikroTik
+- broader firewall log aggregation after UniFi ships:
+  OpenWRT, pfSense/OPNsense, and MikroTik (deliberately sequenced one source at a time)
 - better correlation and labeling across the new passive discovery sources
 - more local DNS collection options for advanced deployments
 - an optional, privacy-conscious community threat network
@@ -113,7 +113,7 @@ sudo ./vedetta-sensor --core http://<CORE_IP>:8080
 Useful sensor diagnostics:
 
 ```bash
-./vedetta-sensor --core http://<CORE_IP>:8080 --cidr 10.0.0.0/24 --print-capture-plan
+./vedetta-sensor --core http://<CORE_IP>:8080 --cidr 192.0.2.0/24 --print-capture-plan
 ```
 
 That command prints the recommended DNS and passive-discovery interfaces, explains why they were chosen, and shows the override flags if you need to pin a different interface on a laptop, VPN client, or multi-homed host.
@@ -163,7 +163,7 @@ Current state:
 
 Planned next:
 
-1. UniFi hardening and documentation
+1. UniFi hardening and documentation — specced in [specs/001-unifi-log-ingestion/](specs/001-unifi-log-ingestion/)
 2. OpenWRT
 3. pfSense / OPNsense
 4. MikroTik
@@ -191,6 +191,10 @@ These should be described honestly as early or planned until they are documented
 - [Project Roadmap](docs/roadmap.md)
 - [Sensor Architecture](docs/sensor-architecture.md)
 - [Security Policy](SECURITY.md)
+
+### Spec-Driven Development
+
+Vedetta follows a spec-driven workflow: major features get a `spec.md`, `plan.md`, and `tasks.md` under [specs/](specs/) before implementation, all governed by the [project constitution](.specify/memory/constitution.md). Specs exist today for UniFi log ingestion, the telemetry service, the community threat network, passive discovery correlation, and broader firewall connectors — implementation status for each is tracked in the [working backlog](docs/backlog.md), and a spec's existence does not mean the feature is built.
 
 ## Community
 
