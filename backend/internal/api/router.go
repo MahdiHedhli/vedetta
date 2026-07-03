@@ -1139,6 +1139,7 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 			// These will be populated in JSON decode; copy to DiscoveredHost only after L4 updates the type.
 			Model           string   `json:"model,omitempty"`
 			Services        []string `json:"services,omitempty"`
+			FriendlyName    string   `json:"friendly_name,omitempty"` // spec 004: optional human-friendly name (mDNS/SSDP). Additive; old sensors omit it.
 			DiscoverySource string   `json:"discovery_source,omitempty"`
 		} `json:"hosts"`
 	}
@@ -1176,6 +1177,7 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 			Status:          h.Status,
 			Model:           h.Model,
 			Services:        h.Services,
+			FriendlyName:    h.FriendlyName,
 			DiscoverySource: h.DiscoverySource,
 		}
 		isNew, err := s.DB.UpsertDevice(host, now, body.Segment)
@@ -1513,11 +1515,18 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 				event.NetworkSegment = dev.Segment
 			}
 
-			// SNR-11: Detect new devices (first seen in last 48 hours)
-			// Suspicious DNS from brand new devices is higher risk.
-			// Use the minimum first_seen across all records for this IP to avoid
-			// spurious "new_device" tags on established machines that have duplicate
-			// records (with different first_seen values) from mixed discovery sources.
+			// SNR-11: Detect new devices (first seen in last 48 hours).
+			// Suspicious DNS from brand new devices is higher risk. A "new_device"
+			// tag can also fire benignly when a client rotates its MAC address
+			// (iOS/Android private Wi-Fi addresses) and the sensor has not yet
+			// re-linked it by hostname/mDNS continuity (spec 004 SNR plan item 3).
+			//
+			// Spec 004 note: the correlation merge logic now takes MIN(first_seen)
+			// when folding duplicate records, so the root cause this GetMinFirstSeenForIP
+			// helper papers over is largely gone. It is kept for ONE release as a
+			// belt-and-braces guard for any residual duplicate rows.
+			// TODO(spec-004 next release): remove GetMinFirstSeenForIP once live-soak
+			// validation confirms merges eliminated duplicate-record first_seen skew.
 			effectiveFirstSeen := dev.FirstSeen
 			if s.DB != nil {
 				if minSeen, err := s.DB.GetMinFirstSeenForIP(q.ClientIP); err == nil && !minSeen.IsZero() && minSeen.Before(effectiveFirstSeen) {

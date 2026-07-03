@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
@@ -231,5 +232,179 @@ func TestIsEventWhitelisted_TagAndSourceIP(t *testing.T) {
 	}
 	if _, ok := db.IsEventWhitelisted([]string{"source:unifi", "fw:drop"}, "203.0.113.9"); ok {
 		t.Error("firewall event matched a domain-only DNS rule; DNS rules must not suppress firewall events")
+	}
+}
+
+// buildDeviceBaseState stands up the devices table with the fingerprint columns
+// (model/os_family/etc) that migration 018's display_name backfill reads. It
+// applies only the devices-shaping migrations that precede 018 and apply cleanly
+// as raw SQL (001 creates the table; 007 adds the fingerprint columns), matching
+// the buildBaseState approach used for the 017 test — deliberately avoiding the
+// full raw chain, which has a known pre-existing break at migration 009 on a
+// fresh DB (001_init.sql was baked to the final events schema).
+func buildDeviceBaseState(t *testing.T, raw *sql.DB, migDir string) {
+	t.Helper()
+	for _, f := range []string{
+		"001_init.sql",
+		"007_device_fingerprints.sql",
+	} {
+		b, err := os.ReadFile(filepath.Join(migDir, f))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if _, err := raw.Exec(string(b)); err != nil {
+			t.Fatalf("apply device base migration %s: %v", f, err)
+		}
+	}
+}
+
+// TestMigration018_SchemaAndBackfill applies migration 018 (spec 004) on top of a
+// realistic post-017 devices schema and asserts:
+//   - devices gains display_name + friendly_name columns;
+//   - the three correlation tables (device_signals, device_identities,
+//     device_networks) exist;
+//   - the in-SQL backfill seeds MAC + hostname identities and network
+//     attachments from pre-existing rows, computes a non-empty display_name,
+//     and leaves first_seen untouched (no upgrade-time new_device wave);
+//   - PRAGMA integrity_check reports ok.
+//
+// All values are synthetic per the constitution (RFC 5737 IPs, 00:00:5E:00:53:xx
+// MACs, .local hostnames).
+func TestMigration018_SchemaAndBackfill(t *testing.T) {
+	migDir := findMigrationsDir(t)
+
+	dbPath := filepath.Join(t.TempDir(), "correlation.db")
+	raw, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	defer raw.Close()
+
+	buildDeviceBaseState(t, raw, migDir)
+
+	// Seed two pre-existing devices with distinct MACs/IPs on the same segment.
+	// dev-a has a hostname; dev-b (MAC-less-hostname) does not.
+	firstSeen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seed := func(id, ip, mac, host, vendor, model string) {
+		if _, err := raw.Exec(`INSERT INTO devices
+			(device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, model, segment)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'iot')`,
+			id, firstSeen, firstSeen, ip, mac, host, vendor, model); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("dev-a", "192.0.2.10", "00:00:5E:00:53:01", "living-room-tv.local", "Google", "Chromecast Ultra")
+	seed("dev-b", "192.0.2.11", "00:00:5E:00:53:02", "", "Espressif", "")
+
+	sql018, err := os.ReadFile(filepath.Join(migDir, "018_device_correlation.sql"))
+	if err != nil {
+		t.Fatalf("read migration 018: %v", err)
+	}
+	if _, err := raw.Exec(string(sql018)); err != nil {
+		t.Fatalf("apply migration 018: %v", err)
+	}
+
+	// devices gained display_name + friendly_name columns.
+	for _, col := range []string{"display_name", "friendly_name"} {
+		var n int
+		if err := raw.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = ?`, col).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info devices/%s: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("devices.%s missing after migration 018", col)
+		}
+	}
+
+	// The three correlation tables exist.
+	for _, tbl := range []string{"device_signals", "device_identities", "device_networks"} {
+		var n int
+		if err := raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, tbl).Scan(&n); err != nil {
+			t.Fatalf("query sqlite_master for %s: %v", tbl, err)
+		}
+		if n != 1 {
+			t.Errorf("table %s missing after migration 018", tbl)
+		}
+	}
+
+	// Backfill: MAC alias for both devices, hostname alias for dev-a only.
+	var macCount int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM device_identities WHERE id_type='mac'`).Scan(&macCount); err != nil {
+		t.Fatalf("count mac identities: %v", err)
+	}
+	if macCount != 2 {
+		t.Errorf("mac identities = %d, want 2", macCount)
+	}
+	var hostCount int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM device_identities WHERE id_type='hostname'`).Scan(&hostCount); err != nil {
+		t.Fatalf("count hostname identities: %v", err)
+	}
+	if hostCount != 1 {
+		t.Errorf("hostname identities = %d, want 1 (dev-a only; dev-b has empty hostname)", hostCount)
+	}
+
+	// Backfill: network attachment for both.
+	var netCount int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM device_networks`).Scan(&netCount); err != nil {
+		t.Fatalf("count networks: %v", err)
+	}
+	if netCount != 2 {
+		t.Errorf("network attachments = %d, want 2", netCount)
+	}
+
+	// Backfill: display_name computed from model(+vendor) for dev-a.
+	var displayA string
+	if err := raw.QueryRow(`SELECT display_name FROM devices WHERE device_id='dev-a'`).Scan(&displayA); err != nil {
+		t.Fatalf("read dev-a display_name: %v", err)
+	}
+	if displayA != "Chromecast Ultra (Google)" {
+		t.Errorf("dev-a display_name = %q, want %q", displayA, "Chromecast Ultra (Google)")
+	}
+
+	// first_seen must be untouched (no upgrade-time new_device wave).
+	var gotFirst time.Time
+	if err := raw.QueryRow(`SELECT first_seen FROM devices WHERE device_id='dev-a'`).Scan(&gotFirst); err != nil {
+		t.Fatalf("read dev-a first_seen: %v", err)
+	}
+	if !gotFirst.Equal(firstSeen) {
+		t.Errorf("dev-a first_seen = %v, want unchanged %v", gotFirst, firstSeen)
+	}
+
+	var integrity string
+	if err := raw.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil {
+		t.Fatalf("integrity_check: %v", err)
+	}
+	if integrity != "ok" {
+		t.Errorf("integrity_check = %q, want ok", integrity)
+	}
+}
+
+// TestInlineFallback_HasCorrelationTables asserts the store's inline fallback
+// schema (the path Go tests hit) carries the spec-004 devices columns and the
+// three correlation tables, so UpsertDevice's resolver has its backing tables.
+func TestInlineFallback_HasCorrelationTables(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "vedetta.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open on fresh db: %v", err)
+	}
+	defer db.Close()
+
+	for _, col := range []string{"display_name", "friendly_name", "services"} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = ?`, col).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info devices/%s: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("inline fallback devices.%s missing", col)
+		}
+	}
+	for _, tbl := range []string{"device_signals", "device_identities", "device_networks"} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, tbl).Scan(&n); err != nil {
+			t.Fatalf("query sqlite_master for %s: %v", tbl, err)
+		}
+		if n != 1 {
+			t.Errorf("inline fallback table %s missing", tbl)
+		}
 	}
 }
