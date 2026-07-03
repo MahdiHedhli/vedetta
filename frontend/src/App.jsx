@@ -583,6 +583,8 @@ function AddWhitelistRule({ onAdd, onError }) {
 function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionRules, whitelistRules, onNavigate }) {
   const [severityFilter, setSeverityFilter] = useState('all');
   const [contextFilter, setContextFilter] = useState('all'); // 'all' | 'new_device' | 'iot'
+  const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'firewall_log'
+  const [sourceFilter, setSourceFilter] = useState('all'); // 'all' | 'unifi'
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [showSuppressed, setShowSuppressed] = useState(false);
   const [hideWhitelisted, setHideWhitelisted] = useState(true);
@@ -698,7 +700,14 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     return groups;
   };
 
-  // Filter: severity + context (new_device / iot)
+  // Source/type predicate shared so button counts stay consistent
+  const matchesTypeSource = (e) => {
+    if (typeFilter === 'firewall_log' && e.event_type !== 'firewall_log') return false;
+    if (sourceFilter === 'unifi' && !(e.tags || []).includes('source:unifi')) return false;
+    return true;
+  };
+
+  // Filter: severity + context (new_device / iot) + event type / source
   const baseFiltered = events.filter(e => {
     const score = e.anomaly_score || 0;
     if (severityFilter === 'critical' && score <= 0.7) return false;
@@ -707,6 +716,8 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     if (contextFilter === 'new_device' && !e.tags?.includes('new_device_context')) return false;
     if (contextFilter === 'iot' && !e.tags?.includes('iot_context')) return false;
     if (contextFilter === 'eol' && !e.tags?.includes('eol_router') && !e.tags?.includes('eol_device_context')) return false;
+
+    if (!matchesTypeSource(e)) return false;
 
     return true;
   });
@@ -722,6 +733,11 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const iotContextCount = displayEvents.filter(e => e.tags?.includes('iot_context')).length;
   const newDeviceContextCount = displayEvents.filter(e => e.tags?.includes('new_device_context')).length;
   const eolContextCount = displayEvents.filter(e => e.tags?.includes('eol_router') || e.tags?.includes('eol_device_context')).length;
+
+  // Event-type / source counts (computed on the full event set, independent of the
+  // type/source selection so the chips always show the total available of each kind)
+  const firewallCount = events.filter(e => e.event_type === 'firewall_log').length;
+  const unifiCount = events.filter(e => (e.tags || []).includes('source:unifi')).length;
 
   // Per-rule match counts for the Active Suppression Rules Summary (SNR-28)
   const activeRules = (suppressionRules || []).filter(r => r.active);
@@ -778,6 +794,20 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     very_new_device: 'bg-red-600/30 text-red-400 font-bold', // Strong visual for <1h devices
     eol_router: 'bg-red-500/20 text-red-300 border border-red-500/40',
     eol_device_context: 'bg-red-500/20 text-red-300 border border-red-500/40 font-semibold',
+    // Firewall (UniFi) tags
+    'source:unifi': 'bg-sky-500/20 text-sky-300',
+    'fw:block': 'bg-red-500/20 text-red-300',
+    'fw:drop': 'bg-red-500/20 text-red-300',
+    'fw:reject': 'bg-red-500/20 text-red-300',
+    'fw:allow': 'bg-green-500/20 text-green-300',
+    'fw:multicast': 'bg-gray-600/30 text-gray-300',
+    'dir:in': 'bg-gray-700/40 text-gray-300',
+    'dir:out': 'bg-indigo-500/20 text-indigo-300',
+    'dir:local': 'bg-gray-700/40 text-gray-300',
+    wan_scan_noise: 'bg-gray-700/40 text-gray-400',
+    new_fw_block: 'bg-amber-500/20 text-amber-300',
+    risky_device_fw_block: 'bg-red-600/20 text-red-300 border border-red-600/40 font-semibold',
+    ips: 'bg-purple-500/20 text-purple-300',
   };
 
   const tagLabel = (tag) => {
@@ -794,6 +824,20 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       very_new_device: 'Very New (<1h)',
       eol_router: 'EOL Router',
       eol_device_context: 'EOL Device (High Risk)',
+      // Firewall (UniFi) tags
+      'source:unifi': 'UniFi',
+      'fw:block': 'Blocked',
+      'fw:drop': 'Dropped',
+      'fw:reject': 'Rejected',
+      'fw:allow': 'Allowed',
+      'fw:multicast': 'Multicast',
+      'dir:in': 'Inbound',
+      'dir:out': 'Outbound',
+      'dir:local': 'Local',
+      wan_scan_noise: 'WAN Scan Noise',
+      new_fw_block: 'New FW Block',
+      risky_device_fw_block: 'Risky Device Block',
+      ips: 'IPS',
     };
     return labels[tag] || tag;
   };
@@ -825,6 +869,24 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const parseMetadata = (metaStr) => {
     if (!metaStr || metaStr === '{}') return null;
     try { return JSON.parse(metaStr); } catch { return null; }
+  };
+
+  const isFirewallEvent = (event) => event?.event_type === 'firewall_log' || (event?.tags || []).includes('source:unifi');
+  const isFirewallRollup = (event) => (event?.tags || []).includes('wan_scan_noise');
+
+  // Render a firewall event's src→dst summary for the (otherwise DNS) domain column.
+  // Rollups collapse to an aggregate "WAN scan noise: N drops" label.
+  const firewallSummary = (event, meta) => {
+    if (isFirewallRollup(event)) {
+      const count = (meta && meta.count) || 0;
+      const win = meta && meta.window_seconds ? `${Math.round(meta.window_seconds / 60)}m` : '15m';
+      return `WAN scan noise: ${count} drops in ${win}`;
+    }
+    if (!meta) return event.threat_desc || 'firewall event';
+    const src = meta.src_ip ? `${meta.src_ip}${meta.src_port ? ':' + meta.src_port : ''}` : (event.source_ip || '?');
+    const dst = meta.dst_ip ? `${meta.dst_ip}${meta.dst_port ? ':' + meta.dst_port : ''}` : '?';
+    const proto = meta.protocol ? meta.protocol.toUpperCase() + ' ' : '';
+    return `${proto}${src} → ${dst}`;
   };
 
   const formatTimestamp = (ts) => {
@@ -1214,6 +1276,41 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
         </div>
       )}
 
+      {/* Event Type + Source Filters (firewall_log / source:unifi) */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <span className="text-xs text-gray-500 mr-1">Type:</span>
+        {[
+          { key: 'all', label: 'All Types' },
+          { key: 'firewall_log', label: 'Firewall' },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTypeFilter(t.key)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              typeFilter === t.key ? 'bg-sky-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
+            }`}
+          >
+            {t.key === 'firewall_log' ? `Firewall (${firewallCount})` : 'All Types'}
+          </button>
+        ))}
+        <div className="w-px bg-gray-700 mx-1" />
+        <span className="text-xs text-gray-500 mr-1">Source:</span>
+        {[
+          { key: 'all', label: 'All Sources' },
+          { key: 'unifi', label: 'UniFi' },
+        ].map((s) => (
+          <button
+            key={s.key}
+            onClick={() => setSourceFilter(s.key)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              sourceFilter === s.key ? 'bg-sky-500 text-gray-950' : 'bg-gray-800 text-gray-400 hover:text-white'
+            }`}
+          >
+            {s.key === 'unifi' ? `source:unifi (${unifiCount})` : 'All Sources'}
+          </button>
+        ))}
+      </div>
+
       {/* Severity Filter + Suppressed Toggle */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-2">
@@ -1341,8 +1438,15 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-sm font-mono text-gray-300 truncate" title={event.domain}>
-                          {event.domain || '—'}
+                        <td className="px-4 py-3 text-sm font-mono text-gray-300 truncate" title={isFirewallEvent(event) ? firewallSummary(event, meta) : event.domain}>
+                          {isFirewallEvent(event) ? (
+                            <span className="flex items-center gap-1.5">
+                              <span className="text-[9px] px-1 py-0.5 rounded bg-sky-500/20 text-sky-300 font-sans shrink-0">FW</span>
+                              <span className="truncate">{firewallSummary(event, meta)}</span>
+                            </span>
+                          ) : (
+                            event.domain || '—'
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
@@ -1611,6 +1715,90 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                     <span className="text-sm font-mono text-gray-200 text-xs truncate" title={meta.process}>{meta.process.length > 16 ? meta.process.slice(0,16)+'…' : meta.process}</span>
                                   </div>
                                 )}
+                                {/* Firewall event details (UniFi source:unifi / firewall_log) */}
+                                {isFirewallEvent(event) && (
+                                  <div className="bg-gray-900/50 border border-sky-500/20 rounded-lg p-4">
+                                    <h4 className="text-xs uppercase tracking-wider text-sky-400 font-medium mb-3">Firewall Event</h4>
+                                    {isFirewallRollup(event) ? (
+                                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Drops</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.count) || 0}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Unique Sources</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.unique_src) || '—'}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Window</span>
+                                          <span className="font-mono text-gray-200">{meta && meta.window_seconds ? `${Math.round(meta.window_seconds / 60)}m` : '—'}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Interface</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.interface) || '—'}</span>
+                                        </div>
+                                        {meta && Array.isArray(meta.top_dst_ports) && meta.top_dst_ports.length > 0 && (
+                                          <div className="col-span-2 md:col-span-4">
+                                            <span className="text-xs text-gray-500 block">Top Destination Ports</span>
+                                            <div className="flex flex-wrap gap-1 mt-0.5">
+                                              {meta.top_dst_ports.map((p, i) => (
+                                                <span key={i} className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700 font-mono">
+                                                  {p.port}{typeof p.count === 'number' ? ` ×${p.count}` : ''}
+                                                </span>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Action</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.action) || (event.blocked ? 'block' : 'allow')}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Protocol</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.protocol && meta.protocol.toUpperCase()) || '—'}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Direction</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.direction) || '—'}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Interface</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.interface) || '—'}{meta && meta.interface_out ? ` → ${meta.interface_out}` : ''}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Source</span>
+                                          <span className="font-mono text-gray-200 break-all">{meta && meta.src_ip ? `${meta.src_ip}${meta.src_port ? ':' + meta.src_port : ''}` : (event.source_ip || '—')}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Destination</span>
+                                          <span className="font-mono text-gray-200 break-all">{meta && meta.dst_ip ? `${meta.dst_ip}${meta.dst_port ? ':' + meta.dst_port : ''}` : '—'}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Source MAC</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.src_mac) || '—'}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-xs text-gray-500 block">Rule</span>
+                                          <span className="font-mono text-gray-200 break-all">{(meta && meta.rule) || '—'}</span>
+                                        </div>
+                                        <div className="col-span-2 md:col-span-4">
+                                          <span className="text-xs text-gray-500 block">Gateway / Dialect</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.gateway) || '—'}{meta && meta.dialect ? ` (${meta.dialect})` : ''}</span>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {meta && meta.raw_log && (
+                                      <div className="mt-3">
+                                        <span className="text-xs text-gray-500 block mb-1">Raw Log</span>
+                                        <code className="block text-[11px] font-mono text-gray-400 bg-gray-950/60 border border-gray-800 rounded p-2 break-all whitespace-pre-wrap">{meta.raw_log}</code>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
                                 {meta && meta.dns_answers && meta.dns_answers.length > 0 && (
                                   <div>
                                     <span className="text-xs text-gray-500 block">DNS Answers ({meta.dns_answers.length})</span>

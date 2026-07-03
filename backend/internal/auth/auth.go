@@ -14,6 +14,11 @@ type TokenScope string
 const (
 	ScopeSensor TokenScope = "sensor"
 	ScopeAdmin  TokenScope = "admin"
+	// ScopeIngest authorizes pushing events to POST /api/v1/ingest (spec 001,
+	// FR-8). Enforced only when an ingest-scoped token exists AND
+	// VEDETTA_REQUIRE_INGEST_AUTH=1; otherwise the endpoint stays open for
+	// backward compatibility with already-deployed collectors.
+	ScopeIngest TokenScope = "ingest"
 )
 
 // Token represents an API authentication token.

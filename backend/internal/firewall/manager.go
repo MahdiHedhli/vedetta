@@ -13,23 +13,47 @@ import (
 // EventSink is called when new firewall events are ready for storage.
 type EventSink func(events []models.Event) error
 
+// DeviceSink is called with connector-discovered clients for device-registry
+// enrichment (never creates events). Optional; when nil, inventory sync is off.
+type DeviceSink func(clients []ClientInfo) error
+
+// ClientLister is implemented by connectors that can enumerate connected clients
+// for device-inventory enrichment (e.g. the UniFi REST connector).
+type ClientLister interface {
+	ListClients(ctx context.Context) ([]ClientInfo, error)
+}
+
 // Manager coordinates multiple firewall connectors.
 type Manager struct {
-	connectors map[string]Connector
-	configs    map[string]ConnectorConfig
-	sink       EventSink
-	mu         sync.RWMutex
-	stopChs    map[string]chan struct{}
-	running    bool
+	connectors     map[string]Connector
+	configs        map[string]ConnectorConfig
+	sink           EventSink
+	deviceSink     DeviceSink
+	inventoryEvery time.Duration
+	mu             sync.RWMutex
+	stopChs        map[string]chan struct{}
+	running        bool
 }
 
 // NewManager creates a new firewall manager with the provided event sink.
 func NewManager(sink EventSink) *Manager {
 	return &Manager{
-		connectors: make(map[string]Connector),
-		configs:    make(map[string]ConnectorConfig),
-		sink:       sink,
-		stopChs:    make(map[string]chan struct{}),
+		connectors:     make(map[string]Connector),
+		configs:        make(map[string]ConnectorConfig),
+		sink:           sink,
+		inventoryEvery: 300 * time.Second,
+		stopChs:        make(map[string]chan struct{}),
+	}
+}
+
+// SetDeviceSink enables client-inventory sync into the device registry, polled
+// every interval (default 300s). Call before Start.
+func (m *Manager) SetDeviceSink(sink DeviceSink, interval time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deviceSink = sink
+	if interval > 0 {
+		m.inventoryEvery = interval
 	}
 }
 
@@ -67,9 +91,62 @@ func (m *Manager) Start() error {
 		stopCh := make(chan struct{})
 		m.stopChs[name] = stopCh
 		go m.pollLoop(name, conn, cfg.PollInterval, stopCh)
+
+		// Client-inventory sync (enrichment only) for connectors that support it.
+		if lister, ok := conn.(ClientLister); ok && m.deviceSink != nil {
+			invStop := make(chan struct{})
+			m.stopChs[name+":inventory"] = invStop
+			go m.inventoryLoop(name, lister, m.inventoryEvery, invStop)
+		}
 	}
 	m.running = true
 	return nil
+}
+
+// inventoryLoop periodically syncs connector clients into the device registry.
+func (m *Manager) inventoryLoop(name string, lister ClientLister, interval time.Duration, stop chan struct{}) {
+	if interval <= 0 {
+		interval = 300 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	log.Printf("Firewall connector %q inventory sync every %s", name, interval)
+
+	// Run one sync promptly so the registry is populated without waiting a full interval.
+	m.doInventory(name, lister)
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			m.doInventory(name, lister)
+		}
+	}
+}
+
+// doInventory performs a single client-inventory sync.
+func (m *Manager) doInventory(name string, lister ClientLister) {
+	m.mu.RLock()
+	sink := m.deviceSink
+	m.mu.RUnlock()
+	if sink == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	clients, err := lister.ListClients(ctx)
+	cancel()
+	if err != nil {
+		log.Printf("Firewall connector %q inventory error: %v", name, err)
+		return
+	}
+	if len(clients) == 0 {
+		return
+	}
+	if err := sink(clients); err != nil {
+		log.Printf("Firewall connector %q device sink error: %v", name, err)
+		return
+	}
+	log.Printf("Firewall connector %q synced %d clients to device registry", name, len(clients))
 }
 
 // Stop gracefully stops all firewall connectors.
@@ -144,6 +221,29 @@ func (m *Manager) List() []ConnectorHealth {
 	var out []ConnectorHealth
 	for _, conn := range m.connectors {
 		out = append(out, conn.Health())
+	}
+	return out
+}
+
+// NamedHealth pairs a connector's configured name and type with its health, for
+// the admin connectors API (spec 001, T4.4).
+type NamedHealth struct {
+	Name   string          `json:"name"`
+	Type   string          `json:"type"`
+	Health ConnectorHealth `json:"health"`
+}
+
+// ListNamed returns the health of all registered connectors with their names.
+func (m *Manager) ListNamed() []NamedHealth {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]NamedHealth, 0, len(m.connectors))
+	for name, conn := range m.connectors {
+		out = append(out, NamedHealth{
+			Name:   name,
+			Type:   m.configs[name].Type,
+			Health: conn.Health(),
+		})
 	}
 	return out
 }
