@@ -1,0 +1,8 @@
+{
+  "_comment": "Known signature vector shared by telemetry (producer) and specs/003 threat-network (validator). Signature = hex(HMAC-SHA256(reporter_secret, timestamp + \"\\n\" + nonce + \"\\n\" + sha256hex(body))). All values synthetic.",
+  "reporter_secret": "reporter-secret-example",
+  "timestamp": "1751551200",
+  "nonce": "00000000-0000-4000-8000-000000000000",
+  "body": "{\"schema_version\":1,\"batch_id\":\"b\"}",
+  "expected_signature": "6623c7cfd0d7c00a04ae2dd5a700746bb377660df6358fd04be70f646588a995"
+}
