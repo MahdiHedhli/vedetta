@@ -12,6 +12,12 @@
 # should never touch a remote.
 /internal/
 
+# ----- Environment Data (constitution.md) -----
+# Live-environment analysis and agent scratch output.
+# Anything derived from real network access is LOCAL-ONLY.
+/analysis-notes/
+/.local/
+
 # ----- Secrets & Credentials -----
 .env
 .env.*
