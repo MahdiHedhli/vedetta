@@ -138,6 +138,32 @@ DHCP + mDNS + SSDP device description           → 0.95 (excellent)
 All above + TCP fingerprint + JA3               → 0.98 (definitive)
 ```
 
+## EOL / High-Risk Device Scanner Expansion (started 2026-05)
+The initial narrow IC3 2026-03-12 (AVrecon/SocksEscort) scanner in `backend/internal/fingerprint/eol.go` has been extended with additional high-confidence patterns for other commonly exploited camera lines (Foscam, Reolink, Dahua, Axis, and generic GoAhead/Realtek-based vulnerable models). These devices frequently appear in Mirai-family and similar botnets.
+
+Current limitations and recent progress (Cycle 2-3):
+- Detection now also receives richer fingerprint data (DeviceType, Model, OSFamily) produced by the engine's OUI + hostname + nmap multi-signal fusion (see engine.go call to DetectEOLFromSignals).
+- Added Foscam and Reolink high-confidence patterns in previous increment.
+- Still limited by what passive discovery currently exposes to the fingerprint layer (see below).
+- Full mDNS service types/TXT records, complete DHCP option 55 lists, and SSDP device description XML are not yet preserved in `DiscoveredHost` or the backend Device model. These are high-value for future precision improvements (see passive/parse.go and research note above).
+
+Next increments should focus on:
+- Exposing more structured passive metadata from the sensor.
+- Adding more narrow, well-documented vulnerable device classes with public RCEs or botnet history.
+- Possibly introducing a secondary "high_risk_iot" flag separate from the specific IC3 `eol_risk` for broader (but still high-confidence) coverage.
+
+All changes follow the conservative SNR philosophy: risk flags primarily affect scoring when combined with suspicious DNS behavior.
+
+Implementation status (as of this cycle):
+- Migration 016 adds risk_category, risk_model, risk_reasons.
+- Device model and all major store load/insert/update paths updated.
+- Fingerprint engine populates the fields ("eol_eos" for IC3-style, "high_risk_iot" example for vulnerable cameras using deviceType).
+- Ingest tagging and Enricher now generalized: new categories produce appropriate tags ("high_risk_iot", "known_exploited") and category-aware boosts/descriptions. Bypass and context metadata logic also updated to recognize all risk categories.
+- Frontend filters (context 'eol' / high-risk) now surface events from the new categories.
+- Basic per-category badges added in device inventory (EOL red, High Risk orange, Known Exploited darker red).
+- tagLabel helper updated to render nice names for the new risk categories in the Threats view.
+- Next: Full per-category filters/suppression, more signatures, richer passive signals from sensor.
+
 ## Recommended Database Schema
 
 ```sql

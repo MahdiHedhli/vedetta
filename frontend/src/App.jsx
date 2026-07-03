@@ -706,7 +706,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
 
     if (contextFilter === 'new_device' && !e.tags?.includes('new_device_context')) return false;
     if (contextFilter === 'iot' && !e.tags?.includes('iot_context')) return false;
-    if (contextFilter === 'eol' && !e.tags?.includes('eol_router') && !e.tags?.includes('eol_device_context')) return false;
+    if (contextFilter === 'eol' && !e.tags?.includes('eol_router') && !e.tags?.includes('eol_device_context') && !e.tags?.includes('high_risk_iot') && !e.tags?.includes('known_exploited')) return false;
 
     return true;
   });
@@ -718,12 +718,23 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const grouped = groupEvents(displayEvents);
   const paginatedGroups = grouped.slice(0, visibleCount);
 
+  // Only show the Proc column when at least one visible event carries a process hint
+  // (process attribution is future host-local work; hide the dead column until then)
+  const hasProcColumn = paginatedGroups.some((g) => {
+    try {
+      const m = JSON.parse(g.lead.metadata || '{}');
+      return !!(m && m.process);
+    } catch {
+      return false;
+    }
+  });
+
   // Pre-severity set (context + whitelist + suppressed, but no severity filter)
   // Used for correct severity button counts
   const contextOnly = events.filter(e => {
     if (contextFilter === 'new_device' && !e.tags?.includes('new_device_context')) return false;
     if (contextFilter === 'iot' && !e.tags?.includes('iot_context')) return false;
-    if (contextFilter === 'eol' && !e.tags?.includes('eol_router') && !e.tags?.includes('eol_device_context')) return false;
+    if (contextFilter === 'eol' && !e.tags?.includes('eol_router') && !e.tags?.includes('eol_device_context') && !e.tags?.includes('high_risk_iot') && !e.tags?.includes('known_exploited')) return false;
     return true;
   });
   const afterWhitelistContextOnly = hideWhitelisted ? contextOnly.filter(e => !isWhitelisted(e)) : contextOnly;
@@ -749,7 +760,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const allContextCount = displaySeverityOnly.length;
   const iotContextCount = displaySeverityOnly.filter(e => e.tags?.includes('iot_context')).length;
   const newDeviceContextCount = displaySeverityOnly.filter(e => e.tags?.includes('new_device_context')).length;
-  const eolContextCount = displaySeverityOnly.filter(e => e.tags?.includes('eol_router') || e.tags?.includes('eol_device_context')).length;
+  const eolContextCount = displaySeverityOnly.filter(e => e.tags?.includes('eol_router') || e.tags?.includes('eol_device_context') || e.tags?.includes('high_risk_iot') || e.tags?.includes('known_exploited')).length;
 
   // Severity counts for filter buttons
   // Computed from pre-severity set (after context + whitelist + suppressed)
@@ -816,6 +827,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     very_new_device: 'bg-red-600/30 text-red-400 font-bold', // Strong visual for <1h devices
     eol_router: 'bg-red-500/20 text-red-300 border border-red-500/40',
     eol_device_context: 'bg-red-500/20 text-red-300 border border-red-500/40 font-semibold',
+    // New generalized risk categories
+    high_risk_iot: 'bg-orange-500/20 text-orange-300 border border-orange-500/40',
+    known_exploited: 'bg-red-600/20 text-red-300 border border-red-600/40 font-semibold',
   };
 
   const tagLabel = (tag) => {
@@ -832,6 +846,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       very_new_device: 'Very New (<1h)',
       eol_router: 'EOL Router',
       eol_device_context: 'EOL Device (High Risk)',
+      // New generalized risk categories
+      high_risk_iot: 'High Risk IoT',
+      known_exploited: 'Known Exploited',
     };
     return labels[tag] || tag;
   };
@@ -1310,6 +1327,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                   <th className="px-4 py-3 w-24">Time</th>
                   <th className="px-4 py-3 w-48">Source Device</th>
                   <th className="px-4 py-3">Domain</th>
+                  <th className="px-4 py-3 w-24">Server</th>
+                  <th className="px-4 py-3 w-16">Ans</th>
+                  {hasProcColumn && <th className="px-4 py-3 w-10" title="Process hint from sensor (future host-local mode)">Proc</th>}
                   <th className="px-4 py-3 w-32">Score</th>
                   <th className="px-4 py-3 w-32">Detection</th>
                   <th className="px-4 py-3 w-28">Status</th>
@@ -1360,6 +1380,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                   <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-gray-700 text-gray-400">{event.network_segment}</span>
                                 )}
                                 {event.device_vendor && <span className="ml-1 text-[10px] text-gray-500">({event.device_vendor})</span>}
+                                {device.model && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-gray-800 text-gray-400">{device.model}</span>}
+                                {device.discovery_source && device.discovery_source !== 'nmap_active' && device.discovery_source !== 'active_nmap' && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-gray-800 text-gray-400">{discoveryLabel(device.discovery_source)}</span>}
+                                {device.services && device.services.length > 0 && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-gray-800 text-gray-400">S:{device.services.length}</span>}
                               </button>
                             ) : (
                               <span className="font-mono text-gray-200">{event.source_ip || '—'}</span>
@@ -1372,6 +1395,17 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                         <td className="px-4 py-3 text-sm font-mono text-gray-300 truncate" title={event.domain}>
                           {event.domain || '—'}
                         </td>
+                        <td className="px-4 py-3 text-xs font-mono text-gray-400 truncate" title={event.server_ip || ''}>
+                          {event.server_ip || '—'}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-gray-400 text-center" title={meta && meta.dns_answers && meta.dns_answers.length ? meta.dns_answers.join(', ') : ''}>
+                          {meta && meta.dns_answers && meta.dns_answers.length ? meta.dns_answers.length : '—'}
+                        </td>
+                        {hasProcColumn && (
+                          <td className="px-4 py-3 text-xs text-gray-400 text-center font-mono truncate" title={meta && meta.process ? meta.process : ''} style={{maxWidth: '7rem'}}>
+                            {meta && meta.process ? (meta.process.length > 12 ? meta.process.slice(0, 12) + '…' : meta.process) : '—'}
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
                             <div className="w-16 bg-gray-800 rounded h-2 shrink-0">
@@ -1421,7 +1455,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                       </tr>
                       {isExpanded && (
                         <tr className="bg-gray-800/20 border-b border-gray-800/50">
-                          <td colSpan="7" className="px-6 py-5">
+                          <td colSpan={hasProcColumn ? 10 : 9} className="px-6 py-5">
                             <div className="space-y-4">
                               {/* Grouped events button */}
                               {group.count > 1 && (
@@ -1582,6 +1616,24 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                       <span className="text-xs text-gray-500 block">Vendor</span>
                                       <span className="text-gray-200">{device.vendor || '—'}</span>
                                     </div>
+                                    <div>
+                                      <span className="text-xs text-gray-500 block">Model</span>
+                                      <span className="text-gray-200">{device.model || '—'}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-xs text-gray-500 block">Discovery Source</span>
+                                      <span className="text-gray-200 text-xs">{discoveryLabel(device.discovery_source)}</span>
+                                    </div>
+                                    {device.services && device.services.length > 0 && (
+                                      <div className="col-span-2">
+                                        <span className="text-xs text-gray-500 block">Services (from passive)</span>
+                                        <div className="flex flex-wrap gap-1 mt-0.5">
+                                          {device.services.map((s, i) => (
+                                            <span key={i} className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700" title={s}>{s}</span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                   <button
                                     className="text-xs text-amber-400 hover:text-amber-300 mt-2"
@@ -1599,8 +1651,20 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                   <span className="text-sm font-mono text-gray-200">{event.source_ip || '—'}</span>
                                 </div>
                                 <div>
+                                  <span className="text-xs text-gray-500 block">Server IP</span>
+                                  <span className="text-sm font-mono text-gray-200">{event.server_ip || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Process (from sensor)</span>
+                                  <span className="text-sm font-mono text-gray-200">{(meta && meta.process) || '—'}</span>
+                                </div>
+                                <div>
                                   <span className="text-xs text-gray-500 block">Resolved IP</span>
                                   <span className="text-sm font-mono text-gray-200">{event.resolved_ip || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-xs text-gray-500 block">Answers / Destinations</span>
+                                  <span className="text-sm font-mono text-gray-200 break-all">{(meta && meta.dns_answers && meta.dns_answers.length ? meta.dns_answers.join(', ') : (event.resolved_ip || '—'))}</span>
                                 </div>
                                 <div>
                                   <span className="text-xs text-gray-500 block">Query Type</span>
@@ -1627,6 +1691,14 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                   <span className="text-sm font-mono text-gray-400 text-xs">{event.event_id}</span>
                                 </div>
                               </div>
+
+                              {/* Dedicated answers/destinations from richer sensor data for actionability */}
+                              {meta && meta.dns_answers && meta.dns_answers.length > 0 && (
+                                <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-4">
+                                  <h4 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-3">Answers / Destinations (from sensor)</h4>
+                                  <div className="text-sm font-mono text-gray-200 break-all">{meta.dns_answers.join(', ')}</div>
+                                </div>
+                              )}
 
                               {/* Algorithm-specific metadata */}
                               {meta && (
@@ -2281,12 +2353,15 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
   const filtered = segmentFilter === 'all' ? devices : devices.filter((d) => d.segment === segmentFilter);
 
   const exportCSV = () => {
-    const headers = ['Status', 'IP Address', 'Hostname', 'Vendor', 'Segment', 'MAC Address', 'Open Ports', 'First Seen', 'Last Seen'];
+    const headers = ['Status', 'IP Address', 'Hostname', 'Vendor', 'Model', 'Discovery Source', 'Services', 'Segment', 'MAC Address', 'Open Ports', 'First Seen', 'Last Seen'];
     const rows = filtered.map((d) => [
       d.is_online ? 'Online' : 'Offline',
       d.ip_address || '',
       d.hostname || '',
       d.vendor || '',
+      d.model || '',
+      d.discovery_source || '',
+      (d.services && d.services.length ? d.services.join(';') : ''),
       d.segment || '',
       d.mac_address || '',
       (d.open_ports && d.open_ports.length > 0) ? d.open_ports.map((p) => `${p.port}/${p.protocol}`).join('; ') : '',
@@ -2400,6 +2475,26 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
               <div>
                 <span className="text-xs text-gray-500 block">OS</span>
                 <span className="text-sm">{selectedDevice.os_family ? `${selectedDevice.os_family} ${selectedDevice.os_version || ''}`.trim() : '—'}</span>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500 block">Model</span>
+                <span className="text-sm">{selectedDevice.model || '—'}</span>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500 block">Discovery Source</span>
+                <span className="text-sm text-xs">{discoveryLabel(selectedDevice.discovery_source)}</span>
+              </div>
+              <div className="col-span-2">
+                <span className="text-xs text-gray-500 block">Services (from passive sensor data)</span>
+                {selectedDevice.services && selectedDevice.services.length > 0 ? (
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {selectedDevice.services.map((s, i) => (
+                      <span key={i} className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700" title={s}>{s}</span>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-sm text-gray-500">—</span>
+                )}
               </div>
               <div>
                 <span className="text-xs text-gray-500 block">First Seen</span>
@@ -3228,6 +3323,20 @@ function SettingsView() {
 
 // --- Shared Components ---
 
+// Friendly labels for sensor-provided discovery_source (makes host identification actionable in UI)
+function discoveryLabel(src) {
+  if (!src) return '—';
+  const map = {
+    'passive_mdns': 'mDNS (passive)',
+    'passive_dhcp': 'DHCP (passive)',
+    'passive_ssdp': 'SSDP (passive)',
+    'passive_arp': 'ARP (passive)',
+    'nmap_active': 'Active (nmap)',
+    'active_nmap': 'Active (nmap)', // legacy alias: old sensor binaries still emit this
+  };
+  return map[src] || src;
+}
+
 function DeviceTable({ devices, compact = false, onSelectDevice }) {
   return (
     <table className="w-full">
@@ -3237,6 +3346,9 @@ function DeviceTable({ devices, compact = false, onSelectDevice }) {
           <th className="px-4 py-3">Name / IP</th>
           <th className="px-4 py-3">Hostname</th>
           <th className="px-4 py-3">Vendor</th>
+          <th className="px-4 py-3">Model</th>
+          <th className="px-4 py-3 w-28">Discovery Source</th>
+          <th className="px-4 py-3">Services</th>
           <th className="px-4 py-3">Segment</th>
           {!compact && <th className="px-4 py-3">MAC</th>}
           {!compact && <th className="px-4 py-3">Ports</th>}
@@ -3262,6 +3374,16 @@ function DeviceTable({ devices, compact = false, onSelectDevice }) {
                     ⚠ EOL
                   </span>
                 )}
+                {device.risk_category === 'high_risk_iot' && (
+                  <span className="bg-orange-500 text-white text-xs font-bold px-1.5 py-0.5 rounded flex items-center gap-1" title={device.risk_model || 'High-risk IoT / camera (common botnet target)'}>
+                    ⚠ High Risk
+                  </span>
+                )}
+                {device.risk_category === 'known_exploited' && (
+                  <span className="bg-red-600 text-white text-xs font-bold px-1.5 py-0.5 rounded flex items-center gap-1" title={device.risk_model || 'Known exploited device or chipset'}>
+                    ⚠ Exploited
+                  </span>
+                )}
               </div>
             </td>
             <td className="px-4 py-3">
@@ -3278,6 +3400,13 @@ function DeviceTable({ devices, compact = false, onSelectDevice }) {
             </td>
             <td className="px-4 py-3 text-sm">{device.hostname || <span className="text-gray-600">—</span>}</td>
             <td className="px-4 py-3 text-sm text-gray-400">{device.vendor || '—'}</td>
+            <td className="px-4 py-3 text-sm text-gray-200">{device.model || '—'}</td>
+            <td className="px-4 py-3 text-xs text-gray-400">{discoveryLabel(device.discovery_source)}</td>
+            <td className="px-4 py-3 text-xs text-gray-400" title={device.services && device.services.length > 0 ? device.services.join(', ') : ''}>
+              {device.services && device.services.length > 0 ? (
+                device.services.length > 2 ? `${device.services.slice(0,2).join(', ')} +${device.services.length-2}` : device.services.join(', ')
+              ) : '—'}
+            </td>
             <td className="px-4 py-3"><SegmentBadge segment={device.segment} /></td>
             {!compact && <td className="px-4 py-3 font-mono text-xs text-gray-500">{device.mac_address}</td>}
             {!compact && (

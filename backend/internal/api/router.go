@@ -526,14 +526,33 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", "attachment; filename=events.csv")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("event_id,timestamp,event_type,source_hash,source_ip,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment,dns_source,threat_desc\n"))
+		w.Write([]byte("event_id,timestamp,event_type,source_hash,source_ip,server_ip,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment,dns_source,threat_desc,dns_answers,process\n"))
 		for _, e := range result.Events {
 			tagsStr := strings.Join(e.Tags, ";")
+			answersStr := ""
+			processStr := ""
+			if e.Metadata != "" {
+				var m map[string]any
+				if json.Unmarshal([]byte(e.Metadata), &m) == nil {
+					if ans, ok := m["dns_answers"].([]interface{}); ok {
+						strs := []string{}
+						for _, a := range ans {
+							if s, ok := a.(string); ok {
+								strs = append(strs, s)
+							}
+						}
+						answersStr = strings.Join(strs, ";")
+					}
+					if p, ok := m["process"].(string); ok {
+						processStr = p
+					}
+				}
+			}
 			line := strings.Join([]string{
 				e.EventID, e.Timestamp.Format(time.RFC3339), e.EventType, e.SourceHash,
-				e.SourceIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
+				e.SourceIP, e.ServerIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
 				strconv.FormatFloat(e.AnomalyScore, 'f', 4, 64), tagsStr, e.Geo,
-				e.DeviceVendor, e.NetworkSegment, e.DNSSource, e.ThreatDesc,
+				e.DeviceVendor, e.NetworkSegment, e.DNSSource, e.ThreatDesc, answersStr, processStr,
 			}, ",")
 			w.Write([]byte(line + "\n"))
 		}
@@ -961,12 +980,15 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 		CIDR     string `json:"cidr"`
 		Segment  string `json:"segment"`
 		Hosts    []struct {
-			IPAddress  string `json:"ip_address"`
-			MACAddress string `json:"mac_address"`
-			Hostname   string `json:"hostname"`
-			Vendor     string `json:"vendor"`
-			OpenPorts  []int  `json:"open_ports"`
-			Status     string `json:"status"`
+			IPAddress       string   `json:"ip_address"`
+			MACAddress      string   `json:"mac_address"`
+			Hostname        string   `json:"hostname"`
+			Vendor          string   `json:"vendor"`
+			OpenPorts       []int    `json:"open_ports"`
+			Status          string   `json:"status"`
+			Model           string   `json:"model,omitempty"`
+			Services        []string `json:"services,omitempty"`
+			DiscoverySource string   `json:"discovery_source,omitempty"`
 		} `json:"hosts"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -995,12 +1017,15 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 	newCount := 0
 	for _, h := range body.Hosts {
 		host := discovery.DiscoveredHost{
-			IPAddress:  h.IPAddress,
-			MACAddress: h.MACAddress,
-			Hostname:   h.Hostname,
-			Vendor:     h.Vendor,
-			OpenPorts:  h.OpenPorts,
-			Status:     h.Status,
+			IPAddress:       h.IPAddress,
+			MACAddress:      h.MACAddress,
+			Hostname:        h.Hostname,
+			Vendor:          h.Vendor,
+			OpenPorts:       h.OpenPorts,
+			Status:          h.Status,
+			Model:           h.Model,
+			Services:        h.Services,
+			DiscoverySource: h.DiscoverySource,
 		}
 		isNew, err := s.DB.UpsertDevice(host, now, body.Segment)
 		if err != nil {
@@ -1161,26 +1186,71 @@ func deduplicateGatewayEchoes(events []models.Event) []models.Event {
 			continue
 		}
 
-		// Find event that is NOT from a gateway IP
-		var nonGatewayEvent *models.Event
-		var gatewayEvents []*models.Event
+		// A dedup group typically contains both the query packet and the response
+		// packet of the same lookup (the sensor emits an event for each). Only the
+		// response carries answers (ResolvedIP / dns_answers metadata). When picking
+		// the survivor we must prefer the answer-bearing event, otherwise the entire
+		// answers feature is silently defeated by dedup.
+		hasAnswerData := func(evt *models.Event) bool {
+			return evt.ResolvedIP != "" || strings.Contains(evt.Metadata, "dns_answers")
+		}
 
+		// Find event that is NOT from a gateway IP, preferring one with answer data.
+		var nonGatewayEvent *models.Event
 		for _, evt := range groupEvents {
 			if isGatewayIP(evt.SourceIP) {
-				gatewayEvents = append(gatewayEvents, evt)
-			} else {
+				continue
+			}
+			if nonGatewayEvent == nil || (!hasAnswerData(nonGatewayEvent) && hasAnswerData(evt)) {
 				nonGatewayEvent = evt
 			}
 		}
 
-		// Keep the non-gateway event, or if all are gateway IPs, keep the first one
+		// Keep the non-gateway event; if all are gateway IPs, prefer an
+		// answer-bearing one, falling back to the first.
 		var kept *models.Event
 		if nonGatewayEvent != nil {
 			kept = nonGatewayEvent
-			dedupCount += len(groupEvents) - 1
 		} else {
 			kept = groupEvents[0]
-			dedupCount += len(groupEvents) - 1
+			for _, evt := range groupEvents {
+				if hasAnswerData(evt) {
+					kept = evt
+					break
+				}
+			}
+		}
+		dedupCount += len(groupEvents) - 1
+
+		// Merge answer-bearing fields from discarded duplicates into the kept event
+		// so no resolution info is lost regardless of which event survived.
+		for _, evt := range groupEvents {
+			if evt == kept {
+				continue
+			}
+			if kept.ResolvedIP == "" && evt.ResolvedIP != "" {
+				kept.ResolvedIP = evt.ResolvedIP
+			}
+			if kept.ServerIP == "" && evt.ServerIP != "" {
+				kept.ServerIP = evt.ServerIP
+			}
+			if evt.Metadata != "" && evt.Metadata != kept.Metadata {
+				merged := map[string]any{}
+				_ = json.Unmarshal([]byte(evt.Metadata), &merged)
+				if kept.Metadata != "" {
+					keptMeta := map[string]any{}
+					if err := json.Unmarshal([]byte(kept.Metadata), &keptMeta); err == nil {
+						for k, v := range keptMeta {
+							merged[k] = v // kept event wins on conflicting keys
+						}
+					}
+				}
+				if len(merged) > 0 {
+					if b, err := json.Marshal(merged); err == nil {
+						kept.Metadata = string(b)
+					}
+				}
+			}
 		}
 
 		// Tag the kept event as deduplicated
@@ -1216,14 +1286,16 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SensorID string `json:"sensor_id"`
 		Queries  []struct {
-			Timestamp  int64  `json:"timestamp"`
-			Domain     string `json:"domain"`
-			QueryType  string `json:"query_type"`
-			ClientIP   string `json:"client_ip"`
-			ResponseIP string `json:"response_ip,omitempty"`
-			ServerIP   string `json:"server_ip,omitempty"`
-			Blocked    bool   `json:"blocked"`
-			Source     string `json:"source"`
+			Timestamp  int64    `json:"timestamp"` // unix millis or seconds (auto-detected for compat)
+			Domain     string   `json:"domain"`
+			QueryType  string   `json:"query_type"`
+			ClientIP   string   `json:"client_ip"`
+			ResponseIP string   `json:"response_ip,omitempty"`
+			ServerIP   string   `json:"server_ip,omitempty"`
+			Blocked    bool     `json:"blocked"`
+			Source     string   `json:"source"`
+			Answers    []string `json:"answers,omitempty"` // resolved destinations from sensor (for actionability)
+			Process    string   `json:"process,omitempty"` // originating process hint (if sensor has local visibility)
 		} `json:"queries"`
 	}
 
@@ -1268,12 +1340,21 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 		h.Write([]byte(q.ClientIP))
 		sourceHash := hex.EncodeToString(h.Sum(nil))
 
+		// Timestamp: support millis (preferred for precision) or legacy seconds
+		var ts time.Time
+		if q.Timestamp > 1_000_000_000_000 { // millis
+			ts = time.UnixMilli(q.Timestamp).UTC()
+		} else {
+			ts = time.Unix(q.Timestamp, 0).UTC()
+		}
+
 		event := models.Event{
 			EventID:        eventID,
-			Timestamp:      time.Unix(q.Timestamp, 0).UTC(),
+			Timestamp:      ts,
 			EventType:      "dns_query",
 			SourceHash:     sourceHash,
 			SourceIP:       q.ClientIP,
+			ServerIP:       q.ServerIP,
 			Domain:         q.Domain,
 			QueryType:      q.QueryType,
 			ResolvedIP:     q.ResponseIP,
@@ -1284,6 +1365,34 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 			DeviceVendor:   "",
 			NetworkSegment: "default",
 			DNSSource:      q.Source,
+		}
+
+		// Store answers (resolved destinations) in metadata for actionability.
+		// This helps users see what the query actually resolved to without extra lookups.
+		if len(q.Answers) > 0 {
+			m := map[string]any{}
+			if event.Metadata != "" {
+				_ = json.Unmarshal([]byte(event.Metadata), &m)
+			}
+			m["dns_answers"] = q.Answers
+			if b, err := json.Marshal(m); err == nil {
+				event.Metadata = string(b)
+			}
+			// Also surface first answer in ResolvedIP for backward/ simple views
+			if event.ResolvedIP == "" {
+				event.ResolvedIP = q.Answers[0]
+			}
+		}
+
+		if q.Process != "" {
+			m := map[string]any{}
+			if event.Metadata != "" {
+				_ = json.Unmarshal([]byte(event.Metadata), &m)
+			}
+			m["process"] = q.Process
+			if b, err := json.Marshal(m); err == nil {
+				event.Metadata = string(b)
+			}
 		}
 
 		// SNR-05: Enrich with passive device discovery context.
@@ -1338,19 +1447,39 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// EOL router / high-risk device (IC3 2026-03-12 AVrecon advisory)
-			// These devices are actively exploited as residential proxies and C2 relays.
-			// Any anomalous DNS from them is much higher priority.
-			if dev.EOLRisk {
-				found := false
-				for _, t := range event.Tags {
-					if t == "eol_router" {
-						found = true
-						break
-					}
+			// Risk tagging for known exploitable / EOL / high-risk IoT devices.
+			// Generalized from the original IC3 AVrecon work (migration 016).
+			// We map categories to tags for downstream scoring and UI:
+			//   eol_eos       -> "eol_router" (kept for compat + specific IC3 boost)
+			//   high_risk_iot -> "high_risk_iot"
+			//   known_exploited -> "known_exploited"
+			if dev.EOLRisk || dev.RiskCategory != "" {
+				category := dev.RiskCategory
+				if category == "" && dev.EOLRisk {
+					category = "eol_eos"
 				}
-				if !found {
-					event.Tags = append(event.Tags, "eol_router")
+
+				tag := ""
+				switch category {
+				case "eol_eos":
+					tag = "eol_router"
+				case "high_risk_iot":
+					tag = "high_risk_iot"
+				case "known_exploited":
+					tag = "known_exploited"
+				}
+
+				if tag != "" {
+					found := false
+					for _, t := range event.Tags {
+						if t == tag {
+							found = true
+							break
+						}
+					}
+					if !found {
+						event.Tags = append(event.Tags, tag)
+					}
 				}
 			}
 		}

@@ -101,6 +101,12 @@ func (db *DB) migrate() error {
 		return db.applyInlineFallback()
 	}
 
+	// Compat shim: earlier dev builds added the 017 columns at runtime via
+	// pragma probes instead of a migration file. If this database already has
+	// any of them, bring it fully to the 017 state and record the migration as
+	// applied so the plain ALTERs in 017 don't fail with "duplicate column name".
+	db.ensureSensorActionability()
+
 	// Apply each migration that hasn't been applied yet
 	for _, filename := range sqlFiles {
 		var applied int
@@ -146,6 +152,41 @@ func (db *DB) migrate() error {
 	return nil
 }
 
+// sensorActionabilityMigration is the migration file that adds
+// events.server_ip and devices.services.
+const sensorActionabilityMigration = "017_sensor_actionability.sql"
+
+// ensureSensorActionability handles databases that were touched by earlier
+// dev builds which added the 017 columns via runtime ALTER probes rather than
+// a migration file. If any of those columns already exist, the remaining ones
+// are added and 017 is recorded as applied, so the migration file (whose plain
+// ALTER statements would otherwise fail) is skipped. On a fresh or normally
+// migrated database (no such columns yet) this is a no-op.
+func (db *DB) ensureSensorActionability() {
+	hasServerIP := db.columnExists("events", "server_ip")
+	hasServices := db.columnExists("devices", "services")
+	if !hasServerIP && !hasServices {
+		return // fresh or pre-017 database: the migration file handles it
+	}
+	if !hasServerIP {
+		db.Exec(`ALTER TABLE events ADD COLUMN server_ip TEXT DEFAULT ''`)
+	}
+	if !hasServices {
+		db.Exec(`ALTER TABLE devices ADD COLUMN services TEXT DEFAULT '[]'`)
+	}
+	db.Exec(`INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)`,
+		sensorActionabilityMigration, time.Now().UTC())
+}
+
+// columnExists reports whether the given table has the given column.
+func (db *DB) columnExists(table, column string) bool {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
 // applyInlineFallback applies the hardcoded schema when migration files
 // are not available (e.g. during development or tests).
 func (db *DB) applyInlineFallback() error {
@@ -164,6 +205,7 @@ CREATE TABLE IF NOT EXISTS events (
     event_type     TEXT NOT NULL,
     source_hash    TEXT NOT NULL,
     source_ip      TEXT,
+    server_ip      TEXT DEFAULT '',
     domain         TEXT,
     query_type     TEXT,
     resolved_ip    TEXT,
@@ -199,7 +241,13 @@ CREATE TABLE IF NOT EXISTS devices (
     discovery_method TEXT DEFAULT 'nmap_active',
     fingerprint_confidence REAL NOT NULL DEFAULT 0.0,
     custom_name  TEXT DEFAULT '',
-    notes        TEXT DEFAULT ''
+    notes        TEXT DEFAULT '',
+    eol_risk     INTEGER DEFAULT 0,
+    eol_model    TEXT DEFAULT '',
+    risk_category TEXT DEFAULT '',
+    risk_model   TEXT DEFAULT '',
+    risk_reasons TEXT DEFAULT '[]',
+    services     TEXT DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_devices_mac  ON devices (mac_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last ON devices (last_seen);
@@ -253,6 +301,30 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS idx_api_tokens_sensor ON api_tokens(sensor_id);
 CREATE INDEX IF NOT EXISTS idx_api_tokens_revoked ON api_tokens(revoked);
+
+CREATE TABLE IF NOT EXISTS suppression_rules (
+    rule_id     TEXT PRIMARY KEY,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    domain      TEXT DEFAULT '',
+    source_ip   TEXT DEFAULT '',
+    tags        TEXT DEFAULT '[]',
+    reason      TEXT DEFAULT '',
+    active      BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS whitelist_rules (
+    rule_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    domain_pattern TEXT DEFAULT '',
+    source_ip_pattern TEXT DEFAULT '',
+    tag_match TEXT DEFAULT '',
+    category TEXT DEFAULT 'custom',
+    is_default BOOLEAN DEFAULT FALSE,
+    enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_whitelist_enabled ON whitelist_rules (enabled);
 
 CREATE TABLE IF NOT EXISTS threat_indicators (
     indicator  TEXT NOT NULL,

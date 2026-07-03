@@ -30,6 +30,10 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 	if len(host.OpenPorts) == 0 {
 		portsJSON = []byte("[]")
 	}
+	servicesJSON, _ := json.Marshal(host.Services)
+	if len(host.Services) == 0 {
+		servicesJSON = []byte("[]")
+	}
 
 	// Choose identity key.
 	// Prefer MAC when available (stable across DHCP).
@@ -49,23 +53,40 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 	// Run fingerprinting on the new host data
 	engine := fingerprint.NewEngine()
 	deviceModel := &models.Device{
-		IPAddress:  host.IPAddress,
-		MACAddress: host.MACAddress,
-		Hostname:   host.Hostname,
-		Vendor:     host.Vendor,
+		IPAddress:       host.IPAddress,
+		MACAddress:      host.MACAddress,
+		Hostname:        host.Hostname,
+		Vendor:          host.Vendor,
+		Model:           host.Model,
+		DiscoveryMethod: host.DiscoverySource,
+		Services:        host.Services,
 	}
 	fpResult := engine.Fingerprint(deviceModel)
+
+	// Prefer sensor-provided model / discovery if present (richer passive data from mDNS/DHCP/SSDP)
+	if host.Model != "" {
+		fpResult.Model = host.Model
+	}
+	if host.DiscoverySource != "" {
+		fpResult.DiscoveryMethod = host.DiscoverySource
+	}
 
 	if err == sql.ErrNoRows {
 		// New device
 		id := uuid.New().String()
+		riskReasonsJSON, _ := json.Marshal(fpResult.RiskReasons)
+		if len(fpResult.RiskReasons) == 0 {
+			riskReasonsJSON = []byte("[]")
+		}
 		_, err := db.Exec(`
 			INSERT INTO devices (device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, open_ports, segment,
-			                      device_type, os_family, os_version, model, discovery_method, fingerprint_confidence, eol_risk, eol_model)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                      device_type, os_family, os_version, model, discovery_method, fingerprint_confidence, eol_risk, eol_model,
+			                      risk_category, risk_model, risk_reasons, services)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, scanTime, scanTime, host.IPAddress, host.MACAddress, host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
 			fpResult.DeviceType, fpResult.OSFamily, fpResult.OSVersion, fpResult.Model, fpResult.DiscoveryMethod, fpResult.FingerprintConfidence,
 			boolToInt(fpResult.EOLRisk), fpResult.EOLModel,
+			fpResult.RiskCategory, fpResult.RiskModel, string(riskReasonsJSON), string(servicesJSON),
 		)
 		if err != nil {
 			return false, fmt.Errorf("insert device: %w", err)
@@ -87,6 +108,11 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 	// This preserves higher-confidence matches made previously
 	updateFP := fpResult.FingerprintConfidence >= currentConfidence
 
+	riskReasonsJSON, _ := json.Marshal(fpResult.RiskReasons)
+	if len(fpResult.RiskReasons) == 0 {
+		riskReasonsJSON = []byte("[]")
+	}
+
 	if updateFP {
 		// Update with fingerprinting
 		_, err = db.Exec(`
@@ -95,25 +121,33 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 			hostname = COALESCE(NULLIF(?, ''), hostname),
 			vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?,
 			device_type = ?, os_family = ?, os_version = ?, model = ?,
-			discovery_method = ?, fingerprint_confidence = ?, eol_risk = ?, eol_model = ?
+			discovery_method = ?, fingerprint_confidence = ?, eol_risk = ?, eol_model = ?,
+			risk_category = ?, risk_model = ?, risk_reasons = ?, services = ?
 			WHERE device_id = ?`,
 			scanTime, host.IPAddress,
 			host.MACAddress, host.MACAddress,
 			host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
 			fpResult.DeviceType, fpResult.OSFamily, fpResult.OSVersion, fpResult.Model,
-			fpResult.DiscoveryMethod, fpResult.FingerprintConfidence, boolToInt(fpResult.EOLRisk), fpResult.EOLModel, existingID,
+			fpResult.DiscoveryMethod, fpResult.FingerprintConfidence, boolToInt(fpResult.EOLRisk), fpResult.EOLModel,
+			fpResult.RiskCategory, fpResult.RiskModel, string(riskReasonsJSON), string(servicesJSON), existingID,
 		)
 	} else {
 		// Update without fingerprinting (preserve higher confidence match)
+		// Still enrich model + discovery_source from sensor passive data (mDNS TXT/PTR etc.) for actionability / host ID;
+		// richer passive signals are preferred for model even if fp confidence not higher.
 		_, err = db.Exec(`
 			UPDATE devices SET last_seen = ?, ip_address = ?,
 			mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
 			hostname = COALESCE(NULLIF(?, ''), hostname),
-			vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?
+			vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?,
+			model = COALESCE(NULLIF(?, ''), model),
+			discovery_method = COALESCE(NULLIF(?, ''), discovery_method),
+			services = ?
 			WHERE device_id = ?`,
 			scanTime, host.IPAddress,
 			host.MACAddress, host.MACAddress,
-			host.Hostname, deviceModel.Vendor, string(portsJSON), seg, existingID,
+			host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
+			host.Model, host.DiscoverySource, string(servicesJSON), existingID,
 		)
 	}
 
@@ -132,7 +166,9 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
 		       COALESCE(fingerprint_confidence, 0.0),
 		       COALESCE(custom_name, ''), COALESCE(notes, ''),
-		       COALESCE(eol_risk, 0), COALESCE(eol_model, '')
+		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
+		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]'),
+		       COALESCE(services, '[]')
 		FROM devices ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query devices: %w", err)
@@ -142,16 +178,19 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 	var devices []models.Device
 	for rows.Next() {
 		var d models.Device
-		var portsJSON string
+		var portsJSON, riskReasonsJSON, servicesJSON string
 		err := rows.Scan(&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
 			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 			&d.DiscoveryMethod, &d.FingerprintConfidence,
-			&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel)
+			&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel,
+			&d.RiskCategory, &d.RiskModel, &riskReasonsJSON, &servicesJSON)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
 		json.Unmarshal([]byte(portsJSON), &d.OpenPorts)
+		json.Unmarshal([]byte(riskReasonsJSON), &d.RiskReasons)
+		json.Unmarshal([]byte(servicesJSON), &d.Services)
 		devices = append(devices, d)
 	}
 	return devices, rows.Err()
@@ -160,7 +199,7 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 // GetDeviceByIP returns a device matching the given IP address.
 func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
 	var d models.Device
-	var portsJSON string
+	var portsJSON, riskReasonsJSON, servicesJSON string
 	err := db.QueryRow(`
 		SELECT device_id, first_seen, last_seen, ip_address, mac_address,
 		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment,
@@ -168,13 +207,16 @@ func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
 		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
 		       COALESCE(fingerprint_confidence, 0.0),
 		       COALESCE(custom_name, ''), COALESCE(notes, ''),
-		       COALESCE(eol_risk, 0), COALESCE(eol_model, '')
+		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
+		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]'),
+		       COALESCE(services, '[]')
 		FROM devices WHERE ip_address = ? ORDER BY last_seen DESC LIMIT 1`, ip).Scan(
 		&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
 		&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 		&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 		&d.DiscoveryMethod, &d.FingerprintConfidence,
-		&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel)
+		&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel,
+		&d.RiskCategory, &d.RiskModel, &riskReasonsJSON, &servicesJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -182,6 +224,8 @@ func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
 		return nil, fmt.Errorf("query device by ip: %w", err)
 	}
 	json.Unmarshal([]byte(portsJSON), &d.OpenPorts)
+	json.Unmarshal([]byte(riskReasonsJSON), &d.RiskReasons)
+	json.Unmarshal([]byte(servicesJSON), &d.Services)
 	return &d, nil
 }
 
@@ -223,7 +267,8 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 		       COALESCE(model, ''), COALESCE(discovery_method, 'nmap_active'),
 		       COALESCE(fingerprint_confidence, 0.0),
 		       COALESCE(custom_name, ''), COALESCE(notes, ''),
-		       COALESCE(eol_risk, 0), COALESCE(eol_model, '')
+		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
+		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]')
 		FROM devices WHERE first_seen > ? ORDER BY first_seen DESC`, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("query new devices: %w", err)
@@ -233,16 +278,18 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 	var devices []models.Device
 	for rows.Next() {
 		var d models.Device
-		var portsJSON string
+		var portsJSON, riskReasonsJSON string
 		err := rows.Scan(&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
 			&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 			&d.DiscoveryMethod, &d.FingerprintConfidence,
-			&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel)
+			&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel,
+			&d.RiskCategory, &d.RiskModel, &riskReasonsJSON)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
 		json.Unmarshal([]byte(portsJSON), &d.OpenPorts)
+		json.Unmarshal([]byte(riskReasonsJSON), &d.RiskReasons)
 		devices = append(devices, d)
 	}
 	return devices, rows.Err()

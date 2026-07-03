@@ -54,6 +54,7 @@ Pi-hole and AdGuard Home are **optional integrations**, not the product identity
 - EOL Router & Camera Detection (models from FBI IC3 2026-03-12 advisory)
 - optional Pi-hole and AdGuard Home pollers
 - device inventory, scan targets, whitelist, suppression, and activity logging
+- Richer sensor payloads for actionability: server_ip and dns_answers (resolved destinations from responses), plus model/services/discovery_source from passive mDNS/DHCP/SSDP/ARP — surfaced in events list (Server/Ans columns with hover for full destinations), device table, host details, and CSV exports.
 
 ### In progress
 

@@ -311,7 +311,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 
 		// Extra boost for rebinding to high-risk devices (SNR-15)
 		if rebindResult != nil && rebindResult.IsRebinding {
-			isHighRiskDevice := containsTag(event.Tags, "new_device") || containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "eol_router")
+			isHighRiskDevice := containsTag(event.Tags, "new_device") || containsTag(event.Tags, "iot_context") || containsAny(event.Tags, []string{"eol_router", "high_risk_iot", "known_exploited"})
 
 			if event.DeviceVendor != "" {
 				lowerVendor := strings.ToLower(event.DeviceVendor)
@@ -428,7 +428,8 @@ func (e *Enricher) Enrich(event *models.Event) {
 	// Known consumer devices on the main network are lower risk for the same signals.
 
 	// Populate device context metadata for UI and analysis
-	if containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device_context") || containsTag(event.Tags, "dns_bypass") || containsTag(event.Tags, "eol_router") {
+	highRiskRiskTags := []string{"eol_router", "eol_device_context", "high_risk_iot", "known_exploited"}
+	if containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device_context") || containsTag(event.Tags, "dns_bypass") || containsAny(event.Tags, highRiskRiskTags) {
 		if meta.DeviceContext == nil {
 			meta.DeviceContext = &deviceContextMeta{}
 		}
@@ -439,7 +440,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 		boosts := []string{}
 		if containsTag(event.Tags, "iot_context") { boosts = append(boosts, "iot_segment") }
 		if containsTag(event.Tags, "new_device_context") { boosts = append(boosts, "new_device") }
-		if containsTag(event.Tags, "eol_router") || containsTag(event.Tags, "eol_device_context") { boosts = append(boosts, "eol_router") }
+		if containsAny(event.Tags, highRiskRiskTags) { boosts = append(boosts, "high_risk_device") }
 		if containsTag(event.Tags, "dns_bypass") && (containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device")) {
 			boosts = append(boosts, "bypass_high_risk")
 		}
@@ -514,24 +515,53 @@ func (e *Enricher) Enrich(event *models.Event) {
 		log.Printf("SNR: +0.10 boost for very_new_device (<1h) (domain=%s, score=%.2f)", event.Domain, event.AnomalyScore)
 	}
 
-	// EOL Router / High-Risk Device boost (new feature for IC3 2026-03-12 AVrecon advisory)
-	// Devices matching known EOL models (D-Link DIR-8xx, TP-Link WR8xx, Netgear R7000/DGN, Zyxel VMG etc.)
-	// are frequently compromised and turned into residential proxies / C2 relays.
-	// Any suspicious DNS activity (DGA/tunnel/rebind/bypass) from them is very high priority.
-	if containsTag(event.Tags, "eol_router") && event.AnomalyScore > 0.15 {
-		boost := 0.22
-		event.AnomalyScore = math.Min(1.0, event.AnomalyScore+boost)
-		if !containsTag(event.Tags, "eol_device_context") {
-			event.Tags = appendUnique(event.Tags, "eol_device_context")
-			descriptions = append(descriptions, "This activity originated from an End-of-Life (EOL) router or IoT device matching models known to be heavily exploited by AVrecon malware (FBI IC3 FLASH 2026-03-12). These devices rarely receive security updates and are commonly sold as residential proxies.")
+	// Risk device boost (generalized from IC3 2026-03-12 AVrecon work).
+	// Devices in "known_exploited", "eol_eos" (tagged "eol_router"), or "high_risk_iot"
+	// categories get elevated priority when exhibiting suspicious DNS behavior.
+	// known_exploited is checked first so it wins when a device carries multiple risk tags.
+	highRiskTags := []string{"known_exploited", "eol_router", "high_risk_iot"}
+	for _, rt := range highRiskTags {
+		if containsTag(event.Tags, rt) && event.AnomalyScore > 0.15 {
+			boost := 0.22
+			event.AnomalyScore = math.Min(1.0, event.AnomalyScore+boost)
+
+			contextTag := "high_risk_device_context"
+			if !containsTag(event.Tags, contextTag) {
+				event.Tags = appendUnique(event.Tags, contextTag)
+			}
+			// Backward compatibility: EOL devices historically emitted "eol_device_context",
+			// and user suppression/whitelist rules may still key on it. known_exploited devices
+			// (the IC3 AVrecon models) are also EOL, so they keep the legacy tag too.
+			// Deprecated — new rules should match "high_risk_device_context" instead.
+			if rt == "eol_router" || rt == "known_exploited" {
+				event.Tags = appendUnique(event.Tags, "eol_device_context")
+			}
+
+			// Category-specific description (kept conservative and factual).
+			// The FBI IC3 AVrecon reference belongs ONLY to known_exploited (the advisory's
+			// campaign models); eol_eos and high_risk_iot get generic category descriptions.
+			desc := ""
+			switch rt {
+			case "known_exploited":
+				desc = "This activity originated from a device model known to be actively exploited in the wild: it matches the FBI IC3 FLASH 2026-03-12 advisory on AVrecon malware and the SocksEscort residential proxy botnet, which target EOL SOHO routers and IP cameras."
+			case "eol_router":
+				desc = "This activity originated from an End-of-Life (EOL) router or IoT device. EOL devices no longer receive security updates, so known vulnerabilities remain exploitable indefinitely."
+			case "high_risk_iot":
+				desc = "This activity originated from a high-risk IoT or camera device from a product line commonly shipped with weak default credentials and rarely-updated firmware, making it a frequent botnet recruitment target."
+			}
+			if desc != "" {
+				descriptions = append(descriptions, desc)
+			}
+
+			log.Printf("SNR: +%.2f boost for %s (domain=%s, vendor=%s, score=%.2f)", boost, rt, event.Domain, event.DeviceVendor, event.AnomalyScore)
+			break // only apply once
 		}
-		log.Printf("SNR: +%.2f boost for EOL router/device (domain=%s, vendor=%s, score=%.2f)", boost, event.Domain, event.DeviceVendor, event.AnomalyScore)
 	}
 
 	// Extra boost for DNS bypass from high-risk devices (SNR-13)
 	// A new or IoT device bypassing local DNS (public resolver or DoH) is a strong signal.
 	if containsTag(event.Tags, "dns_bypass") {
-		isHighRiskDevice := containsTag(event.Tags, "new_device") || containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "eol_router")
+		isHighRiskDevice := containsTag(event.Tags, "new_device") || containsTag(event.Tags, "iot_context") || containsAny(event.Tags, []string{"eol_router", "high_risk_iot", "known_exploited"})
 
 		if event.DeviceVendor != "" {
 			lowerVendor := strings.ToLower(event.DeviceVendor)
@@ -554,10 +584,10 @@ func (e *Enricher) Enrich(event *models.Event) {
 	if containsTag(event.Tags, "new_device_context") {
 		contextReasons = append(contextReasons, "from a device first seen in the last 48 hours")
 	}
-	if containsTag(event.Tags, "eol_device_context") || containsTag(event.Tags, "eol_router") {
-		contextReasons = append(contextReasons, "from an EOL/vulnerable router (high exploitation risk per IC3 advisory)")
+	if containsAny(event.Tags, []string{"eol_device_context", "eol_router", "high_risk_iot", "known_exploited"}) {
+		contextReasons = append(contextReasons, "from a high-risk device (EOL, vulnerable IoT, or known exploited)")
 	}
-	if event.DeviceVendor != "" && (containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device_context") || containsTag(event.Tags, "eol_device_context")) {
+	if event.DeviceVendor != "" && (containsTag(event.Tags, "iot_context") || containsTag(event.Tags, "new_device_context") || containsAny(event.Tags, []string{"eol_device_context", "high_risk_device_context"})) {
 		contextReasons = append(contextReasons, fmt.Sprintf("vendor: %s", event.DeviceVendor))
 	}
 
@@ -679,6 +709,15 @@ func appendUnique(slice []string, val string) []string {
 func containsTag(tags []string, tag string) bool {
 	for _, t := range tags {
 		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAny(tags []string, candidates []string) bool {
+	for _, c := range candidates {
+		if containsTag(tags, c) {
 			return true
 		}
 	}

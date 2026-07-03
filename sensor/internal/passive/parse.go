@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -52,9 +53,10 @@ func parseARP(packet gopacket.Packet) []netscan.DiscoveredHost {
 	}
 
 	return []netscan.DiscoveredHost{{
-		IPAddress:  net.IP(arp.SourceProtAddress).String(),
-		MACAddress: normalizeMAC(arp.SourceHwAddress),
-		Status:     "up",
+		IPAddress:       net.IP(arp.SourceProtAddress).String(),
+		MACAddress:      normalizeMAC(arp.SourceHwAddress),
+		Status:          "up",
+		DiscoverySource: "passive_arp",
 	}}
 }
 
@@ -77,9 +79,10 @@ func parseDHCPv4(packet gopacket.Packet) []netscan.DiscoveredHost {
 
 func hostFromDHCPv4(dhcp *layers.DHCPv4, srcIP string) *netscan.DiscoveredHost {
 	host := netscan.DiscoveredHost{
-		IPAddress:  firstNonEmptyIP(dhcp.YourClientIP, dhcp.ClientIP),
-		MACAddress: normalizeMAC(dhcp.ClientHWAddr),
-		Status:     "up",
+		IPAddress:       firstNonEmptyIP(dhcp.YourClientIP, dhcp.ClientIP),
+		MACAddress:      normalizeMAC(dhcp.ClientHWAddr),
+		Status:          "up",
+		DiscoverySource: "passive_dhcp",
 	}
 	if host.IPAddress == "" {
 		host.IPAddress = srcIP
@@ -114,19 +117,72 @@ func parseMDNS(packet gopacket.Packet) []netscan.DiscoveredHost {
 }
 
 func hostsFromMDNS(dns *layers.DNS, srcIP string) []netscan.DiscoveredHost {
+	// Copy Answers+Additionals into a fresh slice: append(dns.Answers, ...) can
+	// mutate the decoded Answers' backing array when cap(dns.Answers) > len.
+	records := make([]layers.DNSResourceRecord, 0, len(dns.Answers)+len(dns.Additionals))
+	records = append(records, dns.Answers...)
+	records = append(records, dns.Additionals...)
+
 	var hosts []netscan.DiscoveredHost
-	for _, answer := range append(dns.Answers, dns.Additionals...) {
+	for _, answer := range records {
 		switch answer.Type {
 		case layers.DNSTypeA, layers.DNSTypeAAAA:
 			ip := answer.IP.String()
 			if ip == "" {
 				continue
 			}
-			hosts = append(hosts, netscan.DiscoveredHost{
-				IPAddress: ip,
-				Hostname:  trimDNSName(answer.Name),
-				Status:    "up",
-			})
+			h := netscan.DiscoveredHost{
+				IPAddress:       ip,
+				Hostname:        trimDNSName(answer.Name),
+				Status:          "up",
+				DiscoverySource: "passive_mdns",
+			}
+			hosts = append(hosts, h)
+		}
+	}
+
+	// Also parse TXT records for model / service info (common in IoT, printers, etc. for actionability).
+	// NOTE: attaching metadata to hosts[len(hosts)-1] is a heuristic — mDNS packets
+	// can carry records for multiple hosts, and the TXT record's owner is not
+	// necessarily the last A/AAAA host seen. Guarded against empty hosts below;
+	// a proper fix would correlate TXT owner names with host records.
+	for _, answer := range records {
+		if answer.Type == layers.DNSTypeTXT && len(answer.TXT) > 0 && len(hosts) > 0 {
+			last := &hosts[len(hosts)-1]
+			for _, txt := range answer.TXT {
+				// Each TXT element is one segment, usually a single key=value pair,
+				// but some devices pack several pairs separated by whitespace/NULs.
+				for _, pair := range splitTXTPairs(string(txt)) {
+					key, value, ok := strings.Cut(pair, "=")
+					if !ok {
+						continue
+					}
+					key = strings.ToLower(strings.TrimSpace(key))
+					value = strings.TrimSpace(value)
+					if value == "" {
+						continue
+					}
+					switch key {
+					case "model", "modelname", "mn":
+						if last.Model == "" {
+							last.Model = value
+						}
+					case "manufacturer", "mf", "vendor":
+						if last.Vendor == "" {
+							last.Vendor = value
+						}
+					}
+				}
+			}
+		}
+		if answer.Type == layers.DNSTypePTR {
+			svc := trimDNSName(answer.Name)
+			if svc != "" && strings.HasPrefix(svc, "_") {
+				// service type e.g. _http._tcp.local
+				if len(hosts) > 0 {
+					hosts[len(hosts)-1].Services = append(hosts[len(hosts)-1].Services, svc)
+				}
+			}
 		}
 	}
 
@@ -144,9 +200,10 @@ func hostsFromMDNS(dns *layers.DNS, srcIP string) []netscan.DiscoveredHost {
 		if !strings.HasPrefix(name, "_") {
 			if ip := srcIP; ip != "" {
 				hosts = append(hosts, netscan.DiscoveredHost{
-					IPAddress: ip,
-					Hostname:  name,
-					Status:    "up",
+					IPAddress:       ip,
+					Hostname:        name,
+					Status:          "up",
+					DiscoverySource: "passive_mdns",
 				})
 			}
 		}
@@ -183,8 +240,9 @@ func hostFromSSDPPayload(payload []byte, srcIP string) *netscan.DiscoveredHost {
 	}
 
 	host := netscan.DiscoveredHost{
-		IPAddress: srcIP,
-		Status:    "up",
+		IPAddress:       srcIP,
+		Status:          "up",
+		DiscoverySource: "passive_ssdp",
 	}
 
 	if server := strings.TrimSpace(req.Header.Get("SERVER")); server != "" {
@@ -234,6 +292,15 @@ func firstNonEmptyIP(values ...net.IP) string {
 		}
 	}
 	return ""
+}
+
+// splitTXTPairs splits a TXT segment into candidate key=value tokens.
+// Splits on whitespace and NUL separators so keys are anchored to token start
+// (avoids "mn=" matching mid-string, e.g. inside another value).
+func splitTXTPairs(segment string) []string {
+	return strings.FieldsFunc(segment, func(r rune) bool {
+		return r == 0 || unicode.IsSpace(r)
+	})
 }
 
 func trimDNSName(name []byte) string {

@@ -15,10 +15,15 @@ type FingerprintResult struct {
 	Vendor                string  `json:"vendor"`
 	FingerprintConfidence float64 `json:"fingerprint_confidence"`
 	DiscoveryMethod       string  `json:"discovery_method"`
-	// EOLRisk / EOLModel populated when device matches known EOL router/camera models
-	// from FBI IC3 advisory (AVrecon malware targeting unpatched SOHO devices).
+	// EOLRisk / EOLModel kept for backward compatibility.
 	EOLRisk  bool   `json:"eol_risk,omitempty"`
 	EOLModel string `json:"eol_model,omitempty"`
+
+	// Generalized risk fields (migration 016).
+	// Categories: "known_exploited", "eol_eos", "high_risk_iot".
+	RiskCategory string   `json:"risk_category,omitempty"`
+	RiskModel    string   `json:"risk_model,omitempty"`
+	RiskReasons  []string `json:"risk_reasons,omitempty"`
 }
 
 // Engine orchestrates multi-signal device fingerprinting.
@@ -104,25 +109,50 @@ func (e *Engine) Fingerprint(device *models.Device) *FingerprintResult {
 		}
 	}
 
-	// EOL / high-risk router detection (IC3 2026-03-12 AVrecon advisory)
-	// Uses hostname + vendor signals already collected. Specific model matches
-	// get high confidence; broad affected-vendor matches get lower confidence.
-	eol := DetectEOLFromSignals(device.Hostname, result.Vendor, device.Vendor)
-	if eol.IsEOL {
-		result.EOLRisk = true
-		if eol.Model != "" {
-			result.EOLModel = eol.Model
-			// If we have a specific model string, prefer it in the main Model field too
-			if result.Model == "" {
-				result.Model = eol.Model
-			}
+	// Risk classification using the generalized categories (migration 016).
+	// The signature database assigns the category directly:
+	//   "known_exploited" — IC3 FLASH 2026-03-12 AVrecon/SocksEscort campaign models (also EOL)
+	//   "eol_eos"         — end-of-life / likely-EOL devices with no active-campaign evidence
+	//   "high_risk_iot"   — weak-default camera/IoT vendor lines
+	// The legacy EOLRisk/EOLModel fields are only set when the match is actually EOL
+	// (risk.IsEOL), so known_exploited IC3 models keep eol_risk=true but high_risk_iot
+	// vendor matches do not.
+	risk := DetectEOLFromSignals(device.Hostname, result.Vendor, device.Vendor, result.DeviceType, result.Model)
+	if risk.Category != "" {
+		if risk.IsEOL {
+			result.EOLRisk = true
+			result.EOLModel = risk.Model
 		}
-		if eol.Confidence > result.FingerprintConfidence {
-			result.FingerprintConfidence = eol.Confidence
+		if risk.Model != "" && result.Model == "" {
+			result.Model = risk.Model
 		}
-		// Ensure vendor is set from the EOL match when stronger
-		if result.Vendor == "" && eol.Vendor != "" {
-			result.Vendor = eol.Vendor
+		if risk.Confidence > result.FingerprintConfidence {
+			result.FingerprintConfidence = risk.Confidence
+		}
+		if result.Vendor == "" && risk.Vendor != "" {
+			result.Vendor = risk.Vendor
+		}
+
+		result.RiskCategory = risk.Category
+		result.RiskModel = risk.Model
+		result.RiskReasons = risk.Reasons
+	}
+
+	// Fallback high_risk_iot classification for cameras with no specific signature match.
+	// The enumerated camera vendors (Foscam, Reolink, Dahua, Axis, GoAhead/Realtek, plus
+	// Hikvision via the broad IC3 vendor list) are already covered by DetectEOLFromSignals
+	// above; this catches the remaining white-label cameras built on generic IoT chipsets
+	// (or with no identifiable vendor), which almost universally ship with weak default
+	// credentials and rarely receive firmware updates.
+	if result.RiskCategory == "" && result.DeviceType == "camera" {
+		lowerVendor := strings.ToLower(result.Vendor)
+		if result.Vendor == "" ||
+			strings.Contains(lowerVendor, "espressif") ||
+			strings.Contains(lowerVendor, "realtek") ||
+			strings.Contains(lowerVendor, "mediatek") {
+			result.RiskCategory = "high_risk_iot"
+			result.RiskModel = result.Model
+			result.RiskReasons = []string{"weak_defaults"}
 		}
 	}
 
@@ -144,10 +174,21 @@ func (e *Engine) Fingerprint(device *models.Device) *FingerprintResult {
 		device.FingerprintConfidence = result.FingerprintConfidence
 		device.EOLRisk = result.EOLRisk
 		device.EOLModel = result.EOLModel
-	} else if device.EOLRisk == false && result.EOLRisk {
-		// Still apply EOL flag even on lower confidence (EOL is safety-relevant, not just typing)
-		device.EOLRisk = result.EOLRisk
-		device.EOLModel = result.EOLModel
+		// New generalized risk fields
+		device.RiskCategory = result.RiskCategory
+		device.RiskModel = result.RiskModel
+		device.RiskReasons = result.RiskReasons
+	} else if (!device.EOLRisk && result.EOLRisk) || (device.RiskCategory == "" && result.RiskCategory != "") {
+		// Still apply risk flags even on lower confidence (risk is safety-relevant, not just typing)
+		if !device.EOLRisk && result.EOLRisk {
+			device.EOLRisk = result.EOLRisk
+			device.EOLModel = result.EOLModel
+		}
+		if device.RiskCategory == "" && result.RiskCategory != "" {
+			device.RiskCategory = result.RiskCategory
+			device.RiskModel = result.RiskModel
+			device.RiskReasons = result.RiskReasons
+		}
 	}
 
 	return result
@@ -188,10 +229,17 @@ func EnrichFromVendor(vendor string) *FingerprintResult {
 		result.DeviceType = "access_point"
 	}
 
-	// Also run EOL detection on the raw vendor string (catches broad affected manufacturers)
-	if eol := DetectEOLFromSignals("", vendor, ""); eol.IsEOL {
-		result.EOLRisk = true
-		result.EOLModel = eol.Model
+	// Also run risk detection on the raw vendor string (catches broad affected manufacturers)
+	// deviceType/model are empty here (vendor-only path). The signature match carries the
+	// category and reasons; the legacy EOL flag is only set for genuinely EOL matches.
+	if r := DetectEOLFromSignals("", vendor, "", "", ""); r.Category != "" {
+		if r.IsEOL {
+			result.EOLRisk = true
+			result.EOLModel = r.Model
+		}
+		result.RiskCategory = r.Category
+		result.RiskModel = r.Model
+		result.RiskReasons = r.Reasons
 	}
 
 	return result

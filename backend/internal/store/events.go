@@ -24,10 +24,10 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 
 	stmt, err := tx.Prepare(`
 		INSERT OR IGNORE INTO events
-			(event_id, timestamp, event_type, source_hash, source_ip, domain, query_type,
+			(event_id, timestamp, event_type, source_hash, source_ip, server_ip, domain, query_type,
 			 resolved_ip, blocked, anomaly_score, tags, geo, device_vendor, network_segment,
 			 dns_source, threat_desc, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		tx.Rollback()
@@ -54,7 +54,7 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 
 		result, err := stmt.Exec(
 			e.EventID, e.Timestamp.UTC(), e.EventType, e.SourceHash,
-			nullableString(e.SourceIP),
+			nullableString(e.SourceIP), nullableString(e.ServerIP),
 			nullableString(e.Domain), nullableString(e.QueryType),
 			nullableString(e.ResolvedIP), e.Blocked, e.AnomalyScore,
 			string(tagsJSON), nullableString(e.Geo),
@@ -176,7 +176,7 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 	offset := (params.Page - 1) * params.Limit
 	dataQuery := fmt.Sprintf(`
 		SELECT event_id, timestamp, event_type, source_hash,
-		       COALESCE(source_ip, ''), COALESCE(domain, ''), COALESCE(query_type, ''),
+		       COALESCE(source_ip, ''), COALESCE(server_ip, ''), COALESCE(domain, ''), COALESCE(query_type, ''),
 		       COALESCE(resolved_ip, ''), blocked, anomaly_score,
 		       COALESCE(tags, '[]'), COALESCE(geo, ''),
 		       COALESCE(device_vendor, ''), COALESCE(network_segment, 'default'),
@@ -200,7 +200,7 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 		var tagsJSON string
 		err := rows.Scan(
 			&e.EventID, &e.Timestamp, &e.EventType, &e.SourceHash,
-			&e.SourceIP, &e.Domain, &e.QueryType, &e.ResolvedIP, &e.Blocked,
+			&e.SourceIP, &e.ServerIP, &e.Domain, &e.QueryType, &e.ResolvedIP, &e.Blocked,
 			&e.AnomalyScore, &tagsJSON, &e.Geo,
 			&e.DeviceVendor, &e.NetworkSegment,
 			&e.DNSSource, &e.ThreatDesc, &e.Metadata,
