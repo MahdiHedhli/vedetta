@@ -249,11 +249,48 @@ CREATE TABLE IF NOT EXISTS devices (
     risk_model    TEXT DEFAULT '',
     risk_reasons  TEXT DEFAULT '',
     eol_risk  INTEGER DEFAULT 0,
-    eol_model TEXT DEFAULT ''
+    eol_model TEXT DEFAULT '',
+    display_name  TEXT DEFAULT '',
+    friendly_name TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_devices_mac  ON devices (mac_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last ON devices (last_seen);
 CREATE INDEX IF NOT EXISTS idx_devices_ip_segment ON devices (ip_address, segment);
+
+-- Spec 004 (migration 018): per-field provenance, identity aliases, multi-network attachments.
+CREATE TABLE IF NOT EXISTS device_signals (
+    device_id      TEXT NOT NULL REFERENCES devices(device_id),
+    field          TEXT NOT NULL,
+    value          TEXT NOT NULL,
+    source         TEXT NOT NULL,
+    confidence     REAL NOT NULL DEFAULT 0.0,
+    first_observed TIMESTAMP NOT NULL,
+    last_observed  TIMESTAMP NOT NULL,
+    PRIMARY KEY (device_id, field, source)
+);
+CREATE INDEX IF NOT EXISTS idx_device_signals_device ON device_signals(device_id);
+
+CREATE TABLE IF NOT EXISTS device_identities (
+    device_id  TEXT NOT NULL REFERENCES devices(device_id),
+    id_type    TEXT NOT NULL,
+    id_value   TEXT NOT NULL,
+    segment    TEXT NOT NULL DEFAULT 'default',
+    first_seen TIMESTAMP NOT NULL,
+    last_seen  TIMESTAMP NOT NULL,
+    PRIMARY KEY (id_type, id_value, segment)
+);
+CREATE INDEX IF NOT EXISTS idx_device_identities_device ON device_identities(device_id);
+
+CREATE TABLE IF NOT EXISTS device_networks (
+    device_id  TEXT NOT NULL REFERENCES devices(device_id),
+    segment    TEXT NOT NULL,
+    ip_address TEXT NOT NULL DEFAULT '',
+    sensor_id  TEXT NOT NULL DEFAULT '',
+    first_seen TIMESTAMP NOT NULL,
+    last_seen  TIMESTAMP NOT NULL,
+    PRIMARY KEY (device_id, segment)
+);
+CREATE INDEX IF NOT EXISTS idx_device_networks_segment ON device_networks(segment);
 
 CREATE TABLE IF NOT EXISTS retention_config (
     key   TEXT PRIMARY KEY,

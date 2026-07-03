@@ -1387,7 +1387,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                   const isExpanded = expandedRows.has(event.event_id);
                   const meta = parseMetadata(event.metadata);
                   const device = event.source_ip ? deviceByIP[event.source_ip] : null;
-                  const deviceName = device?.custom_name || device?.hostname || null;
+                  const deviceName = device ? (device.display_name || device.custom_name || device.hostname || null) : null;
                   const eventState = getEventState(event);
                   const isEditing = actionMode && actionMode.eventId === event.event_id;
                   return (
@@ -1644,7 +1644,10 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                                     <div>
                                       <span className="text-xs text-gray-500 block">Name</span>
-                                      <span className="text-gray-200">{device.custom_name || device.hostname || '—'}</span>
+                                      <span className="text-gray-200 inline-flex items-center flex-wrap">
+                                        {deviceDisplayName(device)}
+                                        <SegmentsBadge segments={device.segments} />
+                                      </span>
                                     </div>
                                     <div>
                                       <span className="text-xs text-gray-500 block">IP</span>
@@ -2558,7 +2561,11 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-2xl w-full p-6 max-h-[85vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-display">{selectedDevice.custom_name || selectedDevice.hostname || selectedDevice.ip_address}</h3>
+              <h3 className="text-lg font-display flex items-center flex-wrap">
+                {deviceDisplayName(selectedDevice)}
+                <ProvenanceBadge signals={selectedDevice.signals} />
+                <SegmentsBadge segments={selectedDevice.segments} />
+              </h3>
               <button onClick={() => setSelectedDevice(null)} className="text-gray-500 hover:text-white text-lg">✕</button>
             </div>
 
@@ -2606,6 +2613,45 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                 <div>
                   <span className="text-xs text-gray-500 block">Risk</span>
                   <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300" title={(selectedDevice.risk_reasons || []).join('; ') || selectedDevice.risk_model || ''}>{selectedDevice.risk_category}{selectedDevice.risk_model ? ' ' + selectedDevice.risk_model : ''}</span>
+                </div>
+              )}
+              {Array.isArray(selectedDevice.segments) && selectedDevice.segments.length > 1 && (
+                <div className="col-span-2 md:col-span-3">
+                  <span className="text-xs text-gray-500 block">Segments</span>
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {selectedDevice.segments.map((seg) => (
+                      <SegmentBadge key={seg} segment={seg} />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {Array.isArray(selectedDevice.signals) && selectedDevice.signals.length > 0 && (
+                <div className="col-span-2 md:col-span-3">
+                  <span className="text-xs text-gray-500 block mb-1">Identification Provenance</span>
+                  <div className="rounded-lg border border-gray-800 overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-gray-500 bg-gray-800/40">
+                          <th className="px-2 py-1 font-medium">Field</th>
+                          <th className="px-2 py-1 font-medium">Value</th>
+                          <th className="px-2 py-1 font-medium">Source</th>
+                          <th className="px-2 py-1 font-medium text-right">Confidence</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedDevice.signals.map((s, i) => (
+                          <tr key={i} className="border-t border-gray-800/60">
+                            <td className="px-2 py-1 text-gray-400">{SIGNAL_FIELD_LABEL[s.field] || s.field}</td>
+                            <td className="px-2 py-1 text-gray-200 break-all">{s.value || '—'}</td>
+                            <td className="px-2 py-1 text-gray-400">{signalSourceLabel(s.source)}</td>
+                            <td className="px-2 py-1 text-gray-400 text-right font-mono">
+                              {typeof s.confidence === 'number' ? `${(s.confidence * 100).toFixed(0)}%` : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
               {selectedDevice.eol_risk && (
@@ -3431,6 +3477,78 @@ function SettingsView() {
 
 // --- Shared Components ---
 
+// Defensive display-name resolution (spec 004 T4.3).
+// Prefers the backend-computed display_name; falls back to the historical
+// custom_name > hostname > IP chain so an older Core (no display_name) still renders.
+function deviceDisplayName(device) {
+  if (!device) return '—';
+  return device.display_name || device.custom_name || device.friendly_name || device.hostname || device.ip_address || '—';
+}
+
+// Friendly labels for signal provenance sources (device_signals.source).
+function signalSourceLabel(src) {
+  const map = {
+    user_corrected: 'User correction',
+    mdns_txt: 'mDNS TXT',
+    mdns_ptr: 'mDNS PTR',
+    ssdp: 'SSDP',
+    dhcp_hostname: 'DHCP hostname',
+    dhcp_vendor_class: 'DHCP vendor class',
+    hostname_pattern: 'Hostname pattern',
+    oui: 'OUI vendor',
+    nmap: 'Active (nmap)',
+  };
+  return map[src] || src || 'unknown';
+}
+
+const SIGNAL_FIELD_LABEL = {
+  vendor: 'Vendor',
+  model: 'Model',
+  hostname: 'Hostname',
+  friendly_name: 'Friendly name',
+  os_family: 'OS',
+  device_type: 'Device type',
+};
+
+// Multi-segment badge (spec 004 T4.3): rendered only when a device is attached
+// to more than one network segment (segments array from device_networks).
+function SegmentsBadge({ segments }) {
+  if (!Array.isArray(segments) || segments.length <= 1) return null;
+  return (
+    <span
+      className="ml-1.5 inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
+      title={`Seen on ${segments.length} segments: ${segments.join(', ')}`}
+    >
+      {segments.length} segments
+    </span>
+  );
+}
+
+// Provenance tooltip (spec 004 T4.3): builds a source→field→confidence summary
+// from the device_signals array. Renders nothing when no signals are present
+// (old Core), so the surrounding UI degrades gracefully.
+function ProvenanceBadge({ signals }) {
+  if (!Array.isArray(signals) || signals.length === 0) return null;
+  const title = signals
+    .map((s) => {
+      const field = SIGNAL_FIELD_LABEL[s.field] || s.field || '?';
+      const conf = typeof s.confidence === 'number' ? ` ${(s.confidence * 100).toFixed(0)}%` : '';
+      const value = s.value ? `: ${s.value}` : '';
+      return `${signalSourceLabel(s.source)} → ${field}${value}${conf}`;
+    })
+    .join('\n');
+  return (
+    <span
+      className="ml-1.5 inline-flex items-center align-middle text-gray-500 hover:text-gray-300 cursor-help"
+      title={`Identification provenance (source → field → confidence):\n${title}`}
+    >
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    </span>
+  );
+}
+
 function DeviceTable({ devices, compact = false, onSelectDevice }) {
   return (
     <table className="w-full">
@@ -3473,15 +3591,17 @@ function DeviceTable({ devices, compact = false, onSelectDevice }) {
               </div>
             </td>
             <td className="px-4 py-3">
-              <div>
-                {device.custom_name ? (
+              <div className="flex items-center flex-wrap">
+                {(device.display_name || device.custom_name) ? (
                   <>
-                    <span className="text-sm font-medium text-amber-300">{device.custom_name}</span>
+                    <span className="text-sm font-medium text-amber-300">{deviceDisplayName(device)}</span>
                     <span className="font-mono text-xs text-gray-500 ml-2">{device.ip_address}</span>
                   </>
                 ) : (
                   <span className="font-mono text-sm">{device.ip_address}</span>
                 )}
+                <ProvenanceBadge signals={device.signals} />
+                <SegmentsBadge segments={device.segments} />
               </div>
             </td>
             <td className="px-4 py-3 text-sm">{device.hostname || <span className="text-gray-600">—</span>}</td>

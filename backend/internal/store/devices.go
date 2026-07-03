@@ -12,147 +12,273 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
-// UpsertDevice inserts or updates a device.
-// Identity strategy:
-//   - If MAC address is available → match by MAC (handles DHCP IP changes)
-//   - If MAC is empty (cross-subnet scan) → match by IP + segment
+// UpsertDevice inserts or updates a device using the spec-004 correlation
+// pipeline. It replaces the old MAC-then-IP, last-writer-wins logic with:
+//   - an ordered identity resolver (MAC > mDNS name > hostname > IP+segment)
+//     that survives DHCP IP churn and never re-assigns across a MAC conflict;
+//   - a conservative duplicate merge when a MAC match and an alias/IP match
+//     resolve to different records (fold the MAC-less record in);
+//   - confidence-weighted per-field merging via device_signals (higher- or
+//     equal-confidence sources win; user_corrected locks a field);
+//   - multi-network attachment tracking via device_networks;
+//   - a derived display_name.
 //
-// The segment parameter tags which network the device was found on.
-// Runs device fingerprinting to enrich device type, OS, and model information.
-// Returns true if this is a newly discovered device.
+// The whole operation runs in one transaction per reported host.
+// Returns true if this created a new device record.
 func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, segment ...string) (bool, error) {
 	seg := "default"
 	if len(segment) > 0 && segment[0] != "" {
 		seg = segment[0]
 	}
 
-	// Ensure services column exists for richer sensor data (actionability).
-	// Portable check via pragma_table_info + plain ALTER (no "IF NOT EXISTS" in DDL) so it works
-	// reliably even if the container's sqlite3 CLI is older than 3.35+. The go-sqlite3 driver used
-	// by the app supports modern syntax, but this keeps the ensure robust across deploys/restarts.
-	var servicesColCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'services'`).Scan(&servicesColCount); err == nil && servicesColCount == 0 {
-		db.Exec(`ALTER TABLE devices ADD COLUMN services TEXT DEFAULT '[]'`)
+	tx, err := db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin upsert tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// mDNS instance-name continuity uses the friendly name when the source is mDNS.
+	mdnsName := ""
+	if host.FriendlyName != "" && (host.DiscoverySource == "passive_mdns" || host.DiscoverySource == "mdns") {
+		mdnsName = host.FriendlyName
+	}
+	in := correlationInput{
+		ip:       host.IPAddress,
+		mac:      host.MACAddress,
+		hostname: host.Hostname,
+		mdnsName: mdnsName,
 	}
 
-	portsJSON, _ := json.Marshal(host.OpenPorts)
-	if len(host.OpenPorts) == 0 {
-		portsJSON = []byte("[]")
+	res, err := db.resolveIdentity(tx, in, seg, scanTime)
+	if err != nil {
+		return false, err
+	}
+
+	isNew := res.deviceID == ""
+	deviceID := res.deviceID
+	if isNew {
+		deviceID = uuid.New().String()
+		if _, err := tx.Exec(`
+			INSERT INTO devices (device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, open_ports, segment,
+			                      device_type, os_family, os_version, model, discovery_method, fingerprint_confidence, eol_risk, eol_model,
+			                      risk_category, risk_model, risk_reasons, services, display_name, friendly_name)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', ?, 0.0, 0, '', '', '', '[]', '[]', '', '')`,
+			deviceID, scanTime, scanTime, host.IPAddress, host.MACAddress, host.Hostname, host.Vendor,
+			marshalPorts(host.OpenPorts), seg, firstNonEmpty(host.DiscoverySource, "nmap_active"),
+		); err != nil {
+			return false, fmt.Errorf("insert device: %w", err)
+		}
+	}
+
+	// Duplicate merge (T3.3): the MAC matched record A, but the ordered resolver
+	// landed on a different record B via an alias/IP rule — fold the MAC-less B
+	// into the MAC-bearing A. We only merge when A != B and the resolved record
+	// carries no conflicting MAC (the resolver's MAC-conflict veto already
+	// prevents landing on a differently-MAC'd record via IP).
+	if res.macMatchID != "" && res.matchRule != "mac" && res.deviceID != "" && res.macMatchID != res.deviceID {
+		if err := db.mergeDevices(tx, res.macMatchID, res.deviceID, res.matchRule); err != nil {
+			return false, err
+		}
+		deviceID = res.macMatchID
+	}
+	// Inverse case (incoming MAC matches a MAC-less record B by alias/IP, with no
+	// separate MAC record) needs no merge: the MAC is adopted onto B via the
+	// mac_address column CASE-write below, and B simply becomes the device.
+
+	// Record identity aliases for this observation (segment-scoped).
+	if err := db.upsertIdentityTx(tx, deviceID, "mac", host.MACAddress, seg, scanTime); err != nil {
+		return false, err
+	}
+	if host.Hostname != "" {
+		if err := db.upsertIdentityTx(tx, deviceID, "hostname", host.Hostname, seg, scanTime); err != nil {
+			return false, err
+		}
+	}
+	if mdnsName != "" {
+		if err := db.upsertIdentityTx(tx, deviceID, "mdns_name", mdnsName, seg, scanTime); err != nil {
+			return false, err
+		}
+	}
+
+	// Multi-network attachment (T3.5): device x segment, most-recent wins on the
+	// canonical devices.segment/ip_address below.
+	if err := db.upsertNetworkTx(tx, deviceID, seg, host.IPAddress, "", scanTime); err != nil {
+		return false, err
+	}
+
+	// Write raw observation signals at their source confidence (T3.4 write side).
+	sigSource := discoverySourceToSignal(host.DiscoverySource)
+	var sigs []signalUpsert
+	if host.Vendor != "" {
+		sigs = append(sigs, signalUpsert{field: "vendor", value: host.Vendor, source: sigSource, confidence: ConfidenceForSource(sigSource)})
+	}
+	if host.Hostname != "" && !IsGenericHostname(host.Hostname) {
+		sigs = append(sigs, signalUpsert{field: "hostname", value: host.Hostname, source: sigSource, confidence: ConfidenceForSource(sigSource)})
+	}
+	if host.Model != "" {
+		// Model from mDNS TXT / SSDP is high-value; key it to the reporting source.
+		sigs = append(sigs, signalUpsert{field: "model", value: host.Model, source: sigSource, confidence: ConfidenceForSource(sigSource)})
+	}
+	if host.FriendlyName != "" {
+		fnSource := SourceMDNSTxt
+		if host.DiscoverySource == "passive_ssdp" || host.DiscoverySource == "ssdp" {
+			fnSource = SourceSSDP
+		}
+		sigs = append(sigs, signalUpsert{field: "friendly_name", value: host.FriendlyName, source: fnSource, confidence: ConfidenceForSource(fnSource)})
+	}
+	if err := db.upsertSignalsTx(tx, deviceID, sigs, scanTime); err != nil {
+		return false, err
+	}
+
+	// Recompute canonical vendor/model/hostname/friendly_name from the signal set
+	// (confidence-weighted; user_corrected wins). OUI vendor from OpenPorts/MAC is
+	// added as a low-confidence backstop through the fingerprint engine below.
+	canonical, err := db.resolveCanonicalFields(tx, deviceID)
+	if err != nil {
+		return false, err
+	}
+	canonVendor := canonical["vendor"].value
+	canonModel := canonical["model"].value
+	canonHostname := canonical["hostname"].value
+	canonFriendly := canonical["friendly_name"].value
+
+	// Run the fingerprint engine on the correlated signal set (T3.6): hostname,
+	// vendor, model, services, and friendly name all feed device typing / risk.
+	engine := fingerprint.NewEngine()
+	fpModel := &models.Device{
+		IPAddress:    host.IPAddress,
+		MACAddress:   host.MACAddress,
+		Hostname:     firstNonEmpty(canonHostname, host.Hostname),
+		Vendor:       firstNonEmpty(canonVendor, host.Vendor),
+		Model:        firstNonEmpty(canonModel, host.Model),
+		FriendlyName: firstNonEmpty(canonFriendly, host.FriendlyName),
+		Services:     host.Services,
+	}
+	fpResult := engine.FingerprintSignals(fpModel, host.Services, fpModel.Model, fpModel.FriendlyName)
+
+	// OUI vendor + fingerprint device_type / os feed back as their own signals so
+	// they take part in future confidence-weighted resolution (but never beat a
+	// higher-confidence passive source on vendor).
+	var derived []signalUpsert
+	if fpResult.Vendor != "" {
+		derived = append(derived, signalUpsert{field: "vendor", value: fpResult.Vendor, source: SourceOUI, confidence: ConfidenceForSource(SourceOUI)})
+	}
+	if fpResult.DeviceType != "" {
+		derived = append(derived, signalUpsert{field: "device_type", value: fpResult.DeviceType, source: SourceHostnamePattern, confidence: fpResult.FingerprintConfidence})
+	}
+	if fpResult.OSFamily != "" {
+		derived = append(derived, signalUpsert{field: "os_family", value: fpResult.OSFamily, source: SourceHostnamePattern, confidence: fpResult.FingerprintConfidence})
+	}
+	if err := db.upsertSignalsTx(tx, deviceID, derived, scanTime); err != nil {
+		return false, err
+	}
+
+	// Final canonical read (now includes derived signals) for the device row.
+	canonical, err = db.resolveCanonicalFields(tx, deviceID)
+	if err != nil {
+		return false, err
+	}
+	finalVendor := firstNonEmpty(canonical["vendor"].value, fpResult.Vendor)
+	finalModel := firstNonEmpty(canonical["model"].value, fpResult.Model)
+	finalHostname := firstNonEmpty(canonical["hostname"].value, host.Hostname)
+	finalFriendly := canonical["friendly_name"].value
+	finalDeviceType := firstNonEmpty(canonical["device_type"].value, fpResult.DeviceType)
+	finalOSFamily := firstNonEmpty(canonical["os_family"].value, fpResult.OSFamily)
+
+	// Read custom_name so the label deriver honours user overrides.
+	var customName string
+	_ = tx.QueryRow(`SELECT COALESCE(custom_name, '') FROM devices WHERE device_id = ?`, deviceID).Scan(&customName)
+	displayName := deriveDisplayName(customName, finalFriendly, finalModel, finalVendor, finalHostname, host.MACAddress, host.IPAddress)
+
+	riskReasonsJSON, _ := json.Marshal(fpResult.RiskReasons)
+	if len(fpResult.RiskReasons) == 0 {
+		riskReasonsJSON = []byte("[]")
 	}
 	servicesJSON, _ := json.Marshal(host.Services)
 	if len(host.Services) == 0 {
 		servicesJSON = []byte("[]")
 	}
 
-	// Choose identity key.
-	// Prefer MAC when available (stable across DHCP).
-	// Always fall back to IP + segment for local networks, where same IP usually = same device.
-	// This deeper merging strategy prevents creating duplicate records when discovery
-	// sources provide inconsistent MAC presence (common with mDNS/SSDP vs ARP/nmap).
-	var existingID string
-	var err error
-	if host.MACAddress != "" {
-		// Primary lookup: by MAC address (stable across DHCP changes)
-		err = db.QueryRow("SELECT device_id FROM devices WHERE mac_address = ?", host.MACAddress).Scan(&existingID)
-	}
-	if existingID == "" && host.IPAddress != "" {
-		err = db.QueryRow("SELECT device_id FROM devices WHERE ip_address = ? AND segment = ?",
-			host.IPAddress, seg).Scan(&existingID)
-	}
-
-	// Run fingerprinting on the new host data
-	engine := fingerprint.NewEngine()
-	deviceModel := &models.Device{
-		IPAddress:  host.IPAddress,
-		MACAddress: host.MACAddress,
-		Hostname:   host.Hostname,
-		Vendor:     host.Vendor,
-		// Model, Services, DiscoveryMethod populated below or by fp; origin DiscoveredHost lacks the
-		// richer fields (added in sensor layer) so start zero here and let L4+ wire them through.
-		Services: []string{},
-	}
-	fpResult := engine.Fingerprint(deviceModel)
-
-	if err == sql.ErrNoRows {
-		// New device
-		id := uuid.New().String()
-		riskReasonsJSON := []byte("[]")
-		_, err := db.Exec(`
-			INSERT INTO devices (device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, open_ports, segment,
-			                      device_type, os_family, os_version, model, discovery_method, fingerprint_confidence, eol_risk, eol_model,
-			                      risk_category, risk_model, risk_reasons, services)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, scanTime, scanTime, host.IPAddress, host.MACAddress, host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
-			fpResult.DeviceType, fpResult.OSFamily, fpResult.OSVersion, fpResult.Model, fpResult.DiscoveryMethod, fpResult.FingerprintConfidence,
-			boolToInt(fpResult.EOLRisk), fpResult.EOLModel,
-			"", "", string(riskReasonsJSON), string(servicesJSON),
-		)
-		if err != nil {
-			return false, fmt.Errorf("insert device: %w", err)
-		}
-		return true, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("query device: %w", err)
-	}
-
-	// Existing device — fetch current fingerprint confidence
-	var currentConfidence float64
-	err = db.QueryRow("SELECT COALESCE(fingerprint_confidence, 0.0) FROM devices WHERE device_id = ?", existingID).Scan(&currentConfidence)
-	if err != nil && err != sql.ErrNoRows {
-		return false, fmt.Errorf("query device confidence: %w", err)
-	}
-
-	// Only update fingerprint fields if new confidence >= existing confidence
-	// This preserves higher-confidence matches made previously
-	updateFP := fpResult.FingerprintConfidence >= currentConfidence
-
-	if updateFP {
-		// Update with fingerprinting
-		riskReasonsJSON := []byte("[]")
-		_, err = db.Exec(`
-			UPDATE devices SET last_seen = ?, ip_address = ?,
+	// Canonical devices row: segment/ip_address track the MOST RECENT attachment
+	// (this observation). MAC is adopted only when the row had none or matches.
+	if _, err := tx.Exec(`
+		UPDATE devices SET
+			last_seen = ?,
+			ip_address = ?,
 			mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
-			hostname = COALESCE(NULLIF(?, ''), hostname),
-			vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?,
-			device_type = ?, os_family = ?, os_version = ?, model = ?,
-			discovery_method = ?, fingerprint_confidence = ?, eol_risk = ?, eol_model = ?,
-			risk_category = ?, risk_model = ?, risk_reasons = ?, services = ?
-			WHERE device_id = ?`,
-			scanTime, host.IPAddress,
-			host.MACAddress, host.MACAddress,
-			host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
-			fpResult.DeviceType, fpResult.OSFamily, fpResult.OSVersion, fpResult.Model,
-			fpResult.DiscoveryMethod, fpResult.FingerprintConfidence, boolToInt(fpResult.EOLRisk), fpResult.EOLModel,
-			"", "", string(riskReasonsJSON), string(servicesJSON), existingID,
-		)
-	} else {
-		// Update without fingerprinting (preserve higher confidence match)
-		// Still enrich model + discovery_source from sensor passive data (mDNS TXT/PTR etc.) for actionability / host ID;
-		// richer passive signals are preferred for model even if fp confidence not higher.
-		_, err = db.Exec(`
-			UPDATE devices SET last_seen = ?, ip_address = ?,
-			mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
-			hostname = COALESCE(NULLIF(?, ''), hostname),
-			vendor = COALESCE(NULLIF(?, ''), vendor), open_ports = ?, segment = ?,
-			model = COALESCE(NULLIF(?, ''), model),
+			hostname = ?,
+			vendor = ?,
+			model = ?,
+			friendly_name = ?,
+			display_name = ?,
+			device_type = ?,
+			os_family = ?,
+			os_version = COALESCE(NULLIF(?, ''), os_version),
+			segment = ?,
+			open_ports = CASE WHEN ? != '[]' THEN ? ELSE open_ports END,
+			services = CASE WHEN ? != '[]' THEN ? ELSE services END,
 			discovery_method = COALESCE(NULLIF(?, ''), discovery_method),
-			services = ?
-			WHERE device_id = ?`,
-			scanTime, host.IPAddress,
-			host.MACAddress, host.MACAddress,
-			host.Hostname, deviceModel.Vendor, string(portsJSON), seg,
-			host.Model, host.DiscoverySource, string(servicesJSON), existingID,
-		)
-	}
-
-	if err != nil {
+			fingerprint_confidence = MAX(fingerprint_confidence, ?),
+			eol_risk = CASE WHEN ? = 1 THEN 1 ELSE eol_risk END,
+			eol_model = CASE WHEN ? != '' THEN ? ELSE eol_model END,
+			risk_category = CASE WHEN risk_category = '' AND ? != '' THEN ? ELSE risk_category END,
+			risk_model = CASE WHEN risk_model = '' AND ? != '' THEN ? ELSE risk_model END,
+			risk_reasons = CASE WHEN risk_reasons IN ('', '[]') AND ? != '[]' THEN ? ELSE risk_reasons END
+		WHERE device_id = ?`,
+		scanTime,
+		host.IPAddress,
+		host.MACAddress, host.MACAddress,
+		finalHostname,
+		finalVendor,
+		finalModel,
+		finalFriendly,
+		displayName,
+		finalDeviceType,
+		finalOSFamily,
+		fpResult.OSVersion,
+		seg,
+		marshalPorts(host.OpenPorts), marshalPorts(host.OpenPorts),
+		string(servicesJSON), string(servicesJSON),
+		firstNonEmpty(host.DiscoverySource, ""),
+		fpResult.FingerprintConfidence,
+		boolToInt(fpResult.EOLRisk),
+		fpResult.EOLModel, fpResult.EOLModel,
+		fpResult.RiskCategory, fpResult.RiskCategory,
+		fpResult.RiskModel, fpResult.RiskModel,
+		string(riskReasonsJSON), string(riskReasonsJSON),
+		deviceID,
+	); err != nil {
 		return false, fmt.Errorf("update device: %w", err)
 	}
-	return false, nil
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit upsert tx: %w", err)
+	}
+	return isNew, nil
 }
 
-// ListDevices returns all devices, ordered by last_seen descending.
+// marshalPorts returns a JSON array string for open ports ("[]" when empty).
+func marshalPorts(ports []int) string {
+	if len(ports) == 0 {
+		return "[]"
+	}
+	b, _ := json.Marshal(ports)
+	return string(b)
+}
+
+// firstNonEmpty returns the first non-empty string among its arguments.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// ListDevices returns all devices, ordered by last_seen descending. Each device
+// is enriched with its multi-segment attachments and per-field provenance
+// signals (spec 004).
 func (db *DB) ListDevices() ([]models.Device, error) {
 	rows, err := db.Query(`
 		SELECT device_id, first_seen, last_seen, ip_address, mac_address,
@@ -163,7 +289,7 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		       COALESCE(custom_name, ''), COALESCE(notes, ''),
 		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
 		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]'),
-		       COALESCE(services, '[]')
+		       COALESCE(services, '[]'), COALESCE(display_name, ''), COALESCE(friendly_name, '')
 		FROM devices ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query devices: %w", err)
@@ -179,7 +305,8 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 			&d.DiscoveryMethod, &d.FingerprintConfidence,
 			&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel,
-			&d.RiskCategory, &d.RiskModel, &riskReasonsJSON, &servicesJSON)
+			&d.RiskCategory, &d.RiskModel, &riskReasonsJSON, &servicesJSON,
+			&d.DisplayName, &d.FriendlyName)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
@@ -203,7 +330,31 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		}
 		devices = append(devices, d)
 	}
-	return devices, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range devices {
+		db.attachCorrelation(&devices[i])
+	}
+	return devices, nil
+}
+
+// attachCorrelation populates the spec-004 Segments + Signals fields on a device
+// (best-effort; errors leave the slices empty rather than failing the read).
+func (db *DB) attachCorrelation(d *models.Device) {
+	if segs, err := db.GetDeviceSegments(d.DeviceID); err == nil {
+		d.Segments = segs
+	}
+	if sigs, err := db.GetDeviceSignals(d.DeviceID); err == nil && len(sigs) > 0 {
+		out := make([]models.DeviceSignal, 0, len(sigs))
+		for _, s := range sigs {
+			out = append(out, models.DeviceSignal{
+				Field: s.Field, Value: s.Value, Source: s.Source,
+				Confidence: s.Confidence, LastObserved: s.LastObserved,
+			})
+		}
+		d.Signals = out
+	}
 }
 
 // GetDeviceByIP returns a device matching the given IP address.
@@ -219,14 +370,15 @@ func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
 		       COALESCE(custom_name, ''), COALESCE(notes, ''),
 		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
 		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]'),
-		       COALESCE(services, '[]')
+		       COALESCE(services, '[]'), COALESCE(display_name, ''), COALESCE(friendly_name, '')
 		FROM devices WHERE ip_address = ? ORDER BY last_seen DESC LIMIT 1`, ip).Scan(
 		&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
 		&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 		&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 		&d.DiscoveryMethod, &d.FingerprintConfidence,
 		&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel,
-		&d.RiskCategory, &d.RiskModel, &riskReasonsJSON, &servicesJSON)
+		&d.RiskCategory, &d.RiskModel, &riskReasonsJSON, &servicesJSON,
+		&d.DisplayName, &d.FriendlyName)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -251,6 +403,7 @@ func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
 			}
 		}
 	}
+	db.attachCorrelation(&d)
 	return &d, nil
 }
 
@@ -266,18 +419,62 @@ func (db *DB) UpdateDeviceMeta(deviceID, customName, notes, segment string) erro
 }
 
 // UpdateDeviceFingerprint updates user-corrected fingerprint fields (device type, OS, model).
-// These corrections take priority over auto-detected values.
+// These corrections take absolute priority: each corrected field is written as a
+// user_corrected signal at confidence 1.0, which locks it against automatic
+// overwrite in later upserts (spec 004 FR-6, generalizing the old
+// discovery_method='user_corrected' behavior to per-field). The canonical
+// devices row and display_name are recomputed after the correction.
 func (db *DB) UpdateDeviceFingerprint(deviceID, deviceType, osFamily, osVersion, model string) error {
-	_, err := db.Exec(`
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin fingerprint correction tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	var sigs []signalUpsert
+	if deviceType != "" {
+		sigs = append(sigs, signalUpsert{field: "device_type", value: deviceType, source: SourceUserCorrected, confidence: 1.0})
+	}
+	if osFamily != "" {
+		sigs = append(sigs, signalUpsert{field: "os_family", value: osFamily, source: SourceUserCorrected, confidence: 1.0})
+	}
+	if model != "" {
+		sigs = append(sigs, signalUpsert{field: "model", value: model, source: SourceUserCorrected, confidence: 1.0})
+	}
+	if err := db.upsertSignalsTx(tx, deviceID, sigs, now); err != nil {
+		return err
+	}
+
+	// Direct column write preserves prior behavior (os_version has no signal field;
+	// still COALESCE-updated) and stamps discovery_method for legacy consumers.
+	if _, err := tx.Exec(`
 		UPDATE devices SET device_type = COALESCE(NULLIF(?, ''), device_type),
 		                    os_family = COALESCE(NULLIF(?, ''), os_family),
 		                    os_version = COALESCE(NULLIF(?, ''), os_version),
 		                    model = COALESCE(NULLIF(?, ''), model),
 		                    discovery_method = 'user_corrected'
 		WHERE device_id = ?`,
-		deviceType, osFamily, osVersion, model, deviceID)
-	if err != nil {
+		deviceType, osFamily, osVersion, model, deviceID); err != nil {
 		return fmt.Errorf("update device fingerprint: %w", err)
+	}
+
+	// Recompute display_name honoring custom_name / corrected model.
+	var customName, friendlyName, curModel, curVendor, curHostname, curMAC, curIP string
+	if err := tx.QueryRow(`
+		SELECT COALESCE(custom_name,''), COALESCE(friendly_name,''), COALESCE(model,''),
+		       COALESCE(vendor,''), COALESCE(hostname,''), COALESCE(mac_address,''), COALESCE(ip_address,'')
+		FROM devices WHERE device_id = ?`, deviceID).Scan(
+		&customName, &friendlyName, &curModel, &curVendor, &curHostname, &curMAC, &curIP); err != nil {
+		return fmt.Errorf("read device for display_name recompute: %w", err)
+	}
+	displayName := deriveDisplayName(customName, friendlyName, curModel, curVendor, curHostname, curMAC, curIP)
+	if _, err := tx.Exec(`UPDATE devices SET display_name = ? WHERE device_id = ?`, displayName, deviceID); err != nil {
+		return fmt.Errorf("update display_name: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit fingerprint correction: %w", err)
 	}
 	return nil
 }
@@ -293,7 +490,8 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 		       COALESCE(fingerprint_confidence, 0.0),
 		       COALESCE(custom_name, ''), COALESCE(notes, ''),
 		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
-		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]')
+		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]'),
+		       COALESCE(display_name, ''), COALESCE(friendly_name, '')
 		FROM devices WHERE first_seen > ? ORDER BY first_seen DESC`, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("query new devices: %w", err)
@@ -309,7 +507,8 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 			&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
 			&d.DiscoveryMethod, &d.FingerprintConfidence,
 			&d.CustomName, &d.Notes, &d.EOLRisk, &d.EOLModel,
-			&d.RiskCategory, &d.RiskModel, &riskReasonsJSON)
+			&d.RiskCategory, &d.RiskModel, &riskReasonsJSON,
+			&d.DisplayName, &d.FriendlyName)
 		if err != nil {
 			return nil, fmt.Errorf("scan device row: %w", err)
 		}
@@ -317,7 +516,13 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 		json.Unmarshal([]byte(riskReasonsJSON), &d.RiskReasons)
 		devices = append(devices, d)
 	}
-	return devices, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range devices {
+		db.attachCorrelation(&devices[i])
+	}
+	return devices, nil
 }
 
 // CountDevices returns total device count.
