@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "batch_id": "a1111111-1a3d-4f5b-9c7e-2d4f6a8b0c1e",
+  "generated_at": "2026-07-03T14:15:02Z",
+  "window_start": "2026-07-03T14:00:00Z",
+  "window_end": "2026-07-03T15:00:00Z",
+  "signals": [
+    {
+      "signal_id": "3c5e7a9b-2d4f-4a6c-8e0b-1f3a5c7e9b0d",
+      "kind": "known_bad_domain_hit",
+      "time_bucket": "2026-07-03T14:00:00Z",
+      "domain": "192.0.2.7",
+      "etld_plus_one": "badzone.example",
+      "local_confidence": 0.99,
+      "local_reasons": ["known_bad", "c2_candidate"],
+      "observation_count": 4,
+      "distinct_asset_count": 2,
+      "blocked_count": 4
+    }
+  ]
+}
