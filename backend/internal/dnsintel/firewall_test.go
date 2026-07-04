@@ -1,6 +1,7 @@
 package dnsintel
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -159,6 +160,36 @@ func TestEnrichFirewall_IPSSeverityScoring(t *testing.T) {
 		if ev.AnomalyScore != c.want {
 			t.Errorf("IPS severity %d score = %.2f, want %.2f", c.sev, ev.AnomalyScore, c.want)
 		}
+		// MINOR fix: IPS events must carry a non-empty, severity-aware threat_desc.
+		if ev.ThreatDesc == "" {
+			t.Errorf("IPS severity %d produced empty threat_desc", c.sev)
+		}
+		if !strings.Contains(ev.ThreatDesc, "IPS") ||
+			!strings.Contains(ev.ThreatDesc, "severity "+itoa(c.sev)) {
+			t.Errorf("IPS severity %d threat_desc = %q, want it to mention IPS + severity", c.sev, ev.ThreatDesc)
+		}
+	}
+}
+
+// TestEnrichFirewall_IPSThreatDescIncludesSignature verifies the IPS description
+// includes the signature/category carried in metadata (msg → rule).
+func TestEnrichFirewall_IPSThreatDescIncludesSignature(t *testing.T) {
+	e := newFirewallEnricher()
+	ev := &models.Event{
+		EventType:      "firewall_log",
+		Timestamp:      time.Now().UTC(),
+		Blocked:        true,
+		SourceIP:       "203.0.113.88",
+		NetworkSegment: "default",
+		Tags:           []string{"source:unifi", "ips", "fw:block", "dir:in"},
+		Metadata:       `{"action":"block","dialect":"rest","ips_severity":2,"rule":"ET SCAN probe"}`,
+	}
+	e.Enrich(ev)
+	if !strings.Contains(ev.ThreatDesc, "severity 2") {
+		t.Errorf("threat_desc = %q, want it to mention severity 2", ev.ThreatDesc)
+	}
+	if !strings.Contains(ev.ThreatDesc, "ET SCAN probe") {
+		t.Errorf("threat_desc = %q, want it to include the signature 'ET SCAN probe'", ev.ThreatDesc)
 	}
 }
 
