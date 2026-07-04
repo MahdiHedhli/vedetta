@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "batch_id": "6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e",
+  "generated_at": "2026-07-03T14:15:02Z",
+  "window_start": "2026-07-03T14:00:00Z",
+  "window_end": "2026-07-03T15:00:00Z",
+  "signals": [
+    {
+      "signal_id": "3c5e7a9b-2d4f-4a6c-8e0b-1f3a5c7e9b0d",
+      "kind": "high_confidence_domain_candidate",
+      "time_bucket": "2026-07-03T14:00:00Z",
+      "etld_plus_one": "192.0.2.7",
+      "local_confidence": 0.91,
+      "local_reasons": ["dga_candidate"],
+      "observation_count": 1,
+      "distinct_asset_count": 1
+    }
+  ]
+}
