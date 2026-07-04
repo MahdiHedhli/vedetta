@@ -1,0 +1,244 @@
+package transmit
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/vedetta-network/vedetta/telemetry/internal/export"
+)
+
+func testReporter() Reporter {
+	return Reporter{ReporterID: "rid", ReporterSecret: "secret"}
+}
+
+func sampleSignals(n int) []export.Signal {
+	out := make([]export.Signal, n)
+	for i := range out {
+		out[i] = export.Signal{
+			SignalID: "sig", Kind: export.KindBehaviorSummary, Behavior: export.BehaviorBeaconing,
+			TimeBucket: "2026-07-03T14:00:00Z", LocalConfidence: 0.8,
+			LocalReasons: []string{"beaconing_candidate"}, ObservationCount: 1, DistinctAssetCount: 1,
+		}
+	}
+	return out
+}
+
+func noSleep() func(time.Duration) { return func(time.Duration) {} }
+
+func TestSendSuccess(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		// Verify gzip body decompresses.
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		io.ReadAll(zr)
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]any{"accepted": 1, "duplicate": false})
+	}))
+	defer srv.Close()
+
+	tx := New(srv.URL, testReporter(), NewSpool(t.TempDir()), false, 250)
+	tx.HTTP = srv.Client()
+	tx.Sleep = noSleep()
+
+	batches := tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())
+	res := tx.Send(context.Background(), batches[0])
+	if !res.Accepted || res.Err != nil {
+		t.Fatalf("send failed: %+v", res)
+	}
+	// All four auth headers present (contract §1).
+	for _, h := range []string{"Authorization", "X-Vedetta-Timestamp", "X-Vedetta-Nonce", "X-Vedetta-Signature"} {
+		if gotHeaders.Get(h) == "" {
+			t.Errorf("missing header %s", h)
+		}
+	}
+	if gotHeaders.Get("Content-Encoding") != "gzip" {
+		t.Errorf("missing gzip content-encoding")
+	}
+	if got := gotHeaders.Get("Authorization"); got != "VedettaReporter rid" {
+		t.Errorf("auth header = %q", got)
+	}
+}
+
+func TestSendDuplicate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"duplicate": true})
+	}))
+	defer srv.Close()
+	tx := New(srv.URL, testReporter(), NewSpool(t.TempDir()), false, 250)
+	tx.HTTP = srv.Client()
+	tx.Sleep = noSleep()
+	res := tx.Send(context.Background(), tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())[0])
+	if !res.Accepted || !res.Duplicate {
+		t.Errorf("expected accepted+duplicate: %+v", res)
+	}
+}
+
+func TestSend4xxPoisonPillNoRetry(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{"error": "forbidden_content"})
+	}))
+	defer srv.Close()
+	spool := NewSpool(t.TempDir())
+	tx := New(srv.URL, testReporter(), spool, false, 250)
+	tx.HTTP = srv.Client()
+	tx.Sleep = noSleep()
+
+	res := tx.Send(context.Background(), tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())[0])
+	if !res.Rejected {
+		t.Errorf("expected rejected, got %+v", res)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Errorf("4xx should not retry, got %d calls", calls)
+	}
+	// Rejected batch parked for inspection; not in the main spool.
+	if spool.Depth() != 0 {
+		t.Errorf("rejected batch should not sit in main spool")
+	}
+	files, _ := listSpoolFiles(spool.RejectedDir)
+	if len(files) != 1 {
+		t.Errorf("expected 1 rejected file, got %d", len(files))
+	}
+}
+
+func TestSend5xxRetriesThenSpools(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	spool := NewSpool(t.TempDir())
+	tx := New(srv.URL, testReporter(), spool, false, 250)
+	tx.HTTP = srv.Client()
+	tx.Sleep = noSleep()
+	tx.MaxAttempts = 3
+
+	res := tx.Send(context.Background(), tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())[0])
+	if !res.Spooled {
+		t.Errorf("expected spooled after 5xx exhaustion: %+v", res)
+	}
+	if atomic.LoadInt32(&calls) != 3 {
+		t.Errorf("expected 3 attempts, got %d", calls)
+	}
+	if spool.Depth() != 1 {
+		t.Errorf("batch should be spooled")
+	}
+}
+
+func TestDryRunNoEgress(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+	}))
+	defer srv.Close()
+	spool := NewSpool(t.TempDir())
+	tx := New(srv.URL, testReporter(), spool, true /*dryRun*/, 250)
+	tx.HTTP = srv.Client()
+
+	res := tx.Send(context.Background(), tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())[0])
+	if !res.Spooled {
+		t.Errorf("dry-run should spool: %+v", res)
+	}
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Errorf("dry-run must make ZERO egress, got %d calls", calls)
+	}
+	if spool.Depth() != 1 {
+		t.Errorf("dry-run batch should be spooled")
+	}
+}
+
+func TestBuildBatchesSplit(t *testing.T) {
+	tx := New("http://x", testReporter(), NewSpool(t.TempDir()), false, 100)
+	batches := tx.BuildBatches(sampleSignals(250), time.Now(), time.Now())
+	if len(batches) != 3 {
+		t.Errorf("expected 3 batches (100+100+50), got %d", len(batches))
+	}
+	ids := map[string]bool{}
+	for _, b := range batches {
+		if ids[b.BatchID] {
+			t.Errorf("duplicate batch_id")
+		}
+		ids[b.BatchID] = true
+	}
+}
+
+func TestDrainSpoolResendsAndRemoves(t *testing.T) {
+	// First server fails (spool), second succeeds (drain).
+	var ok int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.LoadInt32(&ok) == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		zr, _ := gzip.NewReader(r.Body)
+		io.ReadAll(zr)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	spool := NewSpool(t.TempDir())
+	tx := New(srv.URL, testReporter(), spool, false, 250)
+	tx.HTTP = srv.Client()
+	tx.Sleep = noSleep()
+	tx.MaxAttempts = 2
+
+	tx.Send(context.Background(), tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())[0])
+	if spool.Depth() != 1 {
+		t.Fatalf("precondition: expected 1 spooled")
+	}
+	atomic.StoreInt32(&ok, 1)
+	sent, remaining := tx.DrainSpool(context.Background())
+	if sent != 1 || remaining != 0 {
+		t.Errorf("drain sent=%d remaining=%d, want 1/0", sent, remaining)
+	}
+}
+
+// Signed spooled resend must still carry a valid signature over the uncompressed body.
+func TestDrainSpoolSignsCorrectly(t *testing.T) {
+	var gotSig, gotTS, gotNonce string
+	var gotBody []byte
+	fail := int32(1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.LoadInt32(&fail) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		gotSig = r.Header.Get("X-Vedetta-Signature")
+		gotTS = r.Header.Get("X-Vedetta-Timestamp")
+		gotNonce = r.Header.Get("X-Vedetta-Nonce")
+		zr, _ := gzip.NewReader(r.Body)
+		gotBody, _ = io.ReadAll(zr)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	tx := New(srv.URL, testReporter(), NewSpool(t.TempDir()), false, 250)
+	tx.HTTP = srv.Client()
+	tx.Sleep = noSleep()
+	tx.MaxAttempts = 1
+
+	tx.Send(context.Background(), tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())[0])
+	atomic.StoreInt32(&fail, 0)
+	tx.DrainSpool(context.Background())
+
+	want := Sign([]byte("secret"), SignatureInput{Timestamp: gotTS, Nonce: gotNonce, Body: gotBody})
+	if gotSig == "" || gotSig != want {
+		t.Errorf("spooled resend signature mismatch: got %q want %q", gotSig, want)
+	}
+	_ = bytes.TrimSpace
+}
