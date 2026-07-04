@@ -118,6 +118,79 @@ func (db *DB) IsDomainWhitelisted(domain string) bool {
 	return false
 }
 
+// IsEventWhitelisted checks whether an event matches any enabled whitelist rule
+// by tag or source-IP pattern. This is the firewall_log counterpart to
+// IsDomainWhitelisted (which keys on the queried domain). A rule matches when:
+//   - its tag_match is non-empty AND appears in the event's tags, OR
+//   - its source_ip_pattern is non-empty AND matches the event's source IP.
+//
+// Rules that only carry a domain_pattern never match here — firewall events have
+// no domain — so DNS whitelist rules do not accidentally suppress firewall events.
+// Returns the matching rule name (for tagging/observability) and true on a match.
+func (db *DB) IsEventWhitelisted(tags []string, sourceIP string) (string, bool) {
+	if len(tags) == 0 && sourceIP == "" {
+		return "", false
+	}
+	sourceIP = strings.TrimSpace(sourceIP)
+
+	rows, err := db.Query(`
+		SELECT name, COALESCE(tag_match, ''), COALESCE(source_ip_pattern, '')
+		FROM whitelist_rules
+		WHERE enabled = TRUE AND (tag_match != '' OR source_ip_pattern != '')
+	`)
+	if err != nil {
+		return "", false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, tagMatch, ipPattern string
+		if err := rows.Scan(&name, &tagMatch, &ipPattern); err != nil {
+			continue
+		}
+		if tagMatch != "" {
+			for _, t := range tags {
+				if t == tagMatch {
+					return name, true
+				}
+			}
+		}
+		if ipPattern != "" && sourceIP != "" && matchesIPPattern(sourceIP, ipPattern) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// matchesIPPattern supports exact match and simple glob (* and ?) matching for
+// source IP patterns (e.g. "192.0.2.10", "192.0.2.*").
+func matchesIPPattern(ip, pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return false
+	}
+	if pattern == ip {
+		return true
+	}
+	// Build a regex, quoting literal runs and translating glob tokens so that
+	// "192.0.2.*" matches "192.0.2.45" correctly (dots stay literal).
+	var b strings.Builder
+	b.WriteString("^")
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	b.WriteString("$")
+	matched, _ := regexp.MatchString(b.String(), ip)
+	return matched
+}
+
 // matchesDomainPattern supports simple wildcard matching (* and ?).
 func matchesDomainPattern(domain, pattern string) bool {
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
@@ -131,14 +204,17 @@ func matchesDomainPattern(domain, pattern string) bool {
 	return matched
 }
 func (db *DB) SeedDefaultWhitelistRules() error {
-	// Check if any default rules already exist
+	// Check if the DNS-side default rules already exist. We deliberately scope the
+	// guard to non-firewall defaults: migration 017 seeds firewall-category
+	// defaults (category = 'firewall') independently, and a global is_default>0
+	// guard would let those suppress the DNS defaults from ever being seeded.
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM whitelist_rules WHERE is_default = TRUE`).Scan(&count)
+	err := db.QueryRow(`SELECT COUNT(*) FROM whitelist_rules WHERE is_default = TRUE AND category != 'firewall'`).Scan(&count)
 	if err != nil {
 		return fmt.Errorf("check default rules: %w", err)
 	}
 	if count > 0 {
-		// Default rules already seeded
+		// DNS default rules already seeded
 		return nil
 	}
 
@@ -278,12 +354,12 @@ func (db *DB) SeedDefaultWhitelistRules() error {
 			Enabled:       true,
 		},
 		{
-			RuleID:        uuid.New().String(),
-			Name:          "Cloudflare DNS",
+			RuleID:          uuid.New().String(),
+			Name:            "Cloudflare DNS",
 			SourceIPPattern: "1.1.1.1",
-			Category:      "cloud",
-			IsDefault:     true,
-			Enabled:       true,
+			Category:        "cloud",
+			IsDefault:       true,
+			Enabled:         true,
 		},
 		{
 			RuleID:        uuid.New().String(),

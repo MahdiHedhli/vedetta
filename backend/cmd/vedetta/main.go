@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
@@ -60,6 +61,24 @@ func main() {
 		}
 		return db.IsDomainWhitelisted(domain)
 	})
+	// Firewall (spec 001) enrichment wiring: tag/source-IP whitelist for
+	// firewall_log events and device-inventory cross-ref for risk scoring.
+	enricher.FirewallWhitelisted = func(tags []string, sourceIP string) (string, bool) {
+		if db == nil {
+			return "", false
+		}
+		return db.IsEventWhitelisted(tags, sourceIP)
+	}
+	enricher.DeviceByIP = func(ip string) *models.Device {
+		if db == nil {
+			return nil
+		}
+		dev, err := db.GetDeviceByIP(ip)
+		if err != nil {
+			return nil
+		}
+		return dev
+	}
 	stopEviction := enricher.StartEviction()
 	defer stopEviction()
 
@@ -177,11 +196,15 @@ func main() {
 	}
 	fwManager := firewall.NewManager(fwSink)
 
-	// Optional: UniFi firewall connector
+	// Optional: UniFi firewall connector (spec 001, off by default).
+	// Registered only when a host and at least one credential (API key preferred,
+	// or username/password) are configured. This is enrichment (IPS events +
+	// client inventory); the supported event path is syslog → collector → ingest.
 	unifiHost := os.Getenv("VEDETTA_UNIFI_HOST")
 	unifiUser := os.Getenv("VEDETTA_UNIFI_USER")
 	unifiPass := os.Getenv("VEDETTA_UNIFI_PASS")
-	if unifiHost != "" && unifiUser != "" {
+	unifiAPIKey := os.Getenv("VEDETTA_UNIFI_API_KEY")
+	if unifiHost != "" && (unifiAPIKey != "" || unifiUser != "") {
 		unifiPort := 443
 		if p := os.Getenv("VEDETTA_UNIFI_PORT"); p != "" {
 			if n, err := strconv.Atoi(p); err == nil {
@@ -195,14 +218,41 @@ func main() {
 			Port:          unifiPort,
 			Username:      unifiUser,
 			Password:      unifiPass,
+			APIKey:        unifiAPIKey,
 			TLSSkipVerify: os.Getenv("VEDETTA_UNIFI_TLS_SKIP_VERIFY") == "true",
 			PollInterval:  60 * time.Second,
 			Enabled:       true,
 		}
 		unifiConn := firewall.NewUniFiConnector(unifiCfg)
 		fwManager.Register(unifiCfg, unifiConn)
-		log.Printf("UniFi firewall connector registered: host=%s", unifiHost)
+
+		// Client-inventory sync into the device registry (enrichment only, never
+		// creates events). Maps UniFi network names to canonical segments.
+		fwManager.SetDeviceSink(func(clients []firewall.ClientInfo) error {
+			now := time.Now()
+			for _, c := range clients {
+				host := discovery.DiscoveredHost{
+					IPAddress:       c.IP,
+					MACAddress:      c.MAC,
+					Hostname:        c.Hostname,
+					Vendor:          c.Vendor,
+					DiscoverySource: "unifi_connector",
+				}
+				if _, err := db.UpsertDevice(host, now, segmentFromUniFiNetwork(c.Network)); err != nil {
+					log.Printf("UniFi inventory: upsert device %s failed: %v", c.IP, err)
+				}
+			}
+			return nil
+		}, 300*time.Second)
+
+		authMode := "cookie"
+		if unifiAPIKey != "" {
+			authMode = "api_key"
+		}
+		log.Printf("UniFi firewall connector registered: host=%s auth=%s", unifiHost, authMode)
 	}
+
+	srv.Firewall = fwManager
 
 	if err := fwManager.Start(); err != nil {
 		log.Printf("WARNING: Firewall connector manager failed to start: %v", err)
@@ -242,5 +292,22 @@ func main() {
 	log.Printf("Vedetta Core starting on :%s", port)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)
+	}
+}
+
+// segmentFromUniFiNetwork maps a UniFi network/VLAN name to a canonical Vedetta
+// segment (default|iot|guest). Unknown networks default to "default"; the raw
+// network name is preserved by the connector for reference.
+func segmentFromUniFiNetwork(network string) string {
+	n := strings.ToLower(strings.TrimSpace(network))
+	switch {
+	case n == "":
+		return "default"
+	case strings.Contains(n, "guest"):
+		return "guest"
+	case strings.Contains(n, "iot") || strings.Contains(n, "smart") || strings.Contains(n, "camera"):
+		return "iot"
+	default:
+		return "default"
 	}
 }
