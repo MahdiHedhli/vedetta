@@ -58,6 +58,24 @@ type Device struct {
 	RiskCategory string   `json:"risk_category,omitempty" db:"risk_category"`
 	RiskModel    string   `json:"risk_model,omitempty" db:"risk_model"`
 	RiskReasons  []string `json:"risk_reasons,omitempty" db:"-"` // populated from risk_reasons JSON TEXT
+
+	// Spec 004: correlation, labeling & multi-network fields.
+	// DisplayName is the derived human-readable label (custom_name > friendly_name >
+	// model+vendor > cleaned hostname > vendor+MAC-suffix > IP), recomputed on upsert.
+	DisplayName  string         `json:"display_name,omitempty" db:"display_name"`
+	FriendlyName string         `json:"friendly_name,omitempty" db:"friendly_name"`
+	Segments     []string       `json:"segments,omitempty" db:"-"` // from device_networks attachments
+	Signals      []DeviceSignal `json:"signals,omitempty" db:"-"`  // per-field provenance from device_signals
+}
+
+// DeviceSignal is one per-field provenance record: which source last set a
+// canonical device field, at what confidence, and when (spec 004, FR-6/FR-9).
+type DeviceSignal struct {
+	Field        string    `json:"field"`
+	Value        string    `json:"value"`
+	Source       string    `json:"source"`
+	Confidence   float64   `json:"confidence"`
+	LastObserved time.Time `json:"last_observed"`
 }
 
 // SuppressionRule defines a user-created filter to auto-hide matching events.

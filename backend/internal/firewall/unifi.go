@@ -25,7 +25,16 @@ type UniFiConnector struct {
 	lastError   string
 	eventCount  int64
 	connectTime time.Time
-	mu          sync.RWMutex
+	// seenEvents is a high-water dedup set of event identity keys, so IPS/alarm
+	// events re-reported by the controller within its lookback window (or across
+	// Core restarts within a process lifetime) are not re-inserted.
+	seenEvents map[string]struct{}
+	mu         sync.RWMutex
+}
+
+// eventKey derives a stable identity for a FirewallEvent for dedup across polls.
+func eventKey(fe FirewallEvent) string {
+	return fmt.Sprintf("%d|%s|%s|%d|%s", fe.Timestamp.Unix(), fe.SrcIP, fe.DstIP, fe.DstPort, fe.Rule)
 }
 
 // NewUniFiConnector creates a new UniFi firewall connector.
@@ -48,8 +57,9 @@ func NewUniFiConnector(cfg ConnectorConfig) *UniFiConnector {
 	}
 
 	return &UniFiConnector{
-		cfg:    cfg,
-		client: client,
+		cfg:        cfg,
+		client:     client,
+		seenEvents: make(map[string]struct{}),
 	}
 }
 
@@ -79,17 +89,37 @@ func (uc *UniFiConnector) Discover(ctx context.Context) (*FirewallInfo, error) {
 }
 
 // Connect establishes a session with the UniFi controller.
+//
+// Two auth modes are supported:
+//   - X-API-KEY (preferred): when cfg.APIKey is set, requests carry the
+//     "X-API-KEY" header and no interactive login/cookie session is needed. This
+//     is the read-only local API-key path documented as the setup default.
+//   - Cookie login (fallback): username/password POST to /api/auth/login, session
+//     cookie held in the client jar.
+//
+// TOFU note (accepted limitation): when cfg.TLSSkipVerify is set for self-signed
+// controllers, the TLS certificate is not pinned. Certificate pinning is deferred
+// to a later spec; this is an intentional, documented trade-off for the alpha
+// (LAN-only, off-by-default connector).
 func (uc *UniFiConnector) Connect(ctx context.Context) error {
 	uc.mu.Lock()
 	defer uc.mu.Unlock()
 
-	// Determine if UDM/UDR or standalone
+	// Determine if UDM/UDR or standalone (also sets baseURL, incl. /proxy/network).
 	if err := uc.detectUniFiOS(ctx); err != nil {
 		uc.lastError = err.Error()
 		return err
 	}
 
-	// Perform login
+	// API-key mode skips the cookie login entirely.
+	if uc.usingAPIKey() {
+		uc.connected = true
+		uc.connectTime = time.Now()
+		uc.lastError = ""
+		return nil
+	}
+
+	// Cookie login fallback.
 	if err := uc.login(ctx); err != nil {
 		uc.lastError = err.Error()
 		return err
@@ -100,6 +130,20 @@ func (uc *UniFiConnector) Connect(ctx context.Context) error {
 	uc.lastError = ""
 
 	return nil
+}
+
+// usingAPIKey reports whether the connector should authenticate via X-API-KEY.
+func (uc *UniFiConnector) usingAPIKey() bool {
+	return strings.TrimSpace(uc.cfg.APIKey) != ""
+}
+
+// authenticate applies the configured auth to an outgoing request. For API-key
+// mode it sets the X-API-KEY header; cookie mode relies on the client jar.
+func (uc *UniFiConnector) authenticate(req *http.Request) {
+	if uc.usingAPIKey() {
+		req.Header.Set("X-API-KEY", uc.cfg.APIKey)
+		req.Header.Set("Accept", "application/json")
+	}
 }
 
 // Disconnect gracefully closes the session.
@@ -150,16 +194,34 @@ func (uc *UniFiConnector) Poll(ctx context.Context) ([]FirewallEvent, error) {
 	}
 	events = append(events, alarmEvents...)
 
-	// Update metrics
+	// Dedup against previously-seen events (high-water set). The controller
+	// re-reports events within its lookback window on every poll; only genuinely
+	// new events are returned to the sink.
 	uc.mu.Lock()
+	fresh := events[:0:0]
+	for _, e := range events {
+		k := eventKey(e)
+		if _, ok := uc.seenEvents[k]; ok {
+			continue
+		}
+		uc.seenEvents[k] = struct{}{}
+		fresh = append(fresh, e)
+	}
+	// Bound the dedup set so a long-running process doesn't grow unbounded.
+	if len(uc.seenEvents) > 20000 {
+		uc.seenEvents = make(map[string]struct{})
+		for _, e := range fresh {
+			uc.seenEvents[eventKey(e)] = struct{}{}
+		}
+	}
 	uc.lastPoll = time.Now()
-	uc.eventCount += int64(len(events))
-	if len(events) > 0 {
+	uc.eventCount += int64(len(fresh))
+	if len(fresh) > 0 {
 		uc.lastError = ""
 	}
 	uc.mu.Unlock()
 
-	return events, nil
+	return fresh, nil
 }
 
 // Health returns the current health status of the connector.
@@ -189,6 +251,7 @@ func (uc *UniFiConnector) detectUniFiOS(ctx context.Context) error {
 
 	// Try UDM/UDR first (UniFi OS with /proxy/network prefix)
 	req, _ := http.NewRequestWithContext(ctx, "GET", uc.baseURL+"/proxy/network/api/self", nil)
+	uc.authenticate(req)
 	resp, err := uc.client.Do(req)
 	if err == nil && resp.StatusCode == http.StatusOK {
 		resp.Body.Close()
@@ -202,6 +265,7 @@ func (uc *UniFiConnector) detectUniFiOS(ctx context.Context) error {
 
 	// Fall back to standalone controller (no proxy prefix)
 	req, _ = http.NewRequestWithContext(ctx, "GET", uc.buildURL("")+"/api/self", nil)
+	uc.authenticate(req)
 	resp, err = uc.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("unable to detect UniFi controller type")
@@ -259,6 +323,7 @@ func (uc *UniFiConnector) logout(ctx context.Context) error {
 func (uc *UniFiConnector) getSystemInfo(ctx context.Context) (*FirewallInfo, error) {
 	selfURL := uc.baseURL + "/api/self"
 	req, _ := http.NewRequestWithContext(ctx, "GET", selfURL, nil)
+	uc.authenticate(req)
 	resp, err := uc.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -295,6 +360,7 @@ func (uc *UniFiConnector) getSystemInfo(ctx context.Context) (*FirewallInfo, err
 func (uc *UniFiConnector) fetchIPSEvents(ctx context.Context, baseURL string) ([]FirewallEvent, error) {
 	ipsURL := baseURL + "/api/s/default/stat/event?type=IPS&within=3600"
 	req, _ := http.NewRequestWithContext(ctx, "GET", ipsURL, nil)
+	uc.authenticate(req)
 	resp, err := uc.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -330,6 +396,7 @@ func (uc *UniFiConnector) fetchIPSEvents(ctx context.Context, baseURL string) ([
 func (uc *UniFiConnector) fetchAlarms(ctx context.Context, baseURL string) ([]FirewallEvent, error) {
 	alarmURL := baseURL + "/api/s/default/stat/alarm"
 	req, _ := http.NewRequestWithContext(ctx, "GET", alarmURL, nil)
+	uc.authenticate(req)
 	resp, err := uc.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -364,7 +431,7 @@ func (uc *UniFiConnector) fetchAlarms(ctx context.Context, baseURL string) ([]Fi
 // parseIPSEvent converts a UniFi IPS event to a FirewallEvent.
 func (uc *UniFiConnector) parseIPSEvent(data map[string]interface{}) *FirewallEvent {
 	event := &FirewallEvent{
-		Timestamp:   time.Unix(int64(getFloatField(data, "timestamp")), 0),
+		Timestamp:   parseUniFiTimestamp(data),
 		Action:      "block",
 		Protocol:    getStringField(data, "proto"),
 		SrcIP:       getStringField(data, "srcip"),
@@ -376,6 +443,8 @@ func (uc *UniFiConnector) parseIPSEvent(data map[string]interface{}) *FirewallEv
 		Rule:        getStringField(data, "msg"),
 		Application: getStringField(data, "app"),
 		RawLog:      formatRawLog(data),
+		IPS:         true,
+		Severity:    parseIPSSeverity(data),
 	}
 
 	if event.SrcIP == "" || event.DstIP == "" {
@@ -383,6 +452,42 @@ func (uc *UniFiConnector) parseIPSEvent(data map[string]interface{}) *FirewallEv
 	}
 
 	return event
+}
+
+// parseIPSSeverity maps a UniFi IPS event to a 1/2/3 severity. UniFi exposes
+// severity under a few keys across versions; we normalize the common ones and
+// fall back to 2 (medium) when absent.
+func parseIPSSeverity(data map[string]interface{}) int {
+	// Numeric severity fields first.
+	for _, key := range []string{"inner_alert_severity", "severity", "catname_severity"} {
+		if v := int(getFloatField(data, key)); v >= 1 && v <= 3 {
+			return v
+		}
+	}
+	// String category names (e.g. "high"/"medium"/"low").
+	for _, key := range []string{"severity", "catname"} {
+		switch strings.ToLower(getStringField(data, key)) {
+		case "high", "critical", "3":
+			return 3
+		case "medium", "moderate", "2":
+			return 2
+		case "low", "1":
+			return 1
+		}
+	}
+	return 2
+}
+
+// parseUniFiTimestamp reads a UniFi event timestamp. UniFi reports epoch millis
+// (key "time") or epoch seconds (key "timestamp"); handle both.
+func parseUniFiTimestamp(data map[string]interface{}) time.Time {
+	if ms := int64(getFloatField(data, "time")); ms > 1_000_000_000_000 {
+		return time.UnixMilli(ms).UTC()
+	}
+	if s := int64(getFloatField(data, "timestamp")); s > 0 {
+		return time.Unix(s, 0).UTC()
+	}
+	return time.Now().UTC()
 }
 
 // parseAlarmEvent converts a UniFi alarm event to a FirewallEvent.
@@ -405,6 +510,74 @@ func (uc *UniFiConnector) parseAlarmEvent(data map[string]interface{}) *Firewall
 	}
 
 	return event
+}
+
+// ClientInfo is a normalized UniFi client (station) for device-registry sync.
+// Enrichment only — never turned into an event.
+type ClientInfo struct {
+	IP       string
+	MAC      string
+	Hostname string
+	Vendor   string
+	Network  string // UniFi network/VLAN name (mapped to a canonical segment by the caller)
+}
+
+// ListClients fetches the current connected clients from the controller
+// (read-only stat/sta). Used for device-inventory enrichment. Returns an empty
+// slice (not an error) when the controller reports no clients.
+func (uc *UniFiConnector) ListClients(ctx context.Context) ([]ClientInfo, error) {
+	uc.mu.RLock()
+	connected := uc.connected
+	baseURL := uc.baseURL
+	uc.mu.RUnlock()
+	if !connected {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	url := baseURL + "/api/s/default/stat/sta"
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	uc.authenticate(req)
+	resp, err := uc.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("client list fetch failed: status %d", resp.StatusCode)
+	}
+
+	var out map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	data, ok := out["data"].([]interface{})
+	if !ok {
+		return []ClientInfo{}, nil
+	}
+
+	clients := make([]ClientInfo, 0, len(data))
+	for _, item := range data {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		hostname := getStringField(m, "hostname")
+		if hostname == "" {
+			hostname = getStringField(m, "name")
+		}
+		ci := ClientInfo{
+			IP:       getStringField(m, "ip"),
+			MAC:      getStringField(m, "mac"),
+			Hostname: hostname,
+			Vendor:   getStringField(m, "oui"),
+			Network:  getStringField(m, "network"),
+		}
+		if ci.IP == "" && ci.MAC == "" {
+			continue
+		}
+		clients = append(clients, ci)
+	}
+	return clients, nil
 }
 
 // buildURL constructs the full URL for API requests.

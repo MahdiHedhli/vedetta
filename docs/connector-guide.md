@@ -2,6 +2,11 @@
 
 The Vedetta Firewall Connector framework allows community contributors to add support for any firewall platform. This guide explains how to implement a new connector.
 
+> **Setting up a UniFi gateway?** For end-user setup (enabling syslog/CEF export,
+> verification, optional REST connector, and the supported-vs-experimental status
+> ladder) see the [UniFi Connector Setup Guide](connectors/unifi.md). This document is
+> for contributors implementing a new connector platform.
+
 ## Overview
 
 Vedetta normalizes firewall events from multiple sources into a unified schema. The connector architecture enables:

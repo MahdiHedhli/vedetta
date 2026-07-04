@@ -49,7 +49,12 @@ services:
     build: ./collector
     container_name: vedetta-collector
     ports:
-      - "5140:5140/udp"  # Syslog input for firewalls
+      - "5140:5140/udp"  # Syslog input for firewalls (UniFi CEF + iptables)
+    environment:
+      # Optional ingest auth (spec 001 FR-8/T2.4). Leave UNSET for the default
+      # open-Core deployment (backward compatible). To enable, set this to an
+      # ingest-scope token and set VEDETTA_REQUIRE_INGEST_AUTH=1 on the backend.
+      VEDETTA_INGEST_TOKEN: "${VEDETTA_INGEST_TOKEN:-}"
     volumes:
       - pihole-logs:/var/log/pihole:ro
     networks:

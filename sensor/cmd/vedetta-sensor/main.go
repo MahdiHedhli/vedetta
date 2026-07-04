@@ -498,8 +498,31 @@ func mergePassiveHost(existing, observed netscan.DiscoveredHost) netscan.Discove
 	if existing.Vendor == "" {
 		existing.Vendor = observed.Vendor
 	}
+	// Enriched passive-discovery fields (spec 004): keep the model, friendly
+	// name, and services correlated on the sensor so Core receives them. Without
+	// this, a later bare ARP/DHCP observation would drop mDNS-derived metadata.
+	if existing.Model == "" {
+		existing.Model = observed.Model
+	}
+	if existing.FriendlyName == "" {
+		existing.FriendlyName = observed.FriendlyName
+	}
+	for _, svc := range observed.Services {
+		if !containsString(existing.Services, svc) {
+			existing.Services = append(existing.Services, svc)
+		}
+	}
 	if existing.Status == "" {
 		existing.Status = observed.Status
 	}
 	return existing
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }

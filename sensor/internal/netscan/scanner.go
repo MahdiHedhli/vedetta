@@ -27,6 +27,7 @@ type DiscoveredHost struct {
 
 	// Actionability fields from passive discovery (mDNS/DHCP/SSDP etc).
 	Model           string   `json:"model,omitempty"`
+	FriendlyName    string   `json:"friendly_name,omitempty"` // human-readable label derived from mDNS instance / TXT fn=/n= / SSDP (spec 004)
 	Services        []string `json:"services,omitempty"`
 	DiscoverySource string   `json:"discovery_source,omitempty"`
 }

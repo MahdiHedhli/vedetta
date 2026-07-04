@@ -31,7 +31,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Scope    string `json:"scope"`    // sensor | admin
+		Scope    string `json:"scope"` // sensor | admin | ingest
 		SensorID string `json:"sensor_id,omitempty"`
 		Label    string `json:"label,omitempty"`
 	}
@@ -42,8 +42,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scope := auth.TokenScope(body.Scope)
-	if scope != auth.ScopeSensor && scope != auth.ScopeAdmin {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "scope must be 'sensor' or 'admin'"})
+	if scope != auth.ScopeSensor && scope != auth.ScopeAdmin && scope != auth.ScopeIngest {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "scope must be 'sensor', 'admin', or 'ingest'"})
 		return
 	}
 
@@ -65,12 +65,12 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	// Return the raw token (only displayed once)
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"token_id": token.TokenID,
-		"token":    rawToken, // The actual secret — never returned again
-		"scope":    token.Scope,
-		"label":    token.Label,
+		"token_id":   token.TokenID,
+		"token":      rawToken, // The actual secret — never returned again
+		"scope":      token.Scope,
+		"label":      token.Label,
 		"created_at": token.CreatedAt,
-		"warning": "save this token now — it will not be displayed again",
+		"warning":    "save this token now — it will not be displayed again",
 	})
 }
 

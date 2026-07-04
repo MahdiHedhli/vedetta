@@ -29,6 +29,7 @@ type DiscoveredHost struct {
 	// These flow through to the Device model and UI for richer context (model, advertised services, discovery source).
 	Model           string
 	Services        []string
+	FriendlyName    string // human-friendly instance name from mDNS TXT fn=/n= or SSDP (spec 004)
 	DiscoverySource string // e.g. "passive_mdns", "passive_ssdp", "nmap_active"
 }
 
