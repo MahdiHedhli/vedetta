@@ -200,6 +200,9 @@ These should be described honestly as early or planned until they are documented
 - [Architecture Reference](docs/architecture.md)
 - [Project Roadmap](docs/roadmap.md)
 - [Sensor Architecture](docs/sensor-architecture.md)
+- [UniFi Connector Setup](docs/connectors/unifi.md)
+- [Threat Network — Implementation, Hosting & Configuration](docs/threat-network-operations.md)
+- [Project Constitution](.specify/memory/constitution.md)
 - [Security Policy](SECURITY.md)
 
 ## Community
