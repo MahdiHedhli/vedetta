@@ -45,30 +45,40 @@ Pi-hole and AdGuard Home are **optional integrations**, not the product identity
 
 ## Status
 
+Major features are developed spec-first under [`specs/`](specs/), validated against
+the [project constitution](.specify/memory/constitution.md).
+
 ### Available now
 
 - Docker-based Core with dashboard, API, and SQLite-backed storage
 - native sensor for macOS and Linux install paths
 - passive DNS capture plus active and passive device discovery
+- log ingestion pipeline (`POST /api/v1/ingest` + events query API + retention enforcer)
 - DNS-first threat scoring and local enrichment
-- EOL Router & Camera Detection (models from FBI IC3 2026-03-12 advisory)
+- EOL Router & Camera Detection (FBI IC3 2026-03-12 advisory) plus device risk categories (`known_exploited` / `eol_eos` / `high_risk_iot`)
+- **UniFi log ingestion** ([specs/001](specs/001-unifi-log-ingestion/), [setup guide](docs/connectors/unifi.md)): collector CEF/syslog parser → `firewall_log` events, firewall-aware scoring, seeded noise suppression, optional REST connector, UI filters — syslog path implemented, live SNR validation pending
+- **passive discovery correlation** ([specs/004](specs/004-passive-discovery-correlation/)): multi-signal identity resolution surviving DHCP churn, confidence-weighted provenance, mDNS record-graph parsing, per-device display name, multi-segment attachments
+- richer sensor payloads (`dns_answers`, `server_ip`, `services`, `discovery_source`)
 - optional Pi-hole and AdGuard Home pollers
 - device inventory, scan targets, whitelist, suppression, and activity logging
 
+### Opt-in / off by default
+
+- **Telemetry service** ([specs/002](specs/002-telemetry-service/)): implemented but does nothing unless `VEDETTA_TELEMETRY_OPTIN=true`; structural PII stripping (raw IPs/MACs/hostnames can never reach the wire), aggregate-only signed export. Needs an operational validation pass before real use.
+- **Community threat network** ([specs/003](specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance. Alpha, not production-ready.
+
 ### In progress
 
+- live SNR / operational validation of the newly implemented sources (UniFi, telemetry, threat network) on real deployments
 - install and onboarding polish for alpha users
 - broader dashboard/admin auth hardening plus sensor token rotation
-- turning early router and firewall groundwork into documented workflows
-- better public docs that separate shipped functionality from roadmap direction
+- migration-runner hardening (fresh-install runner fails partway; tracked in the backlog)
 
 ### Planned next
 
-- router and firewall log aggregation for common platforms:
-  UniFi, OpenWRT, pfSense/OPNsense, and MikroTik
-- better correlation and labeling across the new passive discovery sources
+- broader firewall log aggregation after UniFi is validated on real hardware:
+  OpenWRT, pfSense/OPNsense, and MikroTik ([specs/005](specs/005-broader-firewall-connectors/), one source at a time)
 - more local DNS collection options for advanced deployments
-- an optional, privacy-conscious community threat network
 
 ## Quick Start
 
@@ -141,8 +151,8 @@ This split is deliberate. The local network is the strongest source of truth Ved
 | Backend | 8080 | API, device/event storage, enrichment, scan coordination |
 | Frontend | 3107 | Dashboard UI |
 | Collector | 5140/udp | Syslog and normalized log ingestion path |
-| Telemetry | - | Optional outbound sharing path, still scaffolded |
-| Threat Network | 9090 | Future-facing community backend, still scaffolded |
+| Telemetry | - | Opt-in outbound sharing, off unless `VEDETTA_TELEMETRY_OPTIN=true` |
+| Threat Network | 9090 | Optional community backend (advisory-only feed) |
 
 ## Hardware And Platform Notes
 
@@ -156,16 +166,15 @@ Vedetta is not just a Pi-hole companion. DNS is the current wedge, but the produ
 
 Current state:
 
-- connector framework exists in `backend/internal/firewall/`
-- early UniFi connector code exists
-- collector exposes a syslog path on UDP 5140
+- UniFi log ingestion is implemented: the collector normalizes UniFi CEF/legacy-syslog on UDP 5140 into `firewall_log` events through `POST /api/v1/ingest`, with firewall-aware scoring and seeded noise suppression; setup guide at [docs/connectors/unifi.md](docs/connectors/unifi.md)
+- an optional off-by-default REST connector (`backend/internal/firewall/`) adds UniFi client-inventory enrichment
+- syslog is the working path; a live ≥72h SNR validation on real UniFi hardware is pending before it is called fully "supported"
 
-Planned next:
+Planned next (deliberately one source at a time, after UniFi is validated):
 
-1. UniFi hardening and documentation
-2. OpenWRT
-3. pfSense / OPNsense
-4. MikroTik
+1. OpenWRT
+2. pfSense / OPNsense
+3. MikroTik
 
 These should be described honestly as early or planned until they are documented and proven in the public workflow.
 
@@ -173,15 +182,17 @@ These should be described honestly as early or planned until they are documented
 
 - **Self-hosted first.** The local deployment is the product.
 - **Local value first.** Device discovery, DNS visibility, and local detections should remain useful without cloud dependency.
-- **Telemetry is optional.** It is off by default.
-- **Community threat sharing is future-facing.** It is not the main present-tense promise and should remain opt-in and privacy-conscious.
+- **Telemetry is optional.** It is off unless `VEDETTA_TELEMETRY_OPTIN=true`, strips PII structurally, and exports only aggregate signals.
+- **Community threat sharing is opt-in and advisory-only.** It is not the main present-tense promise and remains privacy-conscious by design.
 
 ## Known Alpha Limits
 
 - Core plus native sensor is still the real deployment model.
 - Install still assumes Docker, a native sensor, and some comfort with local networking and `sudo`.
 - Sensor bearer auth is in place, but broader dashboard/admin auth hardening is still in progress.
-- Threat-network and telemetry services are still scaffolded and should not be marketed as production-ready today.
+- The telemetry and threat-network services are implemented but off-by-default / advisory-only and have not completed an operational validation pass — treat them as opt-in alpha, not production-ready.
+- UniFi log ingestion is implemented (syslog path) but has not completed its live ≥72h SNR validation on real hardware, so it is not yet labelled fully "supported".
+- The fresh-install migration runner currently fails partway on a clean DB (tracked in the backlog); production Docker Core fresh installs are affected until it is hardened.
 
 ## Documentation
 

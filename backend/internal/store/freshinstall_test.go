@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -406,5 +407,127 @@ func TestInlineFallback_HasCorrelationTables(t *testing.T) {
 		if n != 1 {
 			t.Errorf("inline fallback table %s missing", tbl)
 		}
+	}
+}
+
+// stageMigrations copies every siem/migrations/*.sql into <dst>/siem/migrations so
+// the store.Open runner's "siem/migrations" candidate (resolved relative to the
+// process working directory) picks up the staged copy.
+func stageMigrations(t *testing.T, dst string) {
+	t.Helper()
+	src := findMigrationsDir(t)
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	staged := filepath.Join(dst, "siem", "migrations")
+	if err := os.MkdirAll(staged, 0o755); err != nil {
+		t.Fatalf("mkdir staged migrations: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(staged, e.Name()), b, 0o644); err != nil {
+			t.Fatalf("write staged %s: %v", e.Name(), err)
+		}
+	}
+}
+
+// TestFullMigrationChain_RealRunner exercises the REAL filesystem migration runner
+// (store.Open → migrate() over on-disk siem/migrations/*.sql), NOT the inline
+// fallback. It is the permanent gate for two foundation-migration bugs:
+//
+//   - VED-015: a fresh-install run used to fail at 009_event_type_encrypted_dns.sql
+//     with "table events has 14 columns but 19 values were supplied" (001_init.sql
+//     ships the final 19-column events schema, but 009 recreated events with only
+//     14 columns and copied via SELECT *). This test fails at store.Open if 009 is
+//     reverted.
+//   - VED-013: devices.segment / events.network_segment carried a restrictive
+//     CHECK (... IN ('default','iot','guest')) that rejected UniFi/VLAN segment
+//     names; migration 019 rebuilds both tables without that CHECK. The 'lan' /
+//     'iot2' insert assertions below fail if 019 is reverted.
+//
+// The test stages the full raw chain and chdirs so the runner uses it — unlike
+// buildBaseState/buildDeviceBaseState, which deliberately stage a targeted subset
+// to avoid the (now-fixed) 009 break. All values are synthetic per the constitution
+// (RFC 5737 IPs, 00:00:5E:00:53:xx MACs).
+func TestFullMigrationChain_RealRunner(t *testing.T) {
+	tmp := t.TempDir()
+	stageMigrations(t, tmp)
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir to staged root: %v", err)
+	}
+
+	dbPath := filepath.Join(tmp, "fresh.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open on a fresh DB via the real migration runner failed: %v", err)
+	}
+	defer db.Close()
+
+	// Sanity: the runner used the staged files, not the inline fallback. The
+	// fallback path does not create scan_targets/sensors, so their presence proves
+	// the file chain ran.
+	for _, tbl := range []string{"scan_targets", "sensors", "api_tokens"} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, tbl).Scan(&n); err != nil {
+			t.Fatalf("query sqlite_master for %s: %v", tbl, err)
+		}
+		if n != 1 {
+			t.Fatalf("table %s missing — real file chain did not run (inline fallback?)", tbl)
+		}
+	}
+
+	// PRAGMA integrity_check = ok.
+	var integrity string
+	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil {
+		t.Fatalf("integrity_check: %v", err)
+	}
+	if integrity != "ok" {
+		t.Errorf("integrity_check = %q, want ok", integrity)
+	}
+
+	// The events table has all final columns.
+	wantEventCols := []string{
+		"event_id", "timestamp", "event_type", "source_hash", "source_ip",
+		"server_ip", "domain", "query_type", "resolved_ip", "blocked",
+		"anomaly_score", "tags", "geo", "device_vendor", "network_segment",
+		"dns_source", "metadata", "threat_desc", "acknowledged", "ack_reason",
+	}
+	for _, col := range wantEventCols {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = ?`, col).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info events/%s: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("events.%s missing after the full real migration chain", col)
+		}
+	}
+
+	// A device row with segment='lan' inserts successfully (segment CHECK relaxed).
+	if _, err := db.Exec(`INSERT INTO devices
+		(device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, segment)
+		VALUES ('dev-lan', ?, ?, '192.0.2.20', '00:00:5E:00:53:10', 'nas.local', 'Synology', 'lan')`,
+		time.Now().UTC(), time.Now().UTC()); err != nil {
+		t.Errorf("insert device with segment='lan' failed (segment CHECK not relaxed?): %v", err)
+	}
+
+	// An events row with network_segment='iot2' inserts (network_segment CHECK relaxed).
+	if _, err := db.Exec(`INSERT INTO events
+		(event_id, timestamp, event_type, source_hash, network_segment)
+		VALUES ('evt-iot2', ?, 'dns_query', 'h-iot2', 'iot2')`,
+		time.Now().UTC()); err != nil {
+		t.Errorf("insert event with network_segment='iot2' failed (network_segment CHECK not relaxed?): %v", err)
 	}
 }
