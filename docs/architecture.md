@@ -59,8 +59,8 @@ vedetta-core (Docker Compose)
 | `backend` | API, event enrichment, device/event storage | shipped |
 | `frontend` | dashboard UI | shipped |
 | `collector` | syslog and normalized log ingestion path | shipped, limited public workflows today |
-| `telemetry` | optional outbound sharing path | scaffolded |
-| `threat-network` | community intelligence backend | scaffolded |
+| `telemetry` | optional outbound sharing path | implemented, opt-in (off unless `VEDETTA_TELEMETRY_OPTIN=true`) |
+| `threat-network` | community intelligence backend | implemented, advisory-only, runs off-node ([ops doc](threat-network-operations.md)) |
 
 ## What the Sensor Does Today
 
@@ -107,7 +107,7 @@ Vedetta currently focuses on DNS-first security signals. The backend includes de
 - DNS rebinding
 - DNS bypass and public-resolver use
 
-Threat-intelligence enrichment is local-first. The current community threat network should be treated as future work, not as a production dependency.
+Threat-intelligence enrichment is local-first. The community threat network is implemented and opt-in but should be treated as opt-in alpha (pending an operational validation pass), not a production dependency. See [threat-network-operations.md](threat-network-operations.md).
 
 ## Deployment Reality
 
