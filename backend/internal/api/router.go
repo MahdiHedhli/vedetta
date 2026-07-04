@@ -1294,26 +1294,71 @@ func deduplicateGatewayEchoes(events []models.Event) []models.Event {
 			continue
 		}
 
-		// Find event that is NOT from a gateway IP
-		var nonGatewayEvent *models.Event
-		var gatewayEvents []*models.Event
+		// A dedup group typically contains both the query packet and the response
+		// packet of the same lookup (the sensor emits an event for each). Only the
+		// response carries answers (ResolvedIP / dns_answers metadata). When picking
+		// the survivor we must prefer the answer-bearing event, otherwise the entire
+		// answers feature is silently defeated by dedup.
+		hasAnswerData := func(evt *models.Event) bool {
+			return evt.ResolvedIP != "" || strings.Contains(evt.Metadata, "dns_answers")
+		}
 
+		// Find event that is NOT from a gateway IP, preferring one with answer data.
+		var nonGatewayEvent *models.Event
 		for _, evt := range groupEvents {
 			if isGatewayIP(evt.SourceIP) {
-				gatewayEvents = append(gatewayEvents, evt)
-			} else {
+				continue
+			}
+			if nonGatewayEvent == nil || (!hasAnswerData(nonGatewayEvent) && hasAnswerData(evt)) {
 				nonGatewayEvent = evt
 			}
 		}
 
-		// Keep the non-gateway event, or if all are gateway IPs, keep the first one
+		// Keep the non-gateway event; if all are gateway IPs, prefer an
+		// answer-bearing one, falling back to the first.
 		var kept *models.Event
 		if nonGatewayEvent != nil {
 			kept = nonGatewayEvent
-			dedupCount += len(groupEvents) - 1
 		} else {
 			kept = groupEvents[0]
-			dedupCount += len(groupEvents) - 1
+			for _, evt := range groupEvents {
+				if hasAnswerData(evt) {
+					kept = evt
+					break
+				}
+			}
+		}
+		dedupCount += len(groupEvents) - 1
+
+		// Merge answer-bearing fields from discarded duplicates into the kept event
+		// so no resolution info is lost regardless of which event survived.
+		for _, evt := range groupEvents {
+			if evt == kept {
+				continue
+			}
+			if kept.ResolvedIP == "" && evt.ResolvedIP != "" {
+				kept.ResolvedIP = evt.ResolvedIP
+			}
+			if kept.ServerIP == "" && evt.ServerIP != "" {
+				kept.ServerIP = evt.ServerIP
+			}
+			if evt.Metadata != "" && evt.Metadata != kept.Metadata {
+				merged := map[string]any{}
+				_ = json.Unmarshal([]byte(evt.Metadata), &merged)
+				if kept.Metadata != "" {
+					keptMeta := map[string]any{}
+					if err := json.Unmarshal([]byte(kept.Metadata), &keptMeta); err == nil {
+						for k, v := range keptMeta {
+							merged[k] = v // kept event wins on conflicting keys
+						}
+					}
+				}
+				if len(merged) > 0 {
+					if b, err := json.Marshal(merged); err == nil {
+						kept.Metadata = string(b)
+					}
+				}
+			}
 		}
 
 		// Tag the kept event as deduplicated
