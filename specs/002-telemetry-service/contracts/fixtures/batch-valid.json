@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "batch_id": "6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e",
+  "generated_at": "2026-07-03T14:15:02Z",
+  "window_start": "2026-07-03T14:00:00Z",
+  "window_end": "2026-07-03T15:00:00Z",
+  "signals": [
+    {
+      "signal_id": "3c5e7a9b-2d4f-4a6c-8e0b-1f3a5c7e9b0d",
+      "kind": "known_bad_domain_hit",
+      "time_bucket": "2026-07-03T14:00:00Z",
+      "domain": "c2-payload.badzone.example",
+      "etld_plus_one": "badzone.example",
+      "local_confidence": 0.99,
+      "local_reasons": ["known_bad", "c2_candidate", "threat_feed_match"],
+      "observation_count": 2,
+      "distinct_asset_count": 2,
+      "blocked_count": 2
+    },
+    {
+      "signal_id": "8d0f2a4c-6e8b-4c0d-a2e4-3b5d7f9a1c2e",
+      "kind": "high_confidence_domain_candidate",
+      "time_bucket": "2026-07-03T14:00:00Z",
+      "etld_plus_one": "qxv-rotator.example",
+      "local_confidence": 0.91,
+      "local_reasons": ["dga_candidate", "newly_registered", "high_entropy"],
+      "observation_count": 1,
+      "distinct_asset_count": 1
+    },
+    {
+      "signal_id": "5f7b9d1e-3a5c-4e7f-b1d3-2c4e6a8b0d1f",
+      "kind": "behavior_summary",
+      "time_bucket": "2026-07-03T14:00:00Z",
+      "behavior": "dns_beaconing_candidate",
+      "local_confidence": 0.81,
+      "local_reasons": ["beaconing_candidate"],
+      "observation_count": 1,
+      "distinct_asset_count": 1
+    }
+  ]
+}
