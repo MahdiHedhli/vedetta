@@ -1,6 +1,6 @@
 # Vedetta Roadmap
 
-> Last updated: 2026-05-19
+> Last updated: 2026-07-03
 > Status: Alpha / active development
 
 ## What Vedetta is today
@@ -24,30 +24,39 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 
 ## Status Snapshot
 
+Major features are now developed spec-first under [`specs/`](../specs/), validated
+against the [project constitution](../.specify/memory/constitution.md).
+
 ### Available now
 
 - Docker-based Core with local API, UI, and SQLite-backed storage
 - Native sensor for active and passive device discovery plus passive DNS capture
+- Log ingestion pipeline (`POST /api/v1/ingest` + events query API + retention enforcer)
 - DNS-first threat scoring and local event enrichment
-- EOL Router & Camera Detection (FBI IC3 2026-03-12 advisory models)
+- EOL Router & Camera Detection (FBI IC3 2026-03-12 advisory models) plus device risk categories (`known_exploited` / `eol_eos` / `high_risk_iot`)
+- **UniFi log ingestion** ([specs/001](../specs/001-unifi-log-ingestion/)): collector CEF/syslog parser → `firewall_log` events, firewall-aware scoring, seeded noise suppression, optional REST connector, UI filters — syslog path implemented, live SNR validation pending
+- **Passive discovery correlation** ([specs/004](../specs/004-passive-discovery-correlation/)): multi-signal identity resolution surviving DHCP churn, confidence-weighted provenance, mDNS record-graph parsing, per-device display name, multi-segment attachments
+- Passive sensor actionability payloads (`dns_answers`, `server_ip`, `services`, `discovery_source`)
 - Optional Pi-hole integration
 - Optional AdGuard Home integration
 - Device inventory, scan targets, whitelist/suppression, and basic onboarding flow
+
+### Opt-in / off by default
+
+- **Telemetry service** ([specs/002](../specs/002-telemetry-service/)): implemented but does nothing unless `VEDETTA_TELEMETRY_OPTIN=true`; structural PII stripping, aggregate-only signed export. Needs an operational validation pass before real use.
+- **Community threat network** ([specs/003](../specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance. Alpha, not production-ready.
 
 ### In progress
 
 - Install and onboarding polish for alpha users
 - Broader auth hardening, token rotation, and cleaner setup flow
-- Turning router and firewall ingestion into documented, testable workflows
+- Live SNR / operational validation of the newly implemented sources (UniFi, telemetry, threat network) on real deployments before they are labelled "supported"
 - Better public docs that separate shipped features from roadmap items
 
 ### Planned next
 
-- Router and firewall log aggregation for common platforms:
-  UniFi, OpenWRT, pfSense/OPNsense, and MikroTik
-- Better passive discovery correlation, labeling, and multi-network handling
+- Broader router/firewall connectors: OpenWRT, pfSense/OPNsense, MikroTik ([specs/005](../specs/005-broader-firewall-connectors/)) — one source at a time, after UniFi is validated on real hardware
 - Better local DNS collection options for advanced deployments
-- An optional, privacy-conscious community threat network
 
 ## Required Vs Optional
 
@@ -80,15 +89,16 @@ Vedetta is not yet positioned as a mass-market consumer appliance. The current i
 
 - **Self-hosted first.** The local deployment should stand on its own.
 - **Local value first.** Device discovery, DNS visibility, and local detections work without a cloud dependency.
-- **Telemetry is optional.** The telemetry container is off by default and the current threat-network path is still future-facing.
-- **Community sharing is not the core promise.** It is a roadmap direction, not the present-tense reason to adopt Vedetta.
+- **Telemetry is optional.** The telemetry service is implemented but stays off unless `VEDETTA_TELEMETRY_OPTIN=true`; it strips PII structurally and exports only aggregate signals.
+- **Community sharing is not the core promise.** The community threat network is implemented and advisory-only, but it is a roadmap direction, not the present-tense reason to adopt Vedetta.
 
 ## Known Product Limits
 
 - The recommended Core path still uses Docker Compose.
 - The sensor install path is currently oriented around macOS and Linux. Windows is not yet a supported public install path.
-- Router and firewall coverage is not mature yet. The connector framework exists, and UniFi groundwork is in the repo, but broader connector support is still ahead.
-- The threat-network and telemetry services are still scaffolded. They should be described as upcoming, not shipped.
+- Router and firewall coverage is still maturing. UniFi log ingestion is implemented (specs/001) but has not completed the live ≥72h SNR validation on real hardware, so it is not yet labelled fully "supported"; broader connectors remain specced-only (specs/005).
+- The telemetry and threat-network services are implemented (specs/002, specs/003) but are off by default / advisory-only and have not completed an operational validation pass. Treat them as opt-in alpha, not production-ready.
+- Fresh-install migration-runner hardening is outstanding (the filesystem runner currently fails partway on a clean DB; tracked in the backlog).
 - Sensor bearer auth is now in place for registration follow-up, device reports, DNS ingest, and work fetches. Broader dashboard/admin auth hardening is still incomplete, and public internet exposure remains unsupported.
 
 ## Near-Term Roadmap Themes
