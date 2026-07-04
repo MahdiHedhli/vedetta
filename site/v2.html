@@ -662,12 +662,12 @@
           <article class="card">
             <div class="eyebrow">Expansion</div>
             <h3>Router and firewall coverage</h3>
-            <p>Early connector groundwork exists in the repo, with UniFi work started and OpenWRT, pfSense/OPNsense, and MikroTik on the near-term expansion path.</p>
+            <p>UniFi log ingestion is implemented (CEF/syslog &rarr; firewall events), with OpenWRT, pfSense/OPNsense, and MikroTik on the near-term expansion path once UniFi is validated on real hardware.</p>
           </article>
           <article class="card">
             <div class="eyebrow">Trust</div>
             <h3>Local ownership first</h3>
-            <p>The local deployment is the product. Telemetry is optional, and the future community threat network should stay opt-in and privacy-conscious.</p>
+            <p>The local deployment is the product. Telemetry is optional and off by default; the community threat network is opt-in, advisory-only, and privacy-reduced.</p>
           </article>
         </div>
       </div>
@@ -688,29 +688,31 @@
               <li>Docker-based Core with API, UI, and local storage</li>
               <li>Native sensor for macOS and Linux workflows</li>
               <li>Passive DNS capture plus active and passive device discovery</li>
-              <li>Local DNS scoring and enrichment</li>
-              <li>EOL Router &amp; Camera Detection (FBI IC3 advisory models)</li>
+              <li>Log ingestion pipeline plus local DNS scoring and enrichment</li>
+              <li>Device risk categories (known-exploited, end-of-life, high-risk IoT) and EOL Router &amp; Camera Detection (FBI IC3 advisory models)</li>
+              <li>UniFi log ingestion (CEF/syslog &rarr; firewall events) &mdash; syslog path implemented</li>
+              <li>Passive discovery correlation and device labeling across ARP, DHCP, mDNS, and SSDP/UPnP</li>
               <li>Optional Pi-hole and AdGuard Home pollers</li>
             </ul>
           </article>
           <article class="status-panel">
             <div class="eyebrow">In progress</div>
-            <h3>Sharpening the alpha product</h3>
+            <h3>Validating the newest work</h3>
             <ul>
+              <li>Real-world SNR validation of UniFi ingestion and discovery correlation on live deployments</li>
+              <li>Opt-in telemetry and community threat network &mdash; implemented, off by default, awaiting an operational validation pass</li>
               <li>Install and onboarding polish</li>
               <li>Token rotation and broader admin/dashboard auth hardening</li>
               <li>More durable docs and setup guidance</li>
-              <li>Turning early connector code into testable workflows</li>
             </ul>
           </article>
           <article class="status-panel planned">
             <div class="eyebrow">Planned next</div>
             <h3>Broader network visibility layers</h3>
             <ul>
-              <li>Router and firewall log aggregation</li>
-              <li>Connectors for UniFi, OpenWRT, pfSense/OPNsense, and MikroTik</li>
-              <li>Better correlation and multi-network handling across ARP, DHCP, mDNS, and SSDP/UPnP signals</li>
-              <li>An optional, privacy-conscious community threat network</li>
+              <li>More firewall/router connectors after UniFi is validated: OpenWRT, pfSense/OPNsense, and MikroTik</li>
+              <li>Wiring the community advisory feed into Core enrichment</li>
+              <li>More local DNS collection options for advanced setups</li>
             </ul>
           </article>
         </div>
@@ -748,7 +750,7 @@
           <article class="card">
             <div class="eyebrow">Privacy and trust</div>
             <h3>Self-hosted first</h3>
-            <p>The local deployment should stay useful with no cloud dependency. Telemetry is optional, off by default, and the community intelligence layer is future-facing.</p>
+            <p>The local deployment should stay useful with no cloud dependency. Telemetry is optional and off by default; the community intelligence layer is opt-in, advisory-only, and privacy-reduced.</p>
           </article>
           <article class="card">
             <div class="eyebrow">Pi-hole positioning</div>
