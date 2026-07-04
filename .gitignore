@@ -151,3 +151,9 @@ INSTRUCTIONS.md
 analysis-notes/
 agent-scratch/
 scratch/
+
+# Local-only environment data: homelab creds, real IPs/MACs, live captures.
+# NEVER committed. Per .specify/memory/constitution.md.
+.local/
+*.env
+!.env.example
