@@ -25,7 +25,29 @@
 --   * devices: fresh and legacy converge on the same 25 columns already, so its
 --     rebuild is a straightforward explicit-column copy minus the segment CHECK.
 
-PRAGMA foreign_keys = OFF;
+-- FK-safe table rebuild (BUG-1 repair).
+--
+-- The store opens SQLite with _foreign_keys=on. The migration runner wraps this
+-- file in a transaction, and PRAGMA foreign_keys is a NO-OP inside a transaction
+-- (SQLite silently ignores it), so the `PRAGMA foreign_keys = OFF` that used to
+-- head this file did nothing. With foreign keys effectively ON and SQLite's
+-- default legacy_alter_table=OFF, `ALTER TABLE devices RENAME TO devices_old_019`
+-- REWRITES the child tables' foreign keys (device_signals / device_identities /
+-- device_networks) to REFERENCE "devices_old_019" — which this migration then
+-- DROPs, orphaning those FKs. At runtime UpsertDevice's identity/network/signal
+-- upserts then failed with `no such table: main.devices_old_019`, rolling the
+-- whole device tx back and leaving the inventory permanently empty on a fresh
+-- install.
+--
+-- The fix is PRAGMA legacy_alter_table = ON, which (unlike foreign_keys) DOES
+-- take effect inside a transaction and restores the legacy RENAME behaviour: the
+-- rename does NOT chase references in other tables' SQL. Because we immediately
+-- recreate a table named exactly `devices`, the child FKs keep resolving to the
+-- new `devices` table — no orphaning. This is the standard SQLite table-rebuild
+-- recipe (see https://www.sqlite.org/lang_altertable.html "making other kinds of
+-- table schema changes"). Migration 020 additionally repairs any DB that already
+-- applied the pre-fix version of this migration.
+PRAGMA legacy_alter_table = ON;
 
 -- ── events ────────────────────────────────────────────────────────────────────
 ALTER TABLE events RENAME TO events_old_019;
@@ -136,4 +158,5 @@ CREATE INDEX IF NOT EXISTS idx_devices_mac        ON devices (mac_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last       ON devices (last_seen);
 CREATE INDEX IF NOT EXISTS idx_devices_ip_segment ON devices (ip_address, segment);
 
-PRAGMA foreign_keys = ON;
+-- Restore the default so the RENAME/rebuild recipe is scoped to this migration only.
+PRAGMA legacy_alter_table = OFF;

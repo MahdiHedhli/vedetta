@@ -162,6 +162,12 @@ func (e *Enricher) enrichFirewall(event *models.Event) {
 			event.AnomalyScore = score
 		}
 		e.applyFirewallDeviceContext(event, srcIP)
+		// MINOR fix: the IPS branch returns before the default description builder
+		// below, so without this an IPS event would carry an empty threat_desc.
+		// Populate a sensible one from the severity + signature/category.
+		if event.ThreatDesc == "" {
+			event.ThreatDesc = ipsThreatDesc(sev, event.Metadata, fm)
+		}
 		return
 	}
 
@@ -225,6 +231,53 @@ func (e *Enricher) applyFirewallDeviceContext(event *models.Event, srcIP string)
 }
 
 // ipsSeverity reads an integer ips_severity (1/2/3) from an event's metadata JSON.
+// ipsThreatDesc builds a human-readable threat description for a UniFi IPS/IDS
+// event. It combines the normalized severity with the signature/category when the
+// connector supplied them (signature lands in metadata.rule via the UniFi "msg"
+// field; category may arrive as metadata.catname or metadata.category).
+func ipsThreatDesc(sev int, metadata string, fm firewallMeta) string {
+	sevStr := "unknown"
+	if sev >= 1 && sev <= 3 {
+		sevStr = itoaSmall(sev)
+	}
+
+	// Prefer the signature (msg) captured into fm.Rule; fall back to category.
+	detail := strings.TrimSpace(fm.Rule)
+	if detail == "" {
+		if metadata != "" {
+			var m map[string]any
+			if json.Unmarshal([]byte(metadata), &m) == nil {
+				for _, key := range []string{"catname", "category", "signature", "msg"} {
+					if v, ok := m[key].(string); ok && strings.TrimSpace(v) != "" {
+						detail = strings.TrimSpace(v)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	desc := "UniFi IPS alert (severity " + sevStr + ")"
+	if detail != "" {
+		desc += ": " + detail
+	}
+	return desc
+}
+
+// itoaSmall renders a small non-negative int without pulling in strconv here.
+func itoaSmall(n int) string {
+	switch n {
+	case 1:
+		return "1"
+	case 2:
+		return "2"
+	case 3:
+		return "3"
+	default:
+		return "0"
+	}
+}
+
 func ipsSeverity(metadata string) int {
 	if metadata == "" {
 		return 0

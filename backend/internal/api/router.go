@@ -119,12 +119,18 @@ func NewRouter(srv *Server) http.Handler {
 
 		// Authentication and token management
 		r.Get("/auth/setup-status", srv.handleSetupStatus)
-		r.Post("/auth/tokens", srv.handleCreateToken)
 
-		// Token management (list/revoke) requires admin scope once auth is configured.
-		// Bootstrap mode allows the first admin token to be created via POST above.
+		// Token management requires admin scope once auth is configured. RequireAdmin
+		// bootstraps when zero tokens exist (so the FIRST admin token is creatable
+		// with no auth) and, once any token exists, requires a valid admin bearer AND
+		// populates the auth scope in the request context. Registering /auth/tokens
+		// POST here (rather than bare, outside any middleware) is the BUG-2 fix:
+		// previously the handler's GetScopeFromContext returned "" for every request
+		// because no middleware ever set it, so once >=1 token existed no second token
+		// could ever be minted even with a valid admin bearer.
 		r.Route("/auth", func(r chi.Router) {
 			r.Use(auth.RequireAdmin(srv.DB))
+			r.Post("/tokens", srv.handleCreateToken)
 			r.Get("/tokens", srv.handleListTokens)
 			r.Delete("/tokens/{tokenID}", srv.handleRevokeToken)
 		})
@@ -358,28 +364,16 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional ingest auth (spec 001, FR-8). Enforced ONLY when an ingest-scoped
-	// token exists AND VEDETTA_REQUIRE_INGEST_AUTH=1. Otherwise the endpoint stays
-	// open, preserving already-deployed collectors that push without a token.
-	if os.Getenv("VEDETTA_REQUIRE_INGEST_AUTH") == "1" {
-		hasIngestToken, err := s.DB.HasActiveIngestToken()
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to check ingest token state"})
-			return
-		}
-		if hasIngestToken {
-			token, err := auth.ValidateAuthorizationHeader(s.DB, r.Header.Get("Authorization"))
-			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
-				return
-			}
-			// Admin tokens may also ingest; otherwise require the ingest scope exactly.
-			if token.Scope != auth.ScopeIngest && token.Scope != auth.ScopeAdmin {
-				writeJSON(w, http.StatusForbidden, map[string]any{"error": "ingest scope required"})
-				return
-			}
-		}
-	}
+	// Ingest auth (spec 001, FR-8) is enforced at the MIDDLEWARE layer: the route is
+	// wrapped in auth.RequireAuth (see NewRouter), whose bootstrap-bypass semantics
+	// are the single source of truth — while zero tokens exist the endpoint is open
+	// for first-run setup, and once ANY token exists a valid Bearer token is required
+	// unconditionally. There is therefore no per-handler VEDETTA_REQUIRE_INGEST_AUTH
+	// toggle here: an earlier in-handler check keyed on that env var was dead code (it
+	// could never make ingest MORE permissive than the middleware already allowed) and
+	// its "optional by default" comment was misleading, so both were removed (BUG-5).
+	// The middleware admits any valid token scope on /ingest; scope narrowing is not
+	// applied so admin/sensor/ingest tokens can all push events.
 
 	// Read body (limit to 10MB to prevent abuse)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
@@ -763,6 +757,11 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// BUG-4: return an empty JSON array, never null, when there are no devices.
+	if devices == nil {
+		devices = []models.Device{}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"devices": devices,
 		"total":   len(devices),
@@ -780,6 +779,11 @@ func (s *Server) handleNewDevices(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+
+	// BUG-4: return an empty JSON array, never null, when there are no new devices.
+	if devices == nil {
+		devices = []models.Device{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1164,9 +1168,14 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Sensor %s reported %d devices", body.SensorID, len(body.Hosts))
 
-	// Upsert each discovered host
+	// Upsert each discovered host, tracking REAL successes and failures.
+	// BUG-3: previously this always reported accepted == len(hosts) and swallowed
+	// every store error, so the API returned 200 "accepted:N" even when every
+	// upsert failed. Now we count what actually persisted and reflect it.
 	now := time.Now()
 	newCount := 0
+	accepted := 0
+	failed := 0
 	for _, h := range body.Hosts {
 		host := discovery.DiscoveredHost{
 			IPAddress:       h.IPAddress,
@@ -1182,21 +1191,40 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		isNew, err := s.DB.UpsertDevice(host, now, body.Segment)
 		if err != nil {
+			failed++
 			log.Printf("Failed to upsert device %s from sensor %s: %v", h.IPAddress, body.SensorID, err)
 			continue
 		}
+		accepted++
 		if isNew {
 			newCount++
 			log.Printf("New device [%s] via sensor %s: %s (%s)", body.Segment, body.SensorID, h.IPAddress, h.MACAddress)
 		}
 	}
 
-	log.Printf("Sensor %s reported %d hosts (%d new) from %s", body.SensorID, len(body.Hosts), newCount, body.CIDR)
-	s.logInfo("scan", fmt.Sprintf("Sensor %s reported %d hosts (%d new) from %s [%s]", body.SensorID, len(body.Hosts), newCount, body.CIDR, body.Segment))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"accepted":    len(body.Hosts),
+	log.Printf("Sensor %s reported %d hosts (%d accepted, %d failed, %d new) from %s", body.SensorID, len(body.Hosts), accepted, failed, newCount, body.CIDR)
+	s.logInfo("scan", fmt.Sprintf("Sensor %s reported %d hosts (%d accepted, %d failed, %d new) from %s [%s]", body.SensorID, len(body.Hosts), accepted, failed, newCount, body.CIDR, body.Segment))
+
+	resp := map[string]any{
+		"accepted":    accepted,
+		"failed":      failed,
 		"new_devices": newCount,
-	})
+	}
+
+	// If we had hosts to store but every single one failed, this is a server-side
+	// persistence failure — do not lie with a 200. Report 500 so the sensor retries.
+	if len(body.Hosts) > 0 && accepted == 0 {
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	// Some (but not all) failed → 207-style partial success signalled in the body.
+	if failed > 0 {
+		resp["status"] = "partial"
+		writeJSON(w, http.StatusMultiStatus, resp)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSensorList(w http.ResponseWriter, r *http.Request) {

@@ -196,13 +196,14 @@ func containsStr(s []string, v string) bool {
 
 // --- Ingest auth (T3.2) ---
 //
-// NOTE ON FOUNDATION: on this (canonical) branch the /ingest route is mounted
-// behind auth.RequireAuth, which bypasses auth only while NO tokens exist (fresh
-// install) and otherwise requires a valid Bearer token. The feature's
-// VEDETTA_REQUIRE_INGEST_AUTH gate layers an additional scope requirement
-// (ingest|admin) inside the handler. These tests exercise that combined model;
-// the backward-compat contract ("unauthenticated batch accepted when the gate is
-// unset") holds for the realistic fresh-collector case (no tokens provisioned).
+// NOTE ON FOUNDATION: the /ingest route is mounted behind auth.RequireAuth, which
+// bypasses auth only while NO tokens exist (fresh install) and otherwise requires
+// a valid Bearer token. This middleware is the SINGLE source of truth for ingest
+// auth (BUG-5): the earlier in-handler VEDETTA_REQUIRE_INGEST_AUTH scope gate was
+// dead code — once any token existed RequireAuth already forced a bearer, so the
+// gate's "optional by default" behavior was unreachable — and it was removed. The
+// resulting contract: while zero tokens exist ingest is open for first-run setup;
+// once ANY token exists a valid Bearer token of any scope is required.
 
 func TestIngestAuth_OpenByDefault(t *testing.T) {
 	// Fresh install: no tokens exist and the gate is unset → RequireAuth bypasses
@@ -242,16 +243,15 @@ func TestIngestAuth_EnforcedRequiresToken(t *testing.T) {
 	}
 }
 
-func TestIngestAuth_EnforcedWrongScopeRejected(t *testing.T) {
-	// Gate on, an ingest token exists (so enforcement engages), but the caller
-	// presents a SENSOR-scoped token → the handler's scope check returns 403.
-	t.Setenv("VEDETTA_REQUIRE_INGEST_AUTH", "1")
+func TestIngestAuth_AnyValidTokenAccepted(t *testing.T) {
+	// BUG-5 coherent behavior: ingest auth lives entirely in RequireAuth, which
+	// admits ANY valid token scope once bootstrap is complete (there is no longer a
+	// scope-narrowing in-handler gate). A sensor-scoped token is therefore accepted.
 	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
-	_ = createIngestToken(t, db) // makes HasActiveIngestToken() true
+	_ = createIngestToken(t, db) // establishes auth state (>=1 token exists)
 
-	// Sensor-scoped token with no sensor_id (avoids the sensors FK); scope is
-	// neither ingest nor admin, so the handler gate must reject it with 403.
+	// Sensor-scoped token with no sensor_id (avoids the sensors FK).
 	rawSensor, sensorTok, err := auth.GenerateToken(auth.ScopeSensor, "", "test-sensor")
 	if err != nil {
 		t.Fatalf("generate sensor token: %v", err)
@@ -263,24 +263,16 @@ func TestIngestAuth_EnforcedWrongScopeRejected(t *testing.T) {
 	w := postIngest(t, router, []models.Event{
 		{EventType: "firewall_log", Timestamp: time.Now().UTC(), SourceHash: "h"},
 	}, rawSensor)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("enforced mode with sensor-scoped token: expected 403, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("valid sensor token on /ingest: expected 202, got %d: %s", w.Code, w.Body.String())
 	}
-}
 
-func TestIngestAuth_EnforcedButNoIngestTokenStaysOpen(t *testing.T) {
-	// Enforcement flag set but NO tokens exist at all → RequireAuth bypasses
-	// (fresh install) and the handler gate finds no ingest token → endpoint stays
-	// open. A deployment that never provisioned an ingest token keeps working.
-	t.Setenv("VEDETTA_REQUIRE_INGEST_AUTH", "1")
-	srv, _ := setupTestServer(t)
-	router := NewRouter(srv)
-
-	w := postIngest(t, router, []models.Event{
+	// A missing/invalid token when tokens exist is still rejected by RequireAuth.
+	w = postIngest(t, router, []models.Event{
 		{EventType: "firewall_log", Timestamp: time.Now().UTC(), SourceHash: "h"},
 	}, "")
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("enforced-but-no-ingest-token: expected 202, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("no token on /ingest after bootstrap: expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
