@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
@@ -529,5 +530,288 @@ func TestFullMigrationChain_RealRunner(t *testing.T) {
 		VALUES ('evt-iot2', ?, 'dns_query', 'h-iot2', 'iot2')`,
 		time.Now().UTC()); err != nil {
 		t.Errorf("insert event with network_segment='iot2' failed (network_segment CHECK not relaxed?): %v", err)
+	}
+}
+
+// TestMigration020_RepairsAlreadyBrokenCorrelationFKs proves migration 020 heals
+// a database that ALREADY applied the broken (pre-fix) migration 019 — i.e. its
+// device_signals / device_identities / device_networks foreign keys already point
+// at the dropped devices_old_019 table. This is the upgrade-path half of the
+// BUG-1 fix (the fresh-install half is covered by
+// TestUpsertDevice_RealMigrationChainPersists via the fixed 019).
+//
+// It reconstructs the broken state directly (child tables whose FK REFERENCES the
+// non-existent devices_old_019), inserts a device + child rows, applies only
+// migration 020, and asserts the FKs now reference `devices` with no violations
+// and the data survived.
+//
+// All values are synthetic per the constitution (RFC 5737 IPs, 00:00:5E:00:53:xx
+// MACs, .local hostnames).
+func TestMigration020_RepairsAlreadyBrokenCorrelationFKs(t *testing.T) {
+	migDir := findMigrationsDir(t)
+
+	dbPath := filepath.Join(t.TempDir(), "broken019.db")
+	// Open with FKs OFF so we can construct the intentionally-dangling FK state.
+	raw, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=off")
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	defer raw.Close()
+
+	// Minimal devices table (only the column 020's copies rely on: device_id).
+	if _, err := raw.Exec(`CREATE TABLE devices (
+		device_id TEXT PRIMARY KEY,
+		first_seen TIMESTAMP NOT NULL,
+		last_seen  TIMESTAMP NOT NULL,
+		ip_address TEXT NOT NULL,
+		mac_address TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create devices: %v", err)
+	}
+
+	// Recreate the exact broken shape: child tables REFERENCE devices_old_019,
+	// which does not exist (019 dropped it). This is what the pre-fix 019 left.
+	brokenChildren := []string{
+		`CREATE TABLE device_signals (
+			device_id TEXT NOT NULL REFERENCES devices_old_019(device_id),
+			field TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL,
+			confidence REAL NOT NULL DEFAULT 0.0,
+			first_observed TIMESTAMP NOT NULL, last_observed TIMESTAMP NOT NULL,
+			PRIMARY KEY (device_id, field, source))`,
+		`CREATE TABLE device_identities (
+			device_id TEXT NOT NULL REFERENCES devices_old_019(device_id),
+			id_type TEXT NOT NULL, id_value TEXT NOT NULL,
+			segment TEXT NOT NULL DEFAULT 'default',
+			first_seen TIMESTAMP NOT NULL, last_seen TIMESTAMP NOT NULL,
+			PRIMARY KEY (id_type, id_value, segment))`,
+		`CREATE TABLE device_networks (
+			device_id TEXT NOT NULL REFERENCES devices_old_019(device_id),
+			segment TEXT NOT NULL, ip_address TEXT NOT NULL DEFAULT '',
+			sensor_id TEXT NOT NULL DEFAULT '',
+			first_seen TIMESTAMP NOT NULL, last_seen TIMESTAMP NOT NULL,
+			PRIMARY KEY (device_id, segment))`,
+	}
+	for _, stmt := range brokenChildren {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatalf("create broken child table: %v", err)
+		}
+	}
+
+	// Seed a device and one row per child table (data must survive the repair).
+	now := time.Now().UTC()
+	if _, err := raw.Exec(`INSERT INTO devices (device_id, first_seen, last_seen, ip_address, mac_address)
+		VALUES ('dev-x', ?, ?, '192.0.2.30', '00:00:5E:00:53:30')`, now, now); err != nil {
+		t.Fatalf("seed device: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO device_signals VALUES ('dev-x','vendor','ExampleCorp','oui',0.5,?,?)`, now, now); err != nil {
+		t.Fatalf("seed signal: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO device_identities VALUES ('dev-x','mac','00:00:5E:00:53:30','lan',?,?)`, now, now); err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO device_networks VALUES ('dev-x','lan','192.0.2.30','',?,?)`, now, now); err != nil {
+		t.Fatalf("seed network: %v", err)
+	}
+
+	// Confirm the pre-repair state really is broken (FKs point at devices_old_019).
+	var brokenRefs int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%devices_old_019%'`).Scan(&brokenRefs); err != nil {
+		t.Fatalf("count broken refs: %v", err)
+	}
+	if brokenRefs != 3 {
+		t.Fatalf("precondition: expected 3 child tables referencing devices_old_019, got %d", brokenRefs)
+	}
+
+	// Apply migration 020.
+	sql020, err := os.ReadFile(filepath.Join(migDir, "020_repair_correlation_fks.sql"))
+	if err != nil {
+		t.Fatalf("read migration 020: %v", err)
+	}
+	if _, err := raw.Exec(string(sql020)); err != nil {
+		t.Fatalf("apply migration 020: %v", err)
+	}
+
+	// No child table references devices_old_019 anymore.
+	var afterRefs int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%devices_old_019%'`).Scan(&afterRefs); err != nil {
+		t.Fatalf("count refs after 020: %v", err)
+	}
+	if afterRefs != 0 {
+		t.Errorf("migration 020 left %d references to devices_old_019", afterRefs)
+	}
+
+	// Every child FK now references devices, and the data survived.
+	for _, tc := range []struct {
+		tbl  string
+		want int
+	}{{"device_signals", 1}, {"device_identities", 1}, {"device_networks", 1}} {
+		var refTable string
+		if err := raw.QueryRow(`SELECT "table" FROM pragma_foreign_key_list(?) LIMIT 1`, tc.tbl).Scan(&refTable); err != nil {
+			t.Fatalf("fk list %s: %v", tc.tbl, err)
+		}
+		if refTable != "devices" {
+			t.Errorf("%s FK references %q after 020, want devices", tc.tbl, refTable)
+		}
+		var rowCount int
+		if err := raw.QueryRow(`SELECT COUNT(*) FROM ` + tc.tbl).Scan(&rowCount); err != nil {
+			t.Fatalf("count %s: %v", tc.tbl, err)
+		}
+		if rowCount != tc.want {
+			t.Errorf("%s row count = %d after 020, want %d (data lost?)", tc.tbl, rowCount, tc.want)
+		}
+	}
+
+	// Turn enforcement on and confirm the FK graph is clean.
+	if _, err := raw.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable fks: %v", err)
+	}
+	rows, err := raw.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	var violations int
+	for rows.Next() {
+		violations++
+	}
+	if violations != 0 {
+		t.Errorf("foreign_key_check reported %d violation(s) after 020, want 0", violations)
+	}
+}
+
+// TestUpsertDevice_RealMigrationChainPersists is the permanent regression gate for
+// BUG-1 (device inventory 100% dead on fresh install). It exercises the FULL,
+// REAL path that production uses and that every other store test avoided:
+//
+//   - store.Open opens SQLite with _foreign_keys=on (see Open()), and the real
+//     file migration runner applies the entire 001..NNN chain;
+//   - it then calls UpsertDevice — the same code POST /api/v1/sensor/devices and
+//     every LAN scan call — and asserts the device is ACTUALLY persisted.
+//
+// The bug: migration 019 renamed devices → devices_old_019 to rebuild it. With
+// _foreign_keys=on and SQLite's default legacy_alter_table=off, that RENAME
+// rewrote the child tables' foreign keys (device_signals / device_identities /
+// device_networks) to REFERENCE "devices_old_019", which 019 then dropped —
+// leaving dangling FKs. UpsertDevice runs in one tx: the devices INSERT
+// succeeded but the follow-up identity/network/signal upserts failed with
+// "no such table: main.devices_old_019", so defer tx.Rollback() threw the whole
+// device away. GET /api/v1/devices returned total:0.
+//
+// Prior store tests missed this because they either inserted into the correlation
+// tables via raw sql.Open with FKs OFF, or (TestFullMigrationChain_RealRunner)
+// only db.Exec'd a raw devices INSERT — never UpsertDevice through the real store
+// after the full chain. This test closes that gap.
+//
+// All values are synthetic per the constitution (RFC 5737 IPs, 00:00:5E:00:53:xx
+// MACs, .local hostnames).
+func TestUpsertDevice_RealMigrationChainPersists(t *testing.T) {
+	tmp := t.TempDir()
+	stageMigrations(t, tmp)
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir to staged root: %v", err)
+	}
+
+	dbPath := filepath.Join(tmp, "fresh.db")
+	db, err := Open(dbPath) // REAL path: _foreign_keys=on + full file migration chain.
+	if err != nil {
+		t.Fatalf("store.Open on a fresh DB via the real migration runner failed: %v", err)
+	}
+	defer db.Close()
+
+	// Prove the file chain ran (not the inline fallback, which never had the 019 bug).
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='scan_targets'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("real file migration chain did not run (scan_targets missing, inline fallback?): n=%d err=%v", n, err)
+	}
+
+	// No leftover reference to the 019 rename table anywhere in the schema — this
+	// is what proves the child-table FKs are NOT dangling to devices_old_019.
+	var old019 int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%old_019%'`).Scan(&old019); err != nil {
+		t.Fatalf("query sqlite_master for old_019 refs: %v", err)
+	}
+	if old019 != 0 {
+		t.Errorf("schema still references devices_old_019 in %d object(s); child FKs are orphaned", old019)
+	}
+
+	// Upsert a synthetic host through the REAL store (same call as the sensor API).
+	host := discovery.DiscoveredHost{
+		IPAddress:  "192.0.2.55",
+		MACAddress: "00:00:5E:00:53:55",
+		Hostname:   "printer.local",
+		Vendor:     "ExampleCorp",
+	}
+	isNew, err := db.UpsertDevice(host, time.Now().UTC(), "lan")
+	if err != nil {
+		t.Fatalf("UpsertDevice failed on a fresh real-migration DB (BUG-1): %v", err)
+	}
+	if !isNew {
+		t.Errorf("UpsertDevice reported isNew=false for a brand-new device")
+	}
+
+	// The device must actually be persisted (the tx must have committed).
+	dev, err := db.GetDeviceByIP("192.0.2.55")
+	if err != nil {
+		t.Fatalf("GetDeviceByIP: %v", err)
+	}
+	if dev == nil {
+		t.Fatal("device was NOT persisted after UpsertDevice — the correlation upserts rolled back the whole tx (BUG-1)")
+	}
+	if dev.IPAddress != "192.0.2.55" || dev.MACAddress != "00:00:5E:00:53:55" {
+		t.Errorf("persisted device mismatch: ip=%q mac=%q", dev.IPAddress, dev.MACAddress)
+	}
+
+	list, err := db.ListDevices()
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(list) < 1 {
+		t.Errorf("ListDevices returned %d devices, want >= 1", len(list))
+	}
+
+	// The whole FK graph must be consistent after the real chain + a real upsert.
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	var violations int
+	for rows.Next() {
+		violations++
+	}
+	if violations != 0 {
+		t.Errorf("PRAGMA foreign_key_check reported %d violation(s), want 0", violations)
+	}
+
+	// The child correlation tables must reference `devices`, not `devices_old_019`.
+	for _, tbl := range []string{"device_signals", "device_identities", "device_networks"} {
+		fkRows, err := db.Query(`SELECT "table" FROM pragma_foreign_key_list(?)`, tbl)
+		if err != nil {
+			t.Fatalf("pragma_foreign_key_list(%s): %v", tbl, err)
+		}
+		sawDevices := false
+		for fkRows.Next() {
+			var refTable string
+			if err := fkRows.Scan(&refTable); err != nil {
+				fkRows.Close()
+				t.Fatalf("scan fk row for %s: %v", tbl, err)
+			}
+			if refTable == "devices" {
+				sawDevices = true
+			}
+			if refTable == "devices_old_019" {
+				t.Errorf("%s still references devices_old_019 (orphaned FK)", tbl)
+			}
+		}
+		fkRows.Close()
+		if !sawDevices {
+			t.Errorf("%s has no FK referencing devices", tbl)
+		}
 	}
 }
