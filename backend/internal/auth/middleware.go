@@ -25,6 +25,10 @@ var (
 // This avoids a circular import between auth and store.
 type TokenValidator interface {
 	CountTokens() (int, error)
+	// HasActiveAdminToken reports whether a non-revoked admin token exists. Admin
+	// bootstrap gates on this (not on CountTokens), so an auto-issued sensor token
+	// cannot close the first-admin window (beta-gate B1b).
+	HasActiveAdminToken() (bool, error)
 	ValidateToken(rawToken string) (*Token, error)
 }
 
@@ -48,14 +52,17 @@ func RequireStrictAuth(tv TokenValidator) func(next http.Handler) http.Handler {
 func RequireAdmin(tv TokenValidator) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tokenCount, err := tv.CountTokens()
+			hasAdmin, err := tv.HasActiveAdminToken()
 			if err != nil {
 				http.Error(w, "auth: failed to check token store", http.StatusInternalServerError)
 				return
 			}
 
-			if tokenCount == 0 {
-				// Bootstrap mode: allow initial setup (including creation of first admin token)
+			if !hasAdmin {
+				// Bootstrap mode: no active admin exists yet, so allow initial setup
+				// (including creation of the first admin token). Gating on active-admin
+				// rather than total token count means an auto-issued sensor/ingest token
+				// can no longer lock the operator out of admin enrollment (beta-gate B1b).
 				next.ServeHTTP(w, r)
 				return
 			}

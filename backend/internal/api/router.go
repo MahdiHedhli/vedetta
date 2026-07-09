@@ -1057,21 +1057,43 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
 			return
 		}
-		if presentedToken.Scope != auth.ScopeSensor {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "sensor scope required"})
-			return
-		}
-		if presentedToken.SensorID != body.SensorID {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "token does not match sensor_id"})
+		switch presentedToken.Scope {
+		case auth.ScopeAdmin:
+			// An admin may enroll or reset any sensor (authenticated sensor reset).
+		case auth.ScopeSensor:
+			if presentedToken.SensorID != body.SensorID {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "token does not match sensor_id"})
+				return
+			}
+		default:
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "sensor or admin scope required"})
 			return
 		}
 	}
-	if existingToken && presentedToken == nil {
-		// Recovery mode: user ran --reset on sensor side.
-		// Revoke old tokens and force generation of a new one.
-		log.Printf("Sensor %s re-registering without token (recovery mode) — revoking old tokens and issuing new one", body.SensorID)
-		_ = s.DB.DeleteTokensBySensor(body.SensorID)
-		existingToken = false // force new token generation
+
+	if existingToken {
+		// This sensor_id is already enrolled with an active token. Re-registration
+		// MUST be authenticated: sensor_ids are derived from hostname-os-arch and are
+		// therefore guessable, so an unauthenticated re-register used to revoke the
+		// real sensor's credential and hand a replacement to the caller — a silent
+		// credential hijack (beta-gate B1a). Recovery/reset is now an authenticated,
+		// admin-initiated action.
+		switch {
+		case presentedToken == nil:
+			writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"error": "sensor already enrolled; present its current sensor token or an admin token to re-register or reset it",
+			})
+			return
+		case presentedToken.Scope == auth.ScopeAdmin:
+			// Admin-initiated reset: revoke the sensor's existing tokens and issue a
+			// fresh one below.
+			log.Printf("Sensor %s reset by admin token %s — revoking old tokens and issuing a new one", body.SensorID, presentedToken.TokenID)
+			_ = s.DB.DeleteTokensBySensor(body.SensorID)
+			existingToken = false // force new token generation
+		default:
+			// Matching sensor token presented: metadata refresh; keep the existing
+			// credential (no reissue).
+		}
 	}
 
 	// Store interfaces as JSON string
