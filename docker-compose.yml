@@ -61,15 +61,19 @@ services:
       - vedetta
     restart: unless-stopped
 
-  # --- Opt-in Telemetry Daemon ---
+  # --- Opt-in Telemetry Daemon (COMMUNITY — not in the Core+Sensor beta) ---
   telemetry:
     build: ./telemetry
     container_name: vedetta-telemetry
+    # Community service, excluded from the default stack. Start explicitly with
+    # `docker compose --profile community up`. The Core+Sensor beta does not run it.
+    profiles: ["community"]
     environment:
       VEDETTA_TELEMETRY_OPTIN: "false"  # User must explicitly opt in
       VEDETTA_THREAT_NETWORK_URL: "http://threat-network:9090"
     volumes:
       - vedetta-data:/data:ro
+      - telemetry-state:/var/lib/vedetta-telemetry  # persist reporter identity, salt, spool
     networks:
       - vedetta
     depends_on:
@@ -77,14 +81,21 @@ services:
       - threat-network
     restart: unless-stopped
 
-  # --- Central Threat Intelligence Backend ---
+  # --- Central Threat Intelligence Backend (COMMUNITY — normally runs OFF-NODE) ---
   threat-network:
     build: ./threat-network
     container_name: vedetta-threat-network
+    # Community service, excluded from the default stack. In production the central
+    # threat network runs OFF-NODE (see docs/threat-network-operations.md), not in
+    # this compose. Start locally with `docker compose --profile community up`.
+    profiles: ["community"]
+    # Loopback only — never expose the central feed on the LAN from a local run.
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     environment:
       THREAT_NETWORK_PORT: "9090"
+    volumes:
+      - threat-network-data:/data  # persist the service-local SQLite DB
     networks:
       - vedetta
     restart: unless-stopped
@@ -93,6 +104,10 @@ volumes:
   vedetta-data:
     driver: local
   pihole-logs:
+    driver: local
+  telemetry-state:
+    driver: local
+  threat-network-data:
     driver: local
 
 networks:
