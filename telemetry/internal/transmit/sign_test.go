@@ -45,3 +45,34 @@ func TestSignDeterministic(t *testing.T) {
 		t.Errorf("signature not deterministic")
 	}
 }
+
+// TestClientSignatureMatchesServerVerification pins the client's signing key to
+// what the threat network actually verifies (beta-gate C1). The server stores
+// only hex(sha256(secret)) and verifies HMAC keyed on that hash; signing with the
+// RAW secret made every upload fail. This reproduces the server's math
+// independently (no fixture dependency) and asserts the client matches — and that
+// the old raw-secret signature does NOT, guarding against regression.
+func TestClientSignatureMatchesServerVerification(t *testing.T) {
+	const rawSecret = "reporter-secret-example"
+	in := SignatureInput{
+		Timestamp: "1751551200",
+		Nonce:     "00000000-0000-4000-8000-000000000000",
+		Body:      []byte(`{"schema_version":1,"batch_id":"b"}`),
+	}
+
+	// Server side: key = hex(sha256(secret)); expected = hex(HMAC(key, canonical)).
+	keyHash := sha256.Sum256([]byte(rawSecret))
+	serverKey := hex.EncodeToString(keyHash[:])
+	bodyHash := sha256.Sum256(in.Body)
+	canonical := in.Timestamp + "\n" + in.Nonce + "\n" + hex.EncodeToString(bodyHash[:])
+	m := hmac.New(sha256.New, []byte(serverKey))
+	m.Write([]byte(canonical))
+	serverExpects := hex.EncodeToString(m.Sum(nil))
+
+	if clientSends := Sign([]byte(SigningKey(rawSecret)), in); clientSends != serverExpects {
+		t.Fatalf("client signature does not match server verification:\n client %s\n server %s", clientSends, serverExpects)
+	}
+	if raw := Sign([]byte(rawSecret), in); raw == serverExpects {
+		t.Fatal("raw-secret signature unexpectedly matched server — the guard is ineffective")
+	}
+}
