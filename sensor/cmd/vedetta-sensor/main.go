@@ -41,6 +41,7 @@ func main() {
 	passiveSSDP := flag.Bool("passive-ssdp", true, "Enable passive SSDP/UPnP discovery")
 	printCapturePlan := flag.Bool("print-capture-plan", false, "Print the recommended DNS/passive capture interfaces and exit")
 	showVersion := flag.Bool("version", false, "Show version")
+	enrollCode := flag.String("enroll-code", "", "One-time enrollment code from Core (or set VEDETTA_ENROLL_CODE). Required to register a NEW sensor once Core has admin auth configured.")
 	flag.Parse()
 
 	if *showVersion {
@@ -96,6 +97,10 @@ func main() {
 	}
 	if core.TokenConfigured() {
 		log.Printf("Loaded persisted sensor token from %s", core.TokenPath)
+	}
+	core.EnrollCode = strings.TrimSpace(*enrollCode)
+	if core.EnrollCode == "" {
+		core.EnrollCode = strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE"))
 	}
 
 	// Enumerate local network interfaces

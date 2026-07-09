@@ -23,6 +23,10 @@ type CoreClient struct {
 	TokenPath  string
 	authToken  string
 	httpClient *http.Client
+	// EnrollCode is an optional one-time enrollment code (from `--enroll-code` /
+	// VEDETTA_ENROLL_CODE). Core requires it to register a NEW sensor once admin
+	// auth is configured; it is sent only on the registration request.
+	EnrollCode string
 }
 
 // SensorRegistration is the payload sent when the sensor first connects.
@@ -224,6 +228,9 @@ func (c *CoreClient) newJSONRequest(method, path string, payload any, allowBoots
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if path == "/api/v1/sensor/register" && strings.TrimSpace(c.EnrollCode) != "" {
+		req.Header.Set("X-Vedetta-Enrollment-Code", strings.TrimSpace(c.EnrollCode))
 	}
 
 	if err := c.authorizeRequest(req, allowBootstrap); err != nil {
