@@ -18,6 +18,9 @@ services:
       VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-auto}"
       VEDETTA_SCAN_INTERVAL: "${VEDETTA_SCAN_INTERVAL:-5m}"
       VEDETTA_SCAN_PORTS: "${VEDETTA_SCAN_PORTS:-false}"
+      # Shared with the collector below: Core provisions this as an ingest-scope
+      # token on startup so /ingest keeps authenticating once auth turns on.
+      VEDETTA_INGEST_TOKEN: "${VEDETTA_INGEST_TOKEN:-}"
     # Core receives device data from sensors — no direct network scanning needed.
     volumes:
       - vedetta-data:/data
@@ -51,9 +54,12 @@ services:
     ports:
       - "5140:5140/udp"  # Syslog input for firewalls (UniFi CEF + iptables)
     environment:
-      # Optional ingest auth (spec 001 FR-8/T2.4). Leave UNSET for the default
-      # open-Core deployment (backward compatible). To enable, set this to an
-      # ingest-scope token and set VEDETTA_REQUIRE_INGEST_AUTH=1 on the backend.
+      # Ingest credential (spec 001 FR-8/T2.4). /ingest is open only while NO
+      # tokens exist; once any token is created (e.g. a sensor registers) a valid
+      # ingest token is required. Set VEDETTA_INGEST_TOKEN in .env to any strong
+      # secret — Core provisions it as an ingest-scope token on startup and the
+      # collector presents the same value. Leave unset only for a Core with no
+      # tokens at all.
       VEDETTA_INGEST_TOKEN: "${VEDETTA_INGEST_TOKEN:-}"
     volumes:
       - pihole-logs:/var/log/pihole:ro

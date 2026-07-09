@@ -142,6 +142,29 @@ func (db *DB) HasActiveIngestToken() (bool, error) {
 	return count > 0, nil
 }
 
+// EnsureTokenFromRaw provisions a token for a KNOWN raw value if one is not
+// already present (matched by hash). Idempotent — safe to call on every startup.
+// Used to register the collector's ingest credential from the shared
+// VEDETTA_INGEST_TOKEN secret so /ingest keeps authenticating once auth turns on.
+// Returns true when a new token was created.
+func (db *DB) EnsureTokenFromRaw(rawToken string, scope auth.TokenScope, label string) (bool, error) {
+	rawToken = strings.TrimSpace(rawToken)
+	if rawToken == "" {
+		return false, nil
+	}
+	if _, err := db.GetTokenByHash(auth.HashToken(rawToken)); err == nil {
+		return false, nil // already provisioned
+	}
+	tok, err := auth.TokenFromRaw(rawToken, scope, "", label)
+	if err != nil {
+		return false, err
+	}
+	if err := db.CreateToken(tok); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // DeleteTokensBySensor revokes all tokens associated with a sensor.
 func (db *DB) DeleteTokensBySensor(sensorID string) error {
 	_, err := db.Exec(`UPDATE api_tokens SET revoked = 1 WHERE sensor_id = ?`, sensorID)

@@ -15,9 +15,11 @@ const (
 	ScopeSensor TokenScope = "sensor"
 	ScopeAdmin  TokenScope = "admin"
 	// ScopeIngest authorizes pushing events to POST /api/v1/ingest (spec 001,
-	// FR-8). Enforced only when an ingest-scoped token exists AND
-	// VEDETTA_REQUIRE_INGEST_AUTH=1; otherwise the endpoint stays open for
-	// backward compatibility with already-deployed collectors.
+	// FR-8). /ingest uses the standard bootstrap-bypass auth: open only while NO
+	// tokens exist, and requiring a valid ingest (or admin) token as soon as any
+	// token exists. The collector's token is provisioned from the shared
+	// VEDETTA_INGEST_TOKEN secret (see store.EnsureTokenFromRaw). The old
+	// VEDETTA_REQUIRE_INGEST_AUTH toggle was removed.
 	ScopeIngest TokenScope = "ingest"
 )
 
@@ -64,6 +66,27 @@ func GenerateToken(scope TokenScope, sensorID, label string) (rawToken string, t
 	}
 
 	return rawToken, token, nil
+}
+
+// TokenFromRaw builds a Token for a KNOWN raw token value (rather than a fresh
+// random one). Used to provision a credential from an operator-supplied secret,
+// e.g. the VEDETTA_INGEST_TOKEN shared between Core and the collector.
+func TokenFromRaw(rawToken string, scope TokenScope, sensorID, label string) (Token, error) {
+	tokenIDBytes := make([]byte, 16)
+	if _, err := rand.Read(tokenIDBytes); err != nil {
+		return Token{}, fmt.Errorf("failed to generate token ID: %w", err)
+	}
+	now := time.Now().UTC()
+	return Token{
+		TokenID:   hex.EncodeToString(tokenIDBytes),
+		TokenHash: HashToken(rawToken),
+		Scope:     scope,
+		SensorID:  sensorID,
+		Label:     label,
+		CreatedAt: now,
+		LastUsed:  now,
+		Revoked:   false,
+	}, nil
 }
 
 // HashToken returns the SHA-256 hash of a raw token string in hex format.
