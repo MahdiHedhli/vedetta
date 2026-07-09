@@ -1,0 +1,61 @@
+# Static top-domains allowlist snapshot (eTLD+1) for the threat-network
+# consensus guard. Popular registered domains here are NEVER promoted into the
+# advisory feed, and reports targeting them increment the reporter's
+# allowlist_flags (a poisoning signal). See specs/003-threat-network/plan.md.
+#
+# V1 ships a static snapshot of well-known public registered domains only.
+# A weekly Tranco refresh job is a fast-follow (spec Open Questions). This file
+# contains only globally well-known public domains — no environment data.
+google.com
+youtube.com
+facebook.com
+wikipedia.org
+amazon.com
+apple.com
+microsoft.com
+cloudflare.com
+akamai.com
+akamaihd.net
+fastly.net
+gstatic.com
+googleapis.com
+googleusercontent.com
+ytimg.com
+doubleclick.net
+office.com
+office365.com
+windows.com
+windowsupdate.com
+live.com
+bing.com
+azure.com
+azureedge.net
+github.com
+githubusercontent.com
+cloudfront.net
+amazonaws.com
+icloud.com
+apple-cloudkit.com
+mzstatic.com
+netflix.com
+nflxvideo.net
+spotify.com
+scdn.co
+cdn.mozilla.net
+mozilla.org
+firefox.com
+ubuntu.com
+debian.org
+archlinux.org
+digicert.com
+letsencrypt.org
+sectigo.com
+ntp.org
+pool.ntp.org
+cloudflare-dns.com
+one.one
+adobe.com
+adobedtm.com
+cloudfront.com
+edgekey.net
+edgesuite.net
