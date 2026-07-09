@@ -1,0 +1,102 @@
+name: CI
+
+# VED-B1 — build, test, and security-scan every change to main.
+# Gate: this workflow must be green before a PR can merge (enable the
+# "CI / *" checks in branch protection once this lands).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Least-privilege by default; jobs opt into more only if they need it.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- Go: build + vet + test + vuln scan, per module -------------------------
+  go:
+    name: go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [backend, sensor, telemetry, threat-network]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # 'stable' tracks the latest patched Go, which also ships the fixed
+          # standard library — govulncheck's stdlib advisories are cleared by
+          # scanning with an up-to-date toolchain rather than by editing code.
+          go-version: stable
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  # ---- Frontend: install + audit + build -------------------------------------
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # Blocking gate: anything a user actually runs. Production deps must be
+      # free of high/critical advisories.
+      - name: npm audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+      # Informational: dev/build-toolchain advisories (e.g. esbuild via vite)
+      # are surfaced here but do not block — the vite major bump that clears
+      # them is tracked separately (VED-B2, human-owned breaking change).
+      - name: npm audit (all deps, informational)
+        run: npm audit || true
+      - run: npm run build
+
+  # ---- Collector: Lua + Python parser regression guards ----------------------
+  collector:
+    name: collector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
+      - name: Lua transform golden suite
+        working-directory: collector/test
+        run: lua5.4 run_tests.lua
+      - name: syslog/CEF parser regression guard
+        working-directory: collector/test
+        run: python3 test_parser.py
+
+  # ---- Secret scan: full tree + history + PR diff ----------------------------
+  secrets:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
