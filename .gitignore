@@ -114,6 +114,11 @@ frontend/dist/
 *.sqlite
 *.sqlite3
 data/
+# ...but this data/ file is an embedded SOURCE file (//go:embed in
+# threat-network/internal/store/allowlist.go), not runtime data. It MUST be
+# tracked or fresh-clone builds (CI, Docker, cloud-init) fail. Re-include it.
+!threat-network/internal/store/data/
+!threat-network/internal/store/data/allowlist.txt
 
 # ----- Docker -----
 docker-compose.override.yml
