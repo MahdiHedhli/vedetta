@@ -1,6 +1,6 @@
 module github.com/vedetta-network/vedetta/threat-network
 
-go 1.22
+go 1.25
 
 require (
 	github.com/mattn/go-sqlite3 v1.14.22
