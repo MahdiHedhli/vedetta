@@ -1,8 +1,8 @@
 {
-  "_comment": "Known signature vector shared by telemetry (producer) and specs/003 threat-network (validator). Signature = hex(HMAC-SHA256(reporter_secret, timestamp + \"\\n\" + nonce + \"\\n\" + sha256hex(body))). All values synthetic.",
+  "_comment": "Known signature vector shared by telemetry (producer) and specs/003 threat-network (validator). The HMAC KEY is hex(sha256(reporter_secret)) — the threat network stores only that hash and verifies against it, so reporters sign with hex(sha256(secret)), NOT the raw secret (beta-gate C1). Signature = hex(HMAC-SHA256(hex(sha256(reporter_secret)), timestamp + \"\\n\" + nonce + \"\\n\" + sha256hex(body))). All values synthetic.",
   "reporter_secret": "reporter-secret-example",
   "timestamp": "1751551200",
   "nonce": "00000000-0000-4000-8000-000000000000",
   "body": "{\"schema_version\":1,\"batch_id\":\"b\"}",
-  "expected_signature": "6623c7cfd0d7c00a04ae2dd5a700746bb377660df6358fd04be70f646588a995"
+  "expected_signature": "871b2c1892d3cca4031edf0ee0962ae97dddc3cd1e999247829c665fd5ea74fa"
 }
