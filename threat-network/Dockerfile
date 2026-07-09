@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 # mattn/go-sqlite3 requires CGO (matches the Core backend's SQLite driver).
 RUN apk --no-cache add gcc musl-dev
@@ -8,7 +8,7 @@ COPY go.mod go.sum* ./
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -o /threat-network ./cmd/threat-network
 
-FROM alpine:3.19
+FROM alpine:3.21
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /threat-network /usr/local/bin/threat-network
 
