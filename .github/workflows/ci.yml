@@ -39,6 +39,9 @@ jobs:
           # scanning with an up-to-date toolchain rather than by editing code.
           go-version: stable
           cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: Install libpcap (sensor's gopacket/pcap cgo dependency)
+        if: matrix.module == 'sensor'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap-dev
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
@@ -85,7 +88,15 @@ jobs:
       # version-independent (pure Python) and must always pass.
       - name: syslog/CEF parser regression guard
         working-directory: collector/test
-        run: python3 test_parser.py
+        # test_parser.py lands on main via PR #17 (collector CEF fix). Run it
+        # when present so this workflow is correct both before and after #17;
+        # once merged it is always present and this is a hard gate.
+        run: |
+          if [ -f test_parser.py ]; then
+            python3 test_parser.py
+          else
+            echo "::notice::collector/test/test_parser.py not on this ref yet (arrives with PR #17); skipping"
+          fi
       # NON-BLOCKING (for now): the Lua transform golden files were captured on
       # Lua 5.5 and differ under 5.4's number/string formatting (4 golden-file
       # cases fail on 5.4, pass on 5.5). Making the golden suite interpreter-
