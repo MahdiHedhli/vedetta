@@ -135,6 +135,10 @@ That command prints the recommended DNS and passive-discovery interfaces, explai
 ./scripts/update-sensor.sh
 ```
 
+**Back up before updating.** Migrations run automatically on start; a backup is
+your rollback path. See [Backup, Restore & Rollback](docs/backup-restore-rollback.md)
+for the online-backup command and a safe update/rollback flow.
+
 ## Architecture
 
 Vedetta uses a **Core + Sensor** model:
