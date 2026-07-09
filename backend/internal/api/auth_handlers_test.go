@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/vedetta-network/vedetta/backend/internal/auth"
 )
 
 // createTokenRequest posts to /api/v1/auth/tokens. If bearer is non-empty it is
@@ -93,4 +95,73 @@ func TestHandleCreateToken_RejectsUnauthedAndNonAdminAfterBootstrap(t *testing.T
 	if w3.Code != http.StatusCreated {
 		t.Errorf("admin create after bootstrap: expected 201, got %d: %s", w3.Code, w3.Body.String())
 	}
+}
+
+// TestSensorRegistrationDoesNotCloseAdminBootstrap is the regression test for
+// beta-gate B1b: a sensor auto-issues a token on registration, which previously
+// bumped the total token count and permanently closed the first-admin window,
+// locking the operator out. Bootstrap now gates on the absence of an ACTIVE
+// ADMIN, so the operator can still create the first admin after a sensor enrolls.
+func TestSensorRegistrationDoesNotCloseAdminBootstrap(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	router := NewRouter(srv)
+
+	_ = registerTestSensor(t, router, "sensor-boot") // mints a sensor-scoped token
+
+	// First admin still creatable with no auth (no active admin yet).
+	w, adminToken := createTokenRequest(t, router, "", "admin")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first admin after sensor registration: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if adminToken == "" {
+		t.Fatal("expected raw admin token in response")
+	}
+
+	// Now that an admin exists, bootstrap is closed: an unauthenticated create fails.
+	w2, _ := createTokenRequest(t, router, "", "admin")
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth create after admin exists: expected 401, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+// TestCannotRevokeLastActiveAdmin is the regression test for the beta-gate B1a
+// lockout: revoking the only admin would leave the deployment unmanageable with
+// no recovery path, so it must be refused until a second admin exists.
+func TestCannotRevokeLastActiveAdmin(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+
+	raw1, tok1, err := auth.GenerateToken(auth.ScopeAdmin, "", "admin-1")
+	if err != nil {
+		t.Fatalf("generate admin-1: %v", err)
+	}
+	if err := db.CreateToken(tok1); err != nil {
+		t.Fatalf("store admin-1: %v", err)
+	}
+
+	revoke := func(id, bearer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("DELETE", "/api/v1/auth/tokens/"+id, nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	// Revoking the only admin must be refused (409) — no lockout.
+	if w := revoke(tok1.TokenID, raw1); w.Code != http.StatusConflict {
+		t.Fatalf("revoke last admin: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Add a second admin; now the first is revocable.
+	raw2, tok2, err := auth.GenerateToken(auth.ScopeAdmin, "", "admin-2")
+	if err != nil {
+		t.Fatalf("generate admin-2: %v", err)
+	}
+	if err := db.CreateToken(tok2); err != nil {
+		t.Fatalf("store admin-2: %v", err)
+	}
+	if w := revoke(tok1.TokenID, raw2); w.Code != http.StatusOK {
+		t.Fatalf("revoke non-last admin: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	_ = raw2
 }
