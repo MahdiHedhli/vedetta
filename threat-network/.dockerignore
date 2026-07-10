@@ -1,0 +1,11 @@
+# threat-network builds with `COPY . .` from this directory. Keep local runtime
+# state, the (unrelated) web dashboard, and build artifacts out of the image.
+.git
+web
+*.db
+*.sqlite*
+data/*.db
+*.test
+*.out
+threat-network
+.DS_Store
