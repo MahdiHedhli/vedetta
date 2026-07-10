@@ -43,7 +43,7 @@ against the [project constitution](../.specify/memory/constitution.md).
 
 ### Opt-in / off by default
 
-- **Telemetry service** ([specs/002](../specs/002-telemetry-service/)): implemented but does nothing unless `VEDETTA_TELEMETRY_OPTIN=true`; structural PII stripping, aggregate-only signed export. Needs an operational validation pass before real use.
+- **Telemetry service** ([specs/002](../specs/002-telemetry-service/)): **on by default, opt-out** (`VEDETTA_TELEMETRY_OPTIN=false`); structural PII stripping, aggregate-only signed export.
 - **Community threat network** ([specs/003](../specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance. Alpha, not production-ready.
 
 ### In progress
@@ -89,7 +89,7 @@ Vedetta is not yet positioned as a mass-market consumer appliance. The current i
 
 - **Self-hosted first.** The local deployment should stand on its own.
 - **Local value first.** Device discovery, DNS visibility, and local detections work without a cloud dependency.
-- **Telemetry is optional.** The telemetry service is implemented but stays off unless `VEDETTA_TELEMETRY_OPTIN=true`; it strips PII structurally and exports only aggregate signals.
+- **Telemetry is on by default and opt-out** (`VEDETTA_TELEMETRY_OPTIN=false`); it strips PII structurally and exports only aggregate, advisory-only signals.
 - **Community sharing is not the core promise.** The community threat network is implemented and advisory-only, but it is a roadmap direction, not the present-tense reason to adopt Vedetta.
 
 ## Known Product Limits

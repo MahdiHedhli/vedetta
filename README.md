@@ -62,9 +62,9 @@ the [project constitution](.specify/memory/constitution.md).
 - optional Pi-hole and AdGuard Home pollers
 - device inventory, scan targets, whitelist, suppression, and activity logging
 
-### Opt-in / off by default
+### Community sharing
 
-- **Telemetry service** ([specs/002](specs/002-telemetry-service/)): implemented but does nothing unless `VEDETTA_TELEMETRY_OPTIN=true`; structural PII stripping (raw IPs/MACs/hostnames can never reach the wire), aggregate-only signed export. Needs an operational validation pass before real use.
+- **Telemetry service** ([specs/002](specs/002-telemetry-service/)): **on by default, opt-out** (`VEDETTA_TELEMETRY_OPTIN=false` disables it). Structural PII stripping (raw IPs/MACs/hostnames can never reach the wire), aggregate-only signed export — see [PRIVACY.md](PRIVACY.md) and the [anonymization proof](specs/003-threat-network/anonymization-proof.md).
 - **Community threat network** ([specs/003](specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance. Alpha, not production-ready.
 
 ### In progress
@@ -155,7 +155,7 @@ This split is deliberate. The local network is the strongest source of truth Ved
 | Backend | 8080 | API, device/event storage, enrichment, scan coordination |
 | Frontend | 3107 | Dashboard UI |
 | Collector | 5140/udp | Syslog and normalized log ingestion path |
-| Telemetry | - | Opt-in outbound sharing, off unless `VEDETTA_TELEMETRY_OPTIN=true` |
+| Telemetry | - | Anonymized community sharing, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false`) |
 | Threat Network | 9090 | Optional community backend (advisory-only feed) |
 
 ## Hardware And Platform Notes
@@ -186,8 +186,8 @@ These should be described honestly as early or planned until they are documented
 
 - **Self-hosted first.** The local deployment is the product.
 - **Local value first.** Device discovery, DNS visibility, and local detections should remain useful without cloud dependency.
-- **Telemetry is optional.** It is off unless `VEDETTA_TELEMETRY_OPTIN=true`, strips PII structurally, and exports only aggregate signals.
-- **Community threat sharing is opt-in and advisory-only.** It is not the main present-tense promise and remains privacy-conscious by design.
+- **Telemetry is on by default and opt-out.** Set `VEDETTA_TELEMETRY_OPTIN=false` to disable it; it strips PII structurally and exports only aggregate signals.
+- **Community threat sharing is on by default, advisory-only, and anonymized.** No source IPs/MACs/hostnames leave your network; opt out any time.
 
 ## Known Alpha Limits
 

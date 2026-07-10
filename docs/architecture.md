@@ -59,7 +59,7 @@ vedetta-core (Docker Compose)
 | `backend` | API, event enrichment, device/event storage | shipped |
 | `frontend` | dashboard UI | shipped |
 | `collector` | syslog and normalized log ingestion path | shipped, limited public workflows today |
-| `telemetry` | optional outbound sharing path | implemented, opt-in (off unless `VEDETTA_TELEMETRY_OPTIN=true`) |
+| `telemetry` | anonymized community sharing | implemented, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false`) |
 | `threat-network` | community intelligence backend | implemented, advisory-only, runs off-node ([ops doc](threat-network-operations.md)) |
 
 ## What the Sensor Does Today
@@ -124,8 +124,8 @@ That makes Vedetta a good fit today for homelabs, technical home users, consulta
 
 - the local deployment is the primary product
 - the local deployment should stay useful even with no cloud dependency
-- telemetry is optional and off by default
-- future community sharing should remain opt-in and privacy-conscious
+- telemetry is on by default and opt-out (`VEDETTA_TELEMETRY_OPTIN=false`), anonymized and advisory-only
+- community sharing is anonymized and privacy-conscious; opting out is trivial
 
 ## Auth Model (Alpha)
 
