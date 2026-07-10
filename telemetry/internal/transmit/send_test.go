@@ -236,7 +236,7 @@ func TestDrainSpoolSignsCorrectly(t *testing.T) {
 	atomic.StoreInt32(&fail, 0)
 	tx.DrainSpool(context.Background())
 
-	want := Sign([]byte("secret"), SignatureInput{Timestamp: gotTS, Nonce: gotNonce, Body: gotBody})
+	want := Sign([]byte(SigningKey("secret")), SignatureInput{Timestamp: gotTS, Nonce: gotNonce, Body: gotBody})
 	if gotSig == "" || gotSig != want {
 		t.Errorf("spooled resend signature mismatch: got %q want %q", gotSig, want)
 	}
