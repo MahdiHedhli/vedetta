@@ -1,25 +1,40 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
+// execQuerier is satisfied by both *DB (via the embedded *sql.DB) and *sql.Tx,
+// so sensor upsert logic can run either standalone or inside a transaction
+// (e.g. ProvisionSensorToken's atomic revoke+upsert+mint).
+type execQuerier interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // RegisterSensor creates or updates a sensor record.
 // If this is the first sensor ever registered, it becomes the primary.
 func (db *DB) RegisterSensor(sensor models.Sensor) error {
+	return registerSensorOn(db, sensor)
+}
+
+// registerSensorOn performs the sensor upsert (and primary-promotion) against any
+// execQuerier, so it composes into a larger transaction without duplicating SQL.
+func registerSensorOn(q execQuerier, sensor models.Sensor) error {
 	now := time.Now()
 
 	// Auto-promote to primary if: no sensors exist yet, or no primary is set, or flag requested
 	var count int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM sensors`).Scan(&count)
+	_ = q.QueryRow(`SELECT COUNT(*) FROM sensors`).Scan(&count)
 	var primaryCount int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM sensors WHERE is_primary = TRUE`).Scan(&primaryCount)
+	_ = q.QueryRow(`SELECT COUNT(*) FROM sensors WHERE is_primary = TRUE`).Scan(&primaryCount)
 	makePrimary := count == 0 || primaryCount == 0 || sensor.IsPrimary
 
-	_, err := db.Exec(`
+	_, err := q.Exec(`
 		INSERT INTO sensors (sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary, interfaces)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online', ?, ?)
 		ON CONFLICT(sensor_id) DO UPDATE SET
@@ -38,7 +53,7 @@ func (db *DB) RegisterSensor(sensor models.Sensor) error {
 
 	// If this sensor should be primary, demote all others
 	if makePrimary {
-		_, err = db.Exec(`UPDATE sensors SET is_primary = FALSE WHERE sensor_id != ?`, sensor.SensorID)
+		_, err = q.Exec(`UPDATE sensors SET is_primary = FALSE WHERE sensor_id != ?`, sensor.SensorID)
 	}
 
 	return err

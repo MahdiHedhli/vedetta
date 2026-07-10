@@ -6,28 +6,62 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
+	"github.com/vedetta-network/vedetta/backend/internal/store"
 )
 
 func TestEnrollmentStore(t *testing.T) {
 	s := NewEnrollmentStore()
+
+	// A generic new-sensor code: single-use, enrolls any new sensor_id.
 	code, _ := s.Generate()
 	if code == "" {
 		t.Fatal("expected a non-empty code")
 	}
-	if !s.Consume(code) {
-		t.Fatal("a freshly generated code should consume once")
+	if !s.ConsumeNewSensor(code, "sensor-x") {
+		t.Fatal("a freshly generated code should consume once for a new sensor")
 	}
-	if s.Consume(code) {
+	if s.ConsumeNewSensor(code, "sensor-x") {
 		t.Fatal("a code must be single-use")
 	}
-	if s.Consume("NOPE-NOPE-NOPE-NOPE") {
+	if s.ConsumeNewSensor("NOPE-NOPE-NOPE-NOPE", "sensor-x") {
 		t.Fatal("an unknown code must not consume")
 	}
-	if s.Consume("") {
+	if s.ConsumeNewSensor("", "sensor-x") {
 		t.Fatal("an empty code must not consume")
+	}
+	if s.ConsumeNewSensor("some-code", "") {
+		t.Fatal("an empty sensor_id must not consume")
+	}
+
+	// A generic code must NOT be usable to RESET an existing sensor, and refusing it
+	// must NOT spend it — it stays valid for its intended new-sensor enrollment.
+	generic, _ := s.Generate()
+	if s.ConsumeReset(generic, "sensor-y") {
+		t.Fatal("a generic new-sensor code must not reset an existing sensor")
+	}
+	if !s.ConsumeNewSensor(generic, "sensor-y") {
+		t.Fatal("a generic code refused for reset must remain valid for new-sensor enrollment")
+	}
+
+	// A bound reset code resets ONLY its sensor; a wrong sensor_id is refused
+	// without spending it, and the code cannot enroll a different new sensor.
+	bound, _ := s.GenerateForSensor("sensor-z")
+	if s.ConsumeReset(bound, "sensor-wrong") {
+		t.Fatal("a reset code bound to sensor-z must not reset a different sensor")
+	}
+	if s.ConsumeNewSensor(bound, "sensor-other") {
+		t.Fatal("a reset code bound to sensor-z must not enroll a different new sensor")
+	}
+	if !s.ConsumeReset(bound, "sensor-z") {
+		t.Fatal("a reset code bound to sensor-z must reset sensor-z")
+	}
+	if s.ConsumeReset(bound, "sensor-z") {
+		t.Fatal("a bound reset code must be single-use")
 	}
 }
 
@@ -203,10 +237,19 @@ func TestSensorReset_ViaFreshEnrollmentCode(t *testing.T) {
 		t.Fatalf("original token must survive a failed reset attempt: %v", err)
 	}
 
-	// A FRESH admin-minted code recovers: revoke the stale token, issue a NEW one.
-	w2 := register("sensor-reset", mintEnrollmentCode(t, router, admin))
+	// A GENERIC new-sensor code must NOT reset an existing sensor (beta-gate B1a):
+	// possession of any enrollment code cannot take over a guessable sensor_id.
+	if w := register("sensor-reset", mintEnrollmentCode(t, router, admin)); w.Code != http.StatusUnauthorized {
+		t.Fatalf("generic code must not reset an existing sensor: expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := auth.ValidateAuthorizationHeader(db, "Bearer "+tok1); err != nil {
+		t.Fatalf("original token must survive a generic-code reset attempt: %v", err)
+	}
+
+	// A RESET code BOUND to this sensor_id recovers it: revoke the stale token, issue a NEW one.
+	w2 := register("sensor-reset", mintResetCode(t, router, admin, "sensor-reset"))
 	if w2.Code != http.StatusOK {
-		t.Fatalf("reset via fresh code: expected 200, got %d: %s", w2.Code, w2.Body.String())
+		t.Fatalf("reset via bound code: expected 200, got %d: %s", w2.Code, w2.Body.String())
 	}
 	tok2 := tokenOf(w2)
 	if tok2 == "" || tok2 == tok1 {
@@ -236,4 +279,204 @@ func mintEnrollmentCode(t *testing.T, router http.Handler, adminBearer string) s
 		t.Fatal("expected an enrollment_code in the response")
 	}
 	return code
+}
+
+// mintResetCode mints a RESET code bound to an existing sensor_id (POST
+// /enrollment-codes with a {"sensor_id":...} body).
+func mintResetCode(t *testing.T, router http.Handler, adminBearer, sensorID string) string {
+	t.Helper()
+	body := []byte(fmt.Sprintf(`{"sensor_id":%q}`, sensorID))
+	req := httptest.NewRequest("POST", "/api/v1/enrollment-codes", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminBearer)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mint reset code: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var m map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&m)
+	code, _ := m["enrollment_code"].(string)
+	if code == "" {
+		t.Fatal("expected an enrollment_code in the reset response")
+	}
+	return code
+}
+
+// TestSensorIDCollisionDoesNotTakeover is the beta-gate B1a regression for the
+// "two fresh Pis named raspberrypi" case: a second device that collides on
+// sensor_id (hostname-os-arch) must NOT be able to displace the first with a
+// generic enrollment code. The collision surfaces as a 401, and the first
+// sensor's token keeps working.
+func TestSensorIDCollisionDoesNotTakeover(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	ipN := 0
+	register := func(id, code string) *httptest.ResponseRecorder {
+		ipN++
+		body := []byte(fmt.Sprintf(`{"sensor_id":%q,"hostname":"raspberrypi","os":"linux","arch":"arm64","cidr":"192.168.1.0/24","version":"t"}`, id))
+		req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if code != "" {
+			req.Header.Set("X-Vedetta-Enrollment-Code", code)
+		}
+		req.RemoteAddr = fmt.Sprintf("198.51.100.%d:1234", 40+ipN)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	tokenOf := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var m map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&m)
+		tok, _ := m["auth_token"].(string)
+		return tok
+	}
+
+	// Pi A enrolls first with its own code.
+	tokA := tokenOf(register("raspberrypi-linux-arm64", mintEnrollmentCode(t, router, admin)))
+	if tokA == "" {
+		t.Fatal("first Pi got no token")
+	}
+
+	// Pi B (same hostname/os/arch → same sensor_id) presents its OWN fresh, valid
+	// generic code. It must be refused (collision surfaced), not silently take over.
+	if w := register("raspberrypi-linux-arm64", mintEnrollmentCode(t, router, admin)); w.Code != http.StatusUnauthorized {
+		t.Fatalf("colliding second Pi with a generic code: expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Pi A's token still works.
+	if _, err := auth.ValidateAuthorizationHeader(db, "Bearer "+tokA); err != nil {
+		t.Fatalf("first Pi token must survive a colliding enrollment: %v", err)
+	}
+	// Exactly one active sensor token exists for the id.
+	if n := activeSensorTokenCount(t, db, "raspberrypi-linux-arm64"); n != 1 {
+		t.Fatalf("expected exactly 1 active sensor token after a blocked takeover, got %d", n)
+	}
+}
+
+// TestConcurrentResetLeavesOneActiveToken is the beta-gate B1a concurrency
+// regression: firing many bound reset codes at one sensor simultaneously must
+// leave exactly ONE active token — never several valid credentials at once.
+func TestConcurrentResetLeavesOneActiveToken(t *testing.T) {
+	// A file-backed DB (not the shared :memory: helper): concurrent registrations
+	// open multiple pooled connections, and a lone :memory: DSN gives each its own
+	// empty schema. Production always uses a WAL file DB, which this mirrors.
+	db, err := store.Open(filepath.Join(t.TempDir(), "vedetta-conc-test.db"))
+	if err != nil {
+		t.Fatalf("open file-backed test db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	srv := &Server{DB: db, SetupCode: testSetupCode}
+	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	// Enroll the sensor once.
+	{
+		body := []byte(`{"sensor_id":"sensor-conc","hostname":"h","os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"t"}`)
+		req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Vedetta-Enrollment-Code", mintEnrollmentCode(t, router, admin))
+		req.RemoteAddr = "203.0.113.5:1234"
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("initial enroll: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	// Pre-mint N bound reset codes, then fire them concurrently.
+	const n = 20
+	codes := make([]string, n)
+	for i := range codes {
+		codes[i] = mintResetCode(t, router, admin, "sensor-conc")
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(code string, ip int) {
+			defer wg.Done()
+			body := []byte(`{"sensor_id":"sensor-conc","hostname":"h","os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"t"}`)
+			req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Vedetta-Enrollment-Code", code)
+			req.RemoteAddr = fmt.Sprintf("10.10.%d.%d:1234", ip/250, ip%250)
+			router.ServeHTTP(httptest.NewRecorder(), req)
+		}(codes[i], i)
+	}
+	wg.Wait()
+
+	if got := activeSensorTokenCount(t, db, "sensor-conc"); got != 1 {
+		t.Fatalf("after %d concurrent resets, expected exactly 1 active sensor token, got %d", n, got)
+	}
+}
+
+// activeSensorTokenCount counts non-revoked sensor-scoped tokens for a sensor_id.
+func activeSensorTokenCount(t *testing.T, db *store.DB, sensorID string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM api_tokens WHERE sensor_id = ? AND scope = 'sensor' AND revoked = 0`,
+		sensorID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count active sensor tokens: %v", err)
+	}
+	return count
+}
+
+// TestReplayAfterResetDoesNotReturnDeadToken guards the idempotent-replay path:
+// if a sensor is reset after its enrollment code was first redeemed, replaying
+// the ORIGINAL code must NOT return the now-revoked token with a misleading 200.
+// The sensor should be told to present a fresh reset code (401) rather than
+// believing it re-enrolled while holding a dead credential.
+func TestReplayAfterResetDoesNotReturnDeadToken(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	ipN := 0
+	register := func(id, code string) *httptest.ResponseRecorder {
+		ipN++
+		body := []byte(fmt.Sprintf(`{"sensor_id":%q,"hostname":"h","os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"t"}`, id))
+		req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if code != "" {
+			req.Header.Set("X-Vedetta-Enrollment-Code", code)
+		}
+		req.RemoteAddr = fmt.Sprintf("198.51.100.%d:1234", 70+ipN)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	tokenOf := func(w *httptest.ResponseRecorder) string {
+		var m map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&m)
+		tok, _ := m["auth_token"].(string)
+		return tok
+	}
+
+	// Enroll with a generic code (which we keep, to replay later).
+	code := mintEnrollmentCode(t, router, admin)
+	tok1 := tokenOf(register("sensor-replay", code))
+	if tok1 == "" {
+		t.Fatal("enroll returned no token")
+	}
+
+	// Reset the sensor with a bound reset code → tok1 is revoked, tok2 issued.
+	if w := register("sensor-replay", mintResetCode(t, router, admin, "sensor-replay")); w.Code != http.StatusOK {
+		t.Fatalf("reset: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The sensor, unaware of the reset, replays its ORIGINAL enroll code. It must not
+	// receive the revoked tok1 — expect a 401 pointing it at a fresh reset code.
+	w3 := register("sensor-replay", code)
+	if w3.Code == http.StatusOK && tokenOf(w3) == tok1 {
+		t.Fatal("replay after reset handed back the revoked original token")
+	}
+	if w3.Code != http.StatusUnauthorized {
+		t.Fatalf("replay of original code after reset: expected 401, got %d: %s", w3.Code, w3.Body.String())
+	}
 }

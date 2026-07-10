@@ -3,6 +3,8 @@ package api
 import (
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,7 +18,7 @@ import (
 // by design and never persisted.
 type EnrollmentStore struct {
 	mu    sync.Mutex
-	codes map[string]time.Time // code -> expiry
+	codes map[string]codeRecord // code -> record
 	// redemptions remembers, for a consumed code, the raw token + sensor_id it minted
 	// (Issue #44). This makes first-sensor enrollment idempotent: if the sensor lost
 	// the registration response, retrying with the SAME code returns the SAME token
@@ -25,6 +27,15 @@ type EnrollmentStore struct {
 	redemptions map[string]redemption
 	ttl         time.Duration
 	now         func() time.Time
+}
+
+// codeRecord is a minted enrollment code's state: when it expires and, for a
+// RESET code, which existing sensor_id it is authorized to reset. An empty
+// sensorID marks a generic NEW-sensor code — usable only to enroll a
+// not-yet-existing sensor, never to take over an existing (guessable) one.
+type codeRecord struct {
+	exp      time.Time
+	sensorID string // "" = generic new-sensor code; non-empty = reset code bound to this sensor
 }
 
 // redemption is the memory of a single consumed enrollment code.
@@ -43,7 +54,7 @@ const maxRedemptions = 1024
 // NewEnrollmentStore creates a store with a 15-minute code TTL.
 func NewEnrollmentStore() *EnrollmentStore {
 	return &EnrollmentStore{
-		codes:       make(map[string]time.Time),
+		codes:       make(map[string]codeRecord),
 		redemptions: make(map[string]redemption),
 		ttl:         15 * time.Minute,
 		now:         time.Now,
@@ -125,35 +136,85 @@ func (s *EnrollmentStore) evictRedemptionsLocked() {
 	}
 }
 
-// Generate mints a new single-use code and returns it with its expiry.
+// Generate mints a generic single-use NEW-sensor code and returns it with its
+// expiry. A generic code can only enroll a not-yet-existing sensor_id; it can
+// never reset an existing sensor (see ConsumeReset).
 func (s *EnrollmentStore) Generate() (string, time.Time) {
+	return s.generate("")
+}
+
+// GenerateForSensor mints a single-use RESET code bound to one existing
+// sensor_id. Only that sensor can redeem it (ConsumeReset), so possession of an
+// enrollment code can never be used to revoke/impersonate a different, guessable
+// sensor_id (beta-gate B1a).
+func (s *EnrollmentStore) GenerateForSensor(sensorID string) (string, time.Time) {
+	return s.generate(strings.TrimSpace(sensorID))
+}
+
+func (s *EnrollmentStore) generate(sensorID string) (string, time.Time) {
 	code := newEnrollmentCode()
 	exp := s.now().Add(s.ttl)
 	s.mu.Lock()
 	s.sweepLocked()
-	s.codes[code] = exp
+	s.codes[code] = codeRecord{exp: exp, sensorID: sensorID}
 	s.mu.Unlock()
 	return code, exp
 }
 
-// Consume validates and removes a code (single use). It returns true only if the
-// code was present and unexpired.
-func (s *EnrollmentStore) Consume(code string) bool {
-	code = strings.TrimSpace(strings.ToUpper(code))
-	if code == "" {
+// ConsumeNewSensor validates and spends a code presented to enroll a BRAND-NEW
+// sensor_id. A generic code — or a reset code minted for exactly this sensor_id —
+// is accepted. Single-use: the code is spent only when accepted.
+func (s *EnrollmentStore) ConsumeNewSensor(code, sensorID string) bool {
+	return s.consume(code, sensorID, false)
+}
+
+// ConsumeReset validates and spends a code presented to RESET an EXISTING
+// sensor. ONLY a reset code explicitly minted for this exact sensor_id is
+// accepted — a generic new-sensor code is refused, so holding a generic code can
+// never revoke or impersonate an existing (guessable) sensor_id. Single-use.
+func (s *EnrollmentStore) ConsumeReset(code, sensorID string) bool {
+	return s.consume(code, sensorID, true)
+}
+
+// consume is the shared validator. requireBound=true demands a reset code bound
+// to sensorID; requireBound=false additionally accepts a generic code. A code is
+// deleted (spent) ONLY when accepted, so a wrong-type or wrong-sensor
+// presentation never burns a still-legitimate code.
+func (s *EnrollmentStore) consume(code, sensorID string, requireBound bool) bool {
+	code = normalizeCode(code)
+	sensorID = strings.TrimSpace(sensorID)
+	if code == "" || sensorID == "" {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	exp, ok := s.codes[code]
-	delete(s.codes, code) // single-use: remove whether or not it was valid
-	return ok && !s.now().After(exp)
+	rec, ok := s.codes[code]
+	if !ok {
+		return false
+	}
+	if s.now().After(rec.exp) {
+		delete(s.codes, code) // spent or not, an expired code is dead — clear it
+		return false
+	}
+	switch {
+	case rec.sensorID == sensorID:
+		// bound to this sensor — valid for both new-enroll and reset
+	case rec.sensorID == "" && !requireBound:
+		// generic code — valid only for new-sensor enrollment
+	default:
+		// generic code presented for a reset, or a code bound to a DIFFERENT
+		// sensor: refuse WITHOUT spending it, so it remains usable for its
+		// intended purpose/sensor.
+		return false
+	}
+	delete(s.codes, code) // single-use: spend only on success
+	return true
 }
 
 func (s *EnrollmentStore) sweepLocked() {
 	now := s.now()
-	for c, exp := range s.codes {
-		if now.After(exp) {
+	for c, rec := range s.codes {
+		if now.After(rec.exp) {
 			delete(s.codes, c)
 		}
 	}
@@ -185,14 +246,57 @@ func NewSetupCode() string {
 
 // handleGenerateEnrollmentCode mints a short-lived, single-use sensor enrollment
 // code. Admin only. POST /api/v1/enrollment-codes
+//
+// With no body (or an empty sensor_id) it mints a GENERIC new-sensor code. With
+// {"sensor_id":"<existing sensor>"} it mints a RESET code BOUND to that sensor —
+// the only way to re-enroll a stranded sensor whose Core token is still active,
+// and which a generic code deliberately cannot do (beta-gate B1a).
 func (s *Server) handleGenerateEnrollmentCode(w http.ResponseWriter, r *http.Request) {
 	if s.Enroll == nil {
 		s.Enroll = NewEnrollmentStore()
 	}
+
+	var body struct {
+		SensorID string `json:"sensor_id"`
+	}
+	if r.Body != nil {
+		// Body is optional; a malformed/empty body just yields a generic code.
+		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+	}
+	sensorID := strings.TrimSpace(body.SensorID)
+
+	if sensorID != "" {
+		// Bind only to a sensor that currently has an active token — that is the
+		// exact "stranded but Core still holds the credential" state a reset
+		// recovers. If there is no active token, it is a fresh enrollment: the
+		// admin should mint a generic code instead.
+		exists, err := s.DB.HasActiveSensorToken(sensorID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to check sensor state"})
+			return
+		}
+		if !exists {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "no active sensor with that sensor_id to reset; omit sensor_id to mint a generic new-sensor code",
+			})
+			return
+		}
+		code, exp := s.Enroll.GenerateForSensor(sensorID)
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"enrollment_code": code,
+			"type":            "reset",
+			"sensor_id":       sensorID,
+			"expires_at":      exp.UTC().Format(time.RFC3339),
+			"note":            "reset code BOUND to sensor " + sensorID + " — present it via --enroll-code to re-enroll that specific stranded sensor. Single use; expires soon.",
+		})
+		return
+	}
+
 	code, exp := s.Enroll.Generate()
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"enrollment_code": code,
+		"type":            "new_sensor",
 		"expires_at":      exp.UTC().Format(time.RFC3339),
-		"note":            "give this to a new sensor via --enroll-code (or VEDETTA_ENROLL_CODE). Single use; expires soon.",
+		"note":            "give this to a NEW sensor via --enroll-code (or VEDETTA_ENROLL_CODE). Single use; expires soon.",
 	})
 }

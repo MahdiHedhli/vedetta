@@ -1175,30 +1175,39 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 	enrollCode := r.Header.Get("X-Vedetta-Enrollment-Code")
 	if s.Enroll != nil {
 		if rawToken, tokenID, ok := s.Enroll.LookupRedemption(enrollCode, body.SensorID); ok {
-			// Refresh sensor metadata idempotently, then hand back the same secret.
-			interfacesStr := ""
-			if len(body.Interfaces) > 0 {
-				interfacesStr = string(body.Interfaces)
+			// Only replay the remembered token if it is STILL ACTIVE. If the sensor was
+			// reset (or its token otherwise revoked) after this code was first redeemed,
+			// the remembered token is dead — returning it would tell a retrying sensor it
+			// re-enrolled while handing back a credential that will not authenticate.
+			// When the remembered token is gone/revoked, fall through to the normal flow,
+			// which surfaces the correct next step (present a fresh reset code).
+			if tok, terr := s.DB.GetTokenByID(tokenID); terr == nil && tok != nil && !tok.Revoked {
+				// Refresh sensor metadata idempotently, then hand back the same secret.
+				interfacesStr := ""
+				if len(body.Interfaces) > 0 {
+					interfacesStr = string(body.Interfaces)
+				}
+				_ = s.DB.RegisterSensor(models.Sensor{
+					SensorID:   body.SensorID,
+					Hostname:   body.Hostname,
+					OS:         body.OS,
+					Arch:       body.Arch,
+					CIDR:       body.CIDR,
+					Version:    body.Version,
+					IsPrimary:  body.IsPrimary,
+					Interfaces: interfacesStr,
+				})
+				log.Printf("Sensor %s re-registered via idempotent enrollment replay — returning existing token %s", body.SensorID, tokenID)
+				writeJSON(w, http.StatusOK, sensorRegistrationResponse{
+					Status:       "registered",
+					SensorID:     body.SensorID,
+					AuthToken:    rawToken,
+					TokenID:      tokenID,
+					TokenWarning: "save this token now — it will not be displayed again",
+				})
+				return
 			}
-			_ = s.DB.RegisterSensor(models.Sensor{
-				SensorID:   body.SensorID,
-				Hostname:   body.Hostname,
-				OS:         body.OS,
-				Arch:       body.Arch,
-				CIDR:       body.CIDR,
-				Version:    body.Version,
-				IsPrimary:  body.IsPrimary,
-				Interfaces: interfacesStr,
-			})
-			log.Printf("Sensor %s re-registered via idempotent enrollment replay — returning existing token %s", body.SensorID, tokenID)
-			writeJSON(w, http.StatusOK, sensorRegistrationResponse{
-				Status:       "registered",
-				SensorID:     body.SensorID,
-				AuthToken:    rawToken,
-				TokenID:      tokenID,
-				TokenWarning: "save this token now — it will not be displayed again",
-			})
-			return
+			log.Printf("Sensor %s replayed a redeemed code whose token is no longer active — falling through to normal enrollment", body.SensorID)
 		}
 	}
 
@@ -1230,41 +1239,43 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// consumedEnrollCode is set to the enrollment code (if any) this registration
-	// spends, so we can record the minted token for idempotent recovery (Issue #44).
+	// consumedEnrollCode is the enrollment code (if any) this registration spends,
+	// recorded after the token is minted so a lost-response retry is idempotent
+	// (Issue #44). resetExisting is set when we must revoke the sensor's current
+	// active token and mint a fresh one (admin reset, or a bound reset code) — the
+	// actual revoke+mint happens atomically in ProvisionSensorToken below.
 	consumedEnrollCode := ""
+	resetExisting := false
 
 	if existingToken {
-		// This sensor_id is already enrolled with an active token. Re-registration
-		// MUST be authenticated: sensor_ids are derived from hostname-os-arch and are
-		// therefore guessable, so an unauthenticated re-register used to revoke the
-		// real sensor's credential and hand a replacement to the caller — a silent
-		// credential hijack (beta-gate B1a). Recovery/reset is an authenticated action.
+		// This sensor_id already has an active token. Re-registration MUST be
+		// authenticated: sensor_ids are derived from hostname-os-arch and are
+		// therefore guessable, so an unauthenticated (or generically-coded)
+		// re-register must not be able to revoke the real sensor's credential and
+		// hand a replacement to the caller — a silent credential hijack (beta-gate
+		// B1a). Recovery/reset is an authenticated, sensor-specific action.
 		switch {
 		case presentedToken != nil && presentedToken.Scope == auth.ScopeAdmin:
-			// Admin-initiated reset: revoke the sensor's existing tokens and issue a
-			// fresh one below.
-			log.Printf("Sensor %s reset by admin token %s — revoking old tokens and issuing a new one", body.SensorID, presentedToken.TokenID)
-			_ = s.DB.DeleteTokensBySensor(body.SensorID)
-			existingToken = false // force new token generation
+			// Admin-initiated reset.
+			log.Printf("Sensor %s reset by admin token %s — revoking old token, issuing a new one", body.SensorID, presentedToken.TokenID)
+			resetExisting = true
 		case presentedToken != nil:
 			// Matching sensor token presented: metadata refresh; keep the existing
 			// credential (no reissue).
-		case s.Enroll != nil && s.Enroll.Consume(enrollCode):
-			// RECOVERY (#44): a sensor stranded by `--reset`, a lost enrollment response
-			// after the idempotency window, a Core restart, or local token corruption
-			// can re-enroll by presenting a FRESH admin-minted, single-use enrollment
-			// code. It is admin-gated + single-use (validated AND consumed here, so the
-			// stale token is only revoked once the code checks out — no revoke-before-
-			// validate DoS), so this is not the guessable-sensor_id hijack and needs no
-			// hidden admin reset API. Revoke the stale token; a new one is minted below.
-			log.Printf("Sensor %s reset via a fresh enrollment code — revoking old token, issuing a new one", body.SensorID)
-			_ = s.DB.DeleteTokensBySensor(body.SensorID)
-			existingToken = false
-			consumedEnrollCode = enrollCode // already consumed; the gate below must not re-consume
+		case s.Enroll != nil && s.Enroll.ConsumeReset(enrollCode, body.SensorID):
+			// RECOVERY (#44): a sensor whose Core token is still active but whose local
+			// copy was lost (`--reset`, a lost enrollment response, a Core restart, or
+			// local token corruption) re-enrolls by presenting a fresh admin-minted
+			// RESET code BOUND to this exact sensor_id (POST /enrollment-codes with
+			// {"sensor_id":...}). A generic new-sensor code is REFUSED here, so holding
+			// any enrollment code cannot revoke/impersonate a different, guessable
+			// sensor_id (beta-gate B1a). Single-use: the code is spent by ConsumeReset.
+			log.Printf("Sensor %s reset via a bound enrollment code — revoking old token, issuing a new one", body.SensorID)
+			resetExisting = true
+			consumedEnrollCode = enrollCode
 		default:
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error": "sensor already enrolled; present its current sensor token, an admin token, or a fresh admin-minted enrollment code (X-Vedetta-Enrollment-Code) to reset it",
+				"error": "sensor_id already enrolled. Two devices that share hostname/OS/arch collide on the same sensor_id — if that is the case, give one a distinct hostname. To re-enroll THIS sensor present its current sensor token, an admin token, or an admin-minted RESET code bound to this sensor_id (POST /api/v1/enrollment-codes with {\"sensor_id\":\"...\"}). A generic new-sensor code will not reset an existing sensor.",
 			})
 			return
 		}
@@ -1295,19 +1306,18 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case !isAdmin:
-			// If the reset-via-code recovery path above already consumed this code,
-			// don't consume again (single-use would fail and wrongly 401).
-			if consumedEnrollCode == "" {
-				if s.Enroll == nil || !s.Enroll.Consume(enrollCode) {
-					writeJSON(w, http.StatusUnauthorized, map[string]any{
-						"error": "new sensor enrollment requires an admin token or a valid enrollment code (an admin can mint one via POST /api/v1/enrollment-codes)",
-					})
-					return
-				}
-				// Remember which code this enrollment consumed so, once the token is
-				// minted below, we can make a lost-response retry idempotent (Issue #44).
-				consumedEnrollCode = enrollCode
+			// Brand-new sensor (existingToken is false here, so this never runs for a
+			// reset — no double-consume). A generic code, or a code bound to this new
+			// sensor_id, is accepted.
+			if s.Enroll == nil || !s.Enroll.ConsumeNewSensor(enrollCode, body.SensorID) {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"error": "new sensor enrollment requires an admin token or a valid enrollment code (an admin can mint one via POST /api/v1/enrollment-codes)",
+				})
+				return
 			}
+			// Remember which code this enrollment consumed so, once the token is minted
+			// below, a lost-response retry is idempotent (Issue #44).
+			consumedEnrollCode = enrollCode
 		}
 	}
 
@@ -1328,23 +1338,30 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		Interfaces: interfacesStr,
 	}
 
-	if err := s.DB.RegisterSensor(sensor); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-
 	response := sensorRegistrationResponse{
 		Status:   "registered",
 		SensorID: body.SensorID,
 	}
-	if !existingToken {
+
+	// Mint a fresh token for a brand-new sensor or an authorized reset; otherwise
+	// (a matching sensor token was presented) just refresh metadata and keep the
+	// existing credential.
+	if !existingToken || resetExisting {
 		rawToken, token, err := auth.GenerateToken(auth.ScopeSensor, body.SensorID, "auto-generated-registration")
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to generate sensor auth token"})
 			return
 		}
-		if err := s.DB.CreateToken(token); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to store sensor auth token"})
+		// Atomic: (on reset) revoke the current active token, upsert the sensor, and
+		// insert the new token in ONE transaction. The partial unique index means a
+		// racing reset/registration for the same sensor_id leaves only ONE active
+		// token — the loser fails here rather than adding a second valid credential
+		// (beta-gate B1a concurrent-reset probe).
+		if err := s.DB.ProvisionSensorToken(sensor, token, resetExisting); err != nil {
+			log.Printf("Sensor %s token provisioning failed: %v", body.SensorID, err)
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "could not provision sensor token; a concurrent registration for this sensor_id may be in progress — retry",
+			})
 			return
 		}
 
@@ -1359,6 +1376,10 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		if consumedEnrollCode != "" && s.Enroll != nil {
 			s.Enroll.RecordRedemption(consumedEnrollCode, body.SensorID, rawToken, token.TokenID)
 		}
+	} else if err := s.DB.RegisterSensor(sensor); err != nil {
+		// Metadata refresh only (matching sensor token, no reissue).
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
 	}
 
 	log.Printf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR)

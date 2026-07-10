@@ -44,7 +44,9 @@
   new sources bring new noise patterns requiring suppression, context, and scoring
   updates before the source is called "supported".
 - Local value first, self-hosted first. Telemetry/community threat network is
-  optional, opt-in, privacy-conscious, and secondary to local operation.
+  optional, opt-out (on by default, disabled by `VEDETTA_TELEMETRY_OPTIN=false` or
+  the dashboard toggle), privacy-conscious, and secondary to local operation — the
+  local deployment must stay fully useful with telemetry off.
 - Ground decisions in primary sources (CISA KEV, FBI FLASH advisories, vendor docs,
   endoflife.date, official APIs, live tests) — never from memory alone.
 - Every schema change is a NEW sequential migration in `siem/migrations/`. Never edit

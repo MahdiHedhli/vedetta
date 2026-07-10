@@ -95,9 +95,11 @@ error. No exported payload (no domains) ever appears here.
 
 Set `VEDETTA_TELEMETRY_OPTIN=false` (exact string — any other value leaves it on)
 or flip the dashboard telemetry toggle off, then restart the container. The daemon
-returns to fully inert on next start. To fully sever the pseudonymous reporter
-identity, also delete `reporter.json` and `salt` from the state dir; the
-community-side identity ages out server-side.
+returns to fully inert on next start. To sever the local half of the pseudonymous
+reporter identity, also delete `reporter.json` and `salt` from the state dir.
+Note the **community-side linkage does not yet age out**: retention/expiry is
+incomplete today, so the server-side `reporter_id`↔indicator/hour linkage is
+**retained**, not aged out (see PRIVACY.md).
 
 ## Failure behavior (best-effort by design)
 

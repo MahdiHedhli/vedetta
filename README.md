@@ -4,7 +4,7 @@
 
 **Your network, under watch.** DNS-first security monitoring for homes and small businesses.
 
-Vedetta is a lightweight, self-hosted security monitoring platform. Today it is strongest at DNS-first visibility and detection, active and passive device discovery, and local threat scoring. The current product stands on its own locally, can optionally pull value from existing DNS infrastructure such as Pi-hole or AdGuard Home, and is still best described as alpha software for homelabs, technical home users, small businesses, and hands-on operators.
+Vedetta is a lightweight, self-hosted security monitoring platform. Today it is strongest at DNS-first visibility and detection, active and passive device discovery, and local threat scoring. The current product stands on its own locally, can optionally pull value from existing DNS infrastructure such as Pi-hole or AdGuard Home, and is currently public beta software for homelabs, technical home users, small businesses, and hands-on operators.
 
 ## What Vedetta Is Today
 
@@ -70,7 +70,7 @@ the [project constitution](.specify/memory/constitution.md).
 ### In progress
 
 - live SNR / operational validation of the newly implemented UniFi source on real deployments
-- install and onboarding polish for alpha users
+- install and onboarding polish for public beta users
 - broader dashboard/admin auth hardening plus sensor token rotation
 
 ### Planned next
@@ -120,8 +120,8 @@ API status: [http://localhost:8080/api/v1/status](http://localhost:8080/api/v1/s
 ### 2. Deploy A Sensor
 
 **Create your admin token first (step 1's onboarding wizard), then enroll the
-sensor.** Once an admin token exists, Core requires a one-time **enrollment
-code** to register a new sensor (admin-before-sensor). Generate one from the
+sensor.** Core always requires a one-time **enrollment code** to register a new
+sensor (admin-before-sensor — there is no open bootstrap). Generate one from the
 dashboard onboarding wizard (the "Connect a sensor" step) and pass it as
 `--enroll-code`.
 
@@ -150,9 +150,10 @@ sudo bash /tmp/vedetta-sensor-install.sh \
   --enroll-code <ENROLL_CODE>
 ```
 
-> The very first sensor on a Core that has **no** admin token yet can register
-> without a code (open bootstrap). But the recommended order is admin-first, so
-> plan to supply `--enroll-code`. The installer bakes the code into the service
+> **Always go admin-first — there is no open bootstrap.** Create your admin via the
+> dashboard onboarding wizard (using the setup code from `gen-env.sh`), mint a
+> one-time enrollment code in the wizard's "Connect a sensor" step, then enroll the
+> sensor with `--enroll-code`. The installer bakes the code into the service
 > definition only for the initial registration; re-run it without the flag to
 > update an already-enrolled sensor.
 
@@ -173,9 +174,9 @@ go build -o vedetta-sensor ./cmd/vedetta-sensor
 sudo ./vedetta-sensor --core https://vedetta.example.com --enroll-code <ENROLL_CODE>
 ```
 
-(`--enroll-code` is required to register a new sensor once Core has an admin
-token; omit it only for the first sensor on a not-yet-bootstrapped Core. You can
-also set `VEDETTA_ENROLL_CODE` instead of the flag.)
+(`--enroll-code` is always required to register a new sensor — enrollment is
+admin-first, so mint the code in the onboarding wizard after creating your admin.
+You can also set `VEDETTA_ENROLL_CODE` instead of the flag.)
 
 Useful sensor diagnostics (use the same `--core` address as above):
 
@@ -218,7 +219,7 @@ This split is deliberate. The local network is the strongest source of truth Ved
 
 ## Hardware And Platform Notes
 
-- **Core:** Raspberry Pi 4 (4 GB RAM) or a small x86 box is a reasonable target for alpha deployments.
+- **Core:** Raspberry Pi 4 (4 GB RAM) or a small x86 box is a reasonable target for public beta deployments.
 - **Sensor:** macOS or Linux host with `nmap` on the network segment you want to inspect.
 - **Windows:** not yet a supported public install path.
 
@@ -247,7 +248,7 @@ These should be described honestly as early or planned until they are documented
 - **Telemetry is on by default and opt-out.** Set `VEDETTA_TELEMETRY_OPTIN=false` (only the exact value `false`) and restart, or flip the dashboard telemetry toggle, to disable it; a first-run disclosure banner surfaces it on first launch. The dashboard also shows the effective on/off state, and a persisted toggle overrides the env default.
 - **Community threat sharing is on by default, advisory-only, and pseudonymous (not anonymous).** Source IPs, MACs, and hostnames are stripped at the source; only the matched known-bad threat indicator (from the public block-list, never the raw observed query name) and aggregate counts are shared. (For beta, telemetry shares only these Core-confirmed block-list matches; query-derived candidate/behavior signals are temporarily disabled.) A per-instance salted HMAC is used only locally for distinct-asset counting and never leaves the node. What remains is a **stable pseudonym**: a per-instance `reporter_id` the threat-network server stores against the indicators/hour it reported, and Cloudflare (the outbound tunnel) sees each reporter's connection source and timing; reporter identities and aggregates do not yet fully expire. See [PRIVACY.md](PRIVACY.md) for the precise residual model and the [anonymization + residual-linkability analysis](specs/003-threat-network/anonymization-proof.md); opt out any time.
 
-## Known Alpha Limits
+## Known Beta Limits
 
 - Core plus native sensor is still the real deployment model.
 - Install still assumes Docker, a native sensor, and some comfort with local networking and `sudo`.

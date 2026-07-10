@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
+	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
 // CreateToken inserts a new API token into the database.
@@ -225,6 +226,49 @@ func (db *DB) EnsureTokenFromRaw(rawToken string, scope auth.TokenScope, label s
 func (db *DB) DeleteTokensBySensor(sensorID string) error {
 	_, err := db.Exec(`UPDATE api_tokens SET revoked = 1 WHERE sensor_id = ?`, sensorID)
 	return err
+}
+
+// ProvisionSensorToken atomically issues a sensor's single active bearer token.
+// In ONE transaction it optionally revokes every existing active sensor token for
+// the sensor, upserts the sensor row, and inserts the new token. The partial
+// unique index ux_api_tokens_active_sensor (migration 024) guarantees at most one
+// active sensor token per sensor_id, so racing resets cannot leave several valid
+// tokens behind (beta-gate B1a concurrent-reset probe). ANY failure — including
+// the revoke or a uniqueness violation from a concurrent registration — rolls the
+// whole thing back and returns an error, so a caller that receives nil can trust
+// that exactly one fresh token is now active and no partial state leaked.
+func (db *DB) ProvisionSensorToken(sensor models.Sensor, token auth.Token, revokeExisting bool) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+
+	if revokeExisting {
+		if _, err := tx.Exec(
+			`UPDATE api_tokens SET revoked = 1 WHERE sensor_id = ? AND scope = ? AND revoked = 0`,
+			sensor.SensorID, auth.ScopeSensor,
+		); err != nil {
+			return fmt.Errorf("revoke existing sensor tokens: %w", err)
+		}
+	}
+
+	if err := registerSensorOn(tx, sensor); err != nil {
+		return fmt.Errorf("upsert sensor: %w", err)
+	}
+
+	var sensorID any
+	if strings.TrimSpace(token.SensorID) != "" {
+		sensorID = token.SensorID
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO api_tokens (token_id, token_hash, scope, sensor_id, label, created_at, last_used, revoked)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+	`, token.TokenID, token.TokenHash, token.Scope, sensorID, token.Label, token.CreatedAt, token.LastUsed); err != nil {
+		return fmt.Errorf("insert sensor token (another active token may already exist for this sensor): %w", err)
+	}
+
+	return tx.Commit()
 }
 
 type tokenScanner interface {

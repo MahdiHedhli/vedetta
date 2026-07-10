@@ -63,9 +63,12 @@ enabled, it:
    allowlisted set of fields — raw source IPs, MACs, hostnames, and the raw device
    `source_hash` are dropped *by construction*, not by a blocklist. A device-linked
    `source_hash` is collapsed into a `distinct_asset_count` before anything leaves.
-3. **Aggregates** to three signal kinds only: `known_bad_domain_hit` (exact domain
-   allowed), `high_confidence_domain_candidate` (reduced to eTLD+1 via a vendored Public
-   Suffix List), and `behavior_summary` (no domain at all).
+3. **Aggregates** to domain-level signals. The frozen wire contract defines three signal
+   kinds — `known_bad_domain_hit` (exact domain allowed), `high_confidence_domain_candidate`
+   (reduced to eTLD+1 via a vendored Public Suffix List), and `behavior_summary` (no domain
+   at all) — but **for beta only `known_bad_domain_hit` is exported**;
+   `high_confidence_domain_candidate` and `behavior_summary` are **disabled pending a
+   trust-model redesign**, so nothing derived from your own observed queries is shared today.
 4. **Signs and uploads** a gzip batch with HMAC-SHA256 auth headers, exponential backoff,
    a bounded on-disk spool, and 4xx poison-pill handling. A **dry-run mode**
    (`VEDETTA_TELEMETRY_DRYRUN=true`) runs the whole pipeline to the spool with **zero
@@ -107,6 +110,11 @@ A single Go binary with a service-local SQLite DB. It:
 | Your device inventory or per-device identifiers | Counts (`distinct_asset_count`, observation counts) — never a host list |
 | Query history, internal domain names | A hash of your reporter secret (pseudonymous identity) |
 | Operator identity, account, email | Coarse behavior summaries with no domain |
+
+> **Beta:** only `known_bad_domain_hit` (the matched block-list indicator + its eTLD+1) is
+> exported today. The candidate-eTLD+1 and behavior-summary rows above are **disabled for
+> beta** pending a trust-model redesign; the kinds remain in the frozen contract for when
+> they re-enable.
 
 Two independent gates enforce this: structural stripping on the client (spec 002) **and**
 a server-side privacy re-check on ingest (spec 003). A batch that violates either is

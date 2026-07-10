@@ -218,7 +218,26 @@ func (db *DB) migrate() error {
 	// older DB that predates 023 self-heals without waiting for the migration pass.
 	db.Exec(settingsDDL)
 
+	// One active sensor token per sensor (migration 024, beta-gate B1a). Ensure it
+	// on every Open so an older DB that already accumulated duplicate active tokens
+	// self-heals even without the migration files present.
+	db.ensureSingleActiveSensorToken()
+
 	return nil
+}
+
+// ensureSingleActiveSensorToken collapses any duplicate active sensor tokens
+// (keeping the most recently inserted one per sensor) and enforces the
+// one-active-token-per-sensor invariant with a partial unique index. Idempotent
+// and safe to run on every Open. The dedup MUST precede the index: a partial
+// UNIQUE index cannot be created while the table already violates it.
+func (db *DB) ensureSingleActiveSensorToken() {
+	db.Exec(`UPDATE api_tokens SET revoked = 1
+		WHERE scope = 'sensor' AND revoked = 0 AND rowid NOT IN (
+			SELECT MAX(rowid) FROM api_tokens
+			WHERE scope = 'sensor' AND revoked = 0 GROUP BY sensor_id)`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_api_tokens_active_sensor
+		ON api_tokens (sensor_id) WHERE scope = 'sensor' AND revoked = 0`)
 }
 
 // settingsDDL is the runtime-ensure definition of the generic key/value settings
@@ -333,6 +352,9 @@ func (db *DB) applyInlineFallback() error {
 	if err != nil {
 		return fmt.Errorf("inline migration failed: %w", err)
 	}
+	// The inline path returns before the migrate() safety-net runs, so enforce the
+	// one-active-token-per-sensor invariant (migration 024) here too.
+	db.ensureSingleActiveSensorToken()
 	log.Println("Inline fallback migration applied")
 	return nil
 }

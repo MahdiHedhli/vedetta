@@ -62,8 +62,10 @@ Vedetta contributes to a **community threat feed** by default. This is:
     aggregates do **not** yet have complete, enforced expiry, so the pseudonymous
     linkage above is retained rather than aged out.
 
-  The exact guarantees, the coarse metadata that *is* shared (a coarse version
-  string, aggregate counts, an hourly time bucket, the candidate eTLD+1), and this
+  The exact guarantees, the coarse metadata that *is* shared today (the matched
+  known-bad indicator and its eTLD+1, aggregate counts, a coarse version string,
+  and an hourly time bucket — the candidate eTLD+1 is **not** currently shared, as
+  the `high_confidence_domain_candidate` signal is disabled for beta), and this
   residual linkability model are documented and independently reviewed in
   [specs/003-threat-network/anonymization-proof.md](specs/003-threat-network/anonymization-proof.md).
 
