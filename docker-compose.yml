@@ -67,16 +67,18 @@ services:
       - vedetta
     restart: unless-stopped
 
-  # --- Opt-in Telemetry Daemon (COMMUNITY — not in the Core+Sensor beta) ---
+  # --- Telemetry Daemon (ON by default — opt out with VEDETTA_TELEMETRY_OPTIN=false) ---
   telemetry:
     build: ./telemetry
     container_name: vedetta-telemetry
-    # Community service, excluded from the default stack. Start explicitly with
-    # `docker compose --profile community up`. The Core+Sensor beta does not run it.
-    profiles: ["community"]
     environment:
-      VEDETTA_TELEMETRY_OPTIN: "false"  # User must explicitly opt in
-      VEDETTA_THREAT_NETWORK_URL: "http://threat-network:9090"
+      # On by default (opt-out). Set to exactly "false" to stop all outbound
+      # sharing. Contributes anonymized, advisory-only signals — no source
+      # IPs/MACs/hostnames ever leave the network (see PRIVACY.md).
+      VEDETTA_TELEMETRY_OPTIN: "${VEDETTA_TELEMETRY_OPTIN:-true}"
+      # Reports to the public community feed (the central threat-network runs
+      # off-node behind the Cloudflare tunnel, not in this compose).
+      VEDETTA_THREAT_NETWORK_URL: "${VEDETTA_THREAT_NETWORK_URL:-https://feed.vedettas.com}"
     volumes:
       - vedetta-data:/data:ro
       - telemetry-state:/var/lib/vedetta-telemetry  # persist reporter identity, salt, spool
@@ -84,7 +86,6 @@ services:
       - vedetta
     depends_on:
       - backend
-      - threat-network
     restart: unless-stopped
 
   # --- Central Threat Intelligence Backend (COMMUNITY — normally runs OFF-NODE) ---

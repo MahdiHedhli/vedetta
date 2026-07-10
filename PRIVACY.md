@@ -24,12 +24,14 @@ Vedetta is **local-first**. When you run it, your network data — devices,
 events, DNS/firewall logs, scan results — stays in **your** Core's database on
 **your** infrastructure. The project operators never receive it.
 
-### Opt-in telemetry (off by default)
+### Community telemetry (on by default, opt-out)
 
-Vedetta can optionally contribute to a **community threat feed**. This is:
+Vedetta contributes to a **community threat feed** by default. This is:
 
-- **Off by default** (`VEDETTA_TELEMETRY_OPTIN=false`) and only active if you
-  explicitly enable it;
+- **On by default, and trivially disabled** — set `VEDETTA_TELEMETRY_OPTIN=false`
+  and nothing leaves your network. We default it on precisely *because* it is
+  anonymized and advisory-only (below): the shared feed only becomes useful when
+  instances contribute, and what they contribute cannot identify anyone;
 - **privacy-reduced before it ever leaves your network**: source IP addresses,
   MAC addresses, and hostnames are **never transmitted**. What is shared is
   limited to threat indicators (e.g. a known-bad domain) plus coarse,

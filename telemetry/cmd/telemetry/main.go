@@ -1,8 +1,8 @@
 // Command telemetry is the Vedetta opt-in, privacy-reduced threat-export daemon.
 //
-// It is OFF by default: unless VEDETTA_TELEMETRY_OPTIN=true it performs no Core
-// reads, no network egress, no reporter registration, and no state writes beyond
-// a single log line — it simply blocks until a signal (today's behavior).
+// It is ON by default (opt-out): only VEDETTA_TELEMETRY_OPTIN=false disables it,
+// in which case it performs no Core reads, no network egress, no reporter
+// registration, and no state writes beyond a single log line.
 //
 // When opted in it reads Core's events API on a cursor-driven interval, gates and
 // strips events through a structurally-allowlisted pipeline (no raw IPs, MACs,
@@ -33,12 +33,21 @@ func main() {
 		log.Fatalf("telemetry: config error: %v", err)
 	}
 
-	// OFF by default — preserve exact prior behavior: one log line, no state
-	// dir, no network, block until signal.
+	// ON by default (opt-out). If explicitly disabled, stay inert.
 	if !cfg.OptIn {
-		log.Println("Telemetry daemon: opt-in not enabled. Sleeping.")
+		log.Println("Telemetry: disabled (VEDETTA_TELEMETRY_OPTIN=false). No data leaves this host.")
 		waitForSignal()
 		return
+	}
+
+	// Loud disclosure — on-by-default sharing must never be silent.
+	log.Println("Telemetry: ON — contributing anonymized, advisory-only threat signals to the community feed.")
+	log.Println("           No source IPs / MACs / hostnames ever leave your network (see PRIVACY.md and")
+	log.Println("           specs/003-threat-network/anonymization-proof.md). Opt out any time:")
+	log.Println("           set VEDETTA_TELEMETRY_OPTIN=false and restart.")
+	if cfg.CoreToken == "" {
+		log.Println("           Note: no VEDETTA_CORE_TOKEN set — reading Core's current (unauthenticated) events;")
+		log.Println("           set a token once Core read auth is enabled so telemetry keeps reading.")
 	}
 
 	if err := run(cfg); err != nil {
