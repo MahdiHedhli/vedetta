@@ -60,12 +60,18 @@ func (db *DB) migrate() error {
 
 	// Locate the migrations directory
 	migrationDir := ""
-	candidates := []string{
+	candidates := []string{}
+	// Explicit override (used by tests to exercise the real migration files, and
+	// by operators with a non-standard layout).
+	if envDir := strings.TrimSpace(os.Getenv("VEDETTA_MIGRATIONS_DIR")); envDir != "" {
+		candidates = append(candidates, envDir)
+	}
+	candidates = append(candidates,
 		"/app/siem/migrations",
 		"siem/migrations",
 		"../siem/migrations",
 		"../../siem/migrations",
-	}
+	)
 	if _, sourceFile, _, ok := runtime.Caller(0); ok {
 		candidates = append(candidates, filepath.Join(filepath.Dir(sourceFile), "..", "..", "siem", "migrations"))
 	}
@@ -124,18 +130,23 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("begin tx for %s: %w", filename, err)
 		}
 
-		// Execute the migration SQL.
-		// If it fails because the schema change is already present (duplicate column, table already exists, etc.),
-		// treat it as a no-op for this migration and still record it as applied.
-		// This makes re-running migrations on an already-migrated DB a clean no-op with no "duplicate column" error,
-		// even in cases of partial previous runs (crash after ALTER but before schema_migrations INSERT, etc.).
-		if _, execErr := tx.Exec(string(sqlBytes)); execErr != nil {
-			errStr := strings.ToLower(execErr.Error())
-			if strings.Contains(errStr, "duplicate column name") ||
-				strings.Contains(errStr, "already exists") ||
-				strings.Contains(errStr, "duplicate table") {
-				log.Printf("Migration %s: schema change already present (e.g. column/table exists) — recording as applied to keep runner idempotent", filename)
-			} else {
+		// Execute the migration statement-by-statement. Per-STATEMENT tolerance
+		// (rather than executing the whole file at once) is essential: an
+		// already-applied statement — e.g. an ALTER for a column another migration
+		// already added — must NOT abort the statements that FOLLOW it in the same
+		// file. Whole-file exec stops at the first error, so a redundant leading
+		// ALTER used to silently skip a later CREATE TABLE while the migration was
+		// still recorded as applied, leaving the schema incomplete (beta-gate B3:
+		// suppression_rules never created). Any UNEXPECTED error still rolls back.
+		for _, stmt := range splitSQLStatements(string(sqlBytes)) {
+			if isNoOpSQL(stmt) {
+				continue
+			}
+			if _, execErr := tx.Exec(stmt); execErr != nil {
+				if isAlreadyAppliedErr(execErr) {
+					log.Printf("Migration %s: statement already applied (%v) — skipping, continuing with the rest", filename, execErr)
+					continue
+				}
 				tx.Rollback()
 				return fmt.Errorf("execute migration %s: %w", filename, execErr)
 			}
@@ -186,7 +197,111 @@ func (db *DB) migrate() error {
 		db.Exec(`ALTER TABLE devices ADD COLUMN risk_reasons TEXT DEFAULT ''`)
 	}
 
+	// suppression_rules is declared only in migration 012. A redundant leading
+	// ALTER in that file used to abort it before this CREATE ran on fresh DBs, so
+	// the table could be missing while 012 was recorded as applied — leaving
+	// GET /api/v1/suppression returning 500 "no such table". This idempotent ensure
+	// guarantees the table on every Open and self-heals already-broken DBs (B3).
+	db.Exec(suppressionRulesDDL)
+
 	return nil
+}
+
+// suppressionRulesDDL is the runtime-ensure definition of the suppression_rules
+// table; keep it in sync with migration 012 and the inline fallback below.
+const suppressionRulesDDL = `CREATE TABLE IF NOT EXISTS suppression_rules (
+    rule_id     TEXT PRIMARY KEY,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    domain      TEXT DEFAULT '',
+    source_ip   TEXT DEFAULT '',
+    tags        TEXT DEFAULT '[]',
+    reason      TEXT DEFAULT '',
+    active      BOOLEAN DEFAULT TRUE
+)`
+
+// splitSQLStatements splits a migration script into individual statements on
+// top-level semicolons, correctly ignoring semicolons inside single-quoted
+// string literals (” escape) and -- line / /* */ block comments. Migrations run
+// statement-by-statement so an already-applied statement does not abort the rest
+// of the file (see migrate()).
+func splitSQLStatements(script string) []string {
+	var (
+		stmts []string
+		b     strings.Builder
+		runes = []rune(script)
+		n     = len(runes)
+		inStr bool
+	)
+	for i := 0; i < n; i++ {
+		c := runes[i]
+		switch {
+		case inStr:
+			b.WriteRune(c)
+			if c == '\'' {
+				if i+1 < n && runes[i+1] == '\'' { // '' escape stays in the string
+					b.WriteRune(runes[i+1])
+					i++
+				} else {
+					inStr = false
+				}
+			}
+		case c == '\'':
+			inStr = true
+			b.WriteRune(c)
+		case c == '-' && i+1 < n && runes[i+1] == '-': // -- line comment
+			for i < n && runes[i] != '\n' {
+				b.WriteRune(runes[i])
+				i++
+			}
+			if i < n {
+				b.WriteRune(runes[i]) // keep the newline
+			}
+		case c == '/' && i+1 < n && runes[i+1] == '*': // /* block comment */
+			b.WriteString("/*")
+			i += 2
+			for i+1 < n && !(runes[i] == '*' && runes[i+1] == '/') {
+				b.WriteRune(runes[i])
+				i++
+			}
+			if i+1 < n {
+				b.WriteString("*/")
+				i++
+			}
+		case c == ';':
+			if s := strings.TrimSpace(b.String()); s != "" {
+				stmts = append(stmts, s)
+			}
+			b.Reset()
+		default:
+			b.WriteRune(c)
+		}
+	}
+	if s := strings.TrimSpace(b.String()); s != "" {
+		stmts = append(stmts, s)
+	}
+	return stmts
+}
+
+// isNoOpSQL reports whether a fragment has no executable SQL — every line is
+// blank or an -- comment (e.g. a trailing comment after the final ';').
+func isNoOpSQL(stmt string) bool {
+	for _, line := range strings.Split(stmt, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "--") {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// isAlreadyAppliedErr reports whether a statement failed only because its schema
+// change is already present (idempotent re-run / partial prior run).
+func isAlreadyAppliedErr(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "duplicate column name") ||
+		strings.Contains(s, "already exists") ||
+		strings.Contains(s, "duplicate table")
 }
 
 // applyInlineFallback applies the hardcoded schema when migration files
@@ -368,4 +483,14 @@ CREATE TABLE IF NOT EXISTS whitelist_rules (
 );
 CREATE INDEX IF NOT EXISTS idx_whitelist_enabled ON whitelist_rules (enabled);
 CREATE INDEX IF NOT EXISTS idx_whitelist_category ON whitelist_rules (category);
+
+CREATE TABLE IF NOT EXISTS suppression_rules (
+    rule_id     TEXT PRIMARY KEY,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    domain      TEXT DEFAULT '',
+    source_ip   TEXT DEFAULT '',
+    tags        TEXT DEFAULT '[]',
+    reason      TEXT DEFAULT '',
+    active      BOOLEAN DEFAULT TRUE
+);
 `
