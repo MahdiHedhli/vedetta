@@ -30,5 +30,5 @@ We expect all community members to be respectful and constructive. Harassment, s
 ## Links
 
 - **Website:** [vedettas.com](https://vedettas.com)
-- **GitHub:** [github.com/mhedhli/vedetta](https://github.com/mhedhli/vedetta)
-- **Issues:** [github.com/mhedhli/vedetta/issues](https://github.com/mhedhli/vedetta/issues)
+- **GitHub:** [github.com/MahdiHedhli/vedetta](https://github.com/MahdiHedhli/vedetta)
+- **Issues:** [github.com/MahdiHedhli/vedetta/issues](https://github.com/MahdiHedhli/vedetta/issues)
