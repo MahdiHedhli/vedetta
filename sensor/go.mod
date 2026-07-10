@@ -1,6 +1,6 @@
 module github.com/vedetta-network/vedetta/sensor
 
-go 1.22
+go 1.25
 
 require github.com/google/gopacket v1.1.19
 

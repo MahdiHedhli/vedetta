@@ -1,0 +1,35 @@
+# Build context for the Core backend is the repo root, but the backend image only
+# needs backend/ and siem/migrations. Keep .git, local/secret material, build
+# artifacts, and unrelated modules out of the build context (faster builds; and
+# defense-in-depth so nothing local is ever sent to the Docker daemon).
+.git
+.gitignore
+.github
+.dockerignore
+.local
+*.env
+!.env.example
+**/node_modules
+**/dist
+**/*.test
+**/*.out
+**/*.db
+**/*.sqlite*
+.claude
+.cursor
+.vscode
+.idea
+.DS_Store
+
+# Modules / assets the backend image does not build from
+frontend
+collector
+telemetry
+threat-network
+sensor
+scripts
+site
+docs
+specs
+research
+*.md

@@ -45,10 +45,24 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
-      - name: govulncheck
+      - name: govulncheck (source mode)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: govulncheck (binary mode — scans the actual compiled artifact)
+        run: |
+          # Source mode scans call graphs; binary mode scans the COMPILED binary —
+          # the same artifact the Docker image ships — so it catches stdlib
+          # advisories tied to the build toolchain. This closes the gap where CI
+          # only source-scanned and never inspected the shipped binary. Build every
+          # main package in the module and scan each one.
+          bin="$(go env GOPATH)/bin/govulncheck"
+          for dir in $(go list -f '{{if eq .Name "main"}}{{.Dir}}{{end}}' ./...); do
+            out="/tmp/vulnscan-$(basename "$dir")"
+            CGO_ENABLED=1 go build -o "$out" "$dir"
+            echo "== binary govulncheck: $dir =="
+            "$bin" -mode=binary "$out"
+          done
 
   # ---- Frontend: install + audit + build -------------------------------------
   frontend:
