@@ -33,11 +33,15 @@ type Server struct {
 	ScanQueue   *ScanQueue
 	ActivityLog *ActivityLog
 	Firewall    *firewall.Manager
+	Enroll      *EnrollmentStore
 }
 
 // NewRouter creates the main API router with all routes mounted.
 func NewRouter(srv *Server) http.Handler {
 	r := chi.NewRouter()
+	if srv.Enroll == nil {
+		srv.Enroll = NewEnrollmentStore()
+	}
 	sensorRegistrationLimiter := newIPRateLimiter(5, time.Minute)
 
 	r.Use(middleware.Logger)
@@ -134,6 +138,10 @@ func NewRouter(srv *Server) http.Handler {
 			r.Get("/tokens", srv.handleListTokens)
 			r.Delete("/tokens/{tokenID}", srv.handleRevokeToken)
 		})
+
+		// Admin mints a short-lived, single-use code to enroll a NEW sensor once
+		// admin auth exists (beta-gate B1a).
+		r.With(auth.RequireAdmin(srv.DB)).Post("/enrollment-codes", srv.handleGenerateEnrollmentCode)
 
 		// Sensor ingest (native sensors push data to Core)
 		r.Route("/sensor", func(r chi.Router) {
@@ -1093,6 +1101,28 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		default:
 			// Matching sensor token presented: metadata refresh; keep the existing
 			// credential (no reissue).
+		}
+	}
+
+	// New-sensor enrollment gate: once an admin exists, registering a brand-new
+	// sensor requires an admin bearer or a valid single-use enrollment code —
+	// otherwise any unauthenticated LAN host could mint a sensor token and push
+	// forged data (beta-gate B1a). During bootstrap (no admin yet) the first
+	// sensor may enroll without a code.
+	if !existingToken {
+		hasAdmin, aerr := s.DB.HasActiveAdminToken()
+		if aerr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to check admin state"})
+			return
+		}
+		isAdmin := presentedToken != nil && presentedToken.Scope == auth.ScopeAdmin
+		if hasAdmin && !isAdmin {
+			if s.Enroll == nil || !s.Enroll.Consume(r.Header.Get("X-Vedetta-Enrollment-Code")) {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"error": "new sensor enrollment requires an admin token or a valid enrollment code (an admin can mint one via POST /api/v1/enrollment-codes)",
+				})
+				return
+			}
 		}
 	}
 
