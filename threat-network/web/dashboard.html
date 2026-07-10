@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Vedetta Threat Network — Monitor</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121821; --panel-2: #0e141c; --border: #1f2937;
+    --text: #e5e7eb; --muted: #94a3b8; --faint: #64748b;
+    --accent: #2dd4bf; --ok: #34d399; --down: #f87171;
+    --sev-high: #f87171; --sev-medium: #fbbf24; --sev-low: #38bdf8;
+    --chip: #1b2430;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); }
+  body { padding: 20px; max-width: 1180px; margin: 0 auto; -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); }
+
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  header h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
+  header h1 .mark { color: var(--accent); }
+  .chip {
+    font: 600 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .6px;
+    padding: 5px 8px; border-radius: 6px; background: var(--chip); color: var(--muted);
+    border: 1px solid var(--border); white-space: nowrap;
+  }
+  .chip.beta { color: var(--accent); border-color: #14b8a622; background: #0d1b1a; }
+  .sub { color: var(--faint); font-size: 12.5px; margin: 2px 0 18px; }
+
+  .bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 16px;
+  }
+  .bar label { font-size: 12px; color: var(--muted); }
+  .bar input[type=text] {
+    flex: 1 1 260px; min-width: 180px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px;
+    font: 13px var(--mono);
+  }
+  .bar input[type=text]:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 13px; font: 600 13px var(--sans); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: #fff; }
+  button.primary { background: #0d1b1a; border-color: #14b8a655; color: var(--accent); }
+  .switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none; }
+  .switch input { accent-color: var(--accent); width: 15px; height: 15px; }
+  .spacer { flex: 1 1 auto; }
+  .updated { font: 12px var(--mono); color: var(--faint); white-space: nowrap; }
+
+  .banner { display: none; border-radius: 9px; padding: 11px 13px; margin-bottom: 16px; font-size: 13px; }
+  .banner.error { display: block; background: #1c0f12; border: 1px solid #7f1d1d; color: #fecaca; }
+
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 11px; padding: 14px 15px; }
+  .card .k { font: 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .7px; color: var(--faint); }
+  .card .v { font: 700 26px/1.1 var(--sans); margin-top: 9px; display: flex; align-items: center; gap: 8px; }
+  .card .v small { font: 500 12px var(--mono); color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 4px #34d39922; }
+  .dot.down { background: var(--down); box-shadow: 0 0 0 4px #f8717122; }
+
+  .section-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px; }
+  .section-h h2 { font-size: 14px; margin: 0; letter-spacing: .3px; }
+  .section-h .count { font: 12px var(--mono); color: var(--faint); }
+
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 11px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { text-align: left; padding: 11px 13px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+  th { font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .6px; color: var(--faint); background: var(--panel-2); position: sticky; top: 0; }
+  tr:last-child td { border-bottom: none; }
+  td.ind { font: 600 13px var(--mono); color: #fff; word-break: break-all; }
+  .type { font: 11px var(--mono); color: var(--muted); }
+  .sev { font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .5px; padding: 3px 7px; border-radius: 5px; }
+  .sev.high { color: var(--sev-high); background: #f871711a; }
+  .sev.medium { color: var(--sev-medium); background: #fbbf241a; }
+  .sev.low { color: var(--sev-low); background: #38bdf81a; }
+  .conf { display: flex; align-items: center; gap: 8px; }
+  .conf .track { width: 60px; height: 6px; border-radius: 3px; background: #0a0f16; border: 1px solid var(--border); overflow: hidden; flex: none; }
+  .conf .fill { height: 100%; background: linear-gradient(90deg, #14b8a6, #2dd4bf); }
+  .conf .num { font: 12px var(--mono); color: var(--muted); }
+  .reasons { display: flex; flex-wrap: wrap; gap: 5px; }
+  .reason { font: 11px var(--mono); color: var(--muted); background: var(--chip); border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px; }
+  .src { font: 12px var(--mono); color: var(--muted); }
+  .when { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
+  .empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+  .empty .big { font-size: 15px; color: var(--text); margin-bottom: 6px; }
+
+  footer { margin-top: 22px; color: var(--faint); font-size: 12px; line-height: 1.6; border-top: 1px solid var(--border); padding-top: 14px; }
+  footer code { font: 12px var(--mono); color: var(--muted); }
+
+  @media (max-width: 720px) {
+    .cards { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1><span class="mark">Vedetta</span> Threat Network</h1>
+    <span class="chip">Monitor</span>
+    <span class="chip beta">Beta</span>
+  </header>
+  <div class="sub">Advisory community feed — read-only operations view. Tailnet-only; not exposed to the public internet.</div>
+
+  <div class="bar">
+    <label for="api">API base</label>
+    <input id="api" type="text" spellcheck="false" placeholder="(same origin) — or http://127.0.0.1:9090 / https://feed.vedettas.com" />
+    <button id="refresh" class="primary">Refresh</button>
+    <label class="switch"><input id="auto" type="checkbox" checked /> Auto (15s)</label>
+    <span class="spacer"></span>
+    <span id="updated" class="updated">—</span>
+  </div>
+
+  <div id="banner" class="banner"></div>
+
+  <div class="cards">
+    <div class="card"><div class="k">Service</div><div class="v" id="c-status"><span class="dot down"></span>—</div></div>
+    <div class="card"><div class="k">Feed items (live)</div><div class="v" id="c-items">—</div></div>
+    <div class="card"><div class="k">Schema</div><div class="v" id="c-schema">—</div></div>
+    <div class="card"><div class="k">Feed TTL</div><div class="v" id="c-ttl">—</div></div>
+  </div>
+
+  <div class="section-h">
+    <h2>Community feed</h2>
+    <span class="count" id="feed-count"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Indicator</th><th>Kind</th><th>Severity</th><th>Confidence</th>
+          <th>Sources</th><th>Reasons</th><th>Last seen</th><th>Expires</th>
+        </tr>
+      </thead>
+      <tbody id="feed-body">
+        <tr><td colspan="8" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    Every item is <strong>advisory-only</strong> (<code>recommended_action: advise</code>) — the feed never instructs a block.
+    Consensus requires ≥2 independent, matured reporters; no single reporter can promote an indicator, and no source IPs
+    or operator identities are ever stored or served. Source: <code>GET /api/v1/feed/community</code>.
+  </footer>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var params = new URLSearchParams(location.search);
+
+  // API base resolution: ?api= wins, else saved value, else same-origin ("").
+  var apiInput = $("api");
+  var saved = params.get("api");
+  if (saved === null) saved = localStorage.getItem("vedetta.api");
+  if (saved === null) saved = "";
+  apiInput.value = saved;
+
+  function base() { return apiInput.value.replace(/\/+$/, ""); }
+  function url(path) { return base() + path; }
+
+  var timer = null, inFlight = false;
+
+  function fmtTTL(s) {
+    if (s == null) return "—";
+    if (s % 3600 === 0) return (s / 3600) + "h";
+    if (s % 60 === 0) return (s / 60) + "m";
+    return s + "s";
+  }
+  function rel(iso) {
+    if (!iso) return "—";
+    var t = Date.parse(iso);
+    if (isNaN(t)) return iso;
+    var d = (t - Date.now()) / 1000, past = d < 0, a = Math.abs(d);
+    var u = [["y",31536000],["mo",2592000],["d",86400],["h",3600],["m",60],["s",1]];
+    for (var i = 0; i < u.length; i++) {
+      if (a >= u[i][1] || u[i][0] === "s") {
+        var n = Math.floor(a / u[i][1]);
+        return past ? (n + u[i][0] + " ago") : ("in " + n + u[i][0]);
+      }
+    }
+    return iso;
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]; }); }
+
+  function showError(msg) {
+    var b = $("banner");
+    b.className = "banner error";
+    b.textContent = "Cannot reach the API at " + (base() || "(same origin)") + " — " + msg;
+    b.style.display = "block";
+    $("c-status").innerHTML = '<span class="dot down"></span>down';
+  }
+  function clearError() { $("banner").style.display = "none"; }
+
+  function renderStatus(s, feedMeta) {
+    var ok = s && s.status === "ok";
+    $("c-status").innerHTML = '<span class="dot ' + (ok ? "ok" : "down") + '"></span>' +
+      (ok ? "ok" : "down") + ' <small>' + esc((s && s.service) || "") + '</small>';
+    $("c-items").textContent = s && s.feed_items != null ? s.feed_items : "—";
+    $("c-schema").innerHTML = s && s.schema_version != null ? ("v" + s.schema_version) : "—";
+    $("c-ttl").textContent = feedMeta ? fmtTTL(feedMeta.ttl_seconds) : "—";
+  }
+
+  function sevClass(sev) {
+    if (sev === "high") return "high";
+    if (sev === "medium") return "medium";
+    return "low";
+  }
+  function kindLabel(k) {
+    return ({ domain_indicator: "domain", etld1_indicator: "eTLD+1", behavior_cluster: "behavior" })[k] || k || "—";
+  }
+
+  function renderFeed(feed) {
+    var items = (feed && feed.items) || [];
+    $("feed-count").textContent = feed
+      ? (feed.returned_items + " shown · " + feed.total_items + " total" +
+         (feed.advisory ? " · advisory" : ""))
+      : "";
+    var body = $("feed-body");
+    if (!items.length) {
+      body.innerHTML = '<tr><td colspan="8" class="empty">' +
+        '<div class="big">No advisory items in the community feed yet.</div>' +
+        'Indicators appear here once ≥2 matured reporters independently corroborate them.</td></tr>';
+      return;
+    }
+    items.sort(function (a, b) { return (b.confidence || 0) - (a.confidence || 0); });
+    var rows = items.map(function (it) {
+      var pct = Math.round((it.confidence || 0) * 100);
+      var reasons = (it.reasons || []).map(function (r) {
+        return '<span class="reason">' + esc(r) + '</span>'; }).join("");
+      return '<tr>' +
+        '<td class="ind">' + esc(it.indicator) + '<div class="type">' + esc(it.indicator_type || "") + '</div></td>' +
+        '<td><span class="type">' + esc(kindLabel(it.kind)) + '</span></td>' +
+        '<td><span class="sev ' + sevClass(it.severity) + '">' + esc(it.severity || "—") + '</span></td>' +
+        '<td><div class="conf"><div class="track"><div class="fill" style="width:' + pct + '%"></div></div>' +
+          '<span class="num">' + (it.confidence != null ? it.confidence.toFixed(2) : "—") + '</span></div></td>' +
+        '<td class="src">' + esc(it.sources_observed) + ' / ' + esc(it.sources_required) + '</td>' +
+        '<td><div class="reasons">' + reasons + '</div></td>' +
+        '<td class="when" title="' + esc(it.last_seen) + '">' + esc(rel(it.last_seen)) + '</td>' +
+        '<td class="when" title="' + esc(it.expires_at) + '">' + esc(rel(it.expires_at)) + '</td>' +
+        '</tr>';
+    }).join("");
+    body.innerHTML = rows;
+  }
+
+  function load() {
+    if (inFlight) return;
+    inFlight = true;
+    Promise.all([
+      fetch(url("/api/v1/status"), { cache: "no-store" }).then(function (r) {
+        if (!r.ok) throw new Error("status HTTP " + r.status); return r.json(); }),
+      fetch(url("/api/v1/feed/community"), { cache: "no-store" }).then(function (r) {
+        if (!r.ok) throw new Error("feed HTTP " + r.status); return r.json(); })
+    ]).then(function (res) {
+      clearError();
+      renderStatus(res[0], res[1]);
+      renderFeed(res[1]);
+      var d = new Date();
+      $("updated").textContent = "updated " + d.toLocaleTimeString();
+    }).catch(function (e) {
+      showError(e.message || String(e));
+    }).finally(function () { inFlight = false; });
+  }
+
+  function schedule() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if ($("auto").checked) timer = setInterval(function () {
+      if (!document.hidden) load();
+    }, 15000);
+  }
+
+  $("refresh").addEventListener("click", load);
+  $("auto").addEventListener("change", schedule);
+  apiInput.addEventListener("change", function () {
+    localStorage.setItem("vedetta.api", apiInput.value);
+    load();
+  });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) load(); });
+
+  load();
+  schedule();
+})();
+</script>
+</body>
+</html>
