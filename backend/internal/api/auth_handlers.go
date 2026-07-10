@@ -19,9 +19,9 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Admin-only once an admin exists. During bootstrap (no active admin) this is
-	// open so the operator can mint the first admin token — keyed on active-admin,
-	// not total token count, so an auto-issued sensor token can't lock setup out.
+	// Admin-only once an admin exists. During bootstrap (no active admin) minting is
+	// keyed on active-admin, not total token count, so an auto-issued sensor token
+	// can't lock setup out.
 	hasAdmin, _ := s.DB.HasActiveAdminToken()
 	if hasAdmin {
 		scope := auth.GetScopeFromContext(r)
@@ -48,6 +48,25 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bootstrap hardening (GHSA-6cmx): before any admin exists, this endpoint is
+	// unauthenticated on the LAN. Previously any client could mint ANY scope,
+	// including a permanent admin. Now, during bootstrap:
+	//   (a) only the first admin token may be created — no other scope; and
+	//   (b) the client must present the server-held single-use setup code.
+	// Env-provisioned ingest/read tokens do NOT come through here (they use
+	// store.EnsureTokenFromRaw), and sensor tokens are minted by handleSensorRegister,
+	// so this does not break those paths.
+	if !hasAdmin {
+		if scope != auth.ScopeAdmin {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the first admin token may be created during setup"})
+			return
+		}
+		if !s.checkSetupCode(r.Header.Get("X-Vedetta-Setup-Code")) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "valid X-Vedetta-Setup-Code required to create the first admin token"})
+			return
+		}
+	}
+
 	// Generate the token
 	rawToken, token, err := auth.GenerateToken(scope, body.SensorID, body.Label)
 	if err != nil {
@@ -59,6 +78,12 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	if err := s.DB.CreateToken(token); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to store token"})
 		return
+	}
+
+	// Single-use: once the first admin is minted during bootstrap, burn the setup
+	// code so it can never be replayed to mint a second unauthenticated admin.
+	if !hasAdmin {
+		s.clearSetupCode()
 	}
 
 	log.Printf("Token created: %s (scope=%s, label=%s)", token.TokenID, scope, body.Label)
@@ -132,6 +157,15 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "only admins can revoke tokens", http.StatusForbidden)
 			return
 		}
+	} else {
+		// Bootstrap defense-in-depth (GHSA-6cmx): before any admin exists this
+		// endpoint is unauthenticated. A LAN attacker revoking the env-provisioned
+		// ingest/read tokens is a real DoS, so require the setup code. This does not
+		// consume the code (that is reserved for the first-admin mint).
+		if !s.checkSetupCode(r.Header.Get("X-Vedetta-Setup-Code")) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "valid X-Vedetta-Setup-Code required to revoke tokens during setup"})
+			return
+		}
 	}
 
 	tokenID := chi.URLParam(r, "tokenID")
@@ -199,5 +233,8 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 			"events":  eventCount,
 			"tokens":  tokenCount,
 		},
+		// GHSA-6cmx: tells the wizard to prompt for the first-admin setup code. Only
+		// the boolean is exposed here — the code value is NEVER returned by any API.
+		"needs_setup_code": s.needsSetupCode(),
 	})
 }

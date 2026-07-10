@@ -25,6 +25,14 @@ type Event struct {
 	Metadata        string    `json:"metadata,omitempty" db:"metadata"`                       // JSON: detection details (entropy, signals, CV, etc.)
 	Acknowledged    bool      `json:"acknowledged" db:"acknowledged"`                         // User reviewed this event
 	AckReason       string    `json:"ack_reason,omitempty" db:"ack_reason"`                   // Why the user dismissed it
+
+	// Match provenance (GHSA-hx86): when an event is tagged known_bad, record WHICH
+	// indicator matched and via which path so downstream readers can tell a domain
+	// match from a resolved-IP match. MatchType is "" (no match), "domain", or
+	// "resolved_ip". For a domain match MatchedIndicator is the matched list entry
+	// (== the observed FQDN today); for a resolved_ip match it is the matched IP.
+	MatchedIndicator string `json:"matched_indicator,omitempty" db:"matched_indicator"`
+	MatchType        string `json:"match_type,omitempty" db:"match_type"`
 }
 
 // Device represents a discovered network device.

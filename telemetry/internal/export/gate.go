@@ -45,9 +45,15 @@ func Eligible(ev corereader.Event, cfg GateConfig) (Kind, bool) {
 		return "", false
 	}
 
-	// known_bad wins regardless of score.
+	// known_bad wins regardless of score — but ONLY for a known-bad DOMAIN-list
+	// match. A resolved-IP known-bad match must NOT become a domain hit: the
+	// observed QNAME is not itself known-bad, and exporting it (even reduced to
+	// eTLD+1) would leak the user's lookup (GHSA-hx86). Withhold it entirely.
 	if hasTag(ev.Tags, "known_bad") {
-		return KindKnownBadDomainHit, true
+		if ev.MatchType == "domain" {
+			return KindKnownBadDomainHit, true
+		}
+		return "", false
 	}
 
 	score := ev.AnomalyScore

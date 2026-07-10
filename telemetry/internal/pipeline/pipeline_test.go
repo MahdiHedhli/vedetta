@@ -27,6 +27,7 @@ func syntheticEvents() []corereader.Event {
 		// known_bad hit — exact domain permitted.
 		{EventID: "e1", Timestamp: base, EventType: "dns_query", SourceIP: "192.0.2.55",
 			Domain: "c2-payload.badzone.example", Blocked: true, AnomalyScore: 0.99,
+			MatchedIndicator: "c2-payload.badzone.example", MatchType: "domain",
 			Tags: []string{"known_bad", "threat_feed_match", "c2_candidate"}},
 		// candidate — eTLD+1 only.
 		{EventID: "e2", Timestamp: base, EventType: "dns_query", SourceIP: "192.0.2.56",
@@ -141,14 +142,16 @@ func knownBadEvents(n int) []corereader.Event {
 	evs := make([]corereader.Event, 0, n)
 	for i := 0; i < n; i++ {
 		evs = append(evs, corereader.Event{
-			EventID:      "kb" + strconv.Itoa(i),
-			Timestamp:    base,
-			EventType:    "dns_query",
-			SourceIP:     "192.0.2." + strconv.Itoa(10+i),
-			Domain:       "c2-" + strconv.Itoa(i) + ".badzone.example",
-			Blocked:      true,
-			AnomalyScore: 0.99,
-			Tags:         []string{"known_bad", "threat_feed_match"},
+			EventID:          "kb" + strconv.Itoa(i),
+			Timestamp:        base,
+			EventType:        "dns_query",
+			SourceIP:         "192.0.2." + strconv.Itoa(10+i),
+			Domain:           "c2-" + strconv.Itoa(i) + ".badzone.example",
+			MatchedIndicator: "c2-" + strconv.Itoa(i) + ".badzone.example",
+			MatchType:        "domain",
+			Blocked:          true,
+			AnomalyScore:     0.99,
+			Tags:             []string{"known_bad", "threat_feed_match"},
 		})
 	}
 	return evs

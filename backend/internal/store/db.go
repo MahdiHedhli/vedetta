@@ -179,6 +179,15 @@ func (db *DB) migrate() error {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'server_ip'`).Scan(&serverIPColCount); err == nil && serverIPColCount == 0 {
 		db.Exec(`ALTER TABLE events ADD COLUMN server_ip TEXT DEFAULT ''`)
 	}
+	// Match-provenance columns (GHSA-hx86, migration 022): safety net for old DBs.
+	var matchedIndicatorColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'matched_indicator'`).Scan(&matchedIndicatorColCount); err == nil && matchedIndicatorColCount == 0 {
+		db.Exec(`ALTER TABLE events ADD COLUMN matched_indicator TEXT DEFAULT ''`)
+	}
+	var matchTypeColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'match_type'`).Scan(&matchTypeColCount); err == nil && matchTypeColCount == 0 {
+		db.Exec(`ALTER TABLE events ADD COLUMN match_type TEXT DEFAULT ''`)
+	}
 	var servicesColCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'services'`).Scan(&servicesColCount); err == nil && servicesColCount == 0 {
 		db.Exec(`ALTER TABLE devices ADD COLUMN services TEXT DEFAULT '[]'`)
@@ -336,7 +345,9 @@ CREATE TABLE IF NOT EXISTS events (
     threat_desc    TEXT DEFAULT '',
     metadata       TEXT DEFAULT '{}',
     acknowledged   BOOLEAN NOT NULL DEFAULT FALSE,
-    ack_reason     TEXT DEFAULT ''
+    ack_reason     TEXT DEFAULT '',
+    matched_indicator TEXT DEFAULT '',
+    match_type     TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_type      ON events (event_type);

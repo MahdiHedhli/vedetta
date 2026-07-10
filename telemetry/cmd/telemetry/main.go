@@ -138,10 +138,17 @@ func run(cfg *config.Config) error {
 			return nil
 		case <-ticker.C:
 			if !st.Get().ReporterRegistered {
-				if r, err := transmit.EnsureReporter(ctx, cfg.StateDir, cfg.ThreatNetworkURL, cfg.VedettaVersion, nil); err == nil {
-					p.Tx.Reporter = r
-					st.Update(func(s *status.Snapshot) { s.ReporterRegistered = true })
+				r, err := transmit.EnsureReporter(ctx, cfg.StateDir, cfg.ThreatNetworkURL, cfg.VedettaVersion, nil)
+				if err != nil {
+					// Still unregistered. Skip this tick entirely — do NOT read
+					// Core or advance the cursor (mirrors the initial-tick guard
+					// at startup). Running the tick here would read events, move
+					// the cursor past them, and drop the batch as 4xx poison
+					// because we have no reporter identity to sign with (issue #36).
+					continue
 				}
+				p.Tx.Reporter = r
+				st.Update(func(s *status.Snapshot) { s.ReporterRegistered = true })
 			}
 			runTickSafely(ctx, p)
 		}

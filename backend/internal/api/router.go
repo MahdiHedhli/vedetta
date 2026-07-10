@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -34,6 +36,41 @@ type Server struct {
 	ActivityLog *ActivityLog
 	Firewall    *firewall.Manager
 	Enroll      *EnrollmentStore
+
+	// SetupCode is the single-use first-admin bootstrap code (GHSA-6cmx). It is set
+	// at boot ONLY while no active admin token exists, and is cleared once the first
+	// admin is minted. While set, minting the first admin (and revoking tokens during
+	// bootstrap) requires the X-Vedetta-Setup-Code header. Guarded by setupMu.
+	SetupCode string
+	setupMu   sync.Mutex
+}
+
+// checkSetupCode reports whether provided matches the server-held bootstrap setup
+// code, using a constant-time compare. Returns false if no code is set (i.e. once
+// the first admin exists and the code has been cleared).
+func (s *Server) checkSetupCode(provided string) bool {
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
+	if s.SetupCode == "" {
+		return false
+	}
+	provided = strings.TrimSpace(provided)
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.SetupCode)) == 1
+}
+
+// clearSetupCode consumes the bootstrap setup code (single-use). Safe to call more
+// than once.
+func (s *Server) clearSetupCode() {
+	s.setupMu.Lock()
+	s.SetupCode = ""
+	s.setupMu.Unlock()
+}
+
+// needsSetupCode reports whether a bootstrap setup code is currently active.
+func (s *Server) needsSetupCode() bool {
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
+	return s.SetupCode != ""
 }
 
 // NewRouter creates the main API router with all routes mounted.
@@ -899,8 +936,15 @@ func (s *Server) handleSetDefaultCIDR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Scheduler.SetDefaultCIDR(body.CIDR)
-	writeJSON(w, http.StatusOK, map[string]any{"default_cidr": body.CIDR})
+	// GHSA-c5gj: reject anything that isn't a clean scan target before it can reach nmap.
+	cidr := strings.TrimSpace(body.CIDR)
+	if err := discovery.ValidateScanTarget(cidr); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+
+	s.Scheduler.SetDefaultCIDR(cidr)
+	writeJSON(w, http.StatusOK, map[string]any{"default_cidr": cidr})
 }
 
 // --- Custom Scan Targets ---
@@ -943,6 +987,13 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Name == "" || body.CIDR == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and cidr required"})
+		return
+	}
+	// GHSA-c5gj: the CIDR is ultimately handed to nmap, so validate it before it is
+	// persisted as a scan target.
+	body.CIDR = strings.TrimSpace(body.CIDR)
+	if err := discovery.ValidateScanTarget(body.CIDR); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	if body.Segment == "" {

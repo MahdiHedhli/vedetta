@@ -3,7 +3,10 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
+
+	"github.com/vedetta-network/vedetta/threat-network/internal/valid"
 )
 
 // Reporter is an opted-in deployment credential. No operator identity is ever
@@ -25,6 +28,11 @@ var ErrReporterNotFound = errors.New("reporter not found")
 // CreateReporter inserts a new reporter row. secretHash is SHA-256(secret); the
 // raw secret is never persisted.
 func (db *DB) CreateReporter(id, secretHash, capabilitiesJSON, vedettaVersion string) error {
+	// Defense in depth for the pinned wire format (GHSA-hx86): reject a
+	// non-semver vedetta_version even if a caller bypasses auth.ValidateRegister.
+	if !valid.Semver(vedettaVersion) {
+		return fmt.Errorf("vedetta_version %q is not strict semver", vedettaVersion)
+	}
 	_, err := db.Exec(`INSERT INTO reporters
         (reporter_id, secret_hash, capabilities, vedetta_version, created_at, status)
         VALUES (?, ?, ?, ?, ?, 'active')`,

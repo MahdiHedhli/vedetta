@@ -66,17 +66,17 @@ func (db *DB) UpsertSignal(s SignalRow) (created bool, err error) {
 // AggregateInput is one reporter's contribution for a given indicator within the
 // consensus window, already reduced to the per-reporter influence cap (max conf).
 type AggregateInput struct {
-	Kind             string
-	IndicatorKey     string
-	ReporterID       string
-	MaxConfidence    float64
-	Observations     int
-	Reasons          []string
-	HasKnownBad      bool
-	FirstBucket      string
-	LastBucket       string
-	IsExactDomain    bool
-	Indicator        string // the human indicator string (domain / etld+1 / behavior)
+	Kind          string
+	IndicatorKey  string
+	ReporterID    string
+	MaxConfidence float64
+	Observations  int
+	Reasons       []string
+	HasKnownBad   bool
+	FirstBucket   string
+	LastBucket    string
+	IsExactDomain bool
+	Indicator     string // the human indicator string (domain / etld+1 / behavior)
 }
 
 // SignalsInWindow returns all signals with received_at >= since, optionally

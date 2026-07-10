@@ -129,7 +129,7 @@ func TestValidBatchAccepted(t *testing.T) {
 	id, key := registerReporter(t, ts)
 
 	body := readFixture(t, "valid-batch.json")
-	resp := postSigned(t, ts, id, key, "nonce-valid", body)
+	resp := postSigned(t, ts, id, key, "11111111-1111-4111-8111-111111111111", body)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusAccepted {
@@ -155,7 +155,7 @@ func TestReplayIsIdempotent(t *testing.T) {
 	id, key := registerReporter(t, ts)
 	body := readFixture(t, "valid-batch.json")
 
-	first := postSigned(t, ts, id, key, "nonce-a", body)
+	first := postSigned(t, ts, id, key, "22222222-2222-4222-8222-222222222222", body)
 	if first.StatusCode != http.StatusAccepted {
 		b, _ := io.ReadAll(first.Body)
 		first.Body.Close()
@@ -167,7 +167,7 @@ func TestReplayIsIdempotent(t *testing.T) {
 
 	// Replay same batch_id with a fresh nonce/timestamp so auth passes and only
 	// the idempotency path is exercised.
-	replay := postSigned(t, ts, id, key, "nonce-b", body)
+	replay := postSigned(t, ts, id, key, "33333333-3333-4333-8333-333333333333", body)
 	defer replay.Body.Close()
 	if replay.StatusCode != http.StatusOK {
 		t.Fatalf("replay must return 200, got %d", replay.StatusCode)
@@ -199,7 +199,7 @@ func TestInvalidFixturesRejected(t *testing.T) {
 	cases := []invalidCase{
 		{
 			fixture:     "invalid-raw-ip.json",
-			nonce:       "n-ip",
+			nonce:       "44444444-4444-4444-8444-444444444444",
 			wantStatus:  http.StatusUnprocessableEntity,
 			wantError:   "forbidden_content",
 			wantBatchID: "a1111111-1a3d-4f5b-9c7e-2d4f6a8b0c1e",
@@ -207,7 +207,7 @@ func TestInvalidFixturesRejected(t *testing.T) {
 		},
 		{
 			fixture:     "invalid-mac.json",
-			nonce:       "n-mac",
+			nonce:       "55555555-5555-4555-8555-555555555555",
 			wantStatus:  http.StatusUnprocessableEntity,
 			wantError:   "forbidden_content",
 			wantBatchID: "a2222222-1a3d-4f5b-9c7e-2d4f6a8b0c1e",
@@ -215,7 +215,7 @@ func TestInvalidFixturesRejected(t *testing.T) {
 		},
 		{
 			fixture:     "invalid-hostname.json",
-			nonce:       "n-host",
+			nonce:       "66666666-6666-4666-8666-666666666666",
 			wantStatus:  http.StatusUnprocessableEntity,
 			wantError:   "forbidden_content",
 			wantBatchID: "a3333333-1a3d-4f5b-9c7e-2d4f6a8b0c1e",
@@ -223,7 +223,7 @@ func TestInvalidFixturesRejected(t *testing.T) {
 		},
 		{
 			fixture:     "invalid-unknown-key.json",
-			nonce:       "n-key",
+			nonce:       "77777777-7777-4777-8777-777777777777",
 			wantStatus:  http.StatusUnprocessableEntity,
 			wantError:   "strict_schema",
 			wantBatchID: "a4444444-1a3d-4f5b-9c7e-2d4f6a8b0c1e",
@@ -277,7 +277,7 @@ func TestMissingRequiredFieldRejected(t *testing.T) {
 	ts := newServer(t)
 	id, key := registerReporter(t, ts)
 	body := readFixture(t, "invalid-missing-field.json")
-	resp := postSigned(t, ts, id, key, "n-missing", body)
+	resp := postSigned(t, ts, id, key, "88888888-8888-4888-8888-888888888888", body)
 	defer resp.Body.Close()
 
 	// The batch is rejected (the contract's intent). Accept either the actual

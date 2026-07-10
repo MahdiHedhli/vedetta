@@ -6,16 +6,16 @@ import (
 
 // AggregateRow is a recomputed per-indicator consensus aggregate.
 type AggregateRow struct {
-	Kind               string
-	IndicatorKey       string
-	DistinctReporters  int
+	Kind                string
+	IndicatorKey        string
+	DistinctReporters   int
 	AggregateConfidence float64
-	TotalObservations  int
-	Reasons            string // JSON array
-	HasKnownBad        bool
-	FirstSeen          string
-	LastSeen           string
-	ComputedAt         string
+	TotalObservations   int
+	Reasons             string // JSON array
+	HasKnownBad         bool
+	FirstSeen           string
+	LastSeen            string
+	ComputedAt          string
 }
 
 // UpsertAggregate writes (or replaces) a signal_aggregates row.

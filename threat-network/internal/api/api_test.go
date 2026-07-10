@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,16 @@ import (
 	"github.com/vedetta-network/vedetta/threat-network/internal/consensus"
 	"github.com/vedetta-network/vedetta/threat-network/internal/store"
 )
+
+// uuidFor deterministically derives a valid UUIDv4 from a friendly label so the
+// HTTP tests can keep readable batch-id/nonce labels while meeting the pinned
+// UUIDv4 wire format (batch_id and X-Vedetta-Nonce validation, GHSA-hx86).
+func uuidFor(label string) string {
+	h := sha256.Sum256([]byte(label))
+	h[6] = (h[6] & 0x0f) | 0x40 // version 4
+	h[8] = (h[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
+}
 
 func newTestServer(t *testing.T) (*Server, *store.DB, *httptest.Server) {
 	t.Helper()
@@ -70,7 +81,7 @@ func registerViaAPI(t *testing.T, ts *httptest.Server) (id, signingKey string) {
 	reqBody, _ := json.Marshal(auth.RegisterRequest{
 		SchemaVersion: 1, InstallID: "11111111-1111-4111-8111-111111111111",
 		VedettaVersion: "0.1.0",
-		Capabilities: []string{"known_bad_domain_hit", "high_confidence_domain_candidate", "behavior_summary"},
+		Capabilities:   []string{"known_bad_domain_hit", "high_confidence_domain_candidate", "behavior_summary"},
 	})
 	resp, err := http.Post(ts.URL+"/api/v1/reporters/register", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
@@ -133,7 +144,7 @@ func TestEndToEndRegisterIngestConsensusFeed(t *testing.T) {
 	id1, key1 := registerViaAPI(t, ts)
 	id2, key2 := registerViaAPI(t, ts)
 
-	r1 := signAndPost(t, ts, id1, key1, "n1", batchBody("batch-1"))
+	r1 := signAndPost(t, ts, id1, key1, uuidFor("n1"), batchBody(uuidFor("batch-1")))
 	if r1.StatusCode != http.StatusAccepted {
 		b, _ := io.ReadAll(r1.Body)
 		t.Fatalf("ingest1 expected 202, got %d: %s", r1.StatusCode, b)
@@ -145,7 +156,7 @@ func TestEndToEndRegisterIngestConsensusFeed(t *testing.T) {
 		t.Fatalf("unexpected ingest1 result: %v", res1)
 	}
 
-	r2 := signAndPost(t, ts, id2, key2, "n1", batchBody("batch-2"))
+	r2 := signAndPost(t, ts, id2, key2, uuidFor("n1"), batchBody(uuidFor("batch-2")))
 	if r2.StatusCode != http.StatusAccepted {
 		t.Fatalf("ingest2 expected 202, got %d", r2.StatusCode)
 	}
@@ -186,7 +197,7 @@ func TestIngestReplayIdempotent(t *testing.T) {
 	_, db, ts := newTestServer(t)
 	id, key := registerViaAPI(t, ts)
 
-	r1 := signAndPost(t, ts, id, key, "nonce-a", batchBody("replay-batch"))
+	r1 := signAndPost(t, ts, id, key, uuidFor("nonce-a"), batchBody(uuidFor("replay-batch")))
 	if r1.StatusCode != http.StatusAccepted {
 		t.Fatalf("first ingest expected 202, got %d", r1.StatusCode)
 	}
@@ -196,7 +207,7 @@ func TestIngestReplayIdempotent(t *testing.T) {
 	db.QueryRow(`SELECT COUNT(*) FROM signals`).Scan(&before)
 
 	// Replay the same batch_id (fresh nonce/timestamp so auth passes).
-	r2 := signAndPost(t, ts, id, key, "nonce-b", batchBody("replay-batch"))
+	r2 := signAndPost(t, ts, id, key, uuidFor("nonce-b"), batchBody(uuidFor("replay-batch")))
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("replay must return 200, got %d", r2.StatusCode)
 	}
@@ -216,7 +227,7 @@ func TestIngestReplayIdempotent(t *testing.T) {
 
 func TestUnsignedIngestRejected(t *testing.T) {
 	_, _, ts := newTestServer(t)
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/ingest", bytes.NewReader(batchBody("x")))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/ingest", bytes.NewReader(batchBody(uuidFor("x"))))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -231,15 +242,15 @@ func TestUnsignedIngestRejected(t *testing.T) {
 func TestTamperedSignatureRejected(t *testing.T) {
 	_, _, ts := newTestServer(t)
 	id, key := registerViaAPI(t, ts)
-	body := batchBody("tamper")
+	body := batchBody(uuidFor("tamper"))
 	tsStr := strconv.FormatInt(time.Now().Unix(), 10)
-	sig := auth.ComputeSignature(key, tsStr, "n1", body)
+	sig := auth.ComputeSignature(key, tsStr, uuidFor("n1"), body)
 	// Tamper the body after signing.
-	tampered := batchBody("tamper-CHANGED")
+	tampered := batchBody(uuidFor("tamper-CHANGED"))
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/ingest", bytes.NewReader(tampered))
 	req.Header.Set("Authorization", "VedettaReporter "+id)
 	req.Header.Set("X-Vedetta-Timestamp", tsStr)
-	req.Header.Set("X-Vedetta-Nonce", "n1")
+	req.Header.Set("X-Vedetta-Nonce", uuidFor("n1"))
 	req.Header.Set("X-Vedetta-Signature", sig)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -254,12 +265,13 @@ func TestTamperedSignatureRejected(t *testing.T) {
 func TestPrivacyGate422OverHTTP(t *testing.T) {
 	_, _, ts := newTestServer(t)
 	id, key := registerViaAPI(t, ts)
-	body := []byte(`{"schema_version":1,"batch_id":"pg","generated_at":"2026-07-03T14:15:02Z",
+	pgBID := uuidFor("pg")
+	body := []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":%q,"generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[
         {"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
          "domain":"printer.local","etld_plus_one":"badzone.example","local_confidence":0.9,
-         "local_reasons":["known_bad"],"observation_count":1,"distinct_asset_count":1}]}`)
-	resp := signAndPost(t, ts, id, key, "n-pg", body)
+         "local_reasons":["known_bad"],"observation_count":1,"distinct_asset_count":1}]}`, pgBID))
+	resp := signAndPost(t, ts, id, key, uuidFor("n-pg"), body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("privacy violation expected 422, got %d", resp.StatusCode)
@@ -271,7 +283,7 @@ func TestPrivacyGate422OverHTTP(t *testing.T) {
 			t.Fatalf("422 body missing field %q: %v", k, m)
 		}
 	}
-	if m["batch_id"].(string) != "pg" {
+	if m["batch_id"].(string) != pgBID {
 		t.Fatalf("422 body batch_id mismatch: %v", m["batch_id"])
 	}
 }
@@ -279,10 +291,10 @@ func TestPrivacyGate422OverHTTP(t *testing.T) {
 func TestStrictSchema422OverHTTP(t *testing.T) {
 	_, _, ts := newTestServer(t)
 	id, key := registerViaAPI(t, ts)
-	body := []byte(`{"schema_version":1,"batch_id":"ss","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":%q,"generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[],
-      "unexpected":"x"}`)
-	resp := signAndPost(t, ts, id, key, "n-ss", body)
+      "unexpected":"x"}`, uuidFor("ss")))
+	resp := signAndPost(t, ts, id, key, uuidFor("n-ss"), body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown key expected 422, got %d", resp.StatusCode)
@@ -366,7 +378,7 @@ func TestDenylistedReporterEndToEnd(t *testing.T) {
 	if err := db.DenylistReporter(id, "abuse"); err != nil {
 		t.Fatal(err)
 	}
-	resp := signAndPost(t, ts, id, key, "n-dl", batchBody("dl"))
+	resp := signAndPost(t, ts, id, key, uuidFor("n-dl"), batchBody(uuidFor("dl")))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("denylisted reporter expected 403, got %d", resp.StatusCode)
@@ -377,8 +389,8 @@ func TestDenylistExcludesFromConsensus(t *testing.T) {
 	_, db, ts := newTestServer(t)
 	id1, key1 := registerViaAPI(t, ts)
 	id2, key2 := registerViaAPI(t, ts)
-	signAndPost(t, ts, id1, key1, "a", batchBody("b1")).Body.Close()
-	signAndPost(t, ts, id2, key2, "a", batchBody("b2")).Body.Close()
+	signAndPost(t, ts, id1, key1, uuidFor("a"), batchBody(uuidFor("b1"))).Body.Close()
+	signAndPost(t, ts, id2, key2, uuidFor("a"), batchBody(uuidFor("b2"))).Body.Close()
 
 	// Denylist reporter 2 → the indicator drops to 1 distinct reporter → not promoted.
 	if err := db.DenylistReporter(id2, "abuse"); err != nil {

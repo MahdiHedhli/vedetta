@@ -19,26 +19,30 @@ var testSalt = []byte("telemetry-local-salt-example")
 // stripper tests can assert none of it survives.
 func fullyPopulatedEvent(_ string) corereader.Event {
 	return corereader.Event{
-		EventID:        "11111111-2222-4333-8444-555555555555",
-		Timestamp:      time.Date(2026, 7, 3, 14, 37, 12, 0, time.UTC),
-		EventType:      "dns_query",
-		SourceHash:     "core-side-hash-should-not-appear",
-		SourceIP:       "192.0.2.55",
-		ServerIP:       "198.51.100.1",
-		Domain:         "c2-payload.badzone.example",
-		QueryType:      "A",
-		ResolvedIP:     "203.0.113.9",
-		Blocked:        true,
-		AnomalyScore:   0.99,
-		Tags:           []string{"known_bad", "threat_feed_match", "c2_candidate", "some_free_text_tag"},
-		Geo:            "US",
-		DeviceVendor:   "AcmeVendor",
-		NetworkSegment: "iot",
-		DNSSource:      "passive_capture",
-		ThreatDesc:     "laptop-placeholder contacted c2 at 00:00:5E:00:53:2A",
-		Metadata:       `{"mac":"00:00:5E:00:53:2A","hostname":"laptop-placeholder","note":"192.168.1.5"}`,
-		Acknowledged:   false,
-		AckReason:      "",
+		EventID:      "11111111-2222-4333-8444-555555555555",
+		Timestamp:    time.Date(2026, 7, 3, 14, 37, 12, 0, time.UTC),
+		EventType:    "dns_query",
+		SourceHash:   "core-side-hash-should-not-appear",
+		SourceIP:     "192.0.2.55",
+		ServerIP:     "198.51.100.1",
+		Domain:       "c2-payload.badzone.example",
+		QueryType:    "A",
+		ResolvedIP:   "203.0.113.9",
+		Blocked:      true,
+		AnomalyScore: 0.99,
+		Tags:         []string{"known_bad", "threat_feed_match", "c2_candidate", "some_free_text_tag"},
+		// Known-bad DOMAIN-list match: matched_indicator equals the observed FQDN
+		// for today's exact-match logic (the value the stripper forwards).
+		MatchedIndicator: "c2-payload.badzone.example",
+		MatchType:        "domain",
+		Geo:              "US",
+		DeviceVendor:     "AcmeVendor",
+		NetworkSegment:   "iot",
+		DNSSource:        "passive_capture",
+		ThreatDesc:       "laptop-placeholder contacted c2 at 00:00:5E:00:53:2A",
+		Metadata:         `{"mac":"00:00:5E:00:53:2A","hostname":"laptop-placeholder","note":"192.168.1.5"}`,
+		Acknowledged:     false,
+		AckReason:        "",
 	}
 }
 
@@ -112,6 +116,47 @@ func TestStripKnownBadKeepsExactDomain(t *testing.T) {
 	}
 	if !c.Blocked {
 		t.Errorf("blocked should be preserved")
+	}
+}
+
+func TestStripKnownBadForwardsMatchedIndicatorNotQNAME(t *testing.T) {
+	// The exported Domain must be the canonical matched indicator from Core
+	// provenance, never the raw observed QNAME (GHSA-hx86). Here they differ:
+	// the matched list entry is the registrable apex while the QNAME is a
+	// deeper label that must not leak.
+	ev := fullyPopulatedEvent("kb")
+	ev.Domain = "secret-host.badzone.example"
+	ev.MatchedIndicator = "badzone.example"
+	ev.MatchType = "domain"
+	c, ok := Strip(ev, KindKnownBadDomainHit, testSalt)
+	if !ok {
+		t.Fatal("not ok")
+	}
+	if c.Domain != "badzone.example" {
+		t.Errorf("Domain must equal MatchedIndicator, got %q", c.Domain)
+	}
+	if strings.Contains(c.Domain, "secret-host") {
+		t.Errorf("observed QNAME leaked into exported domain: %q", c.Domain)
+	}
+}
+
+func TestStripKnownBadResolvedIPWithheld(t *testing.T) {
+	// A resolved-IP known-bad match yields NO domain candidate: fail closed.
+	ev := fullyPopulatedEvent("kb")
+	ev.MatchType = "resolved_ip"
+	ev.MatchedIndicator = "203.0.113.9"
+	if c, ok := Strip(ev, KindKnownBadDomainHit, testSalt); ok {
+		t.Errorf("resolved_ip match must withhold, got candidate %+v", c)
+	}
+}
+
+func TestStripKnownBadEmptyIndicatorWithheld(t *testing.T) {
+	// Missing provenance must fail closed — never fall back to the QNAME.
+	ev := fullyPopulatedEvent("kb")
+	ev.MatchType = "domain"
+	ev.MatchedIndicator = ""
+	if c, ok := Strip(ev, KindKnownBadDomainHit, testSalt); ok {
+		t.Errorf("empty MatchedIndicator must withhold, got candidate %+v", c)
 	}
 }
 

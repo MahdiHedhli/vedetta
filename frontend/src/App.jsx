@@ -65,6 +65,12 @@ export default function App() {
   const [showTokenPrompt, setShowTokenPrompt] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
   const [authError, setAuthError] = useState('');
+  // First-admin bootstrap setup code (GHSA-6cmx). Core requires the
+  // X-Vedetta-Setup-Code header to mint the FIRST admin token; the code is
+  // printed to Core logs on first start (docker logs). We only surface the
+  // field when /auth/setup-status reports needs_setup_code=true.
+  const [needsSetupCode, setNeedsSetupCode] = useState(false);
+  const [setupCode, setSetupCode] = useState('');
 
   // Keep local state in sync with the lib (in case of external clear)
   const updateAdminToken = useCallback((token) => {
@@ -76,18 +82,31 @@ export default function App() {
   // Create the very first admin token (only works in bootstrap mode)
   const createInitialAdminToken = async () => {
     setAuthError('');
+    const code = setupCode.trim();
+    if (needsSetupCode && !code) {
+      setAuthError('A setup code is required. Find it in the Core logs from first start: docker logs <core-container>');
+      return;
+    }
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      // GHSA-6cmx: Core requires the setup code to mint the FIRST admin token.
+      if (code) headers['X-Vedetta-Setup-Code'] = code;
       const res = await authFetch('/api/v1/auth/tokens', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ scope: 'admin', label: 'Initial Admin (created from UI)' }),
       });
       const data = await res.json();
       if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error(data.error || 'Setup code rejected. Check the Core logs (docker logs) for the correct code.');
+        }
         throw new Error(data.error || 'Failed to create admin token');
       }
       if (data.token) {
         updateAdminToken(data.token);
+        setSetupCode('');
+        setNeedsSetupCode(false);
         // Show the token one last time in an alert-style modal (user must copy it now)
         alert(
           'ADMIN TOKEN CREATED (shown only once):\n\n' +
@@ -187,6 +206,16 @@ export default function App() {
     });
     setSensorInterfaces(ifaces);
   }, [sensors]);
+
+  // Detect whether Core still needs the first-admin setup code (GHSA-6cmx).
+  // When true, the bootstrap "Create Initial Admin Token" flow must send the
+  // X-Vedetta-Setup-Code header or Core will 401.
+  useEffect(() => {
+    authFetch('/api/v1/auth/setup-status')
+      .then((r) => r.json())
+      .then((data) => setNeedsSetupCode(!!data.needs_setup_code))
+      .catch(() => {});
+  }, []);
 
   // Global 401 handler — show token recovery prompt when backend rejects our admin token
   useEffect(() => {
@@ -293,6 +322,22 @@ export default function App() {
                 <p className="text-sm text-gray-400">
                   No admin token found in this browser. Create one (first time only) or paste an existing one.
                 </p>
+                {needsSetupCode && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-gray-400 block">Setup code (first admin only)</label>
+                    <input
+                      type="text"
+                      value={setupCode}
+                      onChange={(e) => setSetupCode(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') createInitialAdminToken(); }}
+                      placeholder="Paste setup code..."
+                      className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                    <p className="text-[10px] text-gray-500">
+                      Printed to the Core logs on first start. Run <span className="font-mono text-gray-400">docker logs &lt;core-container&gt;</span> and copy the setup code.
+                    </p>
+                  </div>
+                )}
                 <button
                   onClick={createInitialAdminToken}
                   className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-lg font-medium transition-colors"
