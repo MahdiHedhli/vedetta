@@ -90,6 +90,7 @@ vendor/
 /backend/vedetta
 /telemetry/telemetry
 /threat-network/threat-network
+/scripts/simulate/simulate
 
 # ----- Node / Frontend -----
 node_modules/
