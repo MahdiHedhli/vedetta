@@ -152,19 +152,21 @@ gateway to the collector, and confirm firewall logging is enabled on the rules.
 
 ## 5. Optional: ingest authentication
 
-By default the ingest endpoint is open so that already-deployed collectors keep working
-(backward compatible). To require a bearer token so a rogue host on the LAN cannot inject
-forged events:
+The ingest endpoint uses the same bootstrap-bypass auth as the rest of Core: it is open
+**only while Core has no tokens at all**, and requires a valid ingest (or admin) token as
+soon as any token exists (for example, the moment a sensor registers). So on any real
+deployment the collector needs a credential — otherwise UniFi/firewall ingestion silently
+stops with `401` once the first token is created.
 
-1. Create an ingest-scope token (admin) and set it for the collector via the
-   `VEDETTA_INGEST_TOKEN` environment variable in `docker-compose.yml`. The collector
-   config adds `Authorization: Bearer ${VEDETTA_INGEST_TOKEN}` to its HTTP output when the
-   variable is set, and omits the header when it is unset.
-2. Enforce it on Core by setting `VEDETTA_REQUIRE_INGEST_AUTH=1`.
+To provision it:
 
-When enforcement is **off** (default), no token is required. When **on** and an
-ingest-scope token exists, requests without a valid `Authorization: Bearer <token>`
-header are rejected with `401`. This mirrors the existing sensor-token bootstrap pattern.
+1. Set `VEDETTA_INGEST_TOKEN` in `.env` to a strong secret (e.g. `openssl rand -hex 32`).
+2. `docker compose` passes that value to **both** Core and the collector. Core provisions
+   it as an ingest-scope token on startup (idempotent), and the collector sends
+   `Authorization: Bearer ${VEDETTA_INGEST_TOKEN}` on its HTTP output.
+
+There is no separate `VEDETTA_REQUIRE_INGEST_AUTH` flag — that toggle was removed. A rogue
+host on the LAN without the token is rejected with `401`.
 
 ---
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
+	"github.com/vedetta-network/vedetta/backend/internal/auth"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsingest"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
@@ -40,6 +41,19 @@ func main() {
 	// Seed default whitelist rules if none exist
 	if err := db.SeedDefaultWhitelistRules(); err != nil {
 		log.Printf("WARNING: failed to seed default whitelist rules: %v", err)
+	}
+
+	// Provision the collector's ingest credential from the shared VEDETTA_INGEST_TOKEN
+	// secret (the same value is given to the collector container). Without this,
+	// /ingest keeps working only until the first token is created (e.g. when a
+	// sensor registers), after which the tokenless collector gets 401 and UniFi
+	// ingestion silently stops (beta-gate B5). Idempotent.
+	if raw := strings.TrimSpace(os.Getenv("VEDETTA_INGEST_TOKEN")); raw != "" {
+		if created, err := db.EnsureTokenFromRaw(raw, auth.ScopeIngest, "compose-provisioned ingest token"); err != nil {
+			log.Printf("WARNING: could not provision ingest token from VEDETTA_INGEST_TOKEN: %v", err)
+		} else if created {
+			log.Printf("Provisioned ingest-scope token from VEDETTA_INGEST_TOKEN")
+		}
 	}
 
 	// Start retention enforcer (daily cleanup of old events)
