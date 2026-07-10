@@ -444,7 +444,7 @@ CREATE TABLE IF NOT EXISTS sensors (
 CREATE TABLE IF NOT EXISTS api_tokens (
     token_id     TEXT PRIMARY KEY,
     token_hash   TEXT NOT NULL UNIQUE,
-    scope        TEXT NOT NULL DEFAULT 'sensor' CHECK(scope IN ('sensor', 'admin', 'ingest')),
+    scope        TEXT NOT NULL DEFAULT 'sensor' CHECK(scope IN ('sensor', 'admin', 'ingest', 'read')),
     sensor_id    TEXT,
     label        TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),

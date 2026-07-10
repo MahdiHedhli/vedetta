@@ -508,8 +508,11 @@ func TestHandleIngest_FirewallFieldsRoundtrip_FaithfulCollectorShape(t *testing.
 		t.Fatalf("ingest expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Query with PIECE 3 filter on action (and protocol)
+	// Query with PIECE 3 filter on action (and protocol). An admin token exists,
+	// so the read gate (beta-gate B6) now requires a bearer on GET /events; admin
+	// satisfies read.
 	req = httptest.NewRequest("GET", "/api/v1/events?action=block&protocol=udp&limit=5", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

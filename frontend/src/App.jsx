@@ -77,7 +77,7 @@ export default function App() {
   const createInitialAdminToken = async () => {
     setAuthError('');
     try {
-      const res = await fetch('/api/v1/auth/tokens', {
+      const res = await authFetch('/api/v1/auth/tokens', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scope: 'admin', label: 'Initial Admin (created from UI)' }),
@@ -159,11 +159,11 @@ export default function App() {
 
   const fetchThreatData = useCallback(() => {
     Promise.all([
-      fetch('/api/v1/events?min_score=0.3&limit=100&order=desc').then((r) => r.json()).catch(() => ({ events: [] })),
-      fetch('/api/v1/events/stats').then((r) => r.json()).catch(() => ({})),
-      fetch('/api/v1/events/timeline').then((r) => r.json()).catch(() => ({ timeline: [] })),
-      fetch('/api/v1/suppression').then((r) => r.json()).catch(() => ({ rules: [] })),
-      fetch('/api/v1/whitelist').then((r) => r.json()).catch(() => ({ rules: [] })),
+      authFetch('/api/v1/events?min_score=0.3&limit=100&order=desc').then((r) => r.json()).catch(() => ({ events: [] })),
+      authFetch('/api/v1/events/stats').then((r) => r.json()).catch(() => ({})),
+      authFetch('/api/v1/events/timeline').then((r) => r.json()).catch(() => ({ timeline: [] })),
+      authFetch('/api/v1/suppression').then((r) => r.json()).catch(() => ({ rules: [] })),
+      authFetch('/api/v1/whitelist').then((r) => r.json()).catch(() => ({ rules: [] })),
     ]).then(([eventsData, statsData, timelineData, suppressionData, whitelistData]) => {
       setThreatEvents(eventsData.events || []);
       setThreatStats(statsData);
@@ -209,8 +209,8 @@ export default function App() {
 
     // Show setup guide if no sensors connected and no devices found
     Promise.all([
-      fetch('/api/v1/sensor/list').then((r) => r.json()),
-      fetch('/api/v1/devices').then((r) => r.json()),
+      authFetch('/api/v1/sensor/list').then((r) => r.json()),
+      authFetch('/api/v1/devices').then((r) => r.json()),
     ]).then(([sensorData, deviceData]) => {
       const hasSensors = sensorData.sensors && sensorData.sensors.length > 0;
       const hasDevices = deviceData.devices && deviceData.devices.length > 0;
@@ -230,13 +230,13 @@ export default function App() {
 
   const triggerScan = () => {
     setScanning(true);
-    fetch('/api/v1/scan', { method: 'POST' })
+    authFetch('/api/v1/scan', { method: 'POST' })
       .then((r) => r.json())
       .then(() => {
         const poll = setInterval(() => {
           fetchStatus();
           fetchDevices();
-          fetch('/api/v1/scan/status')
+          authFetch('/api/v1/scan/status')
             .then((r) => r.json())
             .then((s) => {
               if (!s.running) {
@@ -251,13 +251,13 @@ export default function App() {
 
   const triggerTargetScan = (targetId) => {
     setScanning(true);
-    fetch(`/api/v1/scan/targets/${targetId}/scan`, { method: 'POST' })
+    authFetch(`/api/v1/scan/targets/${targetId}/scan`, { method: 'POST' })
       .then(() => {
         const poll = setInterval(() => {
           fetchStatus();
           fetchDevices();
           fetchTargets();
-          fetch('/api/v1/scan/status')
+          authFetch('/api/v1/scan/status')
             .then((r) => r.json())
             .then((s) => {
               if (!s.running) {
@@ -519,7 +519,7 @@ function AddWhitelistRule({ onAdd, onError }) {
     if (!name.trim()) return onError('Rule name is required');
     if (!domainPattern.trim() && !sourceIpPattern.trim()) return onError('At least a domain or IP pattern is required');
     setSaving(true);
-    fetch('/api/v1/whitelist', {
+    authFetch('/api/v1/whitelist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -906,7 +906,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
 
   const handleAck = (eventId, reason) => {
     setActionError(null);
-    fetch(`/api/v1/events/${eventId}/ack`, {
+    authFetch(`/api/v1/events/${eventId}/ack`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
@@ -919,7 +919,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
 
   const handleUnack = (eventId) => {
     setActionError(null);
-    fetch(`/api/v1/events/${eventId}/ack`, { method: 'DELETE' })
+    authFetch(`/api/v1/events/${eventId}/ack`, { method: 'DELETE' })
       .then(r => {
         if (!r.ok) throw new Error(`Server returned ${r.status}`);
         onRefresh();
@@ -928,7 +928,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
 
   const handleCreateSuppression = (event, reason) => {
     setActionError(null);
-    fetch('/api/v1/suppression', {
+    authFetch('/api/v1/suppression', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domain: event.domain, source_ip: event.source_ip, tags: [], reason: reason || '' }),
@@ -941,7 +941,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
 
   const handleDeleteSuppression = (ruleId) => {
     setActionError(null);
-    fetch(`/api/v1/suppression/${ruleId}`, { method: 'DELETE' })
+    authFetch(`/api/v1/suppression/${ruleId}`, { method: 'DELETE' })
       .then(r => {
         if (!r.ok) throw new Error(`Server returned ${r.status}`);
         onRefresh();
@@ -986,12 +986,30 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
           )}
           {visibleEvents.length > 0 && (
             <button
-              onClick={() => {
+              onClick={async () => {
+                // GET /events is auth-gated (read scope), so a top-level
+                // window.open() can't carry the bearer. Fetch via authFetch and
+                // trigger a client-side download from the response blob.
                 const params = new URLSearchParams();
                 params.set('format', 'csv');
                 params.set('limit', '10000');
                 if (severityFilter !== 'all') params.set('min_score', '0.3');
-                window.open('/api/v1/events?' + params.toString(), '_blank');
+                try {
+                  const res = await authFetch('/api/v1/events?' + params.toString());
+                  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'vedetta-events.csv';
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  URL.revokeObjectURL(url);
+                } catch (err) {
+                  console.error('CSV export failed', err);
+                  alert('CSV export failed: ' + (err.message || err));
+                }
               }}
               className="px-3 py-2 border border-amber-500/30 text-amber-400 rounded-lg text-sm hover:bg-amber-500/10 transition-colors"
             >
@@ -1053,7 +1071,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                     let failed = 0;
                     for (const event of visibleEvents) {
                       try {
-                        const r = await fetch(`/api/v1/events/${event.event_id}/ack`, {
+                        const r = await authFetch(`/api/v1/events/${event.event_id}/ack`, {
                           method: 'PUT',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ reason: ackAllReason }),
@@ -1148,7 +1166,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
             const categories = [...new Set((whitelistRules || []).map(r => r.category))].sort();
             const categoryLabels = { apple: 'Apple', mdns: 'mDNS / Bonjour', cloud: 'Cloud Services', os_updates: 'OS Updates', iot: 'IoT / Smart Home', custom: 'Custom' };
             const toggleRule = (ruleId, enabled) => {
-              fetch(`/api/v1/whitelist/${ruleId}`, {
+              authFetch(`/api/v1/whitelist/${ruleId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enabled }),
@@ -1156,7 +1174,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                 .catch(() => setActionError('Failed to update whitelist rule'));
             };
             const deleteRule = (ruleId) => {
-              fetch(`/api/v1/whitelist/${ruleId}`, { method: 'DELETE' })
+              authFetch(`/api/v1/whitelist/${ruleId}`, { method: 'DELETE' })
                 .then(r => { if (r.ok) onRefresh(); else r.text().then(t => setActionError(t || 'Cannot delete default rules')); })
                 .catch(() => setActionError('Failed to delete whitelist rule'));
             };
@@ -1203,7 +1221,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                 <p className="text-gray-500 text-sm mb-3">No whitelist rules loaded yet.</p>
                 <button
                   onClick={() => {
-                    fetch('/api/v1/whitelist/seed', { method: 'POST' })
+                    authFetch('/api/v1/whitelist/seed', { method: 'POST' })
                       .then(r => { if (r.ok) onRefresh(); })
                       .catch(() => {});
                   }}
@@ -1549,7 +1567,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        fetch('/api/v1/suppression', {
+                                        authFetch('/api/v1/suppression', {
                                           method: 'POST',
                                           headers: { 'Content-Type': 'application/json' },
                                           body: JSON.stringify({ domain: '', source_ip: '', tags: ['iot_context'], reason: 'Suppressed all IoT segment activity' })
@@ -1564,7 +1582,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        fetch('/api/v1/suppression', {
+                                        authFetch('/api/v1/suppression', {
                                           method: 'POST',
                                           headers: { 'Content-Type': 'application/json' },
                                           body: JSON.stringify({ domain: '', source_ip: '', tags: ['new_device_context'], reason: 'Suppressed all new device activity' })
@@ -1579,7 +1597,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        fetch('/api/v1/suppression', {
+                                        authFetch('/api/v1/suppression', {
                                           method: 'POST',
                                           headers: { 'Content-Type': 'application/json' },
                                           body: JSON.stringify({ domain: '', source_ip: '', tags: ['eol_router'], reason: 'Suppressed all EOL router high-risk device activity' })
@@ -1596,7 +1614,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        fetch('/api/v1/suppression', {
+                                        authFetch('/api/v1/suppression', {
                                           method: 'POST',
                                           headers: { 'Content-Type': 'application/json' },
                                           body: JSON.stringify({
@@ -1618,7 +1636,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        fetch('/api/v1/suppression', {
+                                        authFetch('/api/v1/suppression', {
                                           method: 'POST',
                                           headers: { 'Content-Type': 'application/json' },
                                           body: JSON.stringify({
@@ -2101,7 +2119,7 @@ function SensorSetupDialog({ onDismiss }) {
 
   useEffect(() => {
     // Check setup status on mount
-    fetch('/api/v1/auth/setup-status')
+    authFetch('/api/v1/auth/setup-status')
       .then(r => r.json())
       .then(data => {
         setSetupStatus(data);
@@ -2113,7 +2131,7 @@ function SensorSetupDialog({ onDismiss }) {
     // Poll device count if on step 3
     if (step === 3) {
       const interval = setInterval(() => {
-        fetch('/api/v1/devices')
+        authFetch('/api/v1/devices')
           .then(r => r.json())
           .then(data => setDeviceCount(data.devices ? data.devices.length : 0))
           .catch(() => {});
@@ -2124,7 +2142,7 @@ function SensorSetupDialog({ onDismiss }) {
 
   const checkSensorConnection = () => {
     setChecking(true);
-    fetch('/api/v1/sensor/list')
+    authFetch('/api/v1/sensor/list')
       .then(r => r.json())
       .then(data => {
         if (data.sensors && data.sensors.length > 0) {
@@ -2305,7 +2323,7 @@ sudo ./vedetta-sensor --core http://localhost:8080`}
 
 function SensorsView({ sensors, onSetup, onRefreshSensors }) {
   const setPrimary = (sensorId) => {
-    fetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}/primary`, { method: 'PUT' })
+    authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}/primary`, { method: 'PUT' })
       .then(() => onRefreshSensors && onRefreshSensors())
       .catch(() => {});
   };
@@ -2743,7 +2761,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                 disabled={saving}
                 onClick={() => {
                   setSaving(true);
-                  fetch(`/api/v1/devices/${selectedDevice.device_id}`, {
+                  authFetch(`/api/v1/devices/${selectedDevice.device_id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ custom_name: editName, notes: editNotes, segment: editSegment, device_type: editDeviceType, os_family: editOSFamily, model: editModel }),
@@ -2788,7 +2806,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                 try {
                   if (action === 'ack') {
                     for (const id of ids) {
-                      const r = await fetch(`/api/v1/events/${id}/ack`, {
+                      const r = await authFetch(`/api/v1/events/${id}/ack`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ reason }),
@@ -2804,7 +2822,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                       const key = `${evt.domain}||${evt.source_ip}`;
                       if (seen.has(key)) continue;
                       seen.add(key);
-                      const r = await fetch('/api/v1/suppression', {
+                      const r = await authFetch('/api/v1/suppression', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ domain: evt.domain, source_ip: evt.source_ip, tags: [], reason }),
@@ -2950,7 +2968,7 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
 
   const addTarget = () => {
     if (!name || !cidr) return;
-    fetch('/api/v1/scan/targets', {
+    authFetch('/api/v1/scan/targets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, cidr, segment, scan_ports: scanPorts, dns_capture: dnsCapture, dns_interface: dnsInterface }),
@@ -2965,11 +2983,11 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
   };
 
   const deleteTarget = (id) => {
-    fetch(`/api/v1/scan/targets/${id}`, { method: 'DELETE' }).then(onRefresh);
+    authFetch(`/api/v1/scan/targets/${id}`, { method: 'DELETE' }).then(onRefresh);
   };
 
   const toggleTarget = (id, enabled) => {
-    fetch(`/api/v1/scan/targets/${id}/toggle`, {
+    authFetch(`/api/v1/scan/targets/${id}/toggle`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -3152,7 +3170,7 @@ function LogsView() {
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const fetchLogs = useCallback(() => {
-    fetch('/api/v1/logs?limit=200')
+    authFetch('/api/v1/logs?limit=200')
       .then((r) => r.json())
       .then((data) => setLogs(data.logs || []))
       .catch(() => {});
@@ -3260,7 +3278,7 @@ function WhitelistManagementView({ whitelistRules, onRefresh }) {
   const [actionError, setActionError] = useState(null);
 
   const toggleRule = (ruleId, enabled) => {
-    fetch(`/api/v1/whitelist/${ruleId}`, {
+    authFetch(`/api/v1/whitelist/${ruleId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -3271,7 +3289,7 @@ function WhitelistManagementView({ whitelistRules, onRefresh }) {
   };
 
   const deleteRule = (ruleId) => {
-    fetch(`/api/v1/whitelist/${ruleId}`, { method: 'DELETE' })
+    authFetch(`/api/v1/whitelist/${ruleId}`, { method: 'DELETE' })
       .then(r => {
         if (r.ok) onRefresh();
         else r.text().then(t => setActionError(t || 'Cannot delete default rules'));
@@ -3347,7 +3365,7 @@ function WhitelistManagementView({ whitelistRules, onRefresh }) {
           <p className="text-gray-500 text-sm mb-4">No whitelist rules loaded yet.</p>
           <button
             onClick={() => {
-              fetch('/api/v1/whitelist/seed', { method: 'POST' })
+              authFetch('/api/v1/whitelist/seed', { method: 'POST' })
                 .then(r => { if (r.ok) onRefresh(); })
                 .catch(() => {});
             }}
@@ -3426,7 +3444,7 @@ function SettingsView() {
             <button
               onClick={async () => {
                 try {
-                  const res = await fetch('/api/v1/auth/tokens', {
+                  const res = await authFetch('/api/v1/auth/tokens', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ scope: 'admin', label: 'Admin (from Settings)' }),
