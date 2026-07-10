@@ -81,13 +81,18 @@ the [project constitution](.specify/memory/constitution.md).
 
 ## Quick Start
 
-> **Transport: the default Quick Start runs plain HTTP on your LAN.** Core and
-> the dashboard speak HTTP, so tokens and data travel unencrypted over the local
-> network. That is fine **only on a trusted LAN**. For any untrusted or remote
-> deployment you **must** front Vedetta with the documented TLS reverse proxy —
-> see [Reverse Proxy & TLS](docs/reverse-proxy.md). There is no in-app TLS and no
-> sensor `--cacert` flag today; native-sensor certificate trust relies on the
-> host system CA store.
+> **Transport (secure by default): the Quick Start publishes Core and the dashboard
+> to the host loopback only (`127.0.0.1`) — they are NOT on your LAN.** The dashboard
+> is reachable at `http://localhost:…` from the machine running Compose, and no
+> bearer tokens are exposed on the network out of the box. To reach Vedetta from
+> another machine you must make an **explicit choice**: front it with the documented
+> **TLS reverse proxy** (recommended — [Reverse Proxy & TLS](docs/reverse-proxy.md)),
+> or knowingly change the port bindings in `docker-compose.yml` from `127.0.0.1:` to
+> `0.0.0.0:`, accepting that tokens then travel your LAN as plaintext HTTP. Insecure
+> LAN exposure is never the silent default. There is no in-app TLS and no sensor
+> `--cacert` flag today; native-sensor certificate trust relies on the host system
+> CA store. (The syslog collector port stays LAN-reachable — it must receive logs
+> from your network devices and carries no admin credentials.)
 
 ### 1. Start Vedetta Core
 

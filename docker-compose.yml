@@ -9,17 +9,19 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: vedetta-backend
+    # SECURE BY DEFAULT (#39): Core's API carries admin & sensor bearer tokens, so
+    # it is published to the host LOOPBACK ONLY — never on the LAN in the clear.
+    # To reach Core/the dashboard from another machine, front it with the documented
+    # TLS reverse proxy (docs/reverse-proxy.md). Change 127.0.0.1 to 0.0.0.0 ONLY if
+    # you knowingly accept plaintext bearer tokens traversing your LAN.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       VEDETTA_PORT: "8080"
-      # Core defaults to a loopback (127.0.0.1) bind for safety on bare-metal
-      # installs (beta-gate B6). Inside a container loopback is unreachable
-      # through the published port and from sibling services, so bind all
-      # interfaces here. The container is isolated on the internal 'vedetta'
-      # network; only the "8080:8080" host port mapping above is exposed, and
-      # the collector/telemetry/frontend reach Core by its service name
-      # (http://backend:8080) over that network.
+      # Inside the container, loopback is unreachable through the published port and
+      # from sibling services, so Core binds all interfaces WITHIN the isolated
+      # 'vedetta' network. Host exposure is governed solely by the loopback port
+      # mapping above; siblings reach Core by service name (http://backend:8080).
       VEDETTA_LISTEN_ADDR: "0.0.0.0"
       VEDETTA_DB_PATH: "/data/vedetta.db"
       VEDETTA_FRONTEND_DIR: "/frontend"
@@ -58,8 +60,11 @@ services:
   frontend:
     build: ./frontend
     container_name: vedetta-frontend
+    # Dashboard — loopback-only by default (see the backend note above). Reach it
+    # from other machines via the TLS reverse proxy, or knowingly set 0.0.0.0 to
+    # serve the dashboard as plaintext HTTP on your LAN.
     ports:
-      - "${VEDETTA_FRONTEND_PORT:-3107}:3000"
+      - "127.0.0.1:${VEDETTA_FRONTEND_PORT:-3107}:3000"
     networks:
       - vedetta
     depends_on:
