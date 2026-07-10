@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -314,68 +315,65 @@ func TestHandleStatus(t *testing.T) {
 	}
 }
 
-func TestHandleSensorRegister_RequiresExistingTokenForReRegistration(t *testing.T) {
-	srv, _ := setupTestServer(t)
+func TestHandleSensorRegister_RequiresAuthForReRegistration(t *testing.T) {
+	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
 
 	originalToken := registerTestSensor(t, router, "sensor-reregister")
 
 	body := []byte(`{"sensor_id":"sensor-reregister","hostname":"sensor-host","os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"test"}`)
-
-	// 1. Unauthenticated re-registration (simulates `vedetta-sensor --reset`)
-	//    → Recovery mode: must succeed and return a fresh token.
-	req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = "192.0.2.10:12345"
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 (recovery) for unauthenticated re-registration, got %d: %s", w.Code, w.Body.String())
+	callN := 0
+	reReg := func(bearer string) *httptest.ResponseRecorder {
+		callN++
+		req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		// Distinct source IP per call so the per-IP registration rate limiter
+		// (5/min) doesn't mask the behavior under test.
+		req.RemoteAddr = fmt.Sprintf("198.51.100.%d:12345", 10+callN)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
 	}
-	var recoveryResp struct {
-		AuthToken string `json:"auth_token"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&recoveryResp); err != nil {
-		t.Fatalf("decode recovery response: %v", err)
-	}
-	if recoveryResp.AuthToken == "" {
-		t.Fatal("expected recovery re-registration to return a fresh auth token")
-	}
-	newToken := recoveryResp.AuthToken
-
-	// 2. Authenticated re-registration using the *new* token from recovery
-	//    → Should succeed and NOT issue yet another token (we already have one).
-	req = httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+newToken)
-	req.RemoteAddr = "192.0.2.10:12345"
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for authenticated re-registration, got %d: %s", w.Code, w.Body.String())
+	tokenOf := func(w *httptest.ResponseRecorder) string {
+		var m map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&m)
+		tok, _ := m["auth_token"].(string)
+		return tok
 	}
 
-	var resp struct {
-		AuthToken string `json:"auth_token"`
+	// 1. Unauthenticated re-registration of an already-enrolled sensor MUST be
+	//    rejected. sensor_ids are guessable (hostname-os-arch), so the old
+	//    "recovery mode" let an attacker revoke the real credential and be issued a
+	//    replacement — a silent credential hijack (beta-gate B1a).
+	if w := reReg(""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated re-registration, got %d: %s", w.Code, w.Body.String())
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode re-registration response: %v", err)
-	}
-	if resp.AuthToken != "" {
-		t.Fatal("expected authenticated re-registration to reuse existing token (no new one issued)")
+	// The rejected attempt must NOT have revoked the legitimate token.
+	if w := reReg(originalToken); w.Code != http.StatusOK {
+		t.Fatalf("expected original sensor token still valid after rejected anon re-register, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Also verify the very old original token is now revoked (recovery deleted it)
-	req = httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+originalToken)
-	req.RemoteAddr = "192.0.2.10:12345"
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected original token to be revoked after recovery, got %d", w.Code)
+	// 2. Authenticated re-registration with the sensor's own token → 200 metadata
+	//    refresh, and NO new token is issued (existing credential preserved).
+	if got := tokenOf(reReg(originalToken)); got != "" {
+		t.Fatal("expected sensor-token re-registration to reuse the existing token (no new one issued)")
+	}
+
+	// 3. Admin-initiated reset: an admin bearer forces revoke-old + issue-new.
+	adminToken := createTestToken(t, db, auth.ScopeAdmin, "")
+	newToken := tokenOf(reReg(adminToken))
+	if newToken == "" {
+		t.Fatal("expected admin-initiated reset to issue a fresh sensor token")
+	}
+	// The old sensor token is now revoked; the freshly issued one is valid.
+	if w := reReg(originalToken); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old sensor token revoked after admin reset, got %d", w.Code)
+	}
+	if w := reReg(newToken); w.Code != http.StatusOK {
+		t.Fatalf("expected new sensor token valid after admin reset, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

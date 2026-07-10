@@ -142,7 +142,46 @@ func (db *DB) HasActiveIngestToken() (bool, error) {
 	return count > 0, nil
 }
 
-// DeleteTokensBySensor revokes all tokens associated with a sensor.
+// HasActiveAdminToken returns true when at least one non-revoked admin-scoped
+// token exists. This is the correct signal for "admin enrollment is complete":
+// bootstrap gates must key on the existence of an ACTIVE ADMIN, not on the total
+// token count — otherwise an auto-issued sensor/ingest token (or a leftover
+// revoked row) permanently closes the first-admin creation window and locks the
+// operator out (beta-gate B1b).
+func (db *DB) HasActiveAdminToken() (bool, error) {
+	n, err := db.CountActiveAdminTokens()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// CountActiveAdminTokens returns the number of non-revoked admin-scoped tokens.
+// Used both for the bootstrap gate and to refuse revoking the last admin.
+func (db *DB) CountActiveAdminTokens() (int, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM api_tokens
+		WHERE scope = ? AND revoked = 0
+	`, auth.ScopeAdmin).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// GetTokenByID retrieves a single token by its id (without the raw value).
+func (db *DB) GetTokenByID(tokenID string) (*auth.Token, error) {
+	return scanAuthToken(db.QueryRow(`
+		SELECT token_id, token_hash, scope, sensor_id, label, created_at, last_used, revoked
+		FROM api_tokens
+		WHERE token_id = ?
+	`, tokenID))
+}
+
+// DeleteTokensBySensor revokes all tokens associated with a sensor. Admin tokens
+// carry no sensor_id, so they are never affected by this call.
 func (db *DB) DeleteTokensBySensor(sensorID string) error {
 	_, err := db.Exec(`UPDATE api_tokens SET revoked = 1 WHERE sensor_id = ?`, sensorID)
 	return err
