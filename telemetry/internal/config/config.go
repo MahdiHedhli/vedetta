@@ -1,8 +1,8 @@
 // Package config parses telemetry daemon configuration from the environment.
 //
-// The single most important behavior: unless VEDETTA_TELEMETRY_OPTIN is exactly
-// "true", the daemon is OFF. OptIn() is the gate the rest of the process checks
-// before doing anything observable (no Core reads, no egress, no state writes).
+// The single most important behavior: telemetry is ON by default. Only the exact
+// value VEDETTA_TELEMETRY_OPTIN="false" opts out. OptIn is the gate the rest of
+// the process checks before doing anything observable (Core reads, egress, state).
 package config
 
 import (
@@ -55,7 +55,7 @@ const (
 // When opt-in is off, Load never errors: the caller stays inert regardless.
 func Load(getenv func(string) string) (*Config, error) {
 	c := &Config{
-		OptIn:             getenv("VEDETTA_TELEMETRY_OPTIN") == "true",
+		OptIn:             getenv("VEDETTA_TELEMETRY_OPTIN") != "false",
 		DryRun:            getenv("VEDETTA_TELEMETRY_DRYRUN") == "true",
 		ThreatNetworkURL:  orDefault(getenv("VEDETTA_THREAT_NETWORK_URL"), defaultThreatNetworkURL),
 		CoreURL:           orDefault(getenv("VEDETTA_CORE_URL"), defaultCoreURL),
@@ -99,11 +99,13 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, err
 	}
 
-	// Validation only matters when the daemon will actually run.
+	// Validation only matters when the daemon will actually run. A missing Core
+	// token is NOT fatal: telemetry is on by default, and a fresh install has no
+	// token yet — crashing the container would be a terrible default. The daemon
+	// reads Core's events (currently unauthenticated) and simply sends nothing it
+	// can't read; the caller surfaces a disclosure. Set a token once Core read
+	// auth is enabled.
 	if c.OptIn {
-		if c.CoreToken == "" {
-			return nil, fmt.Errorf("VEDETTA_CORE_TOKEN is required when VEDETTA_TELEMETRY_OPTIN=true")
-		}
 		if c.CandidateMinScore < 0 || c.CandidateMinScore > 1 {
 			return nil, fmt.Errorf("VEDETTA_TELEMETRY_CANDIDATE_MIN_SCORE out of range [0,1]: %v", c.CandidateMinScore)
 		}

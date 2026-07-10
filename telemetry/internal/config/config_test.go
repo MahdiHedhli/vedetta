@@ -14,8 +14,8 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load with empty env: %v", err)
 	}
-	if c.OptIn {
-		t.Errorf("OptIn should default to false")
+	if !c.OptIn {
+		t.Errorf("OptIn should default to true (on by default, opt-out)")
 	}
 	if c.DryRun {
 		t.Errorf("DryRun should default to false")
@@ -76,20 +76,26 @@ func TestLoadOverrides(t *testing.T) {
 	}
 }
 
-func TestOptInRequiresToken(t *testing.T) {
-	_, err := Load(envFrom(map[string]string{
+func TestOptInWithoutTokenIsNotFatal(t *testing.T) {
+	// On by default with no Core token must NOT error — a fresh install has none,
+	// and crashing the container would be a terrible default.
+	c, err := Load(envFrom(map[string]string{
 		"VEDETTA_TELEMETRY_OPTIN": "true",
 	}))
-	if err == nil {
-		t.Fatalf("expected error when opted in without CoreToken")
+	if err != nil {
+		t.Fatalf("opted in without a token should not error: %v", err)
+	}
+	if !c.OptIn {
+		t.Fatalf("expected OptIn true")
 	}
 }
 
-func TestOptInOffNeverErrors(t *testing.T) {
-	// Even with a garbage tick interval, off means off — but interval parse
-	// happens before the opt-in check, so use a value that only matters when on.
+func TestOptOutNeverErrors(t *testing.T) {
+	// Explicit opt-out means off; on-only validation (out-of-range threshold) is
+	// skipped.
 	c, err := Load(envFrom(map[string]string{
-		"VEDETTA_TELEMETRY_CANDIDATE_MIN_SCORE": "5.0", // out of range but ignored while off
+		"VEDETTA_TELEMETRY_OPTIN":               "false", // explicit opt-out
+		"VEDETTA_TELEMETRY_CANDIDATE_MIN_SCORE": "5.0",   // out of range but ignored while off
 	}))
 	if err != nil {
 		t.Fatalf("off should not error on out-of-range threshold: %v", err)
@@ -99,11 +105,15 @@ func TestOptInOffNeverErrors(t *testing.T) {
 	}
 }
 
-func TestExactStringOptIn(t *testing.T) {
-	for _, v := range []string{"TRUE", "1", "yes", "True", ""} {
-		c, _ := Load(envFrom(map[string]string{"VEDETTA_TELEMETRY_OPTIN": v}))
-		if c.OptIn {
-			t.Errorf("value %q should not enable opt-in", v)
+func TestOptOutSemantics(t *testing.T) {
+	// Opt-out model: only the exact string "false" disables; everything else,
+	// including unset, is on.
+	if c, _ := Load(envFrom(map[string]string{"VEDETTA_TELEMETRY_OPTIN": "false"})); c.OptIn {
+		t.Errorf(`"false" must opt out`)
+	}
+	for _, v := range []string{"", "true", "TRUE", "1", "yes"} {
+		if c, _ := Load(envFrom(map[string]string{"VEDETTA_TELEMETRY_OPTIN": v})); !c.OptIn {
+			t.Errorf("value %q should be ON under the opt-out model", v)
 		}
 	}
 }
