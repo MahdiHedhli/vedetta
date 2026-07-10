@@ -6,9 +6,11 @@
 ALTER TABLE devices ADD COLUMN custom_name TEXT DEFAULT '';
 ALTER TABLE devices ADD COLUMN notes TEXT DEFAULT '';
 
--- Event acknowledgment: mark events as reviewed
-ALTER TABLE events ADD COLUMN acknowledged BOOLEAN DEFAULT FALSE;
-ALTER TABLE events ADD COLUMN ack_reason TEXT DEFAULT '';
+-- NOTE: events.acknowledged and events.ack_reason are declared in 001_init.sql;
+-- re-declaring them here previously caused a "duplicate column" error that, under
+-- whole-file execution, aborted this migration before suppression_rules below was
+-- created (beta-gate B3). The runner now executes statement-by-statement, but
+-- these redundant ALTERs are dropped so a fresh run is clean.
 
 -- Suppression rules: user-defined filters to auto-hide matching events
 CREATE TABLE IF NOT EXISTS suppression_rules (
