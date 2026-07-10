@@ -129,6 +129,11 @@ docker-compose.override.yml
 # ----- Logs -----
 *.log
 logs/
+# ...but the UniFi collector test corpus ships SYNTHETIC syslog inputs as *.log
+# fixtures (RFC 5737 doc IPs, example MACs, placeholder hostnames — no real
+# network data). The Lua golden suite (collector/test/run_tests.lua) reads them,
+# so they MUST be tracked or the suite fails on a clean checkout (issue #40).
+!specs/001-unifi-log-ingestion/corpus/inputs/*.log
 
 # ----- Coverage & Profiling -----
 coverage/

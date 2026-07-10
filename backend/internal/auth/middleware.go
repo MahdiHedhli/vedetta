@@ -87,6 +87,31 @@ func RequireAdmin(tv TokenValidator) func(next http.Handler) http.Handler {
 	}
 }
 
+// RequireStrictAdmin always requires a valid admin-scoped Bearer token, even
+// during bootstrap (NO active-admin bypass). Use it for every admin route EXCEPT
+// first-admin creation: those routes must be unavailable until an admin exists,
+// so a LAN peer cannot mint enrollment codes, plant scan targets, or mutate
+// settings before setup completes (GHSA-6cmx). First-admin creation keeps
+// RequireAdmin (which self-gates on the single-use setup code in the handler).
+func RequireStrictAdmin(tv TokenValidator) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token, err := ValidateAuthorizationHeader(tv, r.Header.Get("Authorization"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			if token.Scope != ScopeAdmin {
+				http.Error(w, "admin scope required", http.StatusForbidden)
+				return
+			}
+			ctx := context.WithValue(r.Context(), ContextKeyToken, token)
+			ctx = context.WithValue(ctx, ContextKeyScope, token.Scope)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 // RequireRead returns middleware for read-only dashboard / query routes
 // (GET events, devices, status, and similar). It mirrors RequireAdmin's
 // bootstrap semantics so first-run setup is never locked out:

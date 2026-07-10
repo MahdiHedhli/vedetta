@@ -18,8 +18,33 @@ export const CORE_BASE =
     import.meta.env.VITE_CORE_BASE) ||
   '';
 
+// urlStringFromInput extracts a plain-string URL from any value fetch() accepts
+// as its first argument: a string, a URL instance, or a Request instance. It
+// returns null for anything else (or when extraction is unsafe) so the caller
+// can FAIL CLOSED — an input we cannot classify must never receive the Core
+// bearer. This never throws.
+function urlStringFromInput(input) {
+  try {
+    if (typeof input === 'string') return input;
+    // A URL instance exposes the absolute URL via .href.
+    if (typeof URL !== 'undefined' && input instanceof URL) {
+      return typeof input.href === 'string' ? input.href : null;
+    }
+    // A Request instance exposes its already-resolved absolute URL via .url.
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+      return typeof input.url === 'string' ? input.url : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // Join CORE_BASE with a relative Core path. Absolute URLs are returned as-is
-// so callers that already build a full URL keep working.
+// so callers that already build a full URL keep working. Non-string inputs
+// (URL/Request) are returned untouched so fetch() receives them natively; the
+// origin gate operates on the extracted string form (see urlStringFromInput),
+// never on the raw object, so this never needs to throw.
 function resolveCoreUrl(url) {
   if (typeof url !== 'string') return url;
   if (/^https?:\/\//i.test(url)) return url;
@@ -95,8 +120,20 @@ export async function authFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
   const resolvedUrl = resolveCoreUrl(url);
 
-  // Only ever attach the Core bearer to a Core-origin request (see isCoreUrl).
-  if (token && !headers.has('Authorization') && isCoreUrl(url, resolvedUrl)) {
+  // The origin gate must run on a plain-string URL, whatever fetch-input shape
+  // the caller passed (string / URL / Request). Extract that string first; if we
+  // cannot (unknown/unsupported type), urlStr is null and we FAIL CLOSED — the
+  // Core bearer is only ever attached to a resolved string whose origin equals
+  // the Core origin. This makes authFetch(new Request('http://external/...'))
+  // safe by construction: its origin is not Core, so no bearer is attached, and
+  // an unclassifiable input likewise gets none. (GHSA-cm6m residual hardening.)
+  const urlStr = urlStringFromInput(url);
+  if (
+    token &&
+    !headers.has('Authorization') &&
+    urlStr !== null &&
+    isCoreUrl(urlStr, resolveCoreUrl(urlStr))
+  ) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 

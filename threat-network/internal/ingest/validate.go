@@ -99,15 +99,37 @@ type EnvelopeError struct {
 
 func (e *EnvelopeError) Error() string { return e.Code + ": " + e.Detail }
 
-// ParseAndValidate decodes and validates a batch body. It enforces:
+// pslDisagreementRules are the per-item validation failures that stem from the
+// producer and receiver using DIFFERENT Public Suffix Lists (issue #41), e.g. a
+// value like "github.io" that one PSL treats as registrable and the other as a
+// public suffix. Unlike the hard forbidden-content rules (IP literals, MAC
+// addresses, special-use zones, URL syntax, single-label names), a PSL/eTLD+1
+// disagreement on ONE indicator must NOT dead-letter the whole batch: that item
+// is skipped (counted in rejected) and the rest of the batch is accepted. The
+// skipped item is never stored, so nothing leaks — the fix only stops a single
+// PSL mismatch from discarding every other valid signal in the batch.
+var pslDisagreementRules = map[string]bool{
+	"not_psl_reducible":           true,
+	"candidate_not_etld_plus_one": true,
+	"etld_plus_one_mismatch":      true,
+}
+
+// ParseAndValidate decodes and validates a batch body against server time now.
+func ParseAndValidate(body []byte) (*Batch, int, error) {
+	return ParseAndValidateAt(body, time.Now())
+}
+
+// ParseAndValidateAt decodes and validates a batch body. It enforces:
 //   - strict-schema unknown-key detection (whole-batch StrictError, →422)
-//   - privacy re-gate (whole-batch StrictError, →422)
+//   - privacy re-gate for hard forbidden content (whole-batch StrictError, →422)
 //   - envelope structural rules (EnvelopeError, →400)
 //
 // Per-signal STRUCTURAL invalidity is NOT fatal: such signals are dropped and
-// their count returned in rejected. It returns the valid signals and the
-// rejected count.
-func ParseAndValidate(body []byte) (*Batch, int, error) {
+// their count returned in rejected. A per-item PSL/eTLD+1 disagreement (issue
+// #41) is likewise skipped, not fatal. now is server time, used for the
+// future-dated time_bucket gate (GHSA-hwcf). It returns the valid signals and
+// the rejected (skipped) count.
+func ParseAndValidateAt(body []byte, now time.Time) (*Batch, int, error) {
 	// First decode into a generic tree to enforce strict keys and run the raw
 	// privacy string screen (defense in depth against identifier-like values).
 	var raw map[string]json.RawMessage
@@ -181,10 +203,18 @@ func ParseAndValidate(body []byte) (*Batch, int, error) {
 			return nil, 0, serr
 		}
 		if perr := privacyScreenSignal(i, sr); perr != nil {
+			// A PSL/eTLD+1 disagreement (issue #41) is a per-item skip: drop just
+			// this signal and keep processing the rest of the batch. Hard forbidden
+			// content (IP/MAC/special-use/URL-syntax/single-label) stays whole-batch
+			// fatal — it is a privacy-poison tripwire, not a PSL-version mismatch.
+			if pslDisagreementRules[perr.Rule] {
+				rejected++
+				continue
+			}
 			return nil, 0, &StrictError{ErrorName: "forbidden_content", Rule: perr.Rule, Detail: perr.Detail}
 		}
 
-		sig, structuralOK := decodeSignal(sr, b.WindowStart, b.WindowEnd)
+		sig, structuralOK := decodeSignal(sr, b.WindowStart, b.WindowEnd, now)
 		if !structuralOK {
 			// Per-signal structural invalidity → counted in rejected only.
 			rejected++

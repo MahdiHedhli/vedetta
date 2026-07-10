@@ -85,8 +85,10 @@ services:
     container_name: vedetta-telemetry
     environment:
       # On by default (opt-out). Set to exactly "false" to stop all outbound
-      # sharing. Contributes anonymized, advisory-only signals — no source
-      # IPs/MACs/hostnames ever leave the network (see PRIVACY.md).
+      # sharing. Contributes privacy-reduced, pseudonymous (NOT anonymous),
+      # advisory-only signals — no source IPs/MACs/hostnames ever leave the
+      # network, but a stable reporter pseudonym is stored server-side; see
+      # PRIVACY.md for the residual model.
       VEDETTA_TELEMETRY_OPTIN: "${VEDETTA_TELEMETRY_OPTIN:-true}"
       # Reports to the public community feed (the central threat-network runs
       # off-node behind the Cloudflare tunnel, not in this compose).

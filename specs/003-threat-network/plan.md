@@ -197,7 +197,17 @@ No existing Core detectors are affected by this spec (consumption is a follow-up
 
 Shipped WITH the feature (not deferred):
 
-- Multi-reporter promotion thresholds — one reporter can never create shared intel.
+- Multi-reporter promotion thresholds — a single **reporter_id** can never create
+  shared intel. **Residual multi-identity Sybil risk (GHSA-573f, honest statement):**
+  the distinctness gate counts distinct `reporter_id`s, and registration mints
+  unlimited operator-anonymous ids. Aging each id past the 24 h maturation delay is
+  a *time cost*, not a proof of independence — aged UUIDs are not evidence of
+  distinct operators. One actor who registers ≥2 ids and lets them mature fully
+  satisfies the weakest rule (rule 1: `distinct_reporters >= 2`). The per-real-IP
+  registration cap and detectable registration velocity are the only friction; there
+  is no cryptographic proof-of-independence. The threshold is intentionally left as-is
+  and the feed is therefore **advisory-only** — never an alert/block source on
+  membership alone. See `internal/consensus/consensus.go` (`ReporterMaturationDelay`).
 - Allowlist guard blocking popular-domain promotion + poisoning flag on offenders.
 - Advisory-only contract: consumers may add context/score, never alert on feed
   membership alone and never block. Enforced in the wire format
@@ -225,12 +235,19 @@ Validation loop before the feed is called "supported":
   design (spec 002 outbox retries); local detection never depends on this service.
 - **Malformed batches:** structurally invalid signals are rejected per-signal and
   reflected in the `rejected` count of the `202` body (per-signal detail is logged
-  server-side, never added to the wire); privacy-gate violations reject the whole
-  batch with `422` and body `{error, rule, detail, batch_id}` (002 contract §5);
-  whole-batch 400 only for envelope/schema-version failures. A duplicate `batch_id`
-  is not an error (idempotent `200` with `duplicate: true`). All error codes machine-
-  readable (`INVALID_SIGNATURE`, `STALE_TIMESTAMP`, `NONCE_REUSED`,
-  `RATE_LIMIT_EXCEEDED`, `INVALID_SCHEMA`, `REPORTER_DENYLISTED`).
+  server-side, never added to the wire). A **PSL / eTLD+1 disagreement** on a single
+  indicator (issue #41 — producer and receiver on different Public Suffix Lists, e.g.
+  `github.io`) is likewise a per-item skip, counted in `rejected`, **not** a whole-batch
+  failure: the offending item is dropped (never stored) and the rest of the batch is
+  accepted. A **future-dated `time_bucket`** more than 1 h ahead of server time is also
+  a per-item skip (GHSA-hwcf), so no caller can pin a promoted item's `expires_at` far
+  in the future. Hard privacy-gate violations (IP literals, MAC addresses, special-use
+  zones, URL syntax, single-label names) still reject the whole batch with `422` and
+  body `{error, rule, detail, batch_id}` (002 contract §5); whole-batch 400 only for
+  envelope/schema-version failures. A duplicate `batch_id` is not an error (idempotent
+  `200` with `duplicate: true`). All error codes machine-readable (`INVALID_SIGNATURE`,
+  `STALE_TIMESTAMP`, `NONCE_REUSED`, `RATE_LIMIT_EXCEEDED`, `INVALID_SCHEMA`,
+  `REPORTER_DENYLISTED`).
 - **Floods:** per-IP token bucket (in-memory, never persisted) at the HTTP layer;
   per-reporter limits: max 250 signals/batch (registration config), max 4 batches/hour,
   max 1,000 accepted signals/day, max 200 distinct new indicators/day

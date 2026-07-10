@@ -159,6 +159,20 @@ type bypassMeta struct {
 // modifies it in place (tags, anomaly_score, threat_desc, metadata).
 // This is called during ingest, before the event is written to the database.
 func (e *Enricher) Enrich(event *models.Event) {
+	// GHSA-hx86: Core OWNS threat provenance and the verdict signals telemetry
+	// trusts. /ingest deserializes caller-controlled fields directly onto the
+	// Event, so a forged match_type / matched_indicator / known_bad tag (and, for
+	// DNS, anomaly_score) could otherwise be re-exported to the community feed —
+	// leaking an attacker-embedded identifier such as 192.0.2.55.badzone.example.
+	// Reset them here so ONLY this enricher's own threat-intel analysis can set
+	// them; no ingest, sensor, or admin token can pre-seed provenance.
+	event.MatchType = ""
+	event.MatchedIndicator = ""
+	event.Tags = removeTags(event.Tags, "known_bad")
+	if event.EventType == "dns_query" {
+		event.AnomalyScore = 0 // recomputed below from analysis, never trusted from the caller
+	}
+
 	if event.EventType == "firewall_log" {
 		e.enrichFirewall(event)
 		return
@@ -659,6 +673,29 @@ func containsTag(tags []string, tag string) bool {
 		}
 	}
 	return false
+}
+
+// removeTags returns tags with every occurrence of the given values removed.
+// Used to strip caller-supplied verdict tags on ingest so the enricher is the
+// sole authority for them (GHSA-hx86).
+func removeTags(tags []string, drop ...string) []string {
+	if len(tags) == 0 {
+		return tags
+	}
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		remove := false
+		for _, d := range drop {
+			if t == d {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // isPrivateReverseDNS returns true if the domain is a PTR lookup (in-addr.arpa)

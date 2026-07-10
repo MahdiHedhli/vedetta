@@ -75,7 +75,7 @@ func (p *Processor) Process(reporterID string, body []byte) (*Result, error) {
 		}
 	}
 
-	batch, rejected, err := ParseAndValidate(body)
+	batch, rejected, err := ParseAndValidateAt(body, p.now())
 	if err != nil {
 		return nil, err
 	}

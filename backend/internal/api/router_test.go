@@ -50,6 +50,8 @@ func registerTestSensor(t *testing.T, router http.Handler, sensorID string) stri
 
 	req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
+	// Bootstrap sensor enrollment now requires the one-time setup code (GHSA-6cmx).
+	req.Header.Set("X-Vedetta-Setup-Code", testSetupCode)
 	req.RemoteAddr = "192.0.2.10:12345"
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)

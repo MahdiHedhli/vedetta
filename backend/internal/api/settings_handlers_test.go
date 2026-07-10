@@ -48,11 +48,12 @@ func decodeTelemetrySetting(t *testing.T, w *httptest.ResponseRecorder) telemetr
 // subsequent GET reads it back with source "setting". Exercised in bootstrap
 // (no admin) where both routes are open.
 func TestTelemetrySetting_PersistAndReadBack(t *testing.T) {
-	srv, _ := setupTestServer(t)
+	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "") // PUT is admin-only
 
 	// Persist opt_in=false.
-	w := doPutJSON(router, "/api/v1/settings/telemetry", "", map[string]any{"opt_in": false})
+	w := doPutJSON(router, "/api/v1/settings/telemetry", admin, map[string]any{"opt_in": false})
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -60,15 +61,15 @@ func TestTelemetrySetting_PersistAndReadBack(t *testing.T) {
 		t.Fatalf("PUT body: want {false,setting,false}, got %+v", got)
 	}
 
-	// Read it back.
-	w = doGet(router, "/api/v1/settings/telemetry", "")
+	// Read it back (admin satisfies read).
+	w = doGet(router, "/api/v1/settings/telemetry", admin)
 	if got := decodeTelemetrySetting(t, w); got.Source != "setting" || got.OptIn != false || got.Effective != false {
 		t.Fatalf("GET after persist false: want {false,setting,false}, got %+v", got)
 	}
 
 	// Flip it back to true.
-	_ = doPutJSON(router, "/api/v1/settings/telemetry", "", map[string]any{"opt_in": true})
-	w = doGet(router, "/api/v1/settings/telemetry", "")
+	_ = doPutJSON(router, "/api/v1/settings/telemetry", admin, map[string]any{"opt_in": true})
+	w = doGet(router, "/api/v1/settings/telemetry", admin)
 	if got := decodeTelemetrySetting(t, w); got.Source != "setting" || got.Effective != true {
 		t.Fatalf("GET after persist true: want effective true / source setting, got %+v", got)
 	}
@@ -107,14 +108,15 @@ func TestTelemetrySetting_EnvFalse(t *testing.T) {
 // var even when they disagree.
 func TestTelemetrySetting_PersistWinsOverEnv(t *testing.T) {
 	t.Setenv("VEDETTA_TELEMETRY_OPTIN", "false")
-	srv, _ := setupTestServer(t)
+	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
 
 	// Persist opt_in=true; it must win over env "false".
-	if w := doPutJSON(router, "/api/v1/settings/telemetry", "", map[string]any{"opt_in": true}); w.Code != http.StatusOK {
+	if w := doPutJSON(router, "/api/v1/settings/telemetry", admin, map[string]any{"opt_in": true}); w.Code != http.StatusOK {
 		t.Fatalf("PUT expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	w := doGet(router, "/api/v1/settings/telemetry", "")
+	w := doGet(router, "/api/v1/settings/telemetry", admin)
 	if got := decodeTelemetrySetting(t, w); got.Source != "setting" || got.Effective != true {
 		t.Fatalf("persist wins: want effective true / source setting (env was false), got %+v", got)
 	}
@@ -162,10 +164,11 @@ func TestTelemetrySetting_AdminOnlyPut_ReadCanGet(t *testing.T) {
 
 // TestTelemetrySetting_PutRequiresBody: a PUT without opt_in is a 400.
 func TestTelemetrySetting_PutRequiresBody(t *testing.T) {
-	srv, _ := setupTestServer(t)
+	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
 
-	if w := doPutJSON(router, "/api/v1/settings/telemetry", "", map[string]any{}); w.Code != http.StatusBadRequest {
+	if w := doPutJSON(router, "/api/v1/settings/telemetry", admin, map[string]any{}); w.Code != http.StatusBadRequest {
 		t.Fatalf("PUT with empty body: expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }

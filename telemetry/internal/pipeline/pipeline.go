@@ -26,7 +26,9 @@ type Pipeline struct {
 
 	// lastKnownOptIn caches the last effective opt-in successfully read from Core
 	// so a transient settings-endpoint error cannot silently override an explicit
-	// admin opt-out (issue #37). nil until the first successful read.
+	// admin opt-out (issue #37). It is nil until the first successful read OR a
+	// value is hydrated from optin.json (GHSA-c776) — the persisted twin that
+	// lets an explicit opt-out survive a restart during a Core outage.
 	lastKnownOptIn *bool
 }
 
@@ -38,20 +40,40 @@ type Pipeline struct {
 func (p *Pipeline) RunTick(ctx context.Context) {
 	p.State.TouchTick()
 
-	// Issue #37: consult Core for the EFFECTIVE telemetry opt-in before doing any
-	// work. If Core says opted-out, export nothing this tick (stay fully inert —
-	// no drain, no read, no send) and surface it. If Core is unreachable, fall
-	// back to the last value we successfully read (so a transient error can't
-	// override an explicit admin opt-out), and only to the env OptIn if we have
-	// never read one (issue #37).
+	// Issue #37 / GHSA-c776: consult Core for the EFFECTIVE telemetry opt-in
+	// before doing any work. If Core says opted-out, export nothing this tick
+	// (stay fully inert — no drain, no read, no send) and surface it.
+	//
+	// If Core is unreachable, fall back to the last effective opt-in we ever
+	// observed so a transient error can't override an explicit admin opt-out.
+	// That last-known value is PERSISTED to the state dir (optin.json) so it
+	// survives a daemon restart: without persistence, a restart during a brief
+	// Core outage would forget a prior OFF state, fall back to the env default
+	// (on), and drain queued batches — a fail-OPEN on a privacy control. We fall
+	// back to the env OptIn ONLY when no effective value has ever been observed
+	// (neither in memory this run nor persisted from a prior run).
+	if p.lastKnownOptIn == nil {
+		if v, ok := loadPersistedOptIn(p.StateDir); ok {
+			p.lastKnownOptIn = &v
+		}
+	}
 	effective, err := p.Reader.EffectiveOptIn(ctx)
 	if err != nil {
 		if p.lastKnownOptIn != nil {
+			// Known-and-last-known state governs: if that is off, we return below
+			// without draining or exporting. The env default is NOT consulted.
 			effective = *p.lastKnownOptIn
 		} else {
 			effective = p.Cfg.OptIn
 		}
 	} else {
+		// Successful read: cache in memory and durably record it (only when it
+		// changed) so an explicit opt-out survives a restart + startup Core blip.
+		if p.lastKnownOptIn == nil || *p.lastKnownOptIn != effective {
+			if perr := persistOptIn(p.StateDir, effective); perr != nil {
+				p.setError("persist opt-in: " + perr.Error())
+			}
+		}
 		v := effective
 		p.lastKnownOptIn = &v
 	}

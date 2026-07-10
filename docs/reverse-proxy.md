@@ -137,19 +137,39 @@ frontend container (which already proxies `/api` to Core over the internal
 network) and your TLS proxy be the only ingress.
 
 ```yaml
-# docker-compose.override.yml
+# docker-compose.override.yml  (requires Docker Compose v2.24.4+ for the !reset/!override tags)
 services:
   backend:
-    ports: []          # <- drop the "8080:8080" host mapping; Core stays internal
+    # Compose MERGES the `ports` list across files by APPENDING — an empty
+    # `ports: []` would leave the base "8080:8080" mapping in place, so Core would
+    # stay published. The `!reset` tag actually drops the base list, leaving Core
+    # with NO host port: reachable only on the internal network as http://backend:8080.
+    ports: !reset []
   frontend:
-    # your TLS proxy (Caddy/nginx) terminates HTTPS and forwards to the frontend,
+    # Your TLS proxy (Caddy/nginx) terminates HTTPS and forwards to the frontend,
     # which serves the dashboard and proxies /api/* to backend:8080 same-origin.
-    ports:
-      - "127.0.0.1:8088:80"   # proxy connects here; not exposed to the LAN directly
+    # `!override` REPLACES the base mapping (which binds ${VEDETTA_FRONTEND_PORT:-3107}
+    # on ALL interfaces, i.e. the LAN) instead of appending to it. Republish
+    # loopback-only, and target the frontend's actual listen port 3000 — nginx in
+    # the frontend image listens on 3000 (see frontend/nginx.conf and Dockerfile),
+    # NOT 80.
+    ports: !override
+      - "127.0.0.1:8088:3000"   # proxy connects here; not exposed to the LAN directly
 ```
 
-- Core is reachable only on the internal `vedetta` network (`http://backend:8080`).
+- Core is reachable only on the internal `vedetta` network (`http://backend:8080`) —
+  no host port at all.
+- The dashboard is published on `127.0.0.1:8088` only; point your TLS proxy at it
+  (e.g. `reverse_proxy 127.0.0.1:8088` / `proxy_pass http://127.0.0.1:8088;`), not
+  the LAN. The frontend then proxies `/api/*` to `backend:8080` over the internal
+  network.
 - Sensors reach Core through the **HTTPS** proxy endpoint, not a plaintext port.
+
+> **Why the `!reset` / `!override` tags?** Compose does not replace list-valued
+> keys like `ports` in an override file — it concatenates them. Without these tags
+> the base LAN-facing publications survive and the "keep Core unpublished" goal
+> silently fails. If your Compose predates v2.24.4, instead edit the base
+> `docker-compose.yml` to remove/loopback-bind those `ports:` entries directly.
 
 ---
 

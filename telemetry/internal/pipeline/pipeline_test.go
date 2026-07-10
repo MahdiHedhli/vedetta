@@ -422,6 +422,90 @@ func TestPipelineCoreOptOutSuppressesExport(t *testing.T) {
 	}
 }
 
+// GHSA-c776 (privacy fail-open on restart): an explicit opt-out must survive a
+// daemon restart even if Core is briefly unreachable at startup. The last
+// effective opt-in is persisted to the state dir; on restart the new Pipeline
+// loads it and uses it as the fallback when Core is unreachable — instead of the
+// env default (on). Deterministic: persist off -> restart with Core down + a
+// pre-seeded spool -> no export, no drain, cursor unchanged, suppressed.
+func TestPipelinePersistedOptOutSurvivesRestartWhenCoreUnreachable(t *testing.T) {
+	dir := t.TempDir()
+
+	// Phase 1: Core reports the effective opt-in as OFF. One tick records that to
+	// optin.json (and suppresses export). This models an admin having opted out.
+	optOutCore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/settings/telemetry" {
+			json.NewEncoder(w).Encode(map[string]any{"opt_in": false, "source": "setting", "effective": false})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"events": knownBadEvents(1), "total": 1, "page": 1, "limit": 500})
+	}))
+
+	cfg := &config.Config{OptIn: true, CoreURL: optOutCore.URL, StateDir: dir,
+		CandidateMinScore: 0.85, BehaviorMinScore: 0.70, ReadCapPerTick: 5000, MaxBatchItems: 250, MaxBatchesTick: 4}
+	st := status.NewState(true, false)
+	p1 := &Pipeline{Cfg: cfg, Reader: corereader.NewClient(optOutCore.URL, ""),
+		Tx: transmit.New("http://ingest.invalid", transmit.Reporter{ReporterID: "rid", ReporterSecret: "secret"}, transmit.NewSpool(dir), false, 250),
+		Salt: []byte("salt"), State: st, StateDir: dir}
+	p1.RunTick(context.Background())
+	optOutCore.Close()
+
+	// The opt-out must have been durably recorded.
+	if v, ok := loadPersistedOptIn(dir); !ok || v {
+		t.Fatalf("expected persisted opt-in = off after phase 1, got value=%v ok=%v", v, ok)
+	}
+
+	// Pre-seed the spool with a batch that WOULD be drained/exported if the
+	// daemon forgot the opt-out and fell back to the env default (on).
+	seedSpool := transmit.NewSpool(dir)
+	if err := seedSpool.Add("seed-batch", []byte("gz-placeholder")); err != nil {
+		t.Fatal(err)
+	}
+	if seedSpool.Depth() != 1 {
+		t.Fatalf("spool seed failed, depth=%d", seedSpool.Depth())
+	}
+
+	// Phase 2: RESTART — a brand-new Pipeline (empty in-memory lastKnownOptIn),
+	// env OptIn=true (fail-open default), and Core is UNREACHABLE. It must load
+	// the persisted OFF and stay fully inert: no ingest call, no drain.
+	var ingestCalls int32
+	ingest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&ingestCalls, 1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer ingest.Close()
+
+	deadCore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError) // settings endpoint errors → Core "unreachable"
+	}))
+	defer deadCore.Close()
+
+	cfg2 := &config.Config{OptIn: true, CoreURL: deadCore.URL, ThreatNetworkURL: ingest.URL, StateDir: dir,
+		CandidateMinScore: 0.85, BehaviorMinScore: 0.70, ReadCapPerTick: 5000, MaxBatchItems: 250, MaxBatchesTick: 4}
+	st2 := status.NewState(true, false)
+	spool2 := transmit.NewSpool(dir)
+	tx2 := transmit.New(ingest.URL, transmit.Reporter{ReporterID: "rid", ReporterSecret: "secret"}, spool2, false, 250)
+	tx2.HTTP = ingest.Client()
+	tx2.Sleep = func(time.Duration) {}
+	p2 := &Pipeline{Cfg: cfg2, Reader: corereader.NewClient(deadCore.URL, ""), Tx: tx2,
+		Salt: []byte("salt"), State: st2, StateDir: dir}
+
+	p2.RunTick(context.Background())
+
+	if got := atomic.LoadInt32(&ingestCalls); got != 0 {
+		t.Errorf("persisted opt-out must block all export after restart, got %d ingest calls", got)
+	}
+	if d := spool2.Depth(); d != 1 {
+		t.Errorf("pre-seeded spool must NOT be drained while opted out, depth=%d (want 1)", d)
+	}
+	if snap := st2.Get(); !snap.Suppressed {
+		t.Errorf("suppressed state not surfaced when falling back to persisted opt-out")
+	}
+	if cur, _ := corereader.LoadCursor(dir); cur.LastEventID != "" {
+		t.Errorf("cursor must not advance while suppressed, got %q", cur.LastEventID)
+	}
+}
+
 // Issue #36 (3): an unregistered reporter surfaces a degraded state.
 func TestPipelineUnregisteredReporterDegraded(t *testing.T) {
 	core := fakeCoreServer(knownBadEvents(1))

@@ -128,14 +128,18 @@ jobs:
           else
             echo "::notice::collector/test/test_parser.py not on this ref yet (arrives with PR #17); skipping"
           fi
-      # NON-BLOCKING (for now): the Lua transform golden files were captured on
-      # Lua 5.5 and differ under 5.4's number/string formatting (4 golden-file
-      # cases fail on 5.4, pass on 5.5). Making the golden suite interpreter-
-      # version-robust — ideally pinned to the Lua that Fluent Bit actually
-      # embeds — is a tracked follow-up. Surfaced here, not gated, until then.
-      - name: Lua transform golden suite (informational)
+      # BLOCKING: the Lua transform golden suite. It was previously marked
+      # informational on the theory that Lua 5.4 vs 5.5 number/string formatting
+      # made 4 golden cases fail — that was a MISDIAGNOSIS. The suite's only
+      # float output is `anomaly_score:0.0`, which `tostring` formats identically
+      # on 5.4 and 5.5; verified all 14 cases pass under both interpreters. The
+      # real cause of the 4 clean-checkout failures (cef/iptables/noise golden +
+      # wan_drops rollup) was that the corpus `.log` inputs were gitignored
+      # (`*.log`) and untracked, so they were absent on a fresh CI checkout. Those
+      # SYNTHETIC fixtures are now tracked (see .gitignore negation + issue #40),
+      # so the suite is deterministic on a clean checkout and this is a hard gate.
+      - name: Lua transform golden suite
         working-directory: collector/test
-        continue-on-error: true
         run: lua5.4 run_tests.lua
 
   # ---- Secret scan: full history (push) + PR diff (pull_request) -------------

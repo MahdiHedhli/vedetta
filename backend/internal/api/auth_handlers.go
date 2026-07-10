@@ -61,7 +61,9 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the first admin token may be created during setup"})
 			return
 		}
-		if !s.checkSetupCode(r.Header.Get("X-Vedetta-Setup-Code")) {
+		// Atomically verify AND consume the single-use setup code under one lock, so a
+		// concurrent replay of the correct code cannot mint two admins (GHSA-6cmx).
+		if !s.consumeSetupCode(r.Header.Get("X-Vedetta-Setup-Code")) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "valid X-Vedetta-Setup-Code required to create the first admin token"})
 			return
 		}
@@ -80,11 +82,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Single-use: once the first admin is minted during bootstrap, burn the setup
-	// code so it can never be replayed to mint a second unauthenticated admin.
-	if !hasAdmin {
-		s.clearSetupCode()
-	}
+	// The setup code was already consumed atomically above (consumeSetupCode), so
+	// nothing to clear here — a concurrent replay could never reach this point.
 
 	log.Printf("Token created: %s (scope=%s, label=%s)", token.TokenID, scope, body.Label)
 	s.logInfo("auth", fmt.Sprintf("Token created: %s (scope=%s)", token.TokenID, scope))
@@ -149,24 +148,10 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Admin-only once an admin exists (see handleCreateToken).
-	hasAdmin, _ := s.DB.HasActiveAdminToken()
-	if hasAdmin {
-		scope := auth.GetScopeFromContext(r)
-		if scope != auth.ScopeAdmin {
-			http.Error(w, "only admins can revoke tokens", http.StatusForbidden)
-			return
-		}
-	} else {
-		// Bootstrap defense-in-depth (GHSA-6cmx): before any admin exists this
-		// endpoint is unauthenticated. A LAN attacker revoking the env-provisioned
-		// ingest/read tokens is a real DoS, so require the setup code. This does not
-		// consume the code (that is reserved for the first-admin mint).
-		if !s.checkSetupCode(r.Header.Get("X-Vedetta-Setup-Code")) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "valid X-Vedetta-Setup-Code required to revoke tokens during setup"})
-			return
-		}
-	}
+	// Revoke is gated by RequireStrictAdmin in the router, so this handler only ever
+	// runs with a valid admin token — there is no bootstrap path here anymore, which
+	// removes the LAN-peer machine-token-revocation DoS (GHSA-6cmx). The
+	// last-active-admin guard below still applies.
 
 	tokenID := chi.URLParam(r, "tokenID")
 	if tokenID == "" {

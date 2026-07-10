@@ -164,6 +164,37 @@ func TestKnownBadNeedsTwoReporters(t *testing.T) {
 	}
 }
 
+// TestExpiryClampedToNow is the GHSA-hwcf defense-in-depth regression: even if a
+// future-dated time_bucket reaches consensus (last_seen ahead of now), the
+// promoted feed item's expires_at must be anchored to server now + ttl, never
+// pinned years ahead by the caller-supplied bucket.
+func TestExpiryClampedToNow(t *testing.T) {
+	now := time.Date(2026, 7, 3, 15, 0, 0, 0, time.UTC)
+	// A bucket ~10 years in the future (as if it slipped past ingest).
+	futureBucket := time.Date(2036, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	e, db := newEngine(t, now)
+	addSignal(t, db, "r1", ingest.KindKnownBad, "kb.badzone.example", 0.99, `["known_bad"]`, futureBucket)
+	addSignal(t, db, "r2", ingest.KindKnownBad, "kb.badzone.example", 0.99, `["known_bad"]`, futureBucket)
+	if err := e.Run(); err != nil {
+		t.Fatal(err)
+	}
+	fi, found, err := db.GetFeedItemByIndicator("domain_indicator", "kb.badzone.example")
+	if err != nil || !found {
+		t.Fatalf("expected promoted item, found=%v err=%v", found, err)
+	}
+	exp, err := time.Parse(time.RFC3339, fi.ExpiresAt)
+	if err != nil {
+		t.Fatalf("bad expires_at %q: %v", fi.ExpiresAt, err)
+	}
+	// Rule-1 ttl is 30d; anchored to now the horizon is now+30d, NOT bucket+30d.
+	maxExpected := now.Add(30 * 24 * time.Hour).Add(time.Minute)
+	if exp.After(maxExpected) {
+		t.Fatalf("expires_at %s must be clamped to now+ttl (<= %s), not pinned to the future bucket",
+			exp.Format(time.RFC3339), maxExpected.Format(time.RFC3339))
+	}
+}
+
 func TestExactDomainRuleTwoBoundaries(t *testing.T) {
 	now := time.Date(2026, 7, 3, 15, 0, 0, 0, time.UTC)
 	bucket := time.Date(2026, 7, 3, 14, 0, 0, 0, time.UTC)

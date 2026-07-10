@@ -170,11 +170,13 @@ func TestValidSubdomainAccepted(t *testing.T) {
 	}
 }
 
-// TestCandidateFullSubdomainRejected is the finding #2 regression: a
-// high_confidence_domain_candidate whose etld_plus_one field carries a full
-// subdomain (exact host NOT withheld) must reject the whole batch under the PSL
-// re-gate. Previously this leaked the exact host verbatim into the feed.
-func TestCandidateFullSubdomainRejected(t *testing.T) {
+// TestCandidateFullSubdomainSkipped is the issue #41 regression: a
+// high_confidence_domain_candidate whose etld_plus_one field disagrees with the
+// receiver's PSL reduction (here a full subdomain, exact host NOT its own eTLD+1)
+// is a per-ITEM skip, not a whole-batch dead-letter. The offending item is
+// dropped (never stored, so no leak) and counted in rejected; the batch itself
+// succeeds. Previously a single such value rejected every other valid signal too.
+func TestCandidateFullSubdomainSkipped(t *testing.T) {
 	cases := []string{
 		"secret-victim-host.internal-corp-name.example",
 		"host.badzone.example",
@@ -187,15 +189,45 @@ func TestCandidateFullSubdomainRejected(t *testing.T) {
               "signals":[{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
                 "etld_plus_one":%q,"local_confidence":0.9,"local_reasons":["dga_candidate"],
                 "observation_count":1,"distinct_asset_count":1}]}`, v))
-			_, _, err := ParseAndValidate(body)
-			se, ok := err.(*StrictError)
-			if !ok {
-				t.Fatalf("expected *StrictError (422), got %T (%v)", err, err)
+			b, rejected, err := ParseAndValidate(body)
+			if err != nil {
+				t.Fatalf("PSL/eTLD+1 disagreement must be a per-item skip, not a whole-batch error: %v", err)
 			}
-			if se.ErrorName != "forbidden_content" || se.Rule != "candidate_not_etld_plus_one" {
-				t.Fatalf("expected forbidden_content/candidate_not_etld_plus_one, got %s/%s", se.ErrorName, se.Rule)
+			if rejected != 1 || len(b.Signals) != 0 {
+				t.Fatalf("expected the item skipped (rejected=1, accepted=0), got rejected=%d accepted=%d", rejected, len(b.Signals))
 			}
 		})
+	}
+}
+
+// TestPSLDisagreementSkipsOnlyOffendingItem is the core issue #41 regression: a
+// batch mixing valid signals with ONE PSL/eTLD+1-disagreeing item accepts the
+// valid signals and skips only the bad one — the whole batch is NOT dead-lettered.
+func TestPSLDisagreementSkipsOnlyOffendingItem(t *testing.T) {
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
+      "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[
+        {"signal_id":"ok1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
+         "etld_plus_one":"qxv-rotator.example","local_confidence":0.9,"local_reasons":["dga_candidate"],
+         "observation_count":1,"distinct_asset_count":1},
+        {"signal_id":"psl_bare_suffix","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
+         "etld_plus_one":"co.uk","local_confidence":0.9,"local_reasons":["dga_candidate"],
+         "observation_count":1,"distinct_asset_count":1},
+        {"signal_id":"psl_etld_mismatch","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
+         "domain":"c2.badzone.example","etld_plus_one":"otherzone.example","local_confidence":0.9,
+         "local_reasons":["known_bad"],"observation_count":1,"distinct_asset_count":1},
+        {"signal_id":"ok2","kind":"behavior_summary","time_bucket":"2026-07-03T14:00:00Z",
+         "behavior":"dns_beaconing_candidate","local_confidence":0.8,"local_reasons":["beaconing_candidate"],
+         "observation_count":1,"distinct_asset_count":1}
+      ]}`)
+	b, rejected, err := ParseAndValidate(body)
+	if err != nil {
+		t.Fatalf("mixed batch with PSL disagreements must not be dead-lettered: %v", err)
+	}
+	if len(b.Signals) != 2 {
+		t.Fatalf("expected 2 valid signals accepted, got %d", len(b.Signals))
+	}
+	if rejected != 2 {
+		t.Fatalf("expected 2 PSL-disagreeing items skipped, got %d", rejected)
 	}
 }
 
@@ -212,39 +244,94 @@ func TestCandidateExactEtldAccepted(t *testing.T) {
 	}
 }
 
-// TestNonPSLReducibleRejected covers §5.4: a value that is a bare public suffix
-// (no registrable eTLD+1) is not reducible under the PSL and rejects the batch.
-func TestNonPSLReducibleRejected(t *testing.T) {
+// TestNonPSLReducibleSkipped covers §5.4 under issue #41: a value that is a bare
+// public suffix in the receiver's PSL (no registrable eTLD+1) — the classic
+// producer/receiver PSL-version mismatch (e.g. "github.io") — is a per-item skip,
+// not a whole-batch dead-letter.
+func TestNonPSLReducibleSkipped(t *testing.T) {
 	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
         "etld_plus_one":"co.uk","local_confidence":0.9,"local_reasons":["dga_candidate"],
         "observation_count":1,"distinct_asset_count":1}]}`)
-	_, _, err := ParseAndValidate(body)
-	se, ok := err.(*StrictError)
-	if !ok {
-		t.Fatalf("expected *StrictError for non-PSL-reducible value, got %T (%v)", err, err)
+	b, rejected, err := ParseAndValidate(body)
+	if err != nil {
+		t.Fatalf("non-PSL-reducible value must be a per-item skip, not a whole-batch error: %v", err)
 	}
-	if se.ErrorName != "forbidden_content" || se.Rule != "not_psl_reducible" {
-		t.Fatalf("expected forbidden_content/not_psl_reducible, got %s/%s", se.ErrorName, se.Rule)
+	if rejected != 1 || len(b.Signals) != 0 {
+		t.Fatalf("expected the item skipped (rejected=1, accepted=0), got rejected=%d accepted=%d", rejected, len(b.Signals))
 	}
 }
 
-// TestKnownBadEtldMismatchRejected covers §4.1: etld_plus_one must be the PSL
-// reduction of the exact domain; a mismatched eTLD+1 rejects the batch.
-func TestKnownBadEtldMismatchRejected(t *testing.T) {
+// TestKnownBadEtldMismatchSkipped covers §4.1 under issue #41: when the receiver's
+// PSL reduction of domain disagrees with the producer-supplied etld_plus_one, the
+// item is skipped (never stored), not the whole batch.
+func TestKnownBadEtldMismatchSkipped(t *testing.T) {
 	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
         "domain":"c2.badzone.example","etld_plus_one":"otherzone.example","local_confidence":0.9,
         "local_reasons":["known_bad"],"observation_count":1,"distinct_asset_count":1}]}`)
-	_, _, err := ParseAndValidate(body)
-	se, ok := err.(*StrictError)
-	if !ok {
-		t.Fatalf("expected *StrictError for etld mismatch, got %T (%v)", err, err)
+	b, rejected, err := ParseAndValidate(body)
+	if err != nil {
+		t.Fatalf("etld mismatch must be a per-item skip, not a whole-batch error: %v", err)
 	}
-	if se.ErrorName != "forbidden_content" || se.Rule != "etld_plus_one_mismatch" {
-		t.Fatalf("expected forbidden_content/etld_plus_one_mismatch, got %s/%s", se.ErrorName, se.Rule)
+	if rejected != 1 || len(b.Signals) != 0 {
+		t.Fatalf("expected the item skipped (rejected=1, accepted=0), got rejected=%d accepted=%d", rejected, len(b.Signals))
+	}
+}
+
+// TestHardForbiddenContentStillWholeBatch confirms the finding-#2 scope-down does
+// NOT weaken the privacy tripwire: genuine forbidden content (IP literal / special-
+// use zone) still dead-letters the whole batch with 422, unchanged.
+func TestHardForbiddenContentStillWholeBatch(t *testing.T) {
+	for _, c := range []struct{ name, value string }{
+		{"ip_literal", "192.0.2.7"},
+		{"special_use", "printer.local"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
+              "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
+              "signals":[{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
+                "etld_plus_one":%q,"local_confidence":0.9,"local_reasons":["dga_candidate"],
+                "observation_count":1,"distinct_asset_count":1}]}`, c.value))
+			_, _, err := ParseAndValidate(body)
+			if se, ok := err.(*StrictError); !ok || se.ErrorName != "forbidden_content" {
+				t.Fatalf("hard forbidden content must stay whole-batch forbidden_content, got %T (%v)", err, err)
+			}
+		})
+	}
+}
+
+// TestFutureDatedBucketSkipped is the GHSA-hwcf regression: a signal whose
+// time_bucket (and window) sit years in the future is skipped per-item under the
+// clock-skew gate, so it can never become last_seen and pin a feed item's expiry
+// far ahead. Valid signals in the same batch are still accepted.
+func TestFutureDatedBucketSkipped(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+
+	// Wholly-future batch: single future signal is skipped, batch not dead-lettered.
+	future := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2036-01-01T00:00:02Z",
+      "window_start":"2036-01-01T00:00:00Z","window_end":"2036-01-01T01:00:00Z",
+      "signals":[{"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":"2036-01-01T00:00:00Z",
+        "domain":"c2.badzone.example","etld_plus_one":"badzone.example","local_confidence":0.9,
+        "local_reasons":["known_bad"],"observation_count":1,"distinct_asset_count":1}]}`)
+	b, rejected, err := ParseAndValidateAt(future, now)
+	if err != nil {
+		t.Fatalf("future-dated batch must not be dead-lettered: %v", err)
+	}
+	if rejected != 1 || len(b.Signals) != 0 {
+		t.Fatalf("future bucket must be skipped (rejected=1, accepted=0), got rejected=%d accepted=%d", rejected, len(b.Signals))
+	}
+
+	// A bucket within the clock-skew allowance (<= now+1h) is still accepted.
+	skew := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-10T12:00:02Z",
+      "window_start":"2026-07-10T12:00:00Z","window_end":"2026-07-10T13:00:00Z",
+      "signals":[{"signal_id":"s1","kind":"behavior_summary","time_bucket":"2026-07-10T12:00:00Z",
+        "behavior":"dns_beaconing_candidate","local_confidence":0.8,"local_reasons":["beaconing_candidate"],
+        "observation_count":1,"distinct_asset_count":1}]}`)
+	if b, rejected, err := ParseAndValidateAt(skew, now); err != nil || rejected != 0 || len(b.Signals) != 1 {
+		t.Fatalf("current-hour bucket must be accepted, got rejected=%d accepted=%d err=%v", rejected, len(b.Signals), err)
 	}
 }
 

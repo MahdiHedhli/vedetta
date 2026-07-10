@@ -66,6 +66,24 @@ func (s *Server) clearSetupCode() {
 	s.setupMu.Unlock()
 }
 
+// consumeSetupCode atomically verifies AND clears the single-use bootstrap setup
+// code under one lock. Exactly ONE caller presenting the correct code gets true;
+// every concurrent or later caller gets false. Use this (never a separate check +
+// later clear) for first-admin creation so a concurrent replay cannot mint two
+// admins (GHSA-6cmx).
+func (s *Server) consumeSetupCode(provided string) bool {
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
+	if s.SetupCode == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(provided)), []byte(s.SetupCode)) != 1 {
+		return false
+	}
+	s.SetupCode = "" // consume — single use
+	return true
+}
+
 // needsSetupCode reports whether a bootstrap setup code is currently active.
 func (s *Server) needsSetupCode() bool {
 	s.setupMu.Lock()
@@ -80,6 +98,10 @@ func NewRouter(srv *Server) http.Handler {
 		srv.Enroll = NewEnrollmentStore()
 	}
 	sensorRegistrationLimiter := newIPRateLimiter(5, time.Minute)
+
+	// Outermost middleware: stamp anti-clickjacking / anti-sniffing headers on
+	// every response, including the dashboard SPA and health probes (GHSA-69jp).
+	r.Use(securityHeaders)
 
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -121,7 +143,7 @@ func NewRouter(srv *Server) http.Handler {
 
 		// Persisting the telemetry opt-in is an admin action (dashboard control).
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAdmin(srv.DB))
+			r.Use(auth.RequireStrictAdmin(srv.DB))
 			r.Put("/settings/telemetry", srv.handlePutTelemetrySetting)
 		})
 
@@ -146,13 +168,13 @@ func NewRouter(srv *Server) http.Handler {
 			r.Get("/devices/new", srv.handleNewDevices)
 		})
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAdmin(srv.DB))
+			r.Use(auth.RequireStrictAdmin(srv.DB))
 			r.Put("/devices/{deviceID}", srv.handleUpdateDevice)
 		})
 
 		// Event acknowledgment and suppression — protected (user intent / configuration)
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAdmin(srv.DB))
+			r.Use(auth.RequireStrictAdmin(srv.DB))
 			r.Put("/events/{eventID}/ack", srv.handleAckEvent)
 			r.Delete("/events/{eventID}/ack", srv.handleUnackEvent)
 			r.Get("/suppression", srv.handleListSuppression)
@@ -162,7 +184,7 @@ func NewRouter(srv *Server) http.Handler {
 
 		// Known-traffic whitelist — protected (user configuration)
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAdmin(srv.DB))
+			r.Use(auth.RequireStrictAdmin(srv.DB))
 			r.Get("/whitelist", srv.handleListWhitelist)
 			r.Post("/whitelist", srv.handleCreateWhitelist)
 			r.Put("/whitelist/{ruleID}", srv.handleToggleWhitelist)
@@ -172,7 +194,7 @@ func NewRouter(srv *Server) http.Handler {
 
 		// Scanning & scan targets — protected (active scanning + configuration)
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAdmin(srv.DB))
+			r.Use(auth.RequireStrictAdmin(srv.DB))
 			r.Post("/scan", srv.handleTriggerScan)
 			r.Put("/scan/cidr", srv.handleSetDefaultCIDR)
 			r.Get("/scan/targets", srv.handleListTargets)
@@ -202,15 +224,21 @@ func NewRouter(srv *Server) http.Handler {
 		// because no middleware ever set it, so once >=1 token existed no second token
 		// could ever be minted even with a valid admin bearer.
 		r.Route("/auth", func(r chi.Router) {
-			r.Use(auth.RequireAdmin(srv.DB))
-			r.Post("/tokens", srv.handleCreateToken)
-			r.Get("/tokens", srv.handleListTokens)
-			r.Delete("/tokens/{tokenID}", srv.handleRevokeToken)
+			// First-admin creation must work during bootstrap (self-gated by the
+			// single-use setup code inside the handler); RequireAdmin bootstrap-passes
+			// ONLY here. Listing/revoking tokens are strictly admin — never open
+			// pre-admin (GHSA-6cmx).
+			r.With(auth.RequireAdmin(srv.DB)).Post("/tokens", srv.handleCreateToken)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireStrictAdmin(srv.DB))
+				r.Get("/tokens", srv.handleListTokens)
+				r.Delete("/tokens/{tokenID}", srv.handleRevokeToken)
+			})
 		})
 
 		// Admin mints a short-lived, single-use code to enroll a NEW sensor once
 		// admin auth exists (beta-gate B1a).
-		r.With(auth.RequireAdmin(srv.DB)).Post("/enrollment-codes", srv.handleGenerateEnrollmentCode)
+		r.With(auth.RequireStrictAdmin(srv.DB)).Post("/enrollment-codes", srv.handleGenerateEnrollmentCode)
 
 		// Sensor ingest (native sensors push data to Core)
 		r.Route("/sensor", func(r chi.Router) {
@@ -226,7 +254,7 @@ func NewRouter(srv *Server) http.Handler {
 			// Dashboard-facing sensor management routes — now protected with admin auth.
 			// In bootstrap mode (no tokens yet) they remain open for first-run setup.
 			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireAdmin(srv.DB))
+				r.Use(auth.RequireStrictAdmin(srv.DB))
 				r.Get("/list", srv.handleSensorList)
 				r.Put("/{sensorID}/primary", srv.handleSetPrimarySensor)
 			})
@@ -234,7 +262,7 @@ func NewRouter(srv *Server) http.Handler {
 
 		// Activity log (protected — can contain operational details)
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAdmin(srv.DB))
+			r.Use(auth.RequireStrictAdmin(srv.DB))
 			r.Get("/logs", srv.handleLogs)
 			// Firewall connector health (spec 001, T4.4) — admin-only.
 			r.Get("/connectors", srv.handleListConnectors)
@@ -1222,7 +1250,19 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		isAdmin := presentedToken != nil && presentedToken.Scope == auth.ScopeAdmin
-		if hasAdmin && !isAdmin {
+		switch {
+		case !hasAdmin:
+			// Bootstrap: no admin exists yet. A brand-new sensor may enroll ONLY with
+			// the one-time setup code printed to Core's logs, so a LAN peer cannot grab
+			// a persistent sensor bearer before setup completes (GHSA-6cmx). This is a
+			// non-consuming check; the code is consumed only by first-admin creation.
+			if !s.checkSetupCode(r.Header.Get("X-Vedetta-Setup-Code")) {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"error": "sensor enrollment during setup requires the X-Vedetta-Setup-Code printed in Core's logs",
+				})
+				return
+			}
+		case !isAdmin:
 			if s.Enroll == nil || !s.Enroll.Consume(r.Header.Get("X-Vedetta-Enrollment-Code")) {
 				writeJSON(w, http.StatusUnauthorized, map[string]any{
 					"error": "new sensor enrollment requires an admin token or a valid enrollment code (an admin can mint one via POST /api/v1/enrollment-codes)",

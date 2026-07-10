@@ -36,13 +36,22 @@ func timeField(m map[string]json.RawMessage, key string, dst *time.Time) error {
 	return nil
 }
 
+// maxClockSkew bounds how far ahead of server time a signal's time_bucket (and,
+// transitively, the batch window it falls in) may be. A reporter that stamps a
+// bucket further in the future than this is rejected per-signal (GHSA-hwcf):
+// otherwise a future-dated bucket becomes last_seen and pins the promoted feed
+// item's expires_at years ahead, surviving the raw-signal retention purge. One
+// hour is a generous allowance for benign reporter clock drift.
+const maxClockSkew = time.Hour
+
 // decodeSignal validates and decodes a single signal. It returns (signal, false)
 // on any per-signal STRUCTURAL failure (unknown kind, missing/invalid required
 // field, confidence out of [0,1], observation_count out of [1,10000],
 // distinct_asset_count out of [1,500], mis-aligned/out-of-window time_bucket,
-// reason vocab violation, kind field-presence rule violations). These are
-// non-fatal (rejected count), NOT whole-batch failures.
-func decodeSignal(sr map[string]json.RawMessage, winStart, winEnd time.Time) (Signal, bool) {
+// future-dated time_bucket beyond the clock-skew allowance, reason vocab
+// violation, kind field-presence rule violations). These are non-fatal (rejected
+// count), NOT whole-batch failures. now is server time for the future-date gate.
+func decodeSignal(sr map[string]json.RawMessage, winStart, winEnd, now time.Time) (Signal, bool) {
 	var s Signal
 
 	if strField(sr, "signal_id", &s.SignalID) != nil || s.SignalID == "" {
@@ -65,6 +74,13 @@ func decodeSignal(sr map[string]json.RawMessage, winStart, winEnd time.Time) (Si
 	}
 	// bucket must be within the batch window [window_start, window_end)
 	if tb.Before(winStart) || !tb.Before(winEnd) {
+		return s, false
+	}
+	// Future-date gate (GHSA-hwcf): reject a bucket more than maxClockSkew ahead
+	// of server now. Rejecting the individual signal (not the whole batch) keeps
+	// a stray future bucket from dead-lettering an otherwise-valid batch, while
+	// ensuring no caller can pin an indicator's expiry far in the future.
+	if tb.After(now.Add(maxClockSkew)) {
 		return s, false
 	}
 	s.TimeBucket = tb

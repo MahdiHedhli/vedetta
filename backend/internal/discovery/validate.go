@@ -52,8 +52,18 @@ func ValidateScanTarget(target string) error {
 	if net.ParseIP(target) != nil {
 		return nil
 	}
-	// CIDR (v4 or v6).
-	if _, _, err := net.ParseCIDR(target); err == nil {
+	// CIDR (v4 or v6) — but reject absurdly broad ranges a LAN scanner should never
+	// receive (e.g. 0.0.0.0/0). A forged/over-broad target would otherwise make the
+	// root-running sensor scan far beyond the local network (GHSA-c5gj).
+	if _, ipnet, err := net.ParseCIDR(target); err == nil {
+		ones, _ := ipnet.Mask.Size()
+		minOnes := 8
+		if ipnet.IP.To4() == nil {
+			minOnes = 32 // IPv6
+		}
+		if ones < minOnes {
+			return fmt.Errorf("scan target %q is too broad; use a specific subnet (minimum /%d)", target, minOnes)
+		}
 		return nil
 	}
 	// nmap IPv4 numeric range / octet list.

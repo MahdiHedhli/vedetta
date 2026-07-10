@@ -1,0 +1,7 @@
+<134>Jul  3 10:21:00 gateway-placeholder CEF:0|Ubiquiti|UniFi Network|9.0.108|client|Client Connected|1|src=192.0.2.45 smac=00:00:5E:00:53:0A msg=STA associated
+<134>Jul  3 10:21:05 gateway-placeholder CEF:0|Ubiquiti|UniFi Network|9.0.108|admin|Admin Login|1|suser=placeholder-admin msg=login success
+<30>Jul  3 10:21:10 gateway-placeholder dnsmasq-dhcp[1234]: DHCPACK(br0) 192.0.2.45 00:00:5E:00:53:0A placeholder-host
+<27>Jul  3 10:21:15 gateway-placeholder hostapd: ath0: STA 00:00:5E:00:53:0A IEEE 802.11: authenticated
+<4>Jul  3 10:21:20 gateway-placeholder kernel: bridge br0: received tagged frame
+this is not a syslog line at all and must be dropped
+<134>Jul  3 10:21:25 gateway-placeholder CEF:0|SomeOtherVendor|Firewall|1.0|fwrule|Block|3|src=203.0.113.5 dst=198.51.100.2 act=block

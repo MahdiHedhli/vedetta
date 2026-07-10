@@ -162,7 +162,11 @@ func TestEnvProvisionedTokensBypassHandler(t *testing.T) {
 	}
 }
 
-func TestBootstrap_RevokeGatedBySetupCode(t *testing.T) {
+// TestBootstrap_RevokeRequiresAdmin: revocation is strictly admin-gated
+// (RequireStrictAdmin), so during bootstrap — before any admin exists — it is
+// unavailable regardless of the setup code, closing the LAN-peer machine-token
+// revocation DoS (GHSA-6cmx). It works once an admin token exists.
+func TestBootstrap_RevokeRequiresAdmin(t *testing.T) {
 	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
 
@@ -176,25 +180,27 @@ func TestBootstrap_RevokeGatedBySetupCode(t *testing.T) {
 	}
 	victimID := tokens[0].TokenID
 
-	revoke := func(setupCode string) *httptest.ResponseRecorder {
+	revoke := func(bearer string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("DELETE", "/api/v1/auth/tokens/"+victimID, nil)
-		if setupCode != "" {
-			req.Header.Set("X-Vedetta-Setup-Code", setupCode)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
 		}
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 		return w
 	}
 
-	// No / wrong setup code during bootstrap → refused (DoS protection).
-	if w := revoke(""); w.Code != http.StatusForbidden {
-		t.Fatalf("bootstrap revoke without setup code: expected 403, got %d: %s", w.Code, w.Body.String())
+	// During bootstrap (no admin), revoke is unauthenticated -> 401. The setup code
+	// no longer applies to this route.
+	if w := revoke(""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("bootstrap revoke without admin: expected 401, got %d: %s", w.Code, w.Body.String())
 	}
-	if w := revoke("WRONG"); w.Code != http.StatusForbidden {
-		t.Fatalf("bootstrap revoke with wrong setup code: expected 403, got %d: %s", w.Code, w.Body.String())
+	if w := revoke("bogus-token"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("bootstrap revoke with bogus token: expected 401, got %d: %s", w.Code, w.Body.String())
 	}
-	// Correct setup code → allowed.
-	if w := revoke(testSetupCode); w.Code != http.StatusOK {
-		t.Fatalf("bootstrap revoke with correct setup code: expected 200, got %d: %s", w.Code, w.Body.String())
+	// With a real admin token, revoke succeeds.
+	adminToken := createTestToken(t, db, auth.ScopeAdmin, "")
+	if w := revoke(adminToken); w.Code != http.StatusOK {
+		t.Fatalf("admin revoke: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }

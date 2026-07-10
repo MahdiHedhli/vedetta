@@ -21,7 +21,15 @@ func (e *Engine) upsertFeedItem(now time.Time, ag *aggregate, d decision, conf f
 		return err
 	}
 
-	expiresAt := ag.lastSeen.Add(time.Duration(d.ttl) * time.Hour)
+	// Defense in depth (GHSA-hwcf): expiry is anchored to last_seen (a reporter-
+	// supplied time_bucket). Ingest already rejects future-dated buckets, but never
+	// let a caller pin expires_at past now+ttl even if a future bucket slipped
+	// through — clamp the anchor to server now so the horizon is bounded by ttl.
+	anchor := ag.lastSeen
+	if anchor.After(now) {
+		anchor = now
+	}
+	expiresAt := anchor.Add(time.Duration(d.ttl) * time.Hour)
 	nowStr := now.UTC().Format(time.RFC3339)
 
 	fi := store.FeedItem{
