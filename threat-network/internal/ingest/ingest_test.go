@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -736,6 +737,156 @@ func TestConcurrentDuplicateBatchCountsOnce(t *testing.T) {
 		if receipts != 1 {
 			t.Fatalf("iter %d: expected exactly 1 receipt, got %d", iter, receipts)
 		}
+	}
+}
+
+// TestDNSLengthViolationsSkipped is the GHSA-7p69 validation regression: a
+// registered reporter could submit megabyte-sized "domains" because ingest had no
+// DNS label/name-length checks. An oversized label (> 63), an over-long name
+// (> 253), and an empty label are now rejected. Like a PSL disagreement, this is
+// a PER-ITEM skip (never stored, counted in rejected), not a whole-batch reject.
+func TestDNSLengthViolationsSkipped(t *testing.T) {
+	oneMBLabel := strings.Repeat("a", 1<<20)        // 1 MiB single label
+	label63 := strings.Repeat("b", maxDNSLabelLen)  // 63-char label (max allowed)
+	overLongName := label63 + "." + label63 + "." + // 4×63 + dots + tld > 253,
+		label63 + "." + label63 + ".example" // every label still ≤ 63
+
+	// Each domain-carrying kind exercises the domain-like field it validates.
+	cases := []struct {
+		name  string
+		field string // "domain" (known_bad) | "etld" (candidate)
+		value string
+	}{
+		{"megabyte_label_known_bad", "domain", oneMBLabel + ".example"},
+		{"megabyte_label_candidate", "etld", oneMBLabel + ".example"},
+		{"overlong_name_known_bad", "domain", overLongName},
+		{"overlong_name_candidate", "etld", overLongName},
+		{"empty_label", "etld", "a..example"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var sig string
+			if c.field == "domain" {
+				sig = fmt.Sprintf(`{"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
+                  "domain":%q,"etld_plus_one":"badzone.example","local_confidence":0.9,
+                  "local_reasons":["known_bad"],"observation_count":1,"distinct_asset_count":1}`, c.value)
+			} else {
+				sig = fmt.Sprintf(`{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
+                  "etld_plus_one":%q,"local_confidence":0.9,"local_reasons":["dga_candidate"],
+                  "observation_count":1,"distinct_asset_count":1}`, c.value)
+			}
+			body := []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
+              "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[%s]}`, sig))
+			b, rejected, err := ParseAndValidate(body)
+			if err != nil {
+				t.Fatalf("DNS length violation must be a per-item skip, not a whole-batch error: %v", err)
+			}
+			if rejected != 1 || len(b.Signals) != 0 {
+				t.Fatalf("expected the item skipped (rejected=1, accepted=0), got rejected=%d accepted=%d", rejected, len(b.Signals))
+			}
+		})
+	}
+}
+
+// TestDNSLengthSkipsOnlyOffendingItem confirms an oversized "domain" does not
+// dead-letter the rest of the batch: the valid signals are accepted and only the
+// megabyte item is skipped.
+func TestDNSLengthSkipsOnlyOffendingItem(t *testing.T) {
+	huge := strings.Repeat("z", 1<<20) + ".example"
+	body := []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
+      "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[
+        {"signal_id":"ok1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
+         "etld_plus_one":"qxv-rotator.example","local_confidence":0.9,"local_reasons":["dga_candidate"],
+         "observation_count":1,"distinct_asset_count":1},
+        {"signal_id":"huge","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
+         "domain":%q,"etld_plus_one":"badzone.example","local_confidence":0.9,
+         "local_reasons":["known_bad"],"observation_count":1,"distinct_asset_count":1}
+      ]}`, huge))
+	b, rejected, err := ParseAndValidate(body)
+	if err != nil {
+		t.Fatalf("batch with one oversized domain must not be dead-lettered: %v", err)
+	}
+	if len(b.Signals) != 1 || rejected != 1 {
+		t.Fatalf("expected 1 accepted / 1 skipped, got accepted=%d rejected=%d", len(b.Signals), rejected)
+	}
+}
+
+// TestValidLengthDomainAccepted guards against over-blocking: a name exactly at
+// the limits (253-char name, 63-char labels) is still accepted.
+func TestValidLengthDomainAccepted(t *testing.T) {
+	if v := checkDNSLimits("x", strings.Repeat("a", maxDNSLabelLen)+".example"); v != nil {
+		t.Fatalf("max-length label must be accepted, got %v", v)
+	}
+	// Build a name whose total length is exactly 253.
+	name := strings.Repeat("a", 53) + "." + strings.Repeat("b", 63) + "." +
+		strings.Repeat("c", 63) + "." + strings.Repeat("d", 63) + ".example"
+	if len(name) != maxDNSNameLen {
+		t.Fatalf("test fixture wrong length: got %d, want %d", len(name), maxDNSNameLen)
+	}
+	if v := checkDNSLimits("x", name); v != nil {
+		t.Fatalf("253-char name must be accepted, got %v", v)
+	}
+}
+
+// TestDistinctCapEnforcedBeforeStorage is the GHSA-7p69 storage-bound regression:
+// the per-reporter distinct-indicator cap must be enforced BEFORE persisting, so a
+// reporter already at MaxDistinctPerDay cannot store any NEW distinct indicators —
+// previously the cap was only a counter clip applied AFTER the rows were written.
+func TestDistinctCapEnforcedBeforeStorage(t *testing.T) {
+	now := time.Date(2026, 7, 3, 14, 30, 0, 0, time.UTC)
+	p, db := newProcessor(t, now)
+	day := "2026-07-03"
+	// Reporter already at the daily distinct-indicator cap.
+	if err := db.AddCounters("r1", day, 0, 0, MaxDistinctPerDay, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := p.Process("r1", validBatch(uuidFor("over-distinct")))
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	// All three signals are NEW distinct indicators → all refused pre-storage.
+	if res.Accepted != 0 || res.Rejected != 3 {
+		t.Fatalf("at distinct cap all new indicators must be refused, got accepted=%d rejected=%d", res.Accepted, res.Rejected)
+	}
+	var rows int
+	db.QueryRow(`SELECT COUNT(*) FROM signals WHERE reporter_id = 'r1'`).Scan(&rows)
+	if rows != 0 {
+		t.Fatalf("cap must be enforced BEFORE storage: expected 0 stored rows, got %d", rows)
+	}
+}
+
+// TestDistinctCapAllowsMerges confirms the pre-storage cap does not over-block: a
+// reporter at the cap may still MERGE into indicators it has already stored (those
+// add no new distinct indicator), so re-sent observations are not lost.
+func TestDistinctCapAllowsMerges(t *testing.T) {
+	now := time.Date(2026, 7, 3, 14, 30, 0, 0, time.UTC)
+	p, db := newProcessor(t, now)
+	day := "2026-07-03"
+
+	// First store the batch's 3 indicators normally (distinct counter → 3).
+	if _, err := p.Process("r1", validBatch(uuidFor("seed"))); err != nil {
+		t.Fatal(err)
+	}
+	// Now push the reporter's distinct counter up to the cap.
+	if err := db.AddCounters("r1", day, 0, 0, MaxDistinctPerDay-3, 0); err != nil {
+		t.Fatal(err)
+	}
+	var rowsBefore int
+	db.QueryRow(`SELECT COUNT(*) FROM signals WHERE reporter_id = 'r1'`).Scan(&rowsBefore)
+
+	// Re-send the SAME signals under a different batch_id: all merge, none new.
+	res, err := p.Process("r1", validBatch(uuidFor("remerge")))
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if res.Accepted != 3 || res.Rejected != 0 {
+		t.Fatalf("merges into existing indicators must be allowed at cap, got accepted=%d rejected=%d", res.Accepted, res.Rejected)
+	}
+	var rowsAfter int
+	db.QueryRow(`SELECT COUNT(*) FROM signals WHERE reporter_id = 'r1'`).Scan(&rowsAfter)
+	if rowsAfter != rowsBefore {
+		t.Fatalf("merges must not create new rows: %d → %d", rowsBefore, rowsAfter)
 	}
 }
 

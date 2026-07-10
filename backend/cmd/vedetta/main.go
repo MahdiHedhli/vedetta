@@ -73,6 +73,15 @@ func main() {
 		log.Printf("WARNING: failed to seed default whitelist rules: %v", err)
 	}
 
+	// Issue #7: an upgraded DB may carry scan targets written before write-time
+	// validation existed (e.g. a planted 0.0.0.0/0). Disable any stored target that
+	// fails discovery.ValidateScanTarget so it can never be handed to the root sensor.
+	if n, err := db.ScrubInvalidScanTargets(); err != nil {
+		log.Printf("WARNING: failed to scrub invalid scan targets: %v", err)
+	} else if n > 0 {
+		log.Printf("Disabled %d invalid stored scan target(s) at startup", n)
+	}
+
 	// Provision the collector's ingest credential from the shared VEDETTA_INGEST_TOKEN
 	// secret (the same value is given to the collector container). Without this,
 	// /ingest keeps working only until the first token is created (e.g. when a

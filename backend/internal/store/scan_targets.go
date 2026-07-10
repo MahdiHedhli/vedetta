@@ -3,9 +3,11 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
@@ -84,6 +86,34 @@ func (db *DB) GetEnabledScanTargets() ([]models.ScanTarget, error) {
 		targets = append(targets, t)
 	}
 	return targets, rows.Err()
+}
+
+// ScrubInvalidScanTargets disables any stored scan target whose CIDR fails
+// discovery.ValidateScanTarget. Fresh writes are validated at the API boundary,
+// but a database upgraded from an older build (Issue #7) can carry rows that were
+// inserted before that validation existed — e.g. a planted 0.0.0.0/0 that would
+// otherwise be served to the root-running sensor. Called once at startup. Targets
+// are disabled rather than deleted so the operator can see and repair them.
+// Returns the number of targets disabled.
+func (db *DB) ScrubInvalidScanTargets() (int, error) {
+	targets, err := db.ListScanTargets()
+	if err != nil {
+		return 0, err
+	}
+	disabled := 0
+	for _, t := range targets {
+		if !t.Enabled {
+			continue
+		}
+		if err := discovery.ValidateScanTarget(t.CIDR); err != nil {
+			if derr := db.ToggleScanTarget(t.TargetID, false); derr != nil {
+				return disabled, fmt.Errorf("disable invalid scan target %s (%q): %w", t.TargetID, t.CIDR, derr)
+			}
+			log.Printf("SECURITY: disabled invalid stored scan target %s (%q): %v", t.TargetID, t.CIDR, err)
+			disabled++
+		}
+	}
+	return disabled, nil
 }
 
 // DeleteScanTarget removes a scan target by ID.

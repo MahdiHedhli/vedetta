@@ -168,7 +168,9 @@ func (e *Enricher) Enrich(event *models.Event) {
 	// them; no ingest, sensor, or admin token can pre-seed provenance.
 	event.MatchType = ""
 	event.MatchedIndicator = ""
-	event.Tags = removeTags(event.Tags, "known_bad")
+	// Strip every verdict tag telemetry trusts (known_bad + the candidate/behavior
+	// signal tags) so a caller cannot forge them; Core's own analysis re-adds them.
+	event.Tags = removeTags(event.Tags, "known_bad", "dga_candidate", "tunneling_candidate", "beaconing_candidate", "newly_registered")
 	if event.EventType == "dns_query" {
 		event.AnomalyScore = 0 // recomputed below from analysis, never trusted from the caller
 	}

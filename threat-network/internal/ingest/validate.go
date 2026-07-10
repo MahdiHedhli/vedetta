@@ -99,19 +99,27 @@ type EnvelopeError struct {
 
 func (e *EnvelopeError) Error() string { return e.Code + ": " + e.Detail }
 
-// pslDisagreementRules are the per-item validation failures that stem from the
-// producer and receiver using DIFFERENT Public Suffix Lists (issue #41), e.g. a
-// value like "github.io" that one PSL treats as registrable and the other as a
-// public suffix. Unlike the hard forbidden-content rules (IP literals, MAC
-// addresses, special-use zones, URL syntax, single-label names), a PSL/eTLD+1
-// disagreement on ONE indicator must NOT dead-letter the whole batch: that item
-// is skipped (counted in rejected) and the rest of the batch is accepted. The
-// skipped item is never stored, so nothing leaks — the fix only stops a single
-// PSL mismatch from discarding every other valid signal in the batch.
-var pslDisagreementRules = map[string]bool{
+// perItemSkipRules are the per-item validation failures that skip just the
+// offending signal (counted in rejected) instead of dead-lettering the whole
+// batch. Two classes qualify:
+//
+//   - PSL/eTLD+1 disagreements (issue #41): the producer and receiver use
+//     DIFFERENT Public Suffix Lists, e.g. a value like "github.io" that one PSL
+//     treats as registrable and the other as a public suffix.
+//   - DNS name/label length violations (GHSA-7p69): an oversized "domain" that
+//     breaches RFC 1035 limits (name > 253 or a label > 63) or has an empty
+//     label — the resource-exhaustion guard.
+//
+// Unlike the hard forbidden-content rules (IP literals, MAC addresses,
+// special-use zones, URL syntax, single-label names), one such malformed
+// indicator must NOT dead-letter the whole batch: that item is skipped and the
+// rest is accepted. The skipped item is never stored, so nothing leaks and
+// nothing oversized is persisted.
+var perItemSkipRules = map[string]bool{
 	"not_psl_reducible":           true,
 	"candidate_not_etld_plus_one": true,
 	"etld_plus_one_mismatch":      true,
+	"invalid_dns_name":            true,
 }
 
 // ParseAndValidate decodes and validates a batch body against server time now.
@@ -203,11 +211,12 @@ func ParseAndValidateAt(body []byte, now time.Time) (*Batch, int, error) {
 			return nil, 0, serr
 		}
 		if perr := privacyScreenSignal(i, sr); perr != nil {
-			// A PSL/eTLD+1 disagreement (issue #41) is a per-item skip: drop just
-			// this signal and keep processing the rest of the batch. Hard forbidden
-			// content (IP/MAC/special-use/URL-syntax/single-label) stays whole-batch
-			// fatal — it is a privacy-poison tripwire, not a PSL-version mismatch.
-			if pslDisagreementRules[perr.Rule] {
+			// A PSL/eTLD+1 disagreement (issue #41) or a DNS length violation
+			// (GHSA-7p69) is a per-item skip: drop just this signal and keep
+			// processing the rest of the batch. Hard forbidden content
+			// (IP/MAC/special-use/URL-syntax/single-label) stays whole-batch fatal —
+			// it is a privacy-poison tripwire, not a malformed-name mismatch.
+			if perItemSkipRules[perr.Rule] {
 				rejected++
 				continue
 			}

@@ -108,6 +108,24 @@ func (p *Processor) Process(reporterID string, body []byte) (*Result, error) {
 			rejected++
 			continue
 		}
+		timeBucket := sig.TimeBucket.UTC().Format(time.RFC3339)
+
+		// Distinct-indicator cap enforced BEFORE persistence (GHSA-7p69): once the
+		// reporter's daily distinct-indicator budget is exhausted, a signal that
+		// would create a NEW distinct stored row is refused (counted in rejected),
+		// so a single reporter/batch cannot grow storage without bound. Merges into
+		// an already-stored row add no new distinct indicator and are still allowed.
+		if counters.DistinctIndicators+newDistinct >= MaxDistinctPerDay {
+			exists, err := p.DB.SignalExists(reporterID, sig.Kind, sig.IndicatorKey, timeBucket)
+			if err != nil {
+				return nil, err
+			}
+			if !exists {
+				rejected++
+				continue
+			}
+		}
+
 		created, err := p.DB.UpsertSignal(store.SignalRow{
 			ReporterID:         reporterID,
 			Kind:               sig.Kind,
@@ -115,7 +133,7 @@ func (p *Processor) Process(reporterID string, body []byte) (*Result, error) {
 			Domain:             sig.Domain,
 			EtldPlusOne:        sig.EtldPlusOne,
 			Behavior:           sig.Behavior,
-			TimeBucket:         sig.TimeBucket.UTC().Format(time.RFC3339),
+			TimeBucket:         timeBucket,
 			LocalConfidence:    sig.LocalConfidence,
 			LocalReasons:       marshalReasons(sig.LocalReasons),
 			ObservationCount:   sig.ObservationCount,
@@ -128,16 +146,6 @@ func (p *Processor) Process(reporterID string, body []byte) (*Result, error) {
 		accepted++
 		if created {
 			newDistinct++
-		}
-	}
-
-	// Distinct-indicator cap is advisory here (flag, not hard-fail): if exceeded,
-	// still stored but capped counter reflects it. Plan.md treats it as a daily
-	// abuse cap; we enforce it as a soft ceiling recorded in counters.
-	if counters.DistinctIndicators+newDistinct > MaxDistinctPerDay {
-		newDistinct = MaxDistinctPerDay - counters.DistinctIndicators
-		if newDistinct < 0 {
-			newDistinct = 0
 		}
 	}
 

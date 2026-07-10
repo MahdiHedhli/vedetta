@@ -63,6 +63,22 @@ func (db *DB) UpsertSignal(s SignalRow) (created bool, err error) {
 	return existing == 0, nil
 }
 
+// SignalExists reports whether a stored row already exists for the dedup key
+// (reporter_id, kind, indicator_key, time_bucket). The ingest pipeline uses it to
+// enforce the per-reporter distinct-indicator cap BEFORE persisting (GHSA-7p69):
+// a signal that would create a NEW distinct row is refused once the daily budget
+// is exhausted, so a single reporter/batch cannot grow storage without bound.
+func (db *DB) SignalExists(reporterID, kind, indicatorKey, timeBucket string) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(1) FROM signals
+        WHERE reporter_id = ? AND kind = ? AND indicator_key = ? AND time_bucket = ?`,
+		reporterID, kind, indicatorKey, timeBucket).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // AggregateInput is one reporter's contribution for a given indicator within the
 // consensus window, already reduced to the per-reporter influence cap (max conf).
 type AggregateInput struct {

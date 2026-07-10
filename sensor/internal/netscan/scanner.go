@@ -25,6 +25,11 @@ var nmapRangeRe = regexp.MustCompile(`^(?:\d{1,3}(?:-\d{1,3})?)(?:\.\d{1,3}(?:-\
 // presence indicates an attempt at shell or nmap-option injection.
 const shellMeta = ";|&$`<>()'\"\\"
 
+// maxScanAddresses bounds how many addresses a scan target may span, aligned with
+// the CIDR /8 floor so an nmap octet-range cannot express a broader scan than a
+// CIDR is allowed to (GHSA-c5gj). Mirrors backend discovery.maxScanAddresses.
+const maxScanAddresses = int64(1) << 24
+
 // ValidateTarget re-validates a scan target that crossed the trust boundary
 // from Core before it is handed to nmap. The sensor runs as root, so an
 // attacker-controlled target that reached an nmap argument could inject
@@ -34,7 +39,8 @@ const shellMeta = ";|&$`<>()'\"\\"
 //
 // A target is valid ONLY if it is one of:
 //   - a bare IP (net.ParseIP)
-//   - a CIDR block (net.ParseCIDR)
+//   - a CIDR block (net.ParseCIDR), but not one broader than /8 (IPv4) or
+//     /32 (IPv6), which would take the root sensor far beyond the local LAN
 //   - an nmap numeric octet range like 10.0.0.1-50
 //   - a strict DNS hostname
 //
@@ -57,10 +63,26 @@ func ValidateTarget(target string) error {
 	if net.ParseIP(target) != nil {
 		return nil
 	}
-	if _, _, err := net.ParseCIDR(target); err == nil {
+	// CIDR block — but reject absurdly broad ranges a LAN scanner should never
+	// receive (e.g. 0.0.0.0/0). A forged/over-broad target from Core would
+	// otherwise make the root-running sensor scan far beyond the local network
+	// (GHSA-c5gj). This mirrors the backend discovery.ValidateScanTarget bound:
+	// minimum /8 for IPv4, /32 for IPv6.
+	if _, ipnet, err := net.ParseCIDR(target); err == nil {
+		ones, _ := ipnet.Mask.Size()
+		minOnes := 8 // IPv4
+		if ipnet.IP.To4() == nil {
+			minOnes = 32 // IPv6
+		}
+		if ones < minOnes {
+			return fmt.Errorf("scan target %q is too broad; use a specific subnet (minimum /%d)", target, minOnes)
+		}
 		return nil
 	}
 	if nmapRangeRe.MatchString(target) {
+		if n := nmapRangeBreadth(target); n > maxScanAddresses {
+			return fmt.Errorf("scan target %q spans too many addresses (> %d); narrow the range", target, maxScanAddresses)
+		}
 		return nil
 	}
 	if hostnameRe.MatchString(target) {
@@ -68,6 +90,37 @@ func ValidateTarget(target string) error {
 	}
 
 	return fmt.Errorf("scan target is not a valid IP, CIDR, range, or hostname: %q", target)
+}
+
+// nmapRangeBreadth returns how many addresses an nmap octet-range target spans
+// (target must already match nmapRangeRe). Fails closed (large sentinel) on any
+// parse anomaly or once the running product exceeds the cap.
+func nmapRangeBreadth(target string) int64 {
+	octets := strings.Split(target, ".")
+	if len(octets) != 4 {
+		return int64(1) << 62
+	}
+	total := int64(1)
+	for _, oct := range octets {
+		var cnt int64
+		for _, part := range strings.Split(oct, ",") {
+			if i := strings.IndexByte(part, '-'); i >= 0 {
+				lo, err1 := strconv.Atoi(part[:i])
+				hi, err2 := strconv.Atoi(part[i+1:])
+				if err1 != nil || err2 != nil || hi < lo {
+					return int64(1) << 62
+				}
+				cnt += int64(hi-lo) + 1
+			} else {
+				cnt++
+			}
+		}
+		total *= cnt
+		if total > maxScanAddresses {
+			return total
+		}
+	}
+	return total
 }
 
 // ScanResult represents the parsed output of an nmap scan.

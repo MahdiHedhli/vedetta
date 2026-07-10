@@ -21,6 +21,17 @@ var specialSuffixes = []string{
 	"home.arpa", ".arpa", "in-addr.arpa", "ip6.arpa",
 }
 
+// DNS name limits (RFC 1035 §2.3.4 / §3.1): a domain's presentation form is at
+// most 253 characters and each label is 1..63 characters. Without these bounds a
+// registered reporter can submit a megabyte-sized "domain" that is stored as a
+// distinct indicator, exhausting storage (GHSA-7p69). A length violation is a
+// per-item skip (see perItemSkipRules) — a malformed-but-not-poison value that
+// must NOT dead-letter the rest of the batch, consistent with the PSL fix.
+const (
+	maxDNSNameLen  = 253
+	maxDNSLabelLen = 63
+)
+
 // PrivacyViolation describes which rule tripped and where.
 type PrivacyViolation struct {
 	Rule   string // machine-readable rule name, e.g. "no_ip_literals"
@@ -42,6 +53,33 @@ func checkStringValue(where, v string) *PrivacyViolation {
 	return nil
 }
 
+// checkDNSLimits enforces DNS name/label length bounds on a domain-like value
+// (already lower-cased/trimmed by the caller). It rejects an empty value, a
+// total presentation length over 253, any empty label (e.g. "a..b" or a leading/
+// trailing dot), and any label over 63 characters. The single "invalid_dns_name"
+// rule is a per-item skip. This is the GHSA-7p69 resource-exhaustion guard.
+func checkDNSLimits(where, v string) *PrivacyViolation {
+	if v == "" {
+		return &PrivacyViolation{Rule: "invalid_dns_name", Detail: where + ": empty domain name"}
+	}
+	// Tolerate a single fully-qualified trailing dot for the length accounting.
+	name := strings.TrimSuffix(v, ".")
+	if name == "" || len(name) > maxDNSNameLen {
+		return &PrivacyViolation{Rule: "invalid_dns_name",
+			Detail: where + ": domain name exceeds DNS length limit (253)"}
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" {
+			return &PrivacyViolation{Rule: "invalid_dns_name", Detail: where + ": empty DNS label"}
+		}
+		if len(label) > maxDNSLabelLen {
+			return &PrivacyViolation{Rule: "invalid_dns_name",
+				Detail: where + ": DNS label exceeds 63 characters"}
+		}
+	}
+	return nil
+}
+
 // checkDomainValue enforces rule 4 (and URL-syntax rule 7) on a domain-like value.
 func checkDomainValue(where, raw string) *PrivacyViolation {
 	if raw == "" {
@@ -52,6 +90,12 @@ func checkDomainValue(where, raw string) *PrivacyViolation {
 	// Rule 7: no URL syntax / whitespace / user parts.
 	if strings.ContainsAny(v, "/?#@ \t\r\n") {
 		return &PrivacyViolation{Rule: "no_url_syntax", Detail: where + ": value contains URL/host syntax"}
+	}
+	// DNS length bounds (GHSA-7p69): reject oversized names/labels before any
+	// other classification so a megabyte-sized value is a per-item skip, not a
+	// whole-batch reject (and can never reach storage as a distinct indicator).
+	if lv := checkDNSLimits(where, v); lv != nil {
+		return lv
 	}
 	// Rule 2/4: an IP literal is never a valid domain.
 	if net.ParseIP(v) != nil {

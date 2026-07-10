@@ -26,7 +26,7 @@ func TestGoldenBatchShapeMatchesContract(t *testing.T) {
 		{EventID: "e2", Timestamp: base.Add(15 * time.Minute), EventType: "dns_query", SourceIP: "192.0.2.56",
 			Domain: "sub.qxv-rotator.example", AnomalyScore: 0.91,
 			Tags: []string{"dga_candidate", "newly_registered", "high_entropy"}},
-		{EventID: "e3", Timestamp: base.Add(15 * time.Minute), EventType: "anomaly", SourceIP: "192.0.2.57",
+		{EventID: "e3", Timestamp: base.Add(15 * time.Minute), EventType: "dns_query", SourceIP: "192.0.2.57",
 			Domain: "beacon.qxv-rotator.example", AnomalyScore: 0.81,
 			Tags: []string{"beaconing_candidate"}},
 	}

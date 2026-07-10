@@ -146,6 +146,13 @@ func (s *Scheduler) runAllTargets() {
 			log.Printf("Failed to load scan targets: %v", err)
 		} else {
 			for _, t := range targets {
+				// Issue #7: re-validate at the serve point. scanCIDR/Scan also
+				// validates as defense-in-depth, but skipping here avoids even
+				// attempting a stored-but-invalid target (e.g. a planted 0.0.0.0/0).
+				if err := ValidateScanTarget(t.CIDR); err != nil {
+					log.Printf("SECURITY: skipping invalid stored scan target %q (%s): %v", t.CIDR, t.ID, err)
+					continue
+				}
 				hosts := s.scanCIDR(t.CIDR, t.Segment, t.ScanPorts)
 				totalHosts += hosts
 				if s.targetProvider != nil && t.ID != "" {

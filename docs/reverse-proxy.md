@@ -64,13 +64,17 @@ that does not touch the `Authorization` header:
 - **Network policy (simplest, recommended).** Only publish the proxy on a trusted
   surface — your LAN, a VPN, or a tailnet — and IP-allowlist at the proxy. Core's
   bearer auth is then your app-layer control and TLS is your transport control.
-- **mTLS (best for remote access).** Require a client certificate at the proxy.
-  This is a *separate* credential from Core's bearer and does not use the
-  `Authorization` header, so there is no collision. Good for remote sensors and
-  admins.
-- **A cookie/session auth proxy (advanced).** A forward-auth proxy (e.g.
-  oauth2-proxy) that gates access with a **cookie** — never the `Authorization`
-  header — can sit in front. Ensure it passes `Authorization` through verbatim.
+- **A cookie/session auth proxy (advanced, browser only).** A forward-auth proxy
+  (e.g. oauth2-proxy) that gates *browser* access with a **cookie** — never the
+  `Authorization` header — can sit in front. Ensure it passes `Authorization`
+  through verbatim. This only gates the dashboard, not the native sensor.
+
+> **Not available: sensor mTLS.** The native `vedetta-sensor` cannot present a
+> client certificate today (there is no client-cert flag/config), so do **not**
+> require mutual TLS at the proxy on any endpoint a sensor uses — it would lock
+> the sensor out. mTLS as a proxy control is only workable for a browser/admin
+> surface that never carries sensor traffic. Use network policy for remote
+> sensors instead.
 
 ---
 
@@ -92,12 +96,13 @@ vedetta.example.com {
     @untrusted not remote_ip 10.0.0.0/8 192.168.0.0/16 100.64.0.0/10
     respond @untrusted 403
 
-    # Optional stronger control — require a client cert (mTLS):
-    # tls { client_auth { mode require_and_verify trusted_ca_cert_file /etc/ssl/clients-ca.pem } }
+    # NOTE: Do not add client-certificate (mTLS) enforcement here — the native
+    # sensor cannot present a client cert and would be locked out. Use network
+    # policy (above) instead.
 }
 ```
 
-### Option B — nginx (bring your own certificate, optional mTLS)
+### Option B — nginx (bring your own certificate)
 
 ```nginx
 server {
@@ -107,9 +112,10 @@ server {
     ssl_certificate     /etc/ssl/certs/vedetta.example.com.crt;
     ssl_certificate_key /etc/ssl/private/vedetta.example.com.key;
 
-    # Optional mTLS outer control (separate from Core's bearer; no header collision):
-    # ssl_client_certificate /etc/ssl/clients-ca.pem;
-    # ssl_verify_client on;
+    # NOTE: Do not enable client-certificate (mTLS) enforcement
+    # (ssl_verify_client on) on endpoints a sensor uses — the native sensor
+    # cannot present a client cert and would be locked out. Use network policy
+    # below as the outer control instead.
 
     # Optional network policy:
     # allow 10.0.0.0/8; allow 192.168.0.0/16; deny all;
@@ -186,14 +192,17 @@ proxy convenience, not a cross-origin split-deployment feature.
 
 ## 6. Native sensors: certificate trust
 
-A native `vedetta-sensor` connecting over HTTPS must trust the proxy's
-certificate:
+A native `vedetta-sensor` connecting over HTTPS validates the proxy's certificate
+against the **host system CA store** — that is the only trust mechanism today.
+**There is no in-app `--cacert` flag** and no way to point the sensor at a custom
+CA bundle from the command line; trust is managed at the OS level.
 
 - **Public CA (Let's Encrypt via Caddy):** trusted automatically by the system CA
   store — nothing to do.
-- **Internal CA / self-signed:** install your CA into the host trust store, or
-  point the sensor at it (`--cacert /path/to/ca.pem`). Do **not** disable
-  verification in production.
+- **Internal CA / self-signed:** install your CA into the **host** trust store
+  (e.g. `/usr/local/share/ca-certificates` + `update-ca-certificates` on Linux,
+  or the System keychain on macOS) so the sensor's system trust store accepts it.
+  Do **not** disable verification in production.
 
 ---
 

@@ -32,8 +32,10 @@ func NewClient(baseURL, token string) *Client {
 // GET /api/v1/settings/telemetry, using the same read token as event reads. The
 // response shape is {"opt_in":bool,"source":"setting"|"env","effective":bool};
 // the daemon acts on `effective`. Any transport/status/decode error is returned
-// so the caller can fall back to its env OptIn (fail-open to the operator's
-// local choice — never silently flip sharing off on a blip).
+// so the caller can FAIL CLOSED: the opt-in cannot be confirmed live, so the
+// caller must suppress this tick (spool only, never drain/export) rather than
+// trust a stale cached "on" that a fresh admin opt-out may have superseded
+// (GHSA-c776).
 func (c *Client) EffectiveOptIn(ctx context.Context) (bool, error) {
 	reqURL := c.BaseURL + "/api/v1/settings/telemetry"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)

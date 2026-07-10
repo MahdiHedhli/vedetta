@@ -23,13 +23,6 @@ type Pipeline struct {
 	Salt     []byte
 	State    *status.State
 	StateDir string
-
-	// lastKnownOptIn caches the last effective opt-in successfully read from Core
-	// so a transient settings-endpoint error cannot silently override an explicit
-	// admin opt-out (issue #37). It is nil until the first successful read OR a
-	// value is hydrated from optin.json (GHSA-c776) — the persisted twin that
-	// lets an explicit opt-out survive a restart during a Core outage.
-	lastKnownOptIn *bool
 }
 
 // RunTick executes one full tick: read → gate → strip → aggregate → send. It
@@ -40,42 +33,29 @@ type Pipeline struct {
 func (p *Pipeline) RunTick(ctx context.Context) {
 	p.State.TouchTick()
 
-	// Issue #37 / GHSA-c776: consult Core for the EFFECTIVE telemetry opt-in
-	// before doing any work. If Core says opted-out, export nothing this tick
-	// (stay fully inert — no drain, no read, no send) and surface it.
+	// Issue #37 / GHSA-c776: FAIL CLOSED on the telemetry opt-in. Before ANY
+	// drain/export we do a LIVE, in-process read of Core's EFFECTIVE telemetry
+	// opt-in (GET /api/v1/settings/telemetry). We export/drain this tick ONLY if
+	// that read succeeds AND reports effective==true.
 	//
-	// If Core is unreachable, fall back to the last effective opt-in we ever
-	// observed so a transient error can't override an explicit admin opt-out.
-	// That last-known value is PERSISTED to the state dir (optin.json) so it
-	// survives a daemon restart: without persistence, a restart during a brief
-	// Core outage would forget a prior OFF state, fall back to the env default
-	// (on), and drain queued batches — a fail-OPEN on a privacy control. We fall
-	// back to the env OptIn ONLY when no effective value has ever been observed
-	// (neither in memory this run nor persisted from a prior run).
-	if p.lastKnownOptIn == nil {
-		if v, ok := loadPersistedOptIn(p.StateDir); ok {
-			p.lastKnownOptIn = &v
-		}
-	}
+	// If Core is unreachable or the setting read errors, we CANNOT confirm the
+	// live opt-in, so we treat it as OFF: suppress this tick (spool only — never
+	// drain or export) rather than trusting a cached/persisted/env "on" that a
+	// fresh admin opt-out may already have superseded. There is deliberately no
+	// cached/persisted fallback: a stale "true" that outlived an opt-out is
+	// exactly the fail-open GHSA-c776 describes. Telemetry reads its events from
+	// the same Core, so an unreachable Core has nothing new to export anyway —
+	// failing closed loses nothing and honors a fresh opt-out immediately.
+	// Default-on (opt-out) semantics apply ONLY when Core is reachable and
+	// confirms effective==true.
 	effective, err := p.Reader.EffectiveOptIn(ctx)
 	if err != nil {
-		if p.lastKnownOptIn != nil {
-			// Known-and-last-known state governs: if that is off, we return below
-			// without draining or exporting. The env default is NOT consulted.
-			effective = *p.lastKnownOptIn
-		} else {
-			effective = p.Cfg.OptIn
-		}
-	} else {
-		// Successful read: cache in memory and durably record it (only when it
-		// changed) so an explicit opt-out survives a restart + startup Core blip.
-		if p.lastKnownOptIn == nil || *p.lastKnownOptIn != effective {
-			if perr := persistOptIn(p.StateDir, effective); perr != nil {
-				p.setError("persist opt-in: " + perr.Error())
-			}
-		}
-		v := effective
-		p.lastKnownOptIn = &v
+		p.State.Update(func(s *status.Snapshot) {
+			s.Suppressed = true
+			s.SuppressedReason = "core telemetry opt-in unconfirmed (failing closed)"
+		})
+		p.setError("core telemetry opt-in check: " + err.Error())
+		return
 	}
 	if !effective {
 		p.State.Update(func(s *status.Snapshot) {

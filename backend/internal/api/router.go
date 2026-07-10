@@ -665,6 +665,11 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			e.Timestamp = time.Now().UTC()
 		}
 
+		// GHSA-9m7g: never persist a far-future timestamp. Telemetry uses the event
+		// Timestamp as its cursor, so a forged/skewed future event would strand all
+		// later normal events behind it. Clamp anything beyond a small skew to now.
+		e.Timestamp = clampFutureTimestamp(e.Timestamp, time.Now().UTC())
+
 		// Default source_hash
 		if e.SourceHash == "" {
 			e.SourceHash = "unknown"
@@ -942,9 +947,10 @@ func (s *Server) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Queue all enabled targets for the next sensor pickup
+	// Queue all enabled targets for the next sensor pickup (re-validated at serve
+	// time so a planted/invalid target is never dispatched to the sensor, Issue #7).
 	if s.DB != nil {
-		if targets, err := s.DB.GetEnabledScanTargets(); err == nil && len(targets) > 0 {
+		if targets, err := s.servableScanTargets(); err == nil && len(targets) > 0 {
 			for _, target := range targets {
 				s.ScanQueue.Enqueue(target.CIDR, target.Segment, target.ScanPorts)
 			}
@@ -1466,7 +1472,9 @@ func (s *Server) handleSensorWork(w http.ResponseWriter, r *http.Request) {
 	// Get enabled scan targets for auto-scanning
 	var targetCount int
 	if s.DB != nil {
-		targets, err := s.DB.GetEnabledScanTargets()
+		// Re-validate at the serve point (Issue #7): never hand an invalid target to
+		// the root-running sensor, even if one slipped past write-time validation.
+		targets, err := s.servableScanTargets()
 		if err == nil {
 			response["targets"] = targets
 			targetCount = len(targets)
@@ -1726,6 +1734,9 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 		} else {
 			ts = time.Unix(q.Timestamp, 0).UTC()
 		}
+		// GHSA-9m7g: same clamp as the generic /ingest path — a sensor must not be
+		// able to plant a far-future cursor via a forged/skewed DNS query timestamp.
+		ts = clampFutureTimestamp(ts, time.Now().UTC())
 
 		event := models.Event{
 			EventID:        eventID,
@@ -1949,6 +1960,44 @@ func (s *Server) logError(category, message string) {
 	if s.ActivityLog != nil {
 		s.ActivityLog.Error(category, message)
 	}
+}
+
+// maxTimestampSkew is how far ahead of server time an event Timestamp may be before
+// it is treated as clock skew or forgery (GHSA-9m7g). Telemetry uses the event
+// Timestamp as its persistent cursor, so a single far-future event (e.g. dated 2036)
+// would permanently strand every normal event behind it. Both ingest paths clamp to
+// this bound so neither the generic /ingest path nor the sensor DNS ingest path can
+// plant a future cursor.
+const maxTimestampSkew = time.Hour
+
+// clampFutureTimestamp returns ts, or now when ts is more than maxTimestampSkew ahead
+// of now. A zero ts is returned unchanged so callers can apply their own default.
+func clampFutureTimestamp(ts, now time.Time) time.Time {
+	if !ts.IsZero() && ts.After(now.Add(maxTimestampSkew)) {
+		return now
+	}
+	return ts
+}
+
+// servableScanTargets returns the enabled scan targets that still pass
+// discovery.ValidateScanTarget. This is the single choke point for handing scan
+// work to sensors: even if an invalid target (e.g. a pre-upgrade 0.0.0.0/0, Issue #7)
+// is disabled at startup, re-validating here guarantees a bad row that slips into the
+// DB by any path is never dispatched to the root-running sensor.
+func (s *Server) servableScanTargets() ([]models.ScanTarget, error) {
+	targets, err := s.DB.GetEnabledScanTargets()
+	if err != nil {
+		return nil, err
+	}
+	valid := make([]models.ScanTarget, 0, len(targets))
+	for _, t := range targets {
+		if verr := discovery.ValidateScanTarget(t.CIDR); verr != nil {
+			s.logWarn("scan", fmt.Sprintf("Skipping invalid scan target %q (%s): %v", t.CIDR, t.TargetID, verr))
+			continue
+		}
+		valid = append(valid, t)
+	}
+	return valid, nil
 }
 
 // --- Device Update ---

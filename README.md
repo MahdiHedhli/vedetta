@@ -81,18 +81,44 @@ the [project constitution](.specify/memory/constitution.md).
 
 ## Quick Start
 
+> **Transport: the default Quick Start runs plain HTTP on your LAN.** Core and
+> the dashboard speak HTTP, so tokens and data travel unencrypted over the local
+> network. That is fine **only on a trusted LAN**. For any untrusted or remote
+> deployment you **must** front Vedetta with the documented TLS reverse proxy —
+> see [Reverse Proxy & TLS](docs/reverse-proxy.md). There is no in-app TLS and no
+> sensor `--cacert` flag today; native-sensor certificate trust relies on the
+> host system CA store.
+
 ### 1. Start Vedetta Core
 
 ```bash
 git clone https://github.com/MahdiHedhli/vedetta.git
 cd vedetta
+
+# Generate machine credentials FIRST (writes ./.env with distinct random
+# ingest/read tokens and a single-use first-admin setup code). Skipping this
+# leaves Core without a setup code and the onboarding wizard cannot mint the
+# first admin token.
+./scripts/gen-env.sh
+
 docker compose up -d
 ```
+
+`gen-env.sh` prints the first-admin **setup code** — keep it handy. On first
+launch the dashboard's onboarding wizard prompts for it to create your initial
+admin token. (If you ever lose it, Core also prints the active setup code to its
+logs on first start: `docker logs vedetta-backend`.)
 
 Dashboard: [http://localhost:3107](http://localhost:3107)
 API status: [http://localhost:8080/api/v1/status](http://localhost:8080/api/v1/status)
 
 ### 2. Deploy A Sensor
+
+**Create your admin token first (step 1's onboarding wizard), then enroll the
+sensor.** Once an admin token exists, Core requires a one-time **enrollment
+code** to register a new sensor (admin-before-sensor). Generate one from the
+dashboard onboarding wizard (the "Connect a sensor" step) and pass it as
+`--enroll-code`.
 
 Review the installer, then run it against your Core instance:
 
@@ -100,8 +126,16 @@ Review the installer, then run it against your Core instance:
 curl -fsSL -o /tmp/vedetta-sensor-install.sh \
   https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
 
-sudo bash /tmp/vedetta-sensor-install.sh --core http://<CORE_IP>:8080
+sudo bash /tmp/vedetta-sensor-install.sh \
+  --core http://<CORE_IP>:8080 \
+  --enroll-code <ENROLL_CODE>
 ```
+
+> The very first sensor on a Core that has **no** admin token yet can register
+> without a code (open bootstrap). But the recommended order is admin-first, so
+> plan to supply `--enroll-code`. The installer bakes the code into the service
+> definition only for the initial registration; re-run it without the flag to
+> update an already-enrolled sensor.
 
 Current public install path:
 
@@ -115,8 +149,12 @@ If you prefer to build manually:
 ```bash
 cd sensor
 go build -o vedetta-sensor ./cmd/vedetta-sensor
-sudo ./vedetta-sensor --core http://<CORE_IP>:8080
+sudo ./vedetta-sensor --core http://<CORE_IP>:8080 --enroll-code <ENROLL_CODE>
 ```
+
+(`--enroll-code` is required to register a new sensor once Core has an admin
+token; omit it only for the first sensor on a not-yet-bootstrapped Core. You can
+also set `VEDETTA_ENROLL_CODE` instead of the flag.)
 
 Useful sensor diagnostics:
 

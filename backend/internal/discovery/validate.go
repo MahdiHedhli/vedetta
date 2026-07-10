@@ -4,8 +4,14 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 )
+
+// maxScanAddresses bounds how many addresses a single scan target may span. It is
+// aligned with the CIDR floor below (/8 for IPv4 = 2^24), so an nmap octet-range
+// target cannot express a broader scan than a CIDR is allowed to (GHSA-c5gj).
+const maxScanAddresses = int64(1) << 24
 
 // forbiddenTargetChars are shell metacharacters and redirection operators that must
 // never appear in a scan target. Even though we always exec nmap directly (never a
@@ -66,8 +72,13 @@ func ValidateScanTarget(target string) error {
 		}
 		return nil
 	}
-	// nmap IPv4 numeric range / octet list.
+	// nmap IPv4 numeric range / octet list — but bound its breadth the same way the
+	// CIDR floor does, so a range like 0-255.0-255.0-255.0-255 cannot slip a whole-
+	// internet scan past the /8 check to the root sensor (GHSA-c5gj).
 	if nmapRangeRe.MatchString(target) {
+		if n := nmapRangeBreadth(target); n > maxScanAddresses {
+			return fmt.Errorf("scan target %q spans too many addresses (> %d); narrow the range", target, maxScanAddresses)
+		}
 		return nil
 	}
 	// Strict DNS hostname.
@@ -76,4 +87,36 @@ func ValidateScanTarget(target string) error {
 	}
 
 	return fmt.Errorf("scan target %q is not a valid IP, CIDR, nmap range, or hostname", target)
+}
+
+// nmapRangeBreadth returns how many addresses an nmap octet-range/list target
+// spans (target must already match nmapRangeRe). It returns a large sentinel on
+// any parse anomaly or once the running product exceeds the cap, so an over-broad
+// or malformed range fails closed.
+func nmapRangeBreadth(target string) int64 {
+	octets := strings.Split(target, ".")
+	if len(octets) != 4 {
+		return int64(1) << 62
+	}
+	total := int64(1)
+	for _, oct := range octets {
+		var cnt int64
+		for _, part := range strings.Split(oct, ",") {
+			if i := strings.IndexByte(part, '-'); i >= 0 {
+				lo, err1 := strconv.Atoi(part[:i])
+				hi, err2 := strconv.Atoi(part[i+1:])
+				if err1 != nil || err2 != nil || hi < lo {
+					return int64(1) << 62
+				}
+				cnt += int64(hi-lo) + 1
+			} else {
+				cnt++
+			}
+		}
+		total *= cnt
+		if total > maxScanAddresses {
+			return total
+		}
+	}
+	return total
 }

@@ -26,6 +26,13 @@ services:
       VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-auto}"
       VEDETTA_SCAN_INTERVAL: "${VEDETTA_SCAN_INTERVAL:-5m}"
       VEDETTA_SCAN_PORTS: "${VEDETTA_SCAN_PORTS:-false}"
+      # Single-use first-admin bootstrap code (issue #34/#35). scripts/gen-env.sh
+      # writes VEDETTA_SETUP_CODE into .env; Core reads it here to mint the FIRST
+      # admin token (presented by the onboarding wizard in the X-Vedetta-Setup-Code
+      # header). Without this line the generated code never reaches Core and the
+      # wizard's "Create Initial Admin Token" 401s. Leave unset only for a Core
+      # you intend to bootstrap from its printed log code instead.
+      VEDETTA_SETUP_CODE: "${VEDETTA_SETUP_CODE:-}"
       # Shared with the collector below: Core provisions this as an ingest-scope
       # token on startup so /ingest keeps authenticating once auth turns on.
       VEDETTA_INGEST_TOKEN: "${VEDETTA_INGEST_TOKEN:-}"

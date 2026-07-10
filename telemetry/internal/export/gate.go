@@ -27,7 +27,14 @@ type GateConfig struct {
 //   - otherwise withheld
 func Eligible(ev corereader.Event, cfg GateConfig) (Kind, bool) {
 	switch ev.EventType {
-	case "dns_query", "anomaly":
+	case "dns_query":
+		// Telemetry exports ONLY dns_query events, where Core's enricher is the sole
+		// authority for the verdict: match provenance, anomaly score, and detection
+		// tags are reset on ingest and recomputed by Core's own analysis. "anomaly"
+		// events are deliberately NOT exported — their score/tags are caller-supplied
+		// and not Core-verified, so trusting them let a forged anomaly event encode
+		// arbitrary data (e.g. an IP as 198-51-100-77.com) onto the public feed
+		// (GHSA-hx86).
 	default:
 		return "", false
 	}

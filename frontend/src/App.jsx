@@ -217,13 +217,24 @@ export default function App() {
     setSensorInterfaces(ifaces);
   }, [sensors]);
 
-  // Detect whether Core still needs the first-admin setup code (GHSA-6cmx).
-  // When true, the bootstrap "Create Initial Admin Token" flow must send the
-  // X-Vedetta-Setup-Code header or Core will 401.
+  // Detect whether Core still needs the first-admin setup code (GHSA-6cmx) and
+  // whether this is a first run. /auth/setup-status is PUBLIC — unlike
+  // /sensor/list, which now returns 401 pre-admin under RequireStrictAdmin — so
+  // it is the correct source for bootstrap/first-run detection. When
+  // needs_setup_code is true the "Create Initial Admin Token" flow must send the
+  // X-Vedetta-Setup-Code header or Core will 401; we also auto-open the
+  // onboarding wizard during bootstrap (or when no sensors/devices exist yet).
   useEffect(() => {
     authFetch('/api/v1/auth/setup-status')
       .then((r) => r.json())
-      .then((data) => setNeedsSetupCode(!!data.needs_setup_code))
+      .then((data) => {
+        setNeedsSetupCode(!!data.needs_setup_code);
+        const counts = data.counts || {};
+        const firstRun =
+          !!data.needs_setup_code ||
+          ((counts.sensors || 0) === 0 && (counts.devices || 0) === 0);
+        if (firstRun) setShowSetup(true);
+      })
       .catch(() => {});
   }, []);
 
@@ -246,17 +257,8 @@ export default function App() {
     fetchSensors();
     fetchThreatData();
 
-    // Show setup guide if no sensors connected and no devices found
-    Promise.all([
-      authFetch('/api/v1/sensor/list').then((r) => r.json()),
-      authFetch('/api/v1/devices').then((r) => r.json()),
-    ]).then(([sensorData, deviceData]) => {
-      const hasSensors = sensorData.sensors && sensorData.sensors.length > 0;
-      const hasDevices = deviceData.devices && deviceData.devices.length > 0;
-      if (!hasSensors && !hasDevices) {
-        setShowSetup(true);
-      }
-    }).catch(() => {});
+    // First-run detection lives in the /auth/setup-status effect above (that
+    // endpoint is public; /sensor/list is now admin-gated and 401s pre-admin).
 
     const interval = setInterval(() => {
       fetchStatus();
