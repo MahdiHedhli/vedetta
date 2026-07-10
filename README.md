@@ -64,15 +64,14 @@ the [project constitution](.specify/memory/constitution.md).
 
 ### Community sharing
 
-- **Telemetry service** ([specs/002](specs/002-telemetry-service/)): **on by default, opt-out** (`VEDETTA_TELEMETRY_OPTIN=false` disables it). Structural PII stripping (raw IPs/MACs/hostnames can never reach the wire), aggregate-only signed export — see [PRIVACY.md](PRIVACY.md) and the [anonymization proof](specs/003-threat-network/anonymization-proof.md).
-- **Community threat network** ([specs/003](specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance. Alpha, not production-ready.
+- **Telemetry service** ([specs/002](specs/002-telemetry-service/)): **on by default, opt-out** — set `VEDETTA_TELEMETRY_OPTIN=false` (only the exact value `false` disables it) or use the dashboard telemetry toggle; a first-run banner discloses it. Source IPs, MACs, and hostnames are stripped at the source; only the matched known-bad threat indicator (from the public block-list, never the raw observed query name) plus aggregate counts are shared, via a signed export — see [PRIVACY.md](PRIVACY.md) and the [anonymization proof](specs/003-threat-network/anonymization-proof.md).
+- **Community threat network** ([specs/003](specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance.
 
 ### In progress
 
-- live SNR / operational validation of the newly implemented sources (UniFi, telemetry, threat network) on real deployments
+- live SNR / operational validation of the newly implemented UniFi source on real deployments
 - install and onboarding polish for alpha users
 - broader dashboard/admin auth hardening plus sensor token rotation
-- migration-runner hardening (fresh-install runner fails partway; tracked in the backlog)
 
 ### Planned next
 
@@ -155,7 +154,7 @@ This split is deliberate. The local network is the strongest source of truth Ved
 | Backend | 8080 | API, device/event storage, enrichment, scan coordination |
 | Frontend | 3107 | Dashboard UI |
 | Collector | 5140/udp | Syslog and normalized log ingestion path |
-| Telemetry | - | Anonymized community sharing, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false`) |
+| Telemetry | - | Privacy-reduced community sharing, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle) |
 | Threat Network | 9090 | Optional community backend (advisory-only feed) |
 
 ## Hardware And Platform Notes
@@ -186,17 +185,16 @@ These should be described honestly as early or planned until they are documented
 
 - **Self-hosted first.** The local deployment is the product.
 - **Local value first.** Device discovery, DNS visibility, and local detections should remain useful without cloud dependency.
-- **Telemetry is on by default and opt-out.** Set `VEDETTA_TELEMETRY_OPTIN=false` to disable it; it strips PII structurally and exports only aggregate signals.
-- **Community threat sharing is on by default, advisory-only, and anonymized.** No source IPs/MACs/hostnames leave your network; opt out any time.
+- **Telemetry is on by default and opt-out.** Set `VEDETTA_TELEMETRY_OPTIN=false` (only the exact value `false`) and restart, or flip the dashboard telemetry toggle, to disable it; a first-run disclosure banner surfaces it on first launch. The dashboard also shows the effective on/off state, and a persisted toggle overrides the env default.
+- **Community threat sharing is on by default and advisory-only.** Source IPs, MACs, and hostnames are stripped at the source; only the matched known-bad threat indicator (from the public block-list, never the raw observed query name) plus aggregate counts are shared. A per-instance salted HMAC is used only locally for distinct-asset counting and never leaves the node. See [PRIVACY.md](PRIVACY.md) and the [anonymization proof](specs/003-threat-network/anonymization-proof.md); opt out any time.
 
 ## Known Alpha Limits
 
 - Core plus native sensor is still the real deployment model.
 - Install still assumes Docker, a native sensor, and some comfort with local networking and `sudo`.
 - Sensor bearer auth is in place, but broader dashboard/admin auth hardening is still in progress.
-- The telemetry and threat-network services are implemented but off-by-default / advisory-only and have not completed an operational validation pass — treat them as opt-in alpha, not production-ready.
+- Telemetry and the community threat network are implemented and on by default (opt-out via `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle); the shared feed is advisory-only. The Core-side consumer that pulls community intel back into local scoring is specced but not yet wired.
 - UniFi log ingestion is implemented (syslog path) but has not completed its live ≥72h SNR validation on real hardware, so it is not yet labelled fully "supported".
-- The fresh-install migration runner currently fails partway on a clean DB (tracked in the backlog); production Docker Core fresh installs are affected until it is hardened.
 
 ## Documentation
 

@@ -213,8 +213,21 @@ func (db *DB) migrate() error {
 	// guarantees the table on every Open and self-heals already-broken DBs (B3).
 	db.Exec(suppressionRulesDDL)
 
+	// settings is declared only in migration 023 (issue #37). Runtime-ensure it on
+	// every Open so the telemetry opt-in setting store works immediately, and so an
+	// older DB that predates 023 self-heals without waiting for the migration pass.
+	db.Exec(settingsDDL)
+
 	return nil
 }
+
+// settingsDDL is the runtime-ensure definition of the generic key/value settings
+// table; keep it in sync with migration 023 and the inline fallback below.
+const settingsDDL = `CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`
 
 // suppressionRulesDDL is the runtime-ensure definition of the suppression_rules
 // table; keep it in sync with migration 012 and the inline fallback below.
@@ -503,5 +516,11 @@ CREATE TABLE IF NOT EXISTS suppression_rules (
     tags        TEXT DEFAULT '[]',
     reason      TEXT DEFAULT '',
     active      BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `

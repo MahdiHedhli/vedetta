@@ -22,6 +22,9 @@ RESET=false
 INSTALL_SERVICE=true
 FORCE_SOURCE="${VEDETTA_BUILD_FROM_SOURCE:-0}"
 REF="${VEDETTA_REF:-main}"
+# Install destination (overridable so the installer test can run without root).
+BIN_DIR="${VEDETTA_BIN_DIR:-/usr/local/bin}"
+BIN_DEST="${BIN_DIR}/vedetta-sensor"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -154,21 +157,26 @@ build_from_source() {
 # ---------------------------------------------------------------------------
 ensure_nmap
 
-if [ "$FORCE_SOURCE" != "1" ] && try_prebuilt; then
+if [ -n "${VEDETTA_SENSOR_BINARY:-}" ]; then
+  # Escape hatch (also used by the installer test): use a caller-supplied binary
+  # instead of downloading or building one.
+  BINARY="$VEDETTA_SENSOR_BINARY"
+  echo "==> using caller-supplied binary: $BINARY"
+elif [ "$FORCE_SOURCE" != "1" ] && try_prebuilt; then
   echo "==> using checksum-verified prebuilt binary"
 else
   [ "$FORCE_SOURCE" = "1" ] || echo "==> no prebuilt release asset for ${GOOS}/${GOARCH}; building from source"
   build_from_source
 fi
 
-echo "==> installing to /usr/local/bin/vedetta-sensor"
-$SUDO install -d /usr/local/bin
-$SUDO install -m 0755 "$BINARY" /usr/local/bin/vedetta-sensor
-/usr/local/bin/vedetta-sensor --version
+echo "==> installing to ${BIN_DEST}"
+$SUDO install -d "$BIN_DIR"
+$SUDO install -m 0755 "$BINARY" "$BIN_DEST"
+"$BIN_DEST" --version
 
 if [ "$RESET" = true ]; then
   echo "==> resetting sensor authentication"
-  $SUDO /usr/local/bin/vedetta-sensor --reset || true
+  $SUDO "$BIN_DEST" --reset || true
 fi
 
 if [ "$INSTALL_SERVICE" != true ]; then
@@ -183,16 +191,24 @@ EXTRA=""
 [ -n "$ENROLL_CODE" ] && EXTRA=" --enroll-code $ENROLL_CODE"
 
 if [ "$OS" = "Darwin" ]; then
-  PLIST="/Library/LaunchDaemons/com.vedetta.sensor.plist"
+  PLIST="${VEDETTA_PLIST_PATH:-/Library/LaunchDaemons/com.vedetta.sensor.plist}"
+  # Enrollment code must reach the LaunchDaemon's ProgramArguments for the
+  # INITIAL registration — otherwise a macOS service ignores a supplied code
+  # (issue #35). Each flag is its own <string> element in the array.
+  ENROLL_ARGS=""
+  [ -n "$ENROLL_CODE" ] && ENROLL_ARGS="    <string>--enroll-code</string><string>${ENROLL_CODE}</string>"
   $SUDO tee "$PLIST" >/dev/null <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.vedetta.sensor</string>
   <key>ProgramArguments</key><array>
-    <string>/usr/local/bin/vedetta-sensor</string>
+    <string>${BIN_DEST}</string>
     <string>--core</string><string>${CORE_URL}</string>
     <string>--cidr</string><string>auto</string>
+    <string>--dns</string>
+    <string>--passive-discovery</string>
+${ENROLL_ARGS}
   </array>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/var/log/vedetta-sensor.log</string>
@@ -202,8 +218,18 @@ EOF
   $SUDO launchctl unload "$PLIST" 2>/dev/null || true
   $SUDO launchctl load -w "$PLIST"
   echo "==> installed as a LaunchDaemon"
+  if [ -n "$ENROLL_CODE" ]; then
+    echo ""
+    echo "    NOTE: the enrollment code is single-use. After the sensor's first"
+    echo "    successful registration it persists a token and no longer needs the"
+    echo "    code. Remove it from the LaunchDaemon so a KeepAlive restart does not"
+    echo "    replay a now-consumed code — re-run this installer WITHOUT --enroll-code:"
+    echo "      sudo ./install.sh --core $CORE_URL"
+    echo "    (or edit $PLIST, delete the two --enroll-code ProgramArguments <string>"
+    echo "    lines, then: sudo launchctl unload $PLIST && sudo launchctl load -w $PLIST)"
+  fi
 else
-  SERVICE="/etc/systemd/system/vedetta-sensor.service"
+  SERVICE="${VEDETTA_SERVICE_PATH:-/etc/systemd/system/vedetta-sensor.service}"
   $SUDO tee "$SERVICE" >/dev/null <<EOF
 [Unit]
 Description=Vedetta Sensor
@@ -212,7 +238,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/vedetta-sensor --core ${CORE_URL} --cidr auto --dns --passive-discovery${EXTRA}
+ExecStart=${BIN_DEST} --core ${CORE_URL} --cidr auto --dns --passive-discovery${EXTRA}
 Restart=always
 RestartSec=10
 User=root

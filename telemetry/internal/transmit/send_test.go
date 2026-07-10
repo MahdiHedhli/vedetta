@@ -117,6 +117,46 @@ func TestSend4xxPoisonPillNoRetry(t *testing.T) {
 	}
 }
 
+// Issue #36: 401/403/429 are identity/rate failures, NOT payload poison. They
+// are retryable and must NOT be dead-lettered NOR spooled — the pipeline holds
+// the Core cursor and re-reads, so the bounded spool is never the durability
+// path under a bad/absent identity. They also must not burn retries in-tick.
+func TestSendAuthFailureRetryableNotSpooled(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var calls int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&calls, 1)
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+			spool := NewSpool(t.TempDir())
+			tx := New(srv.URL, testReporter(), spool, false, 250)
+			tx.HTTP = srv.Client()
+			tx.Sleep = noSleep()
+
+			res := tx.Send(context.Background(), tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())[0])
+			if !res.AuthFailed || res.Spooled {
+				t.Fatalf("status %d: expected AuthFailed and NOT Spooled, got %+v", status, res)
+			}
+			if res.Rejected {
+				t.Errorf("status %d: auth failure must NOT be dead-lettered", status)
+			}
+			if got := atomic.LoadInt32(&calls); got != 1 {
+				t.Errorf("status %d: auth failure must not retry, got %d calls", status, got)
+			}
+			// Nothing is spooled — the held cursor is the retry mechanism.
+			if spool.Depth() != 0 {
+				t.Errorf("status %d: auth failure must not spool, got depth %d", status, spool.Depth())
+			}
+			rejected, _ := listSpoolFiles(spool.RejectedDir)
+			if len(rejected) != 0 {
+				t.Errorf("status %d: auth failure must not land in rejected dir, got %d", status, len(rejected))
+			}
+		})
+	}
+}
+
 func TestSend5xxRetriesThenSpools(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -203,9 +243,47 @@ func TestDrainSpoolResendsAndRemoves(t *testing.T) {
 		t.Fatalf("precondition: expected 1 spooled")
 	}
 	atomic.StoreInt32(&ok, 1)
-	sent, remaining := tx.DrainSpool(context.Background())
+	sent, remaining, _ := tx.DrainSpool(context.Background())
 	if sent != 1 || remaining != 0 {
 		t.Errorf("drain sent=%d remaining=%d, want 1/0", sent, remaining)
+	}
+}
+
+// Issue #36: draining a spooled batch against an auth-failing ingest must keep
+// the batch spooled (no dead-letter) and report authFailed so the caller can
+// surface a degraded state.
+func TestDrainSpoolAuthFailureKeepsSpooled(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	spool := NewSpool(t.TempDir())
+	tx := New(srv.URL, testReporter(), spool, false, 250)
+	tx.HTTP = srv.Client()
+	tx.Sleep = noSleep()
+
+	// Seed the spool directly (dry-run add) with two batches.
+	for i := 0; i < 2; i++ {
+		if err := tx.SpoolBatch(tx.BuildBatches(sampleSignals(1), time.Now(), time.Now())[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sent, remaining, authFailed := tx.DrainSpool(context.Background())
+	if !authFailed {
+		t.Errorf("expected authFailed=true on 403 drain")
+	}
+	if sent != 0 || remaining != 2 {
+		t.Errorf("auth-failing drain must keep all batches: sent=%d remaining=%d", sent, remaining)
+	}
+	// Draining stops at the first auth failure — the second batch is never tried.
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("drain should stop after first auth failure, got %d calls", got)
+	}
+	rejected, _ := listSpoolFiles(spool.RejectedDir)
+	if len(rejected) != 0 {
+		t.Errorf("auth failure must not dead-letter, got %d rejected", len(rejected))
 	}
 }
 

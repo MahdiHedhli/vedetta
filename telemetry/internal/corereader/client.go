@@ -28,6 +28,38 @@ func NewClient(baseURL, token string) *Client {
 	}
 }
 
+// EffectiveOptIn asks Core for the EFFECTIVE telemetry opt-in via
+// GET /api/v1/settings/telemetry, using the same read token as event reads. The
+// response shape is {"opt_in":bool,"source":"setting"|"env","effective":bool};
+// the daemon acts on `effective`. Any transport/status/decode error is returned
+// so the caller can fall back to its env OptIn (fail-open to the operator's
+// local choice — never silently flip sharing off on a blip).
+func (c *Client) EffectiveOptIn(ctx context.Context) (bool, error) {
+	reqURL := c.BaseURL + "/api/v1/settings/telemetry"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return false, err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("core telemetry setting request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("core telemetry setting unexpected status: %s", resp.Status)
+	}
+	var body struct {
+		Effective bool `json:"effective"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return false, fmt.Errorf("decode core telemetry setting: %w", err)
+	}
+	return body.Effective, nil
+}
+
 // FetchPageResult is the outcome of reading one page of events.
 type FetchPageResult struct {
 	Events           []Event

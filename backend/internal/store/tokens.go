@@ -142,6 +142,23 @@ func (db *DB) HasActiveIngestToken() (bool, error) {
 	return count > 0, nil
 }
 
+// HasActiveReadToken returns true when at least one non-revoked read-scoped
+// token exists. Used by the health/status machine-credential surface (issue #34)
+// so operators can confirm the telemetry reader's VEDETTA_CORE_TOKEN was
+// provisioned and did not collide with the ingest token.
+func (db *DB) HasActiveReadToken() (bool, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM api_tokens
+		WHERE scope = ? AND revoked = 0
+	`, auth.ScopeRead).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // HasActiveAdminToken returns true when at least one non-revoked admin-scoped
 // token exists. This is the correct signal for "admin enrollment is complete":
 // bootstrap gates must key on the existence of an ACTIVE ADMIN, not on the total

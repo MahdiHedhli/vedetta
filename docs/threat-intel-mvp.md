@@ -1,7 +1,11 @@
 # Vedetta Threat-Intel MVP
 
 > Last updated: 2026-04-21
-> Status: Draft alpha design
+> Status: Draft alpha design (historical). This is the **original design brief**. The
+> shipped behavior has since changed: telemetry is now **on by default (opt-out)** — set
+> `VEDETTA_TELEMETRY_OPTIN=false` or use the dashboard toggle to disable it — not off by
+> default as sketched below. For current behavior and configuration see
+> [threat-network-operations.md](threat-network-operations.md).
 
 ## Why This Exists
 

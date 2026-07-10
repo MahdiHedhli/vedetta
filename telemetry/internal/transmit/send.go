@@ -115,14 +115,30 @@ type SendResult struct {
 	Accepted  bool
 	Duplicate bool
 	Spooled   bool
-	Rejected  bool // 4xx poison-pill
-	Err       error
+	Rejected  bool // genuine 4xx poison-pill (400/422 schema) — dead-lettered
+	// AuthFailed marks an identity/authorization/rate failure (401/403/429). It
+	// is RETRYABLE: the batch is spooled (Spooled==true), never dead-lettered, so
+	// a later tick re-sends it after re-registration or the rate window clears.
+	AuthFailed bool
+	Err        error
+}
+
+// isAuthFailure reports whether a 4xx status is an identity/authorization/rate
+// failure that should be retried (spooled) rather than dead-lettered. These are
+// transient relative to the payload: the same bytes will succeed once the
+// reporter is (re-)registered or the rate-limit window passes.
+func isAuthFailure(status int) bool {
+	return status == http.StatusUnauthorized || // 401
+		status == http.StatusForbidden || // 403
+		status == http.StatusTooManyRequests // 429
 }
 
 // Send transmits a single batch. Behavior:
 //   - dry-run: gzip + spool, no egress.
 //   - success (2xx): accepted (parse duplicate flag).
-//   - 4xx: poison-pill — NO retry, moved to rejected spool.
+//   - 401/403/429: auth/identity/rate failure — RETRYABLE, spooled (not
+//     dead-lettered) so a later tick re-sends the exact same batch.
+//   - other 4xx (400/422 schema): poison-pill — NO retry, moved to rejected spool.
 //   - 5xx / network: exponential backoff up to MaxAttempts, then spool.
 func (t *Transmitter) Send(ctx context.Context, batch export.Batch) SendResult {
 	body, err := json.Marshal(batch)
@@ -166,8 +182,16 @@ func (t *Transmitter) Send(ctx context.Context, batch export.Batch) SendResult {
 				dup = r.Duplicate
 			}
 			return SendResult{BatchID: batch.BatchID, Accepted: true, Duplicate: dup}
+		case isAuthFailure(status):
+			// Auth/identity/rate failure (401/403/429): RETRYABLE, but do NOT
+			// dead-letter AND do NOT spool. The bounded, drop-oldest spool is not a
+			// durability guarantee, so instead we return AuthFailed and let the
+			// pipeline HOLD the Core cursor — the events are re-read next tick until
+			// identity/rate recovers. Core is the durable source (issue #36).
+			return SendResult{BatchID: batch.BatchID, AuthFailed: true,
+				Err: fmt.Errorf("auth failure %d (retryable, holding cursor): %s", status, strings.TrimSpace(string(respBody)))}
 		case status >= 400 && status < 500:
-			// Poison pill: do NOT retry.
+			// Genuine poison pill (400/422 schema): do NOT retry.
 			_ = t.Spool.AddRejected(batch.BatchID, gz)
 			return SendResult{BatchID: batch.BatchID, Rejected: true,
 				Err: fmt.Errorf("rejected %d: %s", status, strings.TrimSpace(string(respBody)))}
@@ -213,15 +237,18 @@ func (t *Transmitter) doPost(ctx context.Context, uncompressed, gz []byte) (int,
 }
 
 // DrainSpool attempts to resend spooled batches (oldest first) before new work.
-// Successful sends are removed; failures leave the batch spooled. Rejected 4xx
-// re-sends move to the rejected dir. Dry-run leaves the spool untouched.
-func (t *Transmitter) DrainSpool(ctx context.Context) (sent, remaining int) {
+// Successful sends are removed; failures leave the batch spooled. Genuine 4xx
+// poison (400/422) re-sends move to the rejected dir. Auth/rate failures
+// (401/403/429) are RETRYABLE: draining stops and every batch stays spooled, and
+// authFailed is returned so the caller can surface a degraded state. Dry-run
+// leaves the spool untouched.
+func (t *Transmitter) DrainSpool(ctx context.Context) (sent, remaining int, authFailed bool) {
 	if t.DryRun {
-		return 0, t.Spool.Depth()
+		return 0, t.Spool.Depth(), false
 	}
 	items, err := t.Spool.List()
 	if err != nil {
-		return 0, t.Spool.Depth()
+		return 0, t.Spool.Depth(), false
 	}
 	for _, it := range items {
 		status, respBody, err := t.doPostGZ(ctx, it.GZ)
@@ -232,16 +259,20 @@ func (t *Transmitter) DrainSpool(ctx context.Context) (sent, remaining int) {
 		case status >= 200 && status < 300:
 			_ = t.Spool.Remove(it.Path)
 			sent++
+		case isAuthFailure(status):
+			// Auth/rate failure: keep the batch spooled (do NOT dead-letter) and
+			// stop draining — the rest will fail identically this tick.
+			return sent, t.Spool.Depth(), true
 		case status >= 400 && status < 500:
 			_ = t.Spool.Remove(it.Path)
 			_ = t.Spool.AddRejected("spooled", it.GZ)
 			_ = respBody
 		default:
 			// 5xx: stop; try again next tick.
-			return sent, t.Spool.Depth()
+			return sent, t.Spool.Depth(), false
 		}
 	}
-	return sent, t.Spool.Depth()
+	return sent, t.Spool.Depth(), false
 }
 
 // doPostGZ signs and posts an already-gzip'd spooled batch. It must reconstruct

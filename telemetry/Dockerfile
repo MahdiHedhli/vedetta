@@ -5,7 +5,7 @@ COPY go.mod go.sum* ./
 COPY . .
 RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -o /telemetry ./cmd/telemetry
 
-FROM alpine:3.21
+FROM alpine:3.22
 RUN apk --no-cache add ca-certificates
 
 # Persisted telemetry state (cursor, reporter identity, salt, spool). All files

@@ -2,7 +2,10 @@
 
 > Audience: the Vedetta operator/owner deciding whether and how to run the optional
 > community threat-intelligence layer.
-> Status: **implemented, opt-in, off by default, not yet operationally validated.**
+> Status: **implemented; telemetry is on by default (opt-out), advisory-only.** The default
+> `docker-compose.yml` stack runs the telemetry client pointed at `https://feed.vedettas.com`.
+> Disable it any time with `VEDETTA_TELEMETRY_OPTIN=false` (only the exact value `false`
+> disables it) or from the dashboard telemetry toggle.
 > Specs: [002-telemetry-service](../specs/002-telemetry-service/), [003-threat-network](../specs/003-threat-network/).
 > Original design brief: [docs/threat-intel-mvp.md](threat-intel-mvp.md).
 
@@ -11,12 +14,14 @@
 - The community layer is **two separate services** you can run independently: a
   **telemetry client** (runs next to your Core, uploads privacy-reduced signals) and a
   **threat-network server** (a central service everyone reports to and polls).
-- **Nothing here runs by default.** The telemetry client sleeps unless you set
-  `VEDETTA_TELEMETRY_OPTIN=true`. The threat-network server is **off-node** — it is *not*
-  meant to run on your Raspberry Pi.
-- **Most users configure nothing.** The value for a normal deployment is *consuming* the
-  advisory feed, which needs no infrastructure from you. Hosting the server and opting
-  into contribution are separate, optional decisions.
+- **The telemetry client runs by default.** In the default `docker-compose.yml` stack it is
+  on (contributing privacy-reduced signals to `https://feed.vedettas.com`) and is opt-out:
+  set `VEDETTA_TELEMETRY_OPTIN=false` (only the exact value `false` disables it) or flip the
+  dashboard telemetry toggle. A first-run disclosure banner surfaces this on first launch.
+  The threat-network **server** is **off-node** — it is *not* meant to run on your Raspberry Pi.
+- **Most users configure nothing.** Telemetry is preconfigured in the default stack, and the
+  other value for a normal deployment is *consuming* the advisory feed. Hosting your own
+  server and pointing contribution at it are separate, optional decisions.
 - **What I built is a portable Go + SQLite single binary**, not tied to any cloud. You
   decide where it runs (small VPS / free-tier VM / container host). The original brief
   sketched a Cloudflare Workers + D1 shape — that remains a valid alternative because the
@@ -35,7 +40,8 @@ Two components, one frozen wire contract between them.
  │  ├─ events DB                │            │  (Go binary + SQLite,         │
  │  └─ GET /api/v1/events ──────┼── read ──┐ │   :9090, /data volume)        │
  │                              │          │ │                               │
- │  Telemetry client (opt-in) ──┼─ signed ─┼─┼─▶ POST /reporters/register    │
+ │  Telemetry client (on by     ┼─ signed ─┼─┼─▶ POST /reporters/register    │
+ │   default, opt-out) ─────────┼          │ │                               │
  │  • reads events via token    │  batches │ │   POST /ingest  (validate,    │
  │  • strips PII structurally   │  (HTTPS) │ │     privacy re-gate, dedup,    │
  │  • aggregates to 3 signals   │          │ │     consensus)                 │
@@ -47,8 +53,9 @@ Two components, one frozen wire contract between them.
 
 ### Component 1 — Telemetry client (`telemetry/`, spec 002)
 
-Runs alongside Core (its own container in `docker-compose.yml`). When — and only when —
-opted in, each tick it:
+Runs alongside Core (its own container in `docker-compose.yml`) and is **on by default**
+(opt-out via `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle). Each tick, while
+enabled, it:
 
 1. **Reads** new events from Core over HTTP (`GET /api/v1/events`) using a read token,
    tracking a persisted cursor so it never re-sends.
@@ -71,7 +78,7 @@ Go standard library (no third-party deps).
 
 A single Go binary with a service-local SQLite DB. It:
 
-- **Registers reporters** anonymously (`POST /api/v1/reporters/register`) — it stores an
+- **Registers reporters** pseudonymously (`POST /api/v1/reporters/register`) — it stores an
   id and a hash of a secret, never an account, email, or operator identity.
 - **Ingests signed batches** (`POST /api/v1/ingest`): verifies the HMAC signature, rejects
   timestamps outside ±300 s and reused nonces, treats a duplicate `batch_id` as an
@@ -95,7 +102,7 @@ A single Go binary with a service-local SQLite DB. It:
 | --- | --- |
 | Raw internal/WAN IPs, MACs, hostnames, SSIDs | Domain indicators for the 3 signal kinds (exact domain only for known-bad; eTLD+1 for candidates) |
 | Your device inventory or per-device identifiers | Counts (`distinct_asset_count`, observation counts) — never a host list |
-| Query history, internal domain names | A hash of your reporter secret (anonymous identity) |
+| Query history, internal domain names | A hash of your reporter secret (pseudonymous identity) |
 | Operator identity, account, email | Coarse behavior summaries with no domain |
 
 Two independent gates enforce this: structural stripping on the client (spec 002) **and**
@@ -158,24 +165,26 @@ observed activity.
 > the scheduled poll is future work. So today "consume the feed" is a near-term
 > integration, not a toggle. Track it as a follow-up.
 
-### Role 2 — Contribute (opt-in telemetry)
+### Role 2 — Contribute (telemetry, on by default)
 
-Run the telemetry container and flip the opt-in. In `docker-compose.yml` (or the
-telemetry container's env):
+The telemetry container ships in the default stack and contributes to `https://feed.vedettas.com`
+**out of the box**. You do not need to turn anything on. Use these env vars to disable it, point
+it at a different server, or dry-run it. In `docker-compose.yml` (or the telemetry container's env):
 
 | Variable | Set to | Purpose |
 | --- | --- | --- |
-| `VEDETTA_TELEMETRY_OPTIN` | `true` | **The switch.** Without this the daemon is fully inert. |
+| `VEDETTA_TELEMETRY_OPTIN` | `false` to disable (default `true`) | **The switch.** Only the exact value `false` turns the daemon off; you can also toggle it from the dashboard. |
 | `VEDETTA_CORE_URL` | e.g. `http://backend:8080` | Where to read your events from |
 | `VEDETTA_CORE_TOKEN` | a **read-only** Core API token | Auth for the events read (mint one in Core) |
-| `VEDETTA_THREAT_NETWORK_URL` | your server's base URL | Where to upload signed batches |
-| `VEDETTA_TELEMETRY_DRYRUN` | `true` (recommended first) | Run the full pipeline to spool with **zero egress** so you can inspect what would be sent before real upload |
+| `VEDETTA_THREAT_NETWORK_URL` | defaults to `https://feed.vedettas.com` | Where to upload signed batches (override to point at your own server) |
+| `VEDETTA_TELEMETRY_DRYRUN` | `true` (optional) | Run the full pipeline to spool with **zero egress** so you can inspect what would be sent before real upload |
 | `VEDETTA_TELEMETRY_STATE_DIR` | a persisted path | Holds the cursor, reporter secret (0600), and HMAC salt |
 
-Recommended first run: `OPTIN=true` **and** `DRYRUN=true`, let it run ~72 h, inspect the
-spooled batches, then drop dry-run. (This is the owner-side "operational validation" that
-VED-014 tracks.) Registration is automatic and anonymous; the secret is stored `0600` in
-the state dir.
+If you want to inspect exactly what would be shared before any real egress, set
+`DRYRUN=true` (telemetry is already on by default), let it run ~72 h, inspect the spooled
+batches, then drop dry-run. (This is the owner-side "operational validation" that VED-014
+tracks.) Registration is automatic and pseudonymous; the reporter secret is stored `0600`
+in the state dir.
 
 ### Role 3 — Host the community server (only if you want to run the backend for others)
 
@@ -198,15 +207,18 @@ spec 003) — operations are the container + its DB + logs.
   telemetry pipeline, server ingest/consensus/feed, privacy gates, abuse controls.
 - **Not yet done:** the Core-side feed consumer (Role 1 wiring); an operational validation
   pass on real infrastructure (VED-014); the Cloudflare Option B implementation.
-- **Off by default, advisory-only, no PII at rest** — treat it as opt-in alpha, not a
-  production dependency. Deployments that never touch it lose nothing.
+- **On by default (opt-out), advisory-only, no PII at rest** — the shared feed is advisory
+  only and is never a production dependency. Deployments that disable telemetry lose nothing
+  locally.
 
 ## Decisions this doc is asking you to make
 
-1. **Do you want a community layer at all for alpha?** If not — do nothing; it stays off.
+1. **Do you want to keep contributing telemetry?** It is on by default; if not, set
+   `VEDETTA_TELEMETRY_OPTIN=false` or flip the dashboard toggle and it stops.
 2. **If yes, who hosts the server?** Option A (Go+SQLite on a small VPS, recommended) vs
    Option B (build the Cloudflare Worker+D1 version).
 3. **A domain + TLS** for the server (e.g. `feed.vedetta.<you>` behind Caddy or a
    Cloudflare Tunnel).
-4. **Contribute or just consume?** Consuming needs the Core feed-poller finished; contributing
-   needs the opt-in + a Core read token, ideally after a dry-run soak.
+4. **Keep contributing, or just consume?** Contributing is on by default (opt-out via
+   `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle); a dry-run soak first is optional.
+   Consuming a feed still needs the Core feed-poller finished.

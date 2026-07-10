@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -61,6 +63,10 @@ func gunzipReq(r *http.Request) ([]byte, error) {
 
 func fakeCoreServer(events []corereader.Event) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/settings/telemetry" {
+			json.NewEncoder(w).Encode(map[string]any{"opt_in": true, "source": "setting", "effective": true})
+			return
+		}
 		page := 1
 		if r.URL.Query().Get("page") == "2" {
 			page = 2
@@ -195,6 +201,10 @@ func TestPipelineOverflowBatchesSpooledNotDropped(t *testing.T) {
 	events := knownBadEvents(n)
 	var served atomic.Bool
 	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/settings/telemetry" {
+			json.NewEncoder(w).Encode(map[string]any{"opt_in": true, "source": "setting", "effective": true})
+			return
+		}
 		out := events
 		if served.Swap(true) || r.URL.Query().Get("page") == "2" {
 			out = nil
@@ -256,6 +266,187 @@ func TestPipelineOverflowBatchesSpooledNotDropped(t *testing.T) {
 	}
 	if d := spool.Depth(); d != 0 {
 		t.Fatalf("spool should be empty after drain, got depth %d", d)
+	}
+}
+
+// helper: a threat-network stub whose auth behavior is switchable at runtime.
+func newIngestStub(t *testing.T, authFail *atomic.Bool, delivered *atomic.Bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authFail.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if _, err := gunzipReq(r); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if delivered != nil {
+			delivered.Store(true)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]any{"accepted": 1, "duplicate": false})
+	}))
+}
+
+// Issue #36: an ingest auth failure (401) must NOT dead-letter OR spool the
+// batch. The events are left unconsumed in Core (the cursor is HELD), the daemon
+// reports degraded, and a later tick with healthy ingest re-reads and delivers
+// those events — then clears degraded. This proves no data loss under sustained
+// auth failure (the bounded spool is never the durability path).
+func TestPipelineIngestAuthFailHoldsCursorThenRecovers(t *testing.T) {
+	core := fakeCoreServer(knownBadEvents(1))
+	defer core.Close()
+
+	var authFail, delivered atomic.Bool
+	authFail.Store(true)
+	tn := newIngestStub(t, &authFail, &delivered)
+	defer tn.Close()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OptIn: true, CoreURL: core.URL, ThreatNetworkURL: tn.URL, StateDir: dir,
+		CandidateMinScore: 0.85, BehaviorMinScore: 0.70, ReadCapPerTick: 5000, MaxBatchItems: 250, MaxBatchesTick: 4}
+	st := status.NewState(true, false)
+	spool := transmit.NewSpool(dir)
+	tx := transmit.New(tn.URL, transmit.Reporter{ReporterID: "rid", ReporterSecret: "secret"}, spool, false, 250)
+	tx.HTTP = tn.Client()
+	tx.Sleep = func(time.Duration) {}
+	p := &Pipeline{Cfg: cfg, Reader: corereader.NewClient(core.URL, ""), Tx: tx,
+		Salt: []byte("salt"), State: st, StateDir: dir}
+
+	// Tick 1: ingest is auth-failing. Nothing delivered, nothing spooled, cursor HELD.
+	p.RunTick(context.Background())
+	if delivered.Load() {
+		t.Fatal("nothing should be delivered while ingest auth-fails")
+	}
+	if spool.Depth() != 0 {
+		t.Fatalf("auth failure must NOT spool (cursor is held instead), depth=%d", spool.Depth())
+	}
+	if snap := st.Get(); !snap.Degraded {
+		t.Errorf("expected degraded state on ingest auth failure")
+	}
+	// Cursor must be HELD — the events stay unconsumed in Core for a re-read.
+	if cur, _ := corereader.LoadCursor(dir); cur.LastEventID != "" {
+		t.Errorf("cursor must be held (not advanced) on auth failure, got %q", cur.LastEventID)
+	}
+
+	// Tick 2: ingest recovers. Because the cursor was held, the events are re-read
+	// from Core and delivered now (no spool involved).
+	authFail.Store(false)
+	p.RunTick(context.Background())
+	if !delivered.Load() {
+		t.Fatal("recovery tick must deliver the held-back events")
+	}
+	if cur, _ := corereader.LoadCursor(dir); cur.LastEventID == "" {
+		t.Errorf("cursor should advance after successful delivery")
+	}
+	if snap := st.Get(); snap.Degraded {
+		t.Errorf("degraded should clear after recovery: %q", snap.DegradedReason)
+	}
+}
+
+// Issue #36 (2): if a derived batch cannot be durably handled (here: the auth
+// failure's spool write fails because the spool path is unusable), the cursor
+// MUST NOT advance past those events — they are re-read next tick, never lost.
+func TestPipelineCursorHeldWhenBatchNotDurable(t *testing.T) {
+	core := fakeCoreServer(knownBadEvents(1))
+	defer core.Close()
+	tn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // retryable auth failure
+	}))
+	defer tn.Close()
+
+	dir := t.TempDir()
+	// Poison the spool: a FILE where the spool directory must live, so every
+	// Spool.Add fails and the auth-failed batch cannot be durably spooled.
+	if err := os.WriteFile(filepath.Join(dir, "spool"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{OptIn: true, CoreURL: core.URL, ThreatNetworkURL: tn.URL, StateDir: dir,
+		CandidateMinScore: 0.85, BehaviorMinScore: 0.70, ReadCapPerTick: 5000, MaxBatchItems: 250, MaxBatchesTick: 4}
+	st := status.NewState(true, false)
+	tx := transmit.New(tn.URL, transmit.Reporter{ReporterID: "rid", ReporterSecret: "secret"}, transmit.NewSpool(dir), false, 250)
+	tx.HTTP = tn.Client()
+	tx.Sleep = func(time.Duration) {}
+	p := &Pipeline{Cfg: cfg, Reader: corereader.NewClient(core.URL, ""), Tx: tx,
+		Salt: []byte("salt"), State: st, StateDir: dir}
+
+	p.RunTick(context.Background())
+
+	if cur, _ := corereader.LoadCursor(dir); cur.LastEventID != "" {
+		t.Errorf("cursor must not advance when a batch could not be durably handled, got %q", cur.LastEventID)
+	}
+}
+
+// Issue #37: when Core reports the effective telemetry opt-in as OFF, the tick
+// must export NOTHING (no ingest egress) and surface the suppressed state; the
+// cursor must not advance (no events consumed).
+func TestPipelineCoreOptOutSuppressesExport(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/settings/telemetry" {
+			json.NewEncoder(w).Encode(map[string]any{"opt_in": false, "source": "setting", "effective": false})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"events": knownBadEvents(1), "total": 1, "page": 1, "limit": 500})
+	}))
+	defer core.Close()
+
+	var ingestCalls int32
+	tn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&ingestCalls, 1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer tn.Close()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OptIn: true, CoreURL: core.URL, ThreatNetworkURL: tn.URL, StateDir: dir,
+		CandidateMinScore: 0.85, BehaviorMinScore: 0.70, ReadCapPerTick: 5000, MaxBatchItems: 250, MaxBatchesTick: 4}
+	st := status.NewState(true, false)
+	tx := transmit.New(tn.URL, transmit.Reporter{ReporterID: "rid", ReporterSecret: "secret"}, transmit.NewSpool(dir), false, 250)
+	tx.HTTP = tn.Client()
+	tx.Sleep = func(time.Duration) {}
+	p := &Pipeline{Cfg: cfg, Reader: corereader.NewClient(core.URL, ""), Tx: tx,
+		Salt: []byte("salt"), State: st, StateDir: dir}
+
+	p.RunTick(context.Background())
+
+	if got := atomic.LoadInt32(&ingestCalls); got != 0 {
+		t.Errorf("effective opt-out must export nothing, got %d ingest calls", got)
+	}
+	snap := st.Get()
+	if !snap.Suppressed {
+		t.Errorf("suppressed state not surfaced on Core opt-out")
+	}
+	if cur, _ := corereader.LoadCursor(dir); cur.LastEventID != "" {
+		t.Errorf("cursor must not advance when export is suppressed, got %q", cur.LastEventID)
+	}
+}
+
+// Issue #36 (3): an unregistered reporter surfaces a degraded state.
+func TestPipelineUnregisteredReporterDegraded(t *testing.T) {
+	core := fakeCoreServer(knownBadEvents(1))
+	defer core.Close()
+	tn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer tn.Close()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OptIn: true, CoreURL: core.URL, ThreatNetworkURL: tn.URL, StateDir: dir,
+		CandidateMinScore: 0.85, BehaviorMinScore: 0.70, ReadCapPerTick: 5000, MaxBatchItems: 250, MaxBatchesTick: 4}
+	st := status.NewState(true, false)
+	// Reporter with no ReporterID → unregistered.
+	tx := transmit.New(tn.URL, transmit.Reporter{}, transmit.NewSpool(dir), false, 250)
+	tx.HTTP = tn.Client()
+	tx.Sleep = func(time.Duration) {}
+	p := &Pipeline{Cfg: cfg, Reader: corereader.NewClient(core.URL, ""), Tx: tx,
+		Salt: []byte("salt"), State: st, StateDir: dir}
+
+	p.RunTick(context.Background())
+
+	snap := st.Get()
+	if !snap.Degraded || snap.DegradedReason != "reporter unregistered" {
+		t.Errorf("expected degraded=reporter unregistered, got %+v/%q", snap.Degraded, snap.DegradedReason)
 	}
 }
 

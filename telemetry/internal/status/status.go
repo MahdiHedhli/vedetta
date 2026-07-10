@@ -19,9 +19,19 @@ type LastBatch struct {
 
 // Snapshot is the JSON shape returned by /status.
 type Snapshot struct {
-	OptIn                  bool      `json:"opt_in"`
-	DryRun                 bool      `json:"dry_run"`
-	ReporterRegistered     bool      `json:"reporter_registered"`
+	OptIn              bool `json:"opt_in"`
+	DryRun             bool `json:"dry_run"`
+	ReporterRegistered bool `json:"reporter_registered"`
+	// Degraded is true when the daemon is running but not fully functional —
+	// the reporter is unregistered, or ingest is auth-failing (401/403/429).
+	// It reports a health state only; it never carries signal payload.
+	Degraded       bool   `json:"degraded"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
+	// Suppressed is true when the effective telemetry opt-in resolved from Core
+	// is OFF, so this tick exported nothing (a deliberate, healthy inert state —
+	// distinct from Degraded). SuppressedReason names why.
+	Suppressed             bool      `json:"suppressed"`
+	SuppressedReason       string    `json:"suppressed_reason,omitempty"`
 	Cursor                 string    `json:"cursor,omitempty"`
 	LastTick               string    `json:"last_tick,omitempty"`
 	LastBatch              LastBatch `json:"last_batch"`

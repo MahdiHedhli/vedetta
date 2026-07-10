@@ -1,0 +1,38 @@
+# Vedetta gitleaks configuration (issue #38).
+#
+# Extends gitleaks' full default ruleset — every built-in rule stays ACTIVE.
+# The allowlist below does NOT disable the `generic-api-key` rule globally; it
+# only exempts the two KNOWN, REVIEWED synthetic fixtures that trip it:
+#
+#   1. telemetry/internal/transmit/register_test.go  — a hard-coded fake
+#      `reporter_secret` returned by an in-test httptest stub server.
+#   2. specs/002-telemetry-service/contracts/telemetry-export.md — the same
+#      fake `reporter_secret` shown as an example payload in the contract.
+#
+# Both contain the identical placeholder value
+# `c2VjcmV0LWJhc2U2NC1leGFtcGxlLW9ubHk=` (base64 of "secret-base64-example-only").
+# The allowlist is scoped to the `generic-api-key` rule AND those two paths AND
+# that exact placeholder string (condition = AND), so a REAL secret added to
+# either file — or that placeholder appearing anywhere else — still fails the
+# scan.
+
+title = "Vedetta gitleaks config"
+
+[extend]
+# Pull in the upstream default rules; we only add an allowlist on top.
+useDefault = true
+
+[[allowlists]]
+description = "Reviewed synthetic reporter_secret fixtures (issue #38)"
+# Scope to just the rule these fixtures trip — no global rule disable.
+targetRules = ["generic-api-key"]
+# All conditions must hold for a match to be exempted.
+condition = "AND"
+paths = [
+  '''telemetry/internal/transmit/register_test\.go''',
+  '''specs/002-telemetry-service/contracts/telemetry-export\.md''',
+]
+# The exact synthetic placeholder; a real/different secret in these files is
+# NOT exempted.
+regexes = ['''c2VjcmV0LWJhc2U2NC1leGFtcGxlLW9ubHk=''']
+regexTarget = "line"

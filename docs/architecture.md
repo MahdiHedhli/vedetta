@@ -34,7 +34,7 @@ vedetta-core (Docker Compose)
    |- backend
    |- frontend
    |- collector
-   |- telemetry (idle unless opted in)
+   |- telemetry (on by default; opt-out)
    `- local SQLite data
 ```
 
@@ -59,7 +59,7 @@ vedetta-core (Docker Compose)
 | `backend` | API, event enrichment, device/event storage | shipped |
 | `frontend` | dashboard UI | shipped |
 | `collector` | syslog and normalized log ingestion path | shipped, limited public workflows today |
-| `telemetry` | anonymized community sharing | implemented, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false`) |
+| `telemetry` | privacy-reduced community sharing | implemented, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle) |
 | `threat-network` | community intelligence backend | implemented, advisory-only, runs off-node ([ops doc](threat-network-operations.md)) |
 
 ## What the Sensor Does Today
@@ -107,7 +107,7 @@ Vedetta currently focuses on DNS-first security signals. The backend includes de
 - DNS rebinding
 - DNS bypass and public-resolver use
 
-Threat-intelligence enrichment is local-first. The community threat network is implemented and opt-in but should be treated as opt-in alpha (pending an operational validation pass), not a production dependency. See [threat-network-operations.md](threat-network-operations.md).
+Threat-intelligence enrichment is local-first. The community threat network is implemented, and the telemetry client contributes to it on by default (opt-out via `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle); the shared feed is advisory-only and never a production dependency — local detection works without it. See [threat-network-operations.md](threat-network-operations.md).
 
 ## Deployment Reality
 
@@ -124,8 +124,8 @@ That makes Vedetta a good fit today for homelabs, technical home users, consulta
 
 - the local deployment is the primary product
 - the local deployment should stay useful even with no cloud dependency
-- telemetry is on by default and opt-out (`VEDETTA_TELEMETRY_OPTIN=false`), anonymized and advisory-only
-- community sharing is anonymized and privacy-conscious; opting out is trivial
+- telemetry is on by default and opt-out (`VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle, with a first-run disclosure banner), and the shared feed is advisory-only
+- community sharing strips source IPs, MACs, and hostnames at the source and shares only the matched known-bad threat indicator plus aggregate counts; a per-instance salted HMAC stays local for distinct-asset counting and never leaves the node (see [PRIVACY.md](../PRIVACY.md) and [specs/003-threat-network/anonymization-proof.md](../specs/003-threat-network/anonymization-proof.md)); opting out is trivial
 
 ## Auth Model (Alpha)
 
