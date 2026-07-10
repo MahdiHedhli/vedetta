@@ -19,10 +19,11 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this is an admin-only operation (only after tokens exist)
-	tokenCount, _ := s.DB.CountTokens()
-	if tokenCount > 0 {
-		// Auth is enabled - check permissions
+	// Admin-only once an admin exists. During bootstrap (no active admin) this is
+	// open so the operator can mint the first admin token — keyed on active-admin,
+	// not total token count, so an auto-issued sensor token can't lock setup out.
+	hasAdmin, _ := s.DB.HasActiveAdminToken()
+	if hasAdmin {
 		scope := auth.GetScopeFromContext(r)
 		if scope != auth.ScopeAdmin {
 			http.Error(w, "only admins can create tokens", http.StatusForbidden)
@@ -82,10 +83,9 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if auth is enabled
-	tokenCount, _ := s.DB.CountTokens()
-	if tokenCount > 0 {
-		// Auth is enabled - check permissions
+	// Admin-only once an admin exists (see handleCreateToken).
+	hasAdmin, _ := s.DB.HasActiveAdminToken()
+	if hasAdmin {
 		scope := auth.GetScopeFromContext(r)
 		if scope != auth.ScopeAdmin {
 			http.Error(w, "only admins can list tokens", http.StatusForbidden)
@@ -124,10 +124,9 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if auth is enabled
-	tokenCount, _ := s.DB.CountTokens()
-	if tokenCount > 0 {
-		// Auth is enabled - check permissions
+	// Admin-only once an admin exists (see handleCreateToken).
+	hasAdmin, _ := s.DB.HasActiveAdminToken()
+	if hasAdmin {
 		scope := auth.GetScopeFromContext(r)
 		if scope != auth.ScopeAdmin {
 			http.Error(w, "only admins can revoke tokens", http.StatusForbidden)
@@ -139,6 +138,20 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	if tokenID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "token_id required"})
 		return
+	}
+
+	// Never let the last active admin be revoked — that would strip the ability to
+	// manage the deployment with no recovery path (beta-gate B1a lockout).
+	if target, err := s.DB.GetTokenByID(tokenID); err == nil && target.Scope == auth.ScopeAdmin && !target.Revoked {
+		activeAdmins, err := s.DB.CountActiveAdminTokens()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to check admin tokens"})
+			return
+		}
+		if activeAdmins <= 1 {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "cannot revoke the last active admin token — create another admin token first"})
+			return
+		}
 	}
 
 	if err := s.DB.RevokeToken(tokenID); err != nil {
