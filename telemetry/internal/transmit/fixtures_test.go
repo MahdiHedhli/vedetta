@@ -26,7 +26,7 @@ func TestSharedSignatureVector(t *testing.T) {
 	if err := json.Unmarshal(data, &v); err != nil {
 		t.Fatal(err)
 	}
-	got := Sign([]byte(v.ReporterSecret), SignatureInput{
+	got := Sign([]byte(SigningKey(v.ReporterSecret)), SignatureInput{
 		Timestamp: v.Timestamp, Nonce: v.Nonce, Body: []byte(v.Body),
 	})
 	if got != v.ExpectedSignature {

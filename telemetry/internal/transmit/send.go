@@ -187,7 +187,7 @@ func (t *Transmitter) Send(ctx context.Context, batch export.Batch) SendResult {
 func (t *Transmitter) doPost(ctx context.Context, uncompressed, gz []byte) (int, []byte, error) {
 	ts := strconv.FormatInt(t.Now().Unix(), 10)
 	nonce := t.nonceGen()
-	sig := Sign([]byte(t.Reporter.ReporterSecret), SignatureInput{
+	sig := Sign([]byte(SigningKey(t.Reporter.ReporterSecret)), SignatureInput{
 		Timestamp: ts, Nonce: nonce, Body: uncompressed,
 	})
 
