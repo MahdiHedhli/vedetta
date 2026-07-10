@@ -114,6 +114,15 @@ func NewRouter(srv *Server) http.Handler {
 			r.Get("/events", srv.handleEvents)
 			r.Get("/events/stats", srv.handleEventStats)
 			r.Get("/events/timeline", srv.handleEventTimeline)
+			// Telemetry opt-in is a read-scope read: the telemetry daemon polls it
+			// each tick with its read token to decide whether to export (issue #37).
+			r.Get("/settings/telemetry", srv.handleGetTelemetrySetting)
+		})
+
+		// Persisting the telemetry opt-in is an admin action (dashboard control).
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAdmin(srv.DB))
+			r.Put("/settings/telemetry", srv.handlePutTelemetrySetting)
 		})
 
 		// Ingest endpoint for the Fluent Bit log collector (Pi-hole DNS + firewall syslog).
@@ -397,16 +406,38 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		collectionHealth["beacon_tracked_pairs"] = s.Enricher.BeaconEntryCount()
 	}
 
+	// Machine-credential health (issue #34): surface the effective collector-ingest
+	// and telemetry-read credential state so operators can diagnose a 403 from the
+	// API, not only from the startup logs. "configured" reflects the compose env
+	// secret; "active" reflects a usable non-revoked token of that scope actually
+	// existing in the DB; "collision" flags the identical-secret case that would
+	// leave only one scope provisioned.
+	ingestCfg, readCfg, collision := MachineCredentialState()
+	machineCreds := map[string]any{
+		"ingest_token_configured": ingestCfg,
+		"read_token_configured":   readCfg,
+		"collision":               collision,
+	}
+	if s.DB != nil {
+		if present, err := s.DB.HasActiveIngestToken(); err == nil {
+			machineCreds["ingest_token_active"] = present
+		}
+		if present, err := s.DB.HasActiveReadToken(); err == nil {
+			machineCreds["read_token_active"] = present
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "ok",
-		"version":           "0.1.0-dev",
-		"service":           "vedetta-core",
-		"device_count":      deviceCount,
-		"event_count":       eventCount,
-		"sensor_count":      sensorCount,
-		"scan":              scanStatus,
-		"default_cidr":      defaultCIDR,
-		"collection_health": collectionHealth,
+		"status":              "ok",
+		"version":             "0.1.0-dev",
+		"service":             "vedetta-core",
+		"device_count":        deviceCount,
+		"event_count":         eventCount,
+		"sensor_count":        sensorCount,
+		"scan":                scanStatus,
+		"default_cidr":        defaultCIDR,
+		"collection_health":   collectionHealth,
+		"machine_credentials": machineCreds,
 	})
 }
 

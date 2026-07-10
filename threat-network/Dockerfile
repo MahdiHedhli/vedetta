@@ -8,7 +8,7 @@ COPY go.mod go.sum* ./
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -o /threat-network ./cmd/threat-network
 
-FROM alpine:3.21
+FROM alpine:3.22
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /threat-network /usr/local/bin/threat-network
 

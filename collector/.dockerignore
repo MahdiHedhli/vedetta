@@ -1,0 +1,38 @@
+# Build context for the collector image is ./collector. The image only needs the
+# Fluent Bit config/ (conf + Lua transforms) it COPYs in; keep everything else out
+# of the context — the parser/transform test suite, any siem/ material, local or
+# secret files, build outputs, and editor/OS cruft (faster builds; defense-in-depth
+# so nothing local reaches the Docker daemon).
+
+# Test suite (not shipped in the runtime image)
+test
+
+# siem/ material — not part of the collector image
+siem
+
+# Node/JS build outputs (in case tooling lands here)
+node_modules
+dist
+build
+
+# Local/secret material — never send to the daemon.
+.env
+.env.*
+!.env.example
+.local
+
+# VCS / CI / tooling
+.git
+.gitignore
+.github
+.dockerignore
+Dockerfile
+
+# Editor / OS cruft
+.DS_Store
+.vscode
+.idea
+.cursor
+
+# Docs
+*.md

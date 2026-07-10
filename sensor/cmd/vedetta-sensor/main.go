@@ -19,9 +19,9 @@ import (
 	"github.com/vedetta-network/vedetta/sensor/internal/passive"
 )
 
-var (
-	version = "0.1.0-dev"
-)
+// buildVersion is stamped by release CI via -ldflags "-X main.buildVersion=<tag>".
+// It defaults to "dev" for local/source builds.
+var buildVersion = "dev"
 
 func main() {
 	// CLI flags
@@ -46,7 +46,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("vedetta-sensor %s\n", version)
+		fmt.Printf("vedetta-sensor %s\n", buildVersion)
 		os.Exit(0)
 	}
 

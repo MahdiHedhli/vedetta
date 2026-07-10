@@ -46,9 +46,23 @@ jobs:
           CGO_ENABLED: "1"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          # The tag being released: github.ref_name on a tag push (e.g. v1.2.3),
+          # or the workflow_dispatch ref input for a manual run.
+          VERSION: ${{ github.event.inputs.ref || github.ref_name }}
         run: |
-          go build -trimpath -ldflags="-s -w" -o vedetta-sensor ./cmd/vedetta-sensor
-          ./vedetta-sensor --version
+          # Stamp the version into the binary per the build-version contract:
+          # `var buildVersion = "dev"` in package main, overridden at link time.
+          go build -trimpath \
+            -ldflags="-s -w -X main.buildVersion=${VERSION}" \
+            -o vedetta-sensor ./cmd/vedetta-sensor
+          # Assert the built binary actually reports the tag — a mismatch means the
+          # ldflags path silently broke (wrong package/var), so fail the job.
+          reported="$(./vedetta-sensor --version)"
+          echo "binary reports: ${reported}"
+          if [ "${reported}" != "vedetta-sensor ${VERSION}" ]; then
+            echo "::error::version stamp mismatch: got '${reported}', want 'vedetta-sensor ${VERSION}'"
+            exit 1
+          fi
           tar -czf "vedetta-sensor_${GOOS}_${GOARCH}.tar.gz" vedetta-sensor
       - uses: actions/upload-artifact@v4
         with:

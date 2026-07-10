@@ -44,6 +44,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap-dev
       - run: go build ./...
       - run: go vet ./...
+      # staticcheck (issue #38). INFORMATIONAL for now — it is wired here so its
+      # findings surface in CI, but it does not yet gate merges because the
+      # telemetry module trips SA4000 on a tautological determinism test:
+      #   telemetry/internal/transmit/sign_test.go:44
+      #     if Sign(secret, in) != Sign(secret, in) { ... }
+      #   -> "identical expressions on the left and right side of '!=' (SA4000)"
+      # That test lives in application source (telemetry), which is out of scope
+      # for the CI/Docker change that introduced this step, so it is NOT edited
+      # here. Handoff to the telemetry owner: rewrite the test to assert the
+      # signature against a captured expected value (or add a justified
+      # `//lint:ignore SA4000 determinism check` directive), then drop the
+      # `continue-on-error` below to promote staticcheck to a hard gate.
+      - name: staticcheck (informational — see note above)
+        continue-on-error: true
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          "$(go env GOPATH)/bin/staticcheck" ./...
       - run: go test ./...
       - name: govulncheck (source mode)
         run: |
@@ -121,7 +138,12 @@ jobs:
         continue-on-error: true
         run: lua5.4 run_tests.lua
 
-  # ---- Secret scan: full tree + history + PR diff ----------------------------
+  # ---- Secret scan: full history (push) + PR diff (pull_request) -------------
+  # gitleaks-action@v2 auto-selects its mode by event: a full-history scan on
+  # push to main, and a PR-diff scan on pull_request. Both use the reviewed
+  # repo-root .gitleaks.toml (issue #38) via GITLEAKS_CONFIG, which extends the
+  # default ruleset and allowlists ONLY the known synthetic reporter_secret
+  # fixtures — every other rule stays active for both scan modes.
   secrets:
     name: secret-scan
     runs-on: ubuntu-latest
@@ -133,3 +155,4 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml

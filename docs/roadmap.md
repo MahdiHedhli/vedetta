@@ -41,16 +41,16 @@ against the [project constitution](../.specify/memory/constitution.md).
 - Optional AdGuard Home integration
 - Device inventory, scan targets, whitelist/suppression, and basic onboarding flow
 
-### Opt-in / off by default
+### On by default (opt-out)
 
-- **Telemetry service** ([specs/002](../specs/002-telemetry-service/)): **on by default, opt-out** (`VEDETTA_TELEMETRY_OPTIN=false`); structural PII stripping, aggregate-only signed export.
-- **Community threat network** ([specs/003](../specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance. Alpha, not production-ready.
+- **Telemetry service** ([specs/002](../specs/002-telemetry-service/)): **on by default, opt-out** (`VEDETTA_TELEMETRY_OPTIN=false`, or the dashboard telemetry toggle, disables it; a first-run banner discloses it); source IPs, MACs, and hostnames are stripped at the source, aggregate-only signed export.
+- **Community threat network** ([specs/003](../specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance.
 
 ### In progress
 
 - Install and onboarding polish for alpha users
 - Broader auth hardening, token rotation, and cleaner setup flow
-- Live SNR / operational validation of the newly implemented sources (UniFi, telemetry, threat network) on real deployments before they are labelled "supported"
+- Live SNR / operational validation of the newly implemented UniFi source on real deployments before it is labelled "supported"
 - Better public docs that separate shipped features from roadmap items
 
 ### Planned next
@@ -89,16 +89,15 @@ Vedetta is not yet positioned as a mass-market consumer appliance. The current i
 
 - **Self-hosted first.** The local deployment should stand on its own.
 - **Local value first.** Device discovery, DNS visibility, and local detections work without a cloud dependency.
-- **Telemetry is on by default and opt-out** (`VEDETTA_TELEMETRY_OPTIN=false`); it strips PII structurally and exports only aggregate, advisory-only signals.
-- **Community sharing is not the core promise.** The community threat network is implemented and advisory-only, but it is a roadmap direction, not the present-tense reason to adopt Vedetta.
+- **Telemetry is on by default and opt-out** (`VEDETTA_TELEMETRY_OPTIN=false` or the dashboard telemetry toggle); it strips source IPs, MACs, and hostnames at the source and exports only aggregate, advisory-only signals.
+- **Community sharing is not the core promise.** The community threat network is implemented and advisory-only, but it is a secondary layer, not the present-tense reason to adopt Vedetta.
 
 ## Known Product Limits
 
 - The recommended Core path still uses Docker Compose.
 - The sensor install path is currently oriented around macOS and Linux. Windows is not yet a supported public install path.
 - Router and firewall coverage is still maturing. UniFi log ingestion is implemented (specs/001) but has not completed the live ≥72h SNR validation on real hardware, so it is not yet labelled fully "supported"; broader connectors remain specced-only (specs/005).
-- The telemetry and threat-network services are implemented (specs/002, specs/003) but are off by default / advisory-only and have not completed an operational validation pass. Treat them as opt-in alpha, not production-ready.
-- Fresh-install migration-runner hardening is outstanding (the filesystem runner currently fails partway on a clean DB; tracked in the backlog).
+- Telemetry and the community threat network are implemented (specs/002, specs/003) and on by default (opt-out via `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle); the shared feed is advisory-only. The Core-side consumer that pulls community intel back into local scoring is specced but not yet wired.
 - Sensor bearer auth is now in place for registration follow-up, device reports, DNS ingest, and work fetches. Broader dashboard/admin auth hardening is still incomplete, and public internet exposure remains unsupported.
 
 ## Near-Term Roadmap Themes

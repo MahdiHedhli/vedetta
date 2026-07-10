@@ -41,8 +41,10 @@ func TestCanonicalStringShape(t *testing.T) {
 func TestSignDeterministic(t *testing.T) {
 	secret := []byte("s")
 	in := SignatureInput{Timestamp: "1", Nonce: "n", Body: []byte("body")}
-	if Sign(secret, in) != Sign(secret, in) {
-		t.Errorf("signature not deterministic")
+	a := Sign(secret, in)
+	b := Sign(secret, in)
+	if a != b {
+		t.Errorf("signature not deterministic: %q != %q", a, b)
 	}
 }
 

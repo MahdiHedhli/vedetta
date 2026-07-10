@@ -117,6 +117,47 @@ func TestReadMalformedSkipped(t *testing.T) {
 	}
 }
 
+// Issue #37: EffectiveOptIn reads the `effective` field from Core's telemetry
+// setting endpoint (using the read token), and returns an error on any
+// transport/status/decode failure so the caller can fall back to env OptIn.
+func TestEffectiveOptIn(t *testing.T) {
+	t.Run("effective true", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/settings/telemetry" {
+				t.Errorf("unexpected path %q", r.URL.Path)
+			}
+			if r.Header.Get("Authorization") != "Bearer good-token" {
+				t.Errorf("read token not sent: %q", r.Header.Get("Authorization"))
+			}
+			json.NewEncoder(w).Encode(map[string]any{"opt_in": true, "source": "setting", "effective": true})
+		}))
+		defer srv.Close()
+		eff, err := NewClient(srv.URL, "good-token").EffectiveOptIn(context.Background())
+		if err != nil || !eff {
+			t.Fatalf("want effective=true err=nil, got %v %v", eff, err)
+		}
+	})
+	t.Run("effective false", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"opt_in": false, "source": "setting", "effective": false})
+		}))
+		defer srv.Close()
+		eff, err := NewClient(srv.URL, "").EffectiveOptIn(context.Background())
+		if err != nil || eff {
+			t.Fatalf("want effective=false err=nil, got %v %v", eff, err)
+		}
+	})
+	t.Run("unreachable errors", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		if _, err := NewClient(srv.URL, "").EffectiveOptIn(context.Background()); err == nil {
+			t.Fatalf("expected error on non-200")
+		}
+	})
+}
+
 func TestReadUnreachableCursorUnchanged(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

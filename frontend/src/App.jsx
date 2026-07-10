@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { authFetch, authFetchJSON, getAdminToken, setAdminToken, clearAdminToken, hasAdminToken } from './lib/api';
+import { authFetch, authFetchJSON, getAdminToken, setAdminToken, clearAdminToken, hasAdminToken, CORE_BASE } from './lib/api';
 
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
@@ -53,6 +53,16 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  // First-run telemetry disclosure (issue #37c): telemetry is ON by default
+  // (opt-out), so we must surface a visible notice on first dashboard load
+  // before relying on the silent default. Acknowledgement persists per browser.
+  const [showTelemetryNotice, setShowTelemetryNotice] = useState(() => {
+    try { return localStorage.getItem('vedetta_telemetry_notice_ack') !== '1'; } catch { return true; }
+  });
+  const dismissTelemetryNotice = () => {
+    try { localStorage.setItem('vedetta_telemetry_notice_ack', '1'); } catch {}
+    setShowTelemetryNotice(false);
+  };
   const [defaultCIDR, setDefaultCIDR] = useState('');
   const [threatEvents, setThreatEvents] = useState([]);
   const [threatStats, setThreatStats] = useState(null);
@@ -305,7 +315,7 @@ export default function App() {
     <div className="min-h-screen bg-gray-950 text-gray-100">
       {/* Sensor setup guide */}
       {showSetup && (
-        <SensorSetupDialog onDismiss={() => setShowSetup(false)} />
+        <SensorSetupDialog onDismiss={() => setShowSetup(false)} onAdminCreated={updateAdminToken} />
       )}
 
       {/* Admin Token Prompt / Recovery Modal */}
@@ -493,6 +503,25 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* First-run telemetry disclosure (issue #37c): honest, visible notice that
+          anonymous telemetry is ON by default before we rely on the silent default. */}
+      {showTelemetryNotice && (
+        <div className="bg-amber-950/40 border-b border-amber-900/60 px-6 py-3">
+          <div className="max-w-7xl mx-auto flex items-start gap-3 text-sm">
+            <svg className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div className="flex-1 text-amber-100/90">
+              <span className="font-medium text-amber-100">Anonymous telemetry is on by default.</span>{' '}
+              Vedetta contributes anonymized advisory signals — identifiers are stripped to the reviewed guarantees — to improve community threat detection. You can turn it off at any time.{' '}
+              <button onClick={() => { setView('settings'); }} className="underline hover:text-white">Manage in Settings</button>{' · '}
+              <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" className="underline hover:text-white">Read the privacy notice</a>
+            </div>
+            <button onClick={dismissTelemetryNotice} className="text-amber-300 hover:text-white text-xs px-2 py-1 rounded flex-shrink-0">Dismiss</button>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-7xl mx-auto px-6 py-8">
         {view === 'dashboard' ? (
@@ -2155,12 +2184,32 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
 
 // --- Sensor Setup Wizard ---
 
-function SensorSetupDialog({ onDismiss }) {
+// Named onboarding step indices so connection-check / polling never skip a step
+// by hardcoding a raw number (issue #35 regression: it used to jump to step 3,
+// which — after inserting the admin step — is now the discovery step by name).
+const SETUP_STEP = { WELCOME: 0, ADMIN: 1, DEPLOY: 2, DISCOVERY: 3, DNS: 4, DONE: 5 };
+
+function SensorSetupDialog({ onDismiss, onAdminCreated }) {
   const [step, setStep] = useState(0);
   const [setupStatus, setSetupStatus] = useState(null);
   const [sensorConnected, setSensorConnected] = useState(false);
   const [deviceCount, setDeviceCount] = useState(0);
   const [checking, setChecking] = useState(false);
+
+  // First-admin creation state (issue #35.3) — bootstrap requires the
+  // X-Vedetta-Setup-Code header (GHSA-6cmx) when Core reports needs_setup_code.
+  const [adminToken, setWizAdminToken] = useState(() => getAdminToken());
+  const [needsSetupCode, setNeedsSetupCode] = useState(false);
+  const [setupCode, setSetupCode] = useState('');
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [adminError, setAdminError] = useState('');
+
+  // Sensor enrollment code state (issue #35.1).
+  const [enrollCode, setEnrollCode] = useState('');
+  const [enrollExpires, setEnrollExpires] = useState('');
+  const [enrollBusy, setEnrollBusy] = useState(false);
+  const [enrollError, setEnrollError] = useState('');
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     // Check setup status on mount
@@ -2168,13 +2217,16 @@ function SensorSetupDialog({ onDismiss }) {
       .then(r => r.json())
       .then(data => {
         setSetupStatus(data);
-        // Auto-advance based on completed steps
-        if (data.sensor_connected) setSensorConnected(true);
+        setNeedsSetupCode(!!data.needs_setup_code);
+        // Auto-advance based on completed steps. The flag lives under
+        // data.steps.sensor_connected (issue #35.2 — the old code read the
+        // non-existent top-level data.sensor_connected and never fired).
+        if (data.steps && data.steps.sensor_connected) setSensorConnected(true);
       })
       .catch(() => {});
 
-    // Poll device count if on step 3
-    if (step === 3) {
+    // Poll device count while the discovery step is visible.
+    if (step === SETUP_STEP.DISCOVERY) {
       const interval = setInterval(() => {
         authFetch('/api/v1/devices')
           .then(r => r.json())
@@ -2192,12 +2244,94 @@ function SensorSetupDialog({ onDismiss }) {
       .then(data => {
         if (data.sensors && data.sensors.length > 0) {
           setSensorConnected(true);
-          setStep(3); // Jump to discovery step
+          setStep(SETUP_STEP.DISCOVERY); // advance to discovery — do NOT skip it
         }
         setChecking(false);
       })
       .catch(() => setChecking(false));
   };
+
+  // Create the very first admin token as an explicit onboarding step (issue #35.3).
+  const createAdmin = async () => {
+    setAdminError('');
+    const code = setupCode.trim();
+    if (needsSetupCode && !code) {
+      setAdminError('A setup code is required. Find it in the Core logs from first start: docker logs <core-container>');
+      return;
+    }
+    setAdminBusy(true);
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (code) headers['X-Vedetta-Setup-Code'] = code;
+      const res = await authFetch('/api/v1/auth/tokens', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ scope: 'admin', label: 'Initial Admin (onboarding)' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || (res.status === 401
+          ? 'Setup code rejected. Check the Core logs (docker logs) for the correct code.'
+          : 'Failed to create admin token'));
+      }
+      if (data.token) {
+        setAdminToken(data.token);        // persist to localStorage via lib
+        setWizAdminToken(data.token);
+        setSetupCode('');
+        setNeedsSetupCode(false);
+        if (onAdminCreated) onAdminCreated(data.token); // sync App auth state
+        alert(
+          'ADMIN TOKEN CREATED (shown only once):\n\n' +
+          data.token + '\n\n' +
+          'Copy this token and store it safely. It will not be shown again.'
+        );
+      }
+    } catch (e) {
+      setAdminError(e.message || 'Failed to create admin token');
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  // Mint a short-lived, single-use sensor enrollment code (issue #35.1).
+  const generateEnrollCode = async () => {
+    setEnrollError('');
+    setEnrollBusy(true);
+    try {
+      const res = await authFetch('/api/v1/enrollment-codes', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to generate enrollment code (admin token required)');
+      }
+      setEnrollCode(data.enrollment_code || '');
+      setEnrollExpires(data.expires_at || '');
+      setCopied(false);
+    } catch (e) {
+      setEnrollError(e.message || 'Failed to generate enrollment code');
+    } finally {
+      setEnrollBusy(false);
+    }
+  };
+
+  // Core URL to bake into the copy-paste installer command. Prefer an explicit
+  // build-time CORE_BASE, else the page origin the dashboard is served from.
+  const coreUrl = CORE_BASE || (typeof window !== 'undefined' && window.location ? window.location.origin : 'http://YOUR-CORE-IP:8080');
+  const installerCmd = enrollCode
+    ? `curl -fsSL https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core ${coreUrl} --enroll-code ${enrollCode}`
+    : '';
+  const copyInstaller = () => {
+    if (!installerCmd) return;
+    try {
+      navigator.clipboard.writeText(installerCmd);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+  let enrollExpiresLabel = '';
+  if (enrollExpires) {
+    const d = new Date(enrollExpires);
+    if (!isNaN(d.getTime())) enrollExpiresLabel = d.toLocaleTimeString();
+  }
 
   const steps = [
     {
@@ -2213,12 +2347,98 @@ function SensorSetupDialog({ onDismiss }) {
       ),
     },
     {
+      title: 'Create Admin Access',
+      content: (
+        <div className="space-y-4">
+          {adminToken ? (
+            <div className="bg-emerald-950/40 border border-emerald-800 rounded-lg p-4 flex items-center gap-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+              <div>
+                <p className="text-sm text-emerald-200 font-medium">Admin access configured</p>
+                <p className="text-xs text-emerald-300/70">This browser holds an admin token. You can manage tokens later in Settings.</p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-gray-400">Create the first admin token for this Vedetta Core. It unlocks scanning, sensor enrollment, and settings. The token is stored only in this browser and shown once.</p>
+              {needsSetupCode && (
+                <div className="space-y-1.5">
+                  <label className="text-xs text-gray-400 block">Setup code (first admin only)</label>
+                  <input
+                    type="text"
+                    value={setupCode}
+                    onChange={(e) => setSetupCode(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') createAdmin(); }}
+                    placeholder="Paste setup code..."
+                    className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                  <p className="text-[10px] text-gray-500">
+                    Printed to the Core logs on first start. Run <span className="font-mono text-gray-400">docker logs &lt;core-container&gt;</span> and copy the setup code (header <span className="font-mono text-gray-400">X-Vedetta-Setup-Code</span>).
+                  </p>
+                </div>
+              )}
+              <button
+                onClick={createAdmin}
+                disabled={adminBusy}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 text-white py-2.5 rounded-lg text-sm font-medium transition-colors"
+              >
+                {adminBusy ? 'Creating...' : 'Create Initial Admin Token'}
+              </button>
+              {adminError && (
+                <div className="text-xs text-red-400 bg-red-950/50 border border-red-900 rounded p-2">{adminError}</div>
+              )}
+            </>
+          )}
+        </div>
+      ),
+    },
+    {
       title: 'Deploy Sensor',
       content: (
         <div className="space-y-4">
           <p className="text-sm text-gray-400">Install the lightweight sensor on any machine connected to your network.</p>
+
+          {/* Secure enrollment (issue #35.1): admin mints a short-lived, single-use
+              code and hands the sensor host an exact copy-paste installer command. */}
+          <div className="bg-gray-800 rounded-lg p-4 space-y-3">
+            <p className="text-xs text-gray-300 font-medium">Secure enrollment (recommended)</p>
+            <p className="text-[11px] text-gray-500">Generate a short-lived, single-use code that authorizes one new sensor, then run the installer command below on the sensor host.</p>
+            {adminToken ? (
+              <button
+                onClick={generateEnrollCode}
+                disabled={enrollBusy}
+                className="w-full bg-amber-500 hover:bg-amber-400 disabled:bg-gray-700 text-gray-950 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                {enrollBusy ? 'Generating...' : (enrollCode ? 'Regenerate enrollment code' : 'Generate sensor enrollment code')}
+              </button>
+            ) : (
+              <p className="text-[11px] text-amber-400/80">Create an admin token first (previous step) to generate an enrollment code.</p>
+            )}
+            {enrollError && (
+              <div className="text-xs text-red-400 bg-red-950/50 border border-red-900 rounded p-2">{enrollError}</div>
+            )}
+            {enrollCode && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <code className="text-sm text-amber-300 font-mono break-all">{enrollCode}</code>
+                  {enrollExpiresLabel && <span className="text-[10px] text-gray-500 flex-shrink-0">expires {enrollExpiresLabel}</span>}
+                </div>
+                <div className="bg-gray-950 rounded-lg p-3 border border-gray-700">
+                  <code className="text-xs text-teal-400 font-mono block whitespace-pre-wrap break-words">{installerCmd}</code>
+                </div>
+                <button
+                  onClick={copyInstaller}
+                  className="text-xs px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+                >
+                  {copied ? 'Copied ✓' : 'Copy installer command'}
+                </button>
+                <p className="text-[10px] text-gray-500">Single use and expires soon. If it is consumed or expires, generate a new one.</p>
+              </div>
+            )}
+          </div>
+
           <div className="bg-gray-800 rounded-lg p-4">
-            <p className="text-xs text-gray-400 mb-2 font-medium">Quick start (macOS / Linux):</p>
+            <p className="text-xs text-gray-400 mb-2 font-medium">Or build from source (macOS / Linux):</p>
             <code className="text-sm text-teal-400 font-mono block whitespace-pre-wrap break-words">
 {`cd sensor && go build -o vedetta-sensor ./cmd/vedetta-sensor
 sudo ./vedetta-sensor --core http://localhost:8080`}
@@ -3426,6 +3646,100 @@ function WhitelistManagementView({ whitelistRules, onRefresh }) {
 
 // --- Settings (placeholder) ---
 
+// Honest, persisted telemetry control (issue #37a/b). Reads the EFFECTIVE state
+// from GET /api/v1/settings/telemetry and lets an admin flip it via PUT (per the
+// pinned Core contract). Telemetry is ON BY DEFAULT (opt-out) — the copy must say
+// so, and never overclaim about what can/can't leave.
+function TelemetrySettings() {
+  const [state, setState] = useState(null); // { opt_in, source, effective }
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const isAdmin = hasAdminToken();
+
+  const load = useCallback(() => {
+    setLoading(true);
+    authFetch('/api/v1/settings/telemetry')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('unavailable'))))
+      .then((data) => { setState(data); setError(''); })
+      .catch(() => { setState(null); })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const toggle = async () => {
+    if (!state) return;
+    setSaving(true);
+    setError('');
+    const next = !state.effective;
+    try {
+      const res = await authFetch('/api/v1/settings/telemetry', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opt_in: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to update telemetry setting');
+      load(); // re-read the authoritative effective state
+    } catch (e) {
+      setError(e.message || 'Failed to update telemetry setting');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const effective = state ? state.effective : true; // default on (opt-out) when unknown
+  const sourceLabel = state
+    ? (state.source === 'env' ? 'from environment' : 'saved setting')
+    : '';
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+      <h3 className="text-sm font-medium mb-1">Anonymous Telemetry</h3>
+      <p className="text-xs text-gray-500 mb-3">
+        Telemetry is <span className="text-gray-300 font-medium">on by default</span> (opt-out). Vedetta contributes anonymized advisory signals to improve community threat detection; identifiers are stripped to the reviewed guarantees.{' '}
+        <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" className="text-teal-400 hover:text-teal-300 underline">Privacy notice</a>
+      </p>
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${effective ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`text-sm ${effective ? 'text-gray-300' : 'text-gray-400'}`}>
+            {loading ? 'Checking…' : (effective ? 'Enabled' : 'Disabled')}
+          </span>
+          {state && !loading && (
+            <span className="text-[10px] text-gray-500 ml-1">· {sourceLabel}</span>
+          )}
+        </div>
+
+        {/* Toggle switch — admins only, and only when Core exposes the setting. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={effective}
+          disabled={!state || !isAdmin || saving || loading}
+          onClick={toggle}
+          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${effective ? 'bg-green-500' : 'bg-gray-600'}`}
+          title={!isAdmin ? 'Admin token required to change this setting' : (effective ? 'Turn telemetry off' : 'Turn telemetry on')}
+        >
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${effective ? 'translate-x-6' : 'translate-x-1'}`} />
+        </button>
+      </div>
+
+      {!isAdmin && (
+        <p className="text-[10px] text-amber-400/80 mt-2">An admin token is required to change this setting.</p>
+      )}
+      {!state && !loading && (
+        <p className="text-[10px] text-gray-500 mt-2">Live control needs a Core build that exposes <span className="font-mono">/settings/telemetry</span>. Until then the opt-out default (on) applies; set <span className="font-mono">VEDETTA_TELEMETRY_OPTIN=false</span> to disable.</p>
+      )}
+      {error && (
+        <div className="text-xs text-red-400 bg-red-950/50 border border-red-900 rounded p-2 mt-2">{error}</div>
+      )}
+    </div>
+  );
+}
+
 function SettingsView() {
   return (
     <>
@@ -3468,14 +3782,7 @@ function SettingsView() {
           </div>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
-          <h3 className="text-sm font-medium mb-1">Telemetry</h3>
-          <p className="text-xs text-gray-500 mb-3">Opt-in anonymous telemetry to help improve Vedetta</p>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 bg-gray-500 rounded-full" />
-            <span className="text-sm text-gray-400">Disabled</span>
-          </div>
-        </div>
+        <TelemetrySettings />
 
         {/* Real Admin Token Management (Phase 1 of auth hardening) */}
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">

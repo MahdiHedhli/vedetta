@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -21,7 +22,21 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
 )
 
+// buildVersion is the release version of this binary. It defaults to "dev" for
+// local/source builds and is injected by release CI via
+// -ldflags "-X main.buildVersion=<tag>" (issue #38). Printed by --version.
+var buildVersion = "dev"
+
 func main() {
+	// --version: print the build version and exit. Kept ahead of any DB/setup work
+	// so it stays a cheap, side-effect-free build probe (issue #38).
+	for _, arg := range os.Args[1:] {
+		if arg == "--version" || arg == "-version" {
+			fmt.Printf("vedetta-core %s\n", buildVersion)
+			return
+		}
+	}
+
 	port := os.Getenv("VEDETTA_PORT")
 	if port == "" {
 		port = "8080"
@@ -84,6 +99,22 @@ func main() {
 		} else if created {
 			log.Printf("Provisioned read-scope token from VEDETTA_CORE_TOKEN")
 		}
+	}
+
+	// Issue #34: the collector ingest secret (VEDETTA_INGEST_TOKEN) and the
+	// telemetry read secret (VEDETTA_CORE_TOKEN) MUST be distinct. EnsureTokenFromRaw
+	// dedups by hash, so two IDENTICAL values provision only ONE scope — the other
+	// machine client (collector ingest OR telemetry read) then gets 403 and its
+	// pipeline silently stops. Fail fast (issue #34) rather than run degraded.
+	if _, _, collision := api.MachineCredentialState(); collision {
+		log.Printf("=====================================================================")
+		log.Printf("FATAL: VEDETTA_INGEST_TOKEN and VEDETTA_CORE_TOKEN are IDENTICAL.")
+		log.Printf("They must be DISTINCT secrets. Identical values hash-collide, so")
+		log.Printf("only ONE scope (ingest OR read) is provisioned and the other client")
+		log.Printf("— collector ingest or telemetry read — will get 403 and stop.")
+		log.Printf("Generate two DIFFERENT strong values, e.g. `openssl rand -hex 32`.")
+		log.Printf("=====================================================================")
+		log.Fatalf("refusing to start with colliding machine credentials")
 	}
 
 	// Start retention enforcer (daily cleanup of old events)

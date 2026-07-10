@@ -1,8 +1,11 @@
-FROM node:20-alpine AS builder
+# node:20-alpine is EOL; use the maintained LTS and match CI (node 22 + npm ci).
+FROM node:22-alpine AS builder
 
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install
+# `npm ci` requires package-lock.json; copy it explicitly (no glob) so a missing
+# lockfile fails the build loudly instead of silently falling back.
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
 RUN npm run build
 

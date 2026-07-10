@@ -23,6 +23,11 @@ type Pipeline struct {
 	Salt     []byte
 	State    *status.State
 	StateDir string
+
+	// lastKnownOptIn caches the last effective opt-in successfully read from Core
+	// so a transient settings-endpoint error cannot silently override an explicit
+	// admin opt-out (issue #37). nil until the first successful read.
+	lastKnownOptIn *bool
 }
 
 // RunTick executes one full tick: read → gate → strip → aggregate → send. It
@@ -33,10 +38,39 @@ type Pipeline struct {
 func (p *Pipeline) RunTick(ctx context.Context) {
 	p.State.TouchTick()
 
-	// Drain spool before new work (best-effort).
-	if sent, remaining := p.Tx.DrainSpool(ctx); sent > 0 || remaining > 0 {
+	// Issue #37: consult Core for the EFFECTIVE telemetry opt-in before doing any
+	// work. If Core says opted-out, export nothing this tick (stay fully inert —
+	// no drain, no read, no send) and surface it. If Core is unreachable, fall
+	// back to the last value we successfully read (so a transient error can't
+	// override an explicit admin opt-out), and only to the env OptIn if we have
+	// never read one (issue #37).
+	effective, err := p.Reader.EffectiveOptIn(ctx)
+	if err != nil {
+		if p.lastKnownOptIn != nil {
+			effective = *p.lastKnownOptIn
+		} else {
+			effective = p.Cfg.OptIn
+		}
+	} else {
+		v := effective
+		p.lastKnownOptIn = &v
+	}
+	if !effective {
+		p.State.Update(func(s *status.Snapshot) {
+			s.Suppressed = true
+			s.SuppressedReason = "core telemetry opt-in is off"
+		})
+		return
+	}
+	p.State.Update(func(s *status.Snapshot) { s.Suppressed = false; s.SuppressedReason = "" })
+
+	// Drain spool before new work (best-effort). An auth/rate failure while
+	// draining is surfaced as a degraded state below.
+	sent, remaining, authFailing := p.Tx.DrainSpool(ctx)
+	if sent > 0 || remaining > 0 {
 		p.State.Update(func(s *status.Snapshot) { s.SpoolDepth = remaining })
 	}
+	p.setHealth(authFailing)
 
 	cur, err := corereader.LoadCursor(p.StateDir)
 	if err != nil {
@@ -96,16 +130,33 @@ func (p *Pipeline) RunTick(ctx context.Context) {
 		batches = batches[:p.Cfg.MaxBatchesTick]
 	}
 
+	// cursorSafe stays true only while every derived batch is durably ACCEPTED,
+	// durably SPOOLED-for-retry, or a genuine poison-pill REJECT. If any batch
+	// could not be durably handled (e.g. a spool write failed on an auth failure),
+	// the cursor MUST NOT advance past those events — we re-read them next tick
+	// (at-least-once; the ingest dedups the ones that did land). Issue #36 (2).
+	cursorSafe := true
 	var lastResult string
 	var totalSignals int
 	for _, b := range batches {
 		r := p.Tx.Send(ctx, b)
 		totalSignals += len(b.Signals)
+		if r.AuthFailed {
+			authFailing = true
+		}
 		switch {
 		case r.Duplicate:
 			lastResult = "duplicate"
 		case r.Accepted:
 			lastResult = "accepted"
+		case r.AuthFailed:
+			// Identity/authorization/rate failure (401/403/429): the batch was NOT
+			// durably delivered and is deliberately NOT spooled (the bounded spool is
+			// not a durability guarantee). HOLD the cursor so these events are re-read
+			// from Core next tick until the reporter is valid again (issue #36).
+			lastResult = "auth-failed"
+			cursorSafe = false
+			p.setError("ingest auth failure (holding cursor for re-read): " + errStr(r.Err))
 		case r.Rejected:
 			lastResult = "rejected"
 			p.setError("batch rejected: " + errStr(r.Err))
@@ -115,16 +166,20 @@ func (p *Pipeline) RunTick(ctx context.Context) {
 				p.setError("spooled: " + errStr(r.Err))
 			}
 		default:
+			// Hard failure: the batch was neither sent nor durably spooled.
 			lastResult = "error"
+			cursorSafe = false
 			p.setError("send: " + errStr(r.Err))
 		}
 	}
 
 	// Spool overflow batches so their signals survive to a later tick. Their
 	// source events are about to be consumed by persistCursor, so discarding
-	// here would be unrecoverable loss.
+	// here would be unrecoverable loss. If a spool write fails, the batch is lost
+	// unless we hold the cursor back for a re-read.
 	for _, b := range overflow {
 		if err := p.Tx.SpoolBatch(b); err != nil {
+			cursorSafe = false
 			p.setError("spool overflow: " + err.Error())
 		} else if lastResult == "" {
 			lastResult = "spooled"
@@ -137,9 +192,31 @@ func (p *Pipeline) RunTick(ctx context.Context) {
 		s.LastBatch = status.LastBatch{Time: now, SignalCount: totalSignals, Result: lastResult}
 		s.SpoolDepth = depth
 	})
+	p.setHealth(authFailing)
 
-	// Persist cursor after handing everything (sent + spooled) to the transmitter.
-	p.persistCursor(res)
+	// Persist the cursor ONLY when every derived batch was durably accepted or
+	// safely spooled-for-retry. A hard failure holds the cursor so those events
+	// are re-read next tick rather than lost (issue #36 (2)).
+	if cursorSafe {
+		p.persistCursor(res)
+	}
+}
+
+// setHealth surfaces a degraded state when the daemon is running but not fully
+// functional: the reporter is unregistered, or ingest is auth-failing
+// (401/403/429). It reports state only — never any signal payload. Issue #36 (3).
+func (p *Pipeline) setHealth(authFailing bool) {
+	reason := ""
+	switch {
+	case p.Tx.Reporter.ReporterID == "":
+		reason = "reporter unregistered"
+	case authFailing:
+		reason = "ingest auth failing"
+	}
+	p.State.Update(func(s *status.Snapshot) {
+		s.Degraded = reason != ""
+		s.DegradedReason = reason
+	})
 }
 
 func (p *Pipeline) persistCursor(res *corereader.ReadResult) {

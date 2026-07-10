@@ -29,17 +29,25 @@ events, DNS/firewall logs, scan results — stays in **your** Core's database on
 Vedetta contributes to a **community threat feed** by default. This is:
 
 - **On by default, and trivially disabled** — set `VEDETTA_TELEMETRY_OPTIN=false`
-  and nothing leaves your network. We default it on precisely *because* it is
-  anonymized and advisory-only (below): the shared feed only becomes useful when
-  instances contribute, and what they contribute cannot identify anyone;
-- **privacy-reduced before it ever leaves your network**: source IP addresses,
-  MAC addresses, and hostnames are **never transmitted**. What is shared is
-  limited to threat indicators (e.g. a known-bad domain) plus coarse,
-  non-identifying counts;
-- **anonymized and non-reversible**: any per-source identifier used internally is
-  a salted HMAC computed locally with a 256-bit per-instance secret and is
-  **never forwarded**. The published community feed exposes only the indicator and
-  an aggregate source count — never who reported it.
+  (or toggle it off in the dashboard) and nothing leaves your network. We default
+  it on because the shared feed only becomes useful when instances contribute, and
+  what they contribute is reduced to threat indicators that do not identify you
+  (below);
+- **privacy-reduced at the source**: source IP addresses, MAC addresses, and
+  hostnames are stripped before anything leaves your network and are **never
+  transmitted**. What is shared for a known-bad hit is the **matched indicator from
+  the public block-list** — never the raw observed query name (which could embed a
+  hostname or address) — plus coarse, non-identifying aggregate counts;
+- **salted-HMAC counting stays local**: any per-source identifier used to count
+  distinct assets is a salted HMAC computed locally with a 256-bit per-instance
+  secret and is **never forwarded**; the published feed exposes only the indicator
+  and an aggregate source count, never who reported it;
+- **precise, not absolute**: we do not claim mathematical anonymity. The reduction
+  removes direct identifiers by construction; the exact guarantees, the coarse
+  metadata that *is* shared (a coarse version string, aggregate counts, an hourly
+  time bucket), and the residual linkability model are documented and independently
+  reviewed in
+  [specs/003-threat-network/anonymization-proof.md](specs/003-threat-network/anonymization-proof.md).
 
 The community feed itself is **advisory-only**: it never instructs or performs a
 block; operators decide what to do.

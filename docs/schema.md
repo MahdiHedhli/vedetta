@@ -93,7 +93,7 @@ Tags are freeform strings, but the following are recognized by Vedetta's detecti
 
 ### Threat Network (ClickHouse)
 
-- Receives **anonymized** event batches only from opted-in nodes
+- Receives **privacy-reduced** event batches from nodes with telemetry enabled (on by default, opt-out)
 - PII stripping: source IPs → HMAC hashes (per-install salt), hostnames removed, geo rounded to country
 - Deduplication before storage
 - Schema versioned from day one

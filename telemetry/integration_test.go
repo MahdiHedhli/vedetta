@@ -38,6 +38,10 @@ func syntheticEvent() corereader.Event {
 
 func fakeCore() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/settings/telemetry" {
+			json.NewEncoder(w).Encode(map[string]any{"opt_in": true, "source": "setting", "effective": true})
+			return
+		}
 		out := []corereader.Event{}
 		if r.URL.Query().Get("page") != "2" {
 			out = []corereader.Event{syntheticEvent()}
@@ -129,7 +133,7 @@ func TestIntegrationServerDownSpoolsThenDrains(t *testing.T) {
 	}
 
 	atomic.StoreInt32(&down, 0)
-	sent, remaining := tx.DrainSpool(context.Background())
+	sent, remaining, _ := tx.DrainSpool(context.Background())
 	if sent == 0 || remaining != 0 {
 		t.Errorf("drain on recovery: sent=%d remaining=%d", sent, remaining)
 	}

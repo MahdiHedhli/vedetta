@@ -43,6 +43,8 @@ func TestStatusPayloadCountsOnly(t *testing.T) {
 		"opt_in": true, "dry_run": true, "reporter_registered": true, "cursor": true,
 		"last_tick": true, "last_batch": true, "spool_depth": true,
 		"events_skipped_malformed": true, "last_error": true,
+		"degraded": true, "degraded_reason": true,
+		"suppressed": true, "suppressed_reason": true,
 	}
 	for k := range m {
 		if !allowed[k] {

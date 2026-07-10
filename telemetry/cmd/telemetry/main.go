@@ -13,6 +13,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -27,7 +29,17 @@ import (
 	"github.com/vedetta-network/vedetta/telemetry/internal/transmit"
 )
 
+// buildVersion is stamped by release CI via -ldflags "-X main.buildVersion=<tag>".
+var buildVersion = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print the build version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(buildVersion)
+		return
+	}
+
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
 		log.Fatalf("telemetry: config error: %v", err)

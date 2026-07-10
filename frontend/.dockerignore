@@ -1,0 +1,31 @@
+# Build context for the frontend image is ./frontend. The multi-stage build runs
+# `npm ci` + `npm run build` inside the image, so the local node_modules and dist
+# must NOT be shipped into the context (they get rebuilt, and stale/host-specific
+# artifacts would only bloat the context and risk platform-mismatched binaries).
+# Keep .git, local/secret material, and editor/OS cruft out too (faster builds;
+# defense-in-depth so nothing local reaches the Docker daemon).
+node_modules
+dist
+build
+
+# Local/secret material — never send to the daemon.
+.env
+.env.*
+!.env.example
+.local
+
+# VCS / CI / tooling
+.git
+.gitignore
+.github
+.dockerignore
+Dockerfile
+
+# Editor / OS cruft
+.DS_Store
+.vscode
+.idea
+.cursor
+
+# Docs
+*.md
