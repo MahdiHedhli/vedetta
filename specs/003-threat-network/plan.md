@@ -4,6 +4,8 @@
 > Status: Draft
 > Created: 2026-07-03
 
+> **Superseded (shipped behavior, see #37):** telemetry ships **ON by default (opt-out)** — only `VEDETTA_TELEMETRY_OPTIN=false` disables it; sharing is **pseudonymous, not anonymous** (stable per-instance `reporter_id` stored server-side, see PRIVACY.md); and consensus uses **distinct matured reporter credentials**, not proven-independent operators. The design-era "opt-in / off by default / anonymous / independent reporters" language below predates these decisions — read it through this note.
+
 ## Architecture Overview
 
 The threat-network is a standalone Go service (module
@@ -16,7 +18,7 @@ It sits outside the Core + Sensor + Collector model on purpose:
                                │ privacy reduction + export gate (spec 002)
                                ▼
                           [vedetta-telemetry]           (on the user's network)
-                               │ signed HTTPS batches, opt-in only
+                               │ signed HTTPS batches, opt-out (on by default)
                                ▼
                   ┌────────────────────────────────┐
                   │  vedetta-threat-network :9090   │   (community infra, this spec)

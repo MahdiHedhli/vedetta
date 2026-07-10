@@ -47,8 +47,8 @@ anything.
 
 ## User Stories
 
-- As a homelab user who opted into telemetry, I want my Core's high-confidence
-  detections to be contributed anonymously so that other users get earlier warning of
+- As a homelab user who left telemetry on (the default), I want my Core's high-confidence
+  detections to be contributed pseudonymously so that other users get earlier warning of
   the same C2/DGA domains — without my IPs, MACs, hostnames, or query history leaving
   my network.
 - As a small business operator, I want Vedetta to consume a community feed of
@@ -134,7 +134,7 @@ anything.
 | Passive-first | Indirectly | Contributed signals derive from Core's existing passive detections; this feature adds no active scanning anywhere. |
 | V1 scope (no LAN scan/exploit) | Yes | Pure data service. Advisory-only output; no enforcement, no auto-block, no remediation actions. Scope cuts listed below keep complexity down. |
 | SNR re-tune for new sources | Yes | The community feed is a future new enrichment source for Core; promotion thresholds, allowlist guard, decay, and advisory-only semantics are the noise controls shipped WITH it (see SNR section). Core-side consumption gets its own SNR pass when it lands. |
-| Privacy / opt-in telemetry | Yes — core constraint | Off by default, explicit opt-in at Core level, privacy-reduced payloads only, anonymous reporter identity, no PII at rest, server-side privacy gate re-check, advisory-only feed. This spec is the enforcement point for the constitution's "optional, opt-in, privacy-conscious, secondary to local operation" rule. |
+| Privacy / opt-out telemetry | Yes — core constraint | On by default (opt-out) at Core level, privacy-reduced payloads only, pseudonymous reporter identity (stable per-instance `reporter_id` stored server-side, see PRIVACY.md), no direct PII at rest, server-side privacy gate re-check, advisory-only feed. This spec is the enforcement point for the constitution's "optional, privacy-conscious, secondary to local operation" rule — satisfied here by trivially-reversible opt-out rather than opt-in. |
 | Environment data handling | Yes | All examples in this spec, plan, and contract use RFC 5737 IPs, `00:00:5E:00:53:xx` MACs, and placeholder domains (`*.example` / `*.example.net`). No real environment data is referenced. |
 
 ## Signal-to-Noise Impact

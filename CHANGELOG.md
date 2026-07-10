@@ -25,8 +25,9 @@ Public-beta hardening. Highlights in flight:
   lines; the collector's ingest credential is provisioned from a shared secret.
 
 ### Changed
-- The default `docker compose up` stack is scoped to Core + collector + frontend;
-  telemetry and the central threat-network are behind a `community` profile.
+- The default `docker compose up` stack is Core + collector + frontend + telemetry
+  (telemetry ships **on by default, opt-out**); only the central threat-network is
+  behind a `community` profile.
 - Removed a large binary from version control; corrected landing-page claims.
 
 ### Added

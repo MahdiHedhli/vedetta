@@ -4,10 +4,12 @@
 > Status: Draft
 > Created: 2026-07-03
 
+> **Superseded (shipped behavior, see #37):** telemetry ships **ON by default (opt-out)** — only `VEDETTA_TELEMETRY_OPTIN=false` disables it; sharing is **pseudonymous, not anonymous** (stable per-instance `reporter_id` stored server-side, see PRIVACY.md); and consensus uses **distinct matured reporter credentials**, not proven-independent operators. The design-era "opt-in / off by default / anonymous / independent reporters" language below predates these decisions — read it through this note.
+
 ## Architecture Overview
 
 The telemetry daemon is the existing `telemetry` container in the Core Docker Compose
-stack (`docs/architecture.md` lists it as "idle unless opted in"). It sits strictly
+stack (inert only when explicitly opted out via `VEDETTA_TELEMETRY_OPTIN=false`; it ships on by default). It sits strictly
 between Core's read API and the public threat network; sensors never touch it.
 
 ```text
@@ -185,7 +187,7 @@ No new inbound source → no new local alert noise; the tuning work here protect
 
 | Failure | Behavior |
 | --- | --- |
-| Opt-in not set | Fully inert (today's behavior): no reads, no egress, no state writes; sleeps until signal. |
+| Opted out (`VEDETTA_TELEMETRY_OPTIN=false`) | Fully inert: no reads, no egress, no state writes; sleeps until signal. |
 | Core API unreachable / 401 | Tick skipped, cursor unchanged, error surfaced on `/status`; retry next tick. No data loss (events remain in Core, subject to Core's 90-day retention — a multi-week outage loses only telemetry, never local data). |
 | Threat network unreachable / 5xx | Exponential backoff 1s→2s→4s→8s… capped 5 min within a tick; batch then persisted to spool. Spool bounded: max 50 batches or 24h, oldest dropped first (acceptable loss — telemetry is best-effort by design). |
 | Threat network 4xx (schema/signature rejected) | Batch NOT retried (poison-pill guard); moved to `spool/rejected/` (capped at 5, oldest dropped) for operator inspection; error on `/status`. |

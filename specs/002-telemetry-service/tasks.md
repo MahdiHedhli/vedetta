@@ -4,6 +4,8 @@
 > Status: Not Started
 > Created: 2026-07-03
 
+> **Superseded (shipped behavior, see #37):** telemetry ships **ON by default (opt-out)** — only `VEDETTA_TELEMETRY_OPTIN=false` disables it; sharing is **pseudonymous, not anonymous** (stable per-instance `reporter_id` stored server-side, see PRIVACY.md); and consensus uses **distinct matured reporter credentials**, not proven-independent operators. The design-era "opt-in / off by default / anonymous / independent reporters" language below predates these decisions — read it through this note.
+
 Phases are sequential; tasks within a phase are parallelizable unless noted.
 Every task states its verification. Mark done with date.
 All test fixtures use synthetic values only: RFC 5737 IPs (192.0.2.x / 198.51.100.x /
@@ -13,7 +15,7 @@ All test fixtures use synthetic values only: RFC 5737 IPs (192.0.2.x / 198.51.10
 
 - [ ] T1.1 — Create package layout and config loader.
       Files: `telemetry/internal/config/config.go`, `config_test.go`
-      Env vars (with defaults): `VEDETTA_TELEMETRY_OPTIN` (unset→off),
+      Env vars (with defaults): `VEDETTA_TELEMETRY_OPTIN` (unset→on; opt-out — only exact `false` disables),
       `VEDETTA_THREAT_NETWORK_URL` (`http://threat-network:9090`),
       `VEDETTA_CORE_URL` (`http://backend:8080`), `VEDETTA_CORE_TOKEN` (required when
       opted in), `VEDETTA_TELEMETRY_STATE_DIR` (`/var/lib/vedetta-telemetry`),
@@ -23,12 +25,13 @@ All test fixtures use synthetic values only: RFC 5737 IPs (192.0.2.x / 198.51.10
       `VEDETTA_TELEMETRY_BEHAVIOR_MIN_SCORE=0.70`), read/batch caps.
       Verify: table-driven tests — defaults, overrides, opted-in-without-token error;
       `go test ./internal/config` green.
-- [ ] T1.2 — Rewire `cmd/telemetry/main.go`: preserve exact OFF-by-default behavior
-      (opt-in not `true` → log one line, no state-dir creation, no network, block on
-      signal), else start tick loop + status server with graceful shutdown.
+- [ ] T1.2 — Rewire `cmd/telemetry/main.go`: preserve exact opt-out behavior
+      (`VEDETTA_TELEMETRY_OPTIN=false` → log one line, no state-dir creation, no network,
+      block on signal), else start tick loop + status server with graceful shutdown.
       Files: `telemetry/cmd/telemetry/main.go`
-      Verify: run binary with no env → single log line, `lsof` shows no listeners, no
-      files created; run with opt-in + dry-run → status server up; SIGTERM exits clean.
+      Verify: run binary with `VEDETTA_TELEMETRY_OPTIN=false` → single log line, `lsof`
+      shows no listeners, no files created; run with the default (on) + dry-run → status
+      server up; SIGTERM exits clean.
 - [ ] T1.3 — Status server: `GET /healthz` (200 when loop alive) and `GET /status`
       (JSON: opt_in, dry_run, reporter_registered, cursor, last_tick, last_batch
       {time, signal_count, result}, spool_depth, events_skipped_malformed, last_error).
@@ -148,17 +151,17 @@ All test fixtures use synthetic values only: RFC 5737 IPs (192.0.2.x / 198.51.10
       Verify: `go test -tags=integration ./...` green locally.
 - [ ] T5.3 — Update `telemetry/Dockerfile` (state-dir volume, status port expose on
       localhost mapping guidance) and compose wiring docs; keep container healthy-idle
-      when not opted in (unchanged default).
+      when opted out (`VEDETTA_TELEMETRY_OPTIN=false`).
       Files: `telemetry/Dockerfile`, compose file, `docs/architecture.md` service
       table row (`telemetry`: scaffolded → shipped-alpha once merged)
-      Verify: `docker build telemetry/` succeeds; compose up with no opt-in shows the
+      Verify: `docker build telemetry/` succeeds; compose up with `VEDETTA_TELEMETRY_OPTIN=false` shows the
       single idle log line.
 - [ ] T5.4 — Operator docs: what leaves the node (link the contract), how to opt in,
       dry-run audit procedure, how to revoke; update `docs/backlog.md` VED-008 to link
       `specs/002-telemetry-service/`.
       Files: `docs/threat-intel-mvp.md` (status note), `docs/backlog.md`, README
       status section
-      Verify: docs state OFF-by-default, opt-in, advisory-only explicitly; honest
+      Verify: docs state on-by-default (opt-out), how to opt out, advisory-only explicitly; honest
       alpha framing per constitution.
 
 ## Phase 6: Live validation (SNR/export-quality gate)
@@ -189,6 +192,6 @@ All test fixtures use synthetic values only: RFC 5737 IPs (192.0.2.x / 198.51.10
 - [ ] Docs updated: README status, docs/roadmap.md, docs/backlog.md (VED-008 →
       specs/002-telemetry-service/), docs/architecture.md service table;
       docs/schema.md untouched (no schema change) — confirmed
-- [ ] Constitution check re-confirmed on the implemented result (OFF by default
-      re-tested on the shipped binary; opt-in revocation re-tested; contract file
-      matches emitted bytes)
+- [ ] Constitution check re-confirmed on the implemented result (on by default / opt-out
+      re-tested on the shipped binary; opt-out via `VEDETTA_TELEMETRY_OPTIN=false`
+      re-tested; contract file matches emitted bytes)

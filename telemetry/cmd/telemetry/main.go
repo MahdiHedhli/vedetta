@@ -4,7 +4,7 @@
 // in which case it performs no Core reads, no network egress, no reporter
 // registration, and no state writes beyond a single log line.
 //
-// When opted in it reads Core's events API on a cursor-driven interval, gates and
+// While enabled (on by default) it reads Core's events API on a cursor-driven interval, gates and
 // strips events through a structurally-allowlisted pipeline (no raw IPs, MACs,
 // or hostnames ever leave the node), aggregates to domain-level signals, signs
 // and ships them to the community threat network, and exposes a localhost

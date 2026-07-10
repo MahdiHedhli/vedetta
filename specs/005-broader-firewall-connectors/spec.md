@@ -5,6 +5,8 @@
 > Backlog: VED-005 (broader connectors deferred here per its notes; no implementation backlog item until specs/001 ships)
 > Created: 2026-07-03
 
+> **Superseded (shipped behavior, see #37):** telemetry ships **ON by default (opt-out)** — only `VEDETTA_TELEMETRY_OPTIN=false` disables it; sharing is **pseudonymous, not anonymous** (stable per-instance `reporter_id` stored server-side, see PRIVACY.md); and consensus uses **distinct matured reporter credentials**, not proven-independent operators. The design-era "opt-in / off by default / anonymous / independent reporters" language below predates these decisions — read it through this note.
+
 ## Summary
 
 Extend firewall log aggregation beyond UniFi (specs/001-unifi-log-ingestion/spec.md)
@@ -166,7 +168,7 @@ them.
 | Passive-first | Yes | Syslog ingestion is fully passive from Vedetta's side (firewall pushes); no scanning of or active probing against the gateway is introduced. |
 | V1 scope (no LAN scan/exploit) | Yes | Log aggregation only. No exploit verification, no active vulnerability assessment. REST-API polling deferred to per-platform follow-ups. |
 | SNR re-tune for new sources | Yes | Core of this spec: each platform requires its own recorded SNR pass before the "supported" label (see honest-support section). |
-| Privacy / opt-in telemetry | Yes | All ingested data stays local; nothing here feeds telemetry or the threat network (both remain opt-in and out of scope). |
+| Privacy / opt-in telemetry | Yes | All ingested data stays local; nothing here feeds telemetry or the threat network (both remain OPT-OUT — on by default — and out of scope). |
 | Environment data handling | Yes | This spec and all future connector docs use RFC 5737 IPs, 00:00:5E:00:53:xx MACs, and placeholder hostnames only; live validation captures go to gitignored paths. |
 
 ## Signal-to-Noise Impact

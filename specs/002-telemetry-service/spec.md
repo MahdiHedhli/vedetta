@@ -5,13 +5,15 @@
 > Backlog: VED-008 (contract), VED-010 (implementation)
 > Created: 2026-07-03
 
+> **Superseded (shipped behavior, see #37):** telemetry ships **ON by default (opt-out)** — only `VEDETTA_TELEMETRY_OPTIN=false` disables it; sharing is **pseudonymous, not anonymous** (stable per-instance `reporter_id` stored server-side, see PRIVACY.md); and consensus uses **distinct matured reporter credentials**, not proven-independent operators. The design-era "opt-in / off by default / anonymous / independent reporters" language below predates these decisions — read it through this note.
+
 ## Summary
 
 Implement the currently-stubbed telemetry daemon (`telemetry/cmd/telemetry/main.go`, TODO:
 "batch reader, PII stripper, and transmitter") so that an **explicitly opted-in** Vedetta
 Core deployment can contribute a small set of privacy-reduced, domain-level threat
 observations to the community threat network (specs/003-threat-network/spec.md). The
-service is **OFF by default**, exports **only an allowlisted set of fields** (no raw
+service ships **ON by default (opt-out)**, exports **only an allowlisted set of fields** (no raw
 internal IPs, MACs, or hostnames — `source_hash` HMAC only; domain-level indicators
 only), and everything it produces downstream is **advisory-only** — community intel never
 auto-blocks and is never a dependency for local detection. The user-visible outcome: a
@@ -63,10 +65,10 @@ node, and turn it off at any time with zero impact on local monitoring.
 
 ### Functional
 
-- FR-1: The daemon MUST remain OFF by default. Unless `VEDETTA_TELEMETRY_OPTIN=true`
-  (exact string), the process performs no Core reads, no network egress, no reporter
-  registration, and no disk writes beyond its own log line — preserving today's
-  "sleep until signal" behavior.
+- FR-1: The daemon MUST ship ON by default (opt-out). Only the exact string
+  `VEDETTA_TELEMETRY_OPTIN=false` disables it; when disabled, the process performs no
+  Core reads, no network egress, no reporter registration, and no disk writes beyond its
+  own log line — the "sleep until signal" behavior applies only in that opted-out state.
 - FR-2: On first opt-in run, the daemon registers as a reporter with the threat network
   (`POST /api/v1/reporters/register` per `docs/threat-intel-mvp.md`), persists
   `reporter_id` + `reporter_secret` locally with `0600` permissions, and reuses them on
@@ -109,8 +111,9 @@ node, and turn it off at any time with zero impact on local monitoring.
   cursor position, last batch time/size/result, spool depth, and last error. The status
   output itself contains no exported payload data beyond counts.
 - FR-9: All behavior is configured via environment variables (documented in plan.md);
-  no config file is required. Disabling opt-in (unset or any value other than `true`)
-  returns the daemon to fully inert on next start.
+  no config file is required. Disabling telemetry (the exact value
+  `VEDETTA_TELEMETRY_OPTIN=false`) returns the daemon to fully inert on next start; unset
+  or any other value leaves it on.
 - FR-10: Every exported batch carries `schema_version`; the record shape is frozen in
   `contracts/telemetry-export.md` and changes are additive-only (backward-compatibility
   rule below).
@@ -142,7 +145,7 @@ node, and turn it off at any time with zero impact on local monitoring.
 | Passive-first | Yes (indirectly) | No new capture or scanning. Telemetry only re-exports summaries of what passive-first pipelines already detected. Zero gateway cooperation required. |
 | V1 scope (no LAN scan/exploit) | Yes | Pure data export of existing detections. No new scanning, no exploit verification, no active probing. Scope is deliberately Phase-1-of-VED-008 only (upload path); feed consumption is cut (see Out of Scope). |
 | SNR re-tune for new sources | Yes | Telemetry creates no new local alerts, so local SNR is unchanged. The SNR concern inverts: export quality gates (FR-4) keep node-side noise from poisoning the community corpus. See Signal-to-Noise Impact. |
-| Privacy / opt-in telemetry | Yes — this IS the constraint | OFF by default (FR-1); explicit opt-in env var; allowlist-only export (FR-5); no raw IPs/MACs/hostnames ever; `source_hash` HMAC collapsed to counts before egress; advisory-only downstream; revocable at any time. Constitution: "Telemetry … is optional, opt-in, privacy-conscious, and secondary to local operation." |
+| Privacy / opt-in telemetry | Yes — this IS the constraint | ON by default / opt-out (FR-1); disabled only by the exact `VEDETTA_TELEMETRY_OPTIN=false`; allowlist-only export (FR-5); no raw IPs/MACs/hostnames ever; `source_hash` HMAC collapsed to counts before egress; advisory-only downstream; revocable at any time. Constitution: "Telemetry … is optional, opt-in, privacy-conscious, and secondary to local operation." |
 | Environment data handling | Yes | All examples in this spec directory use RFC 5737 IPs, `00:00:5E:00:53:xx` MACs, RFC 2606 `.example` domains, and placeholder hostnames. No real network artifacts. The daemon's own design (allowlist export) is this constraint applied at runtime. |
 
 ## Signal-to-Noise Impact
