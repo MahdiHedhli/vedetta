@@ -18,6 +18,7 @@
 # Confirmed present before any recovery commits.
 .env
 .env.*
+.env.lab
 !.env.example
 *.pem
 *.key
