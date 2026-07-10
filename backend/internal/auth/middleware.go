@@ -87,6 +87,54 @@ func RequireAdmin(tv TokenValidator) func(next http.Handler) http.Handler {
 	}
 }
 
+// RequireRead returns middleware for read-only dashboard / query routes
+// (GET events, devices, status, and similar). It mirrors RequireAdmin's
+// bootstrap semantics so first-run setup is never locked out:
+//   - If no active admin token exists yet (fresh install / bootstrap), all
+//     requests pass through so the operator can complete initial setup.
+//   - Once an active admin exists, a valid Bearer token is required and its
+//     scope must satisfy ScopeRead (admin implies read; a read token qualifies;
+//     sensor/ingest machine tokens do not). Unauthenticated reads are rejected.
+//
+// This is the recommended middleware for all read-only, human-facing endpoints
+// that were previously public (beta-gate B6).
+func RequireRead(tv TokenValidator) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hasAdmin, err := tv.HasActiveAdminToken()
+			if err != nil {
+				http.Error(w, "auth: failed to check token store", http.StatusInternalServerError)
+				return
+			}
+
+			if !hasAdmin {
+				// Bootstrap mode: no active admin yet — keep reads open so the
+				// onboarding wizard and first-run setup work before any token
+				// is minted. Keying on active-admin (not total token count)
+				// matches RequireAdmin, so an auto-issued sensor/ingest token
+				// does not prematurely close the open-read window (beta-gate B1b).
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			token, err := ValidateAuthorizationHeader(tv, r.Header.Get("Authorization"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+
+			if !ScopeSatisfies(token.Scope, ScopeRead) {
+				http.Error(w, "read scope required", http.StatusForbidden)
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), ContextKeyToken, token)
+			ctx = context.WithValue(ctx, ContextKeyScope, token.Scope)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 func requireAuth(tv TokenValidator, allowBootstrapBypass bool) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -152,18 +200,32 @@ func RequireScope(requiredScope TokenScope) func(next http.Handler) http.Handler
 				return
 			}
 
-			// Admin scope can access anything
-			if scope == ScopeAdmin {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// Check if the actual scope matches required
-			if scope != requiredScope {
+			// Scope hierarchy (admin implies everything; otherwise exact match)
+			// lives in ScopeSatisfies so read/admin gating stays consistent.
+			if !ScopeSatisfies(scope, requiredScope) {
 				http.Error(w, "insufficient permissions", http.StatusForbidden)
 				return
 			}
 
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// DenyReadScope rejects read-scoped tokens on state-mutating machine endpoints
+// (e.g. POST /ingest) that are otherwise guarded by RequireAuth. A ScopeRead
+// token is a least-privilege *viewer* credential and must never be able to write
+// (beta-gate B6). This is a deny-list guard layered AFTER RequireAuth: it is a
+// no-op during bootstrap (no scope in context) and for every non-read scope, so
+// it removes read-token write access without tightening any existing path —
+// admin/ingest/sensor tokens and the first-run bootstrap window are unaffected.
+func DenyReadScope() func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if scope, ok := r.Context().Value(ContextKeyScope).(TokenScope); ok && scope == ScopeRead {
+				http.Error(w, "read-only token cannot write", http.StatusForbidden)
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	}

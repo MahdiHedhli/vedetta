@@ -55,7 +55,9 @@ func NewRouter(srv *Server) http.Handler {
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/status", srv.handleStatus)
+		// /version stays public: it exposes only a static version/build string
+		// (no network or inventory data) and is used as an unauthenticated
+		// build probe, like /healthz.
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"version":    "0.1.0-dev",
@@ -63,24 +65,40 @@ func NewRouter(srv *Server) http.Handler {
 				"routes":     []string{"/suppression", "/whitelist", "/events/{eventID}/ack", "/devices/{deviceID}"},
 			})
 		})
-		r.Get("/events", srv.handleEvents)
-		r.Get("/events/stats", srv.handleEventStats)
-		r.Get("/events/timeline", srv.handleEventTimeline)
+
+		// Read-only dashboard/query endpoints (beta-gate B6). These expose device
+		// inventory, DNS/firewall events, and network status, so once an active
+		// admin token exists they require AT LEAST read scope (admin implies read;
+		// a read token qualifies). During bootstrap (no admin yet) RequireRead lets
+		// them through so first-run setup and the onboarding wizard still work.
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireRead(srv.DB))
+			r.Get("/status", srv.handleStatus)
+			r.Get("/events", srv.handleEvents)
+			r.Get("/events/stats", srv.handleEventStats)
+			r.Get("/events/timeline", srv.handleEventTimeline)
+		})
 
 		// Ingest endpoint for the Fluent Bit log collector (Pi-hole DNS + firewall syslog).
-		// Protected using the same auth mechanism as sensor ingest (RequireAuth middleware + scope checks
-		// for admin/sensor tokens; collector supplies Authorization: Bearer <token> or can use X-Sensor-ID
-		// for compatibility with requireAuthenticatedSensorID). Reuses existing sensor auth code in
-		// sensor_auth.go and auth package; no new auth invented. /ingest is for external log sources
-		// (collector), while /sensor/* is for the native vedetta-sensor binary -- they share InsertEvents.
+		// Auth: RequireAuth (bootstrap-open until any token exists, then a valid Bearer of any
+		// scope) reused from sensor ingest, PLUS DenyReadScope so a least-privilege read token
+		// can never write events here (beta-gate B6). admin/ingest/sensor tokens and the
+		// X-Sensor-ID compatibility path (requireAuthenticatedSensorID) are unaffected.
+		// /ingest is for external log sources (collector); /sensor/* is for the native
+		// vedetta-sensor binary -- they share InsertEvents.
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAuth(srv.DB))
+			r.Use(auth.DenyReadScope())
 			r.Post("/ingest", srv.handleIngest)
 		})
 
-		// Device discovery (reads are public for convenience during alpha; writes protected)
-		r.Get("/devices", srv.handleListDevices)
-		r.Get("/devices/new", srv.handleNewDevices)
+		// Device discovery reads now require read scope once an admin exists
+		// (they expose the LAN device inventory). Writes remain admin-only.
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireRead(srv.DB))
+			r.Get("/devices", srv.handleListDevices)
+			r.Get("/devices/new", srv.handleNewDevices)
+		})
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAdmin(srv.DB))
 			r.Put("/devices/{deviceID}", srv.handleUpdateDevice)
@@ -117,9 +135,14 @@ func NewRouter(srv *Server) http.Handler {
 			r.Put("/scan/targets/{targetID}/toggle", srv.handleToggleTarget)
 			r.Post("/scan/targets/{targetID}/scan", srv.handleScanTarget)
 		})
-		// Read-only scan status and subnet detection remain public for convenience
-		r.Get("/scan/status", srv.handleScanStatus)
-		r.Get("/scan/subnets", srv.handleDetectSubnets)
+		// Read-only scan status and subnet detection expose network topology
+		// (detected local subnets), so they require read scope once an admin
+		// exists. Open during bootstrap so the setup wizard can detect subnets.
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireRead(srv.DB))
+			r.Get("/scan/status", srv.handleScanStatus)
+			r.Get("/scan/subnets", srv.handleDetectSubnets)
+		})
 
 		// Authentication and token management
 		r.Get("/auth/setup-status", srv.handleSetupStatus)
@@ -380,8 +403,9 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	// toggle here: an earlier in-handler check keyed on that env var was dead code (it
 	// could never make ingest MORE permissive than the middleware already allowed) and
 	// its "optional by default" comment was misleading, so both were removed (BUG-5).
-	// The middleware admits any valid token scope on /ingest; scope narrowing is not
-	// applied so admin/sensor/ingest tokens can all push events.
+	// The middleware admits admin/ingest/sensor tokens (and the bootstrap window) on
+	// /ingest; a least-privilege read token is rejected by DenyReadScope so it can
+	// never write events here (beta-gate B6).
 
 	// Read body (limit to 10MB to prevent abuse)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))

@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -24,6 +25,20 @@ func main() {
 	port := os.Getenv("VEDETTA_PORT")
 	if port == "" {
 		port = "8080"
+	}
+
+	// Listen address. SAFE BY DEFAULT (beta-gate B6): bind loopback only so a
+	// bare-metal / host-network install is not exposed on the LAN. Operators who
+	// front Core with a reverse proxy (see docs/reverse-proxy.md) or need
+	// direct LAN access set VEDETTA_LISTEN_ADDR explicitly.
+	//
+	// DOCKER: inside a container 127.0.0.1 is unreachable through Docker's
+	// published port and from sibling containers, so docker-compose.yml sets
+	// VEDETTA_LISTEN_ADDR=0.0.0.0 for the backend service (the container is
+	// isolated on the compose network; the host port mapping is what's exposed).
+	listenAddr := os.Getenv("VEDETTA_LISTEN_ADDR")
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1"
 	}
 
 	dbPath := os.Getenv("VEDETTA_DB_PATH")
@@ -53,6 +68,21 @@ func main() {
 			log.Printf("WARNING: could not provision ingest token from VEDETTA_INGEST_TOKEN: %v", err)
 		} else if created {
 			log.Printf("Provisioned ingest-scope token from VEDETTA_INGEST_TOKEN")
+		}
+	}
+
+	// Provision the telemetry daemon's READ credential from the shared
+	// VEDETTA_CORE_TOKEN secret (the same value is given to the telemetry
+	// container, which reads it as VEDETTA_CORE_TOKEN and presents it when
+	// polling GET /api/v1/events). The read endpoints are gated to require at
+	// least read scope once an active admin exists (beta-gate B6); without this
+	// least-privilege token the tokenless telemetry reader would get 401/403 and
+	// silently stop after the first admin token is created. Idempotent.
+	if raw := strings.TrimSpace(os.Getenv("VEDETTA_CORE_TOKEN")); raw != "" {
+		if created, err := db.EnsureTokenFromRaw(raw, auth.ScopeRead, "compose-provisioned read token"); err != nil {
+			log.Printf("WARNING: could not provision read token from VEDETTA_CORE_TOKEN: %v", err)
+		} else if created {
+			log.Printf("Provisioned read-scope token from VEDETTA_CORE_TOKEN")
 		}
 	}
 
@@ -295,15 +325,16 @@ func main() {
 
 	router := api.NewRouter(srv)
 
+	addr := net.JoinHostPort(listenAddr, port)
 	httpSrv := &http.Server{
-		Addr:         ":" + port,
+		Addr:         addr,
 		Handler:      router,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("Vedetta Core starting on :%s", port)
+	log.Printf("Vedetta Core starting on %s", addr)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)
 	}

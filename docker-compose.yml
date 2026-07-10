@@ -13,6 +13,14 @@ services:
       - "8080:8080"
     environment:
       VEDETTA_PORT: "8080"
+      # Core defaults to a loopback (127.0.0.1) bind for safety on bare-metal
+      # installs (beta-gate B6). Inside a container loopback is unreachable
+      # through the published port and from sibling services, so bind all
+      # interfaces here. The container is isolated on the internal 'vedetta'
+      # network; only the "8080:8080" host port mapping above is exposed, and
+      # the collector/telemetry/frontend reach Core by its service name
+      # (http://backend:8080) over that network.
+      VEDETTA_LISTEN_ADDR: "0.0.0.0"
       VEDETTA_DB_PATH: "/data/vedetta.db"
       VEDETTA_FRONTEND_DIR: "/frontend"
       VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-auto}"
@@ -21,6 +29,10 @@ services:
       # Shared with the collector below: Core provisions this as an ingest-scope
       # token on startup so /ingest keeps authenticating once auth turns on.
       VEDETTA_INGEST_TOKEN: "${VEDETTA_INGEST_TOKEN:-}"
+      # Shared with the telemetry service below: Core provisions this as a
+      # read-scope token on startup so the telemetry reader keeps authenticating
+      # against GET /api/v1/events once the read gate turns on (beta-gate B6).
+      VEDETTA_CORE_TOKEN: "${VEDETTA_CORE_TOKEN:-}"
     # Core receives device data from sensors — no direct network scanning needed.
     volumes:
       - vedetta-data:/data
@@ -79,6 +91,12 @@ services:
       # Reports to the public community feed (the central threat-network runs
       # off-node behind the Cloudflare tunnel, not in this compose).
       VEDETTA_THREAT_NETWORK_URL: "${VEDETTA_THREAT_NETWORK_URL:-https://feed.vedettas.com}"
+      # Read credential for polling Core's GET /api/v1/events. Core's read
+      # endpoints require at least read scope once an admin token exists
+      # (beta-gate B6); Core provisions this same value as a read-scope token on
+      # startup (see VEDETTA_CORE_TOKEN on the backend service) and telemetry
+      # presents it here. Leave unset only for a Core with no admin token.
+      VEDETTA_CORE_TOKEN: "${VEDETTA_CORE_TOKEN:-}"
     volumes:
       - vedetta-data:/data:ro
       - telemetry-state:/var/lib/vedetta-telemetry  # persist reporter identity, salt, spool
