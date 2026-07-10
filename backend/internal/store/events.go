@@ -35,6 +35,17 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 		db.Exec(`ALTER TABLE events ADD COLUMN server_ip TEXT DEFAULT ''`)
 	}
 
+	// Match-provenance columns (GHSA-hx86, migration 022). Same guarded pragma +
+	// plain ALTER safety net so old DBs get the columns before this insert binds them.
+	var matchedIndicatorColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'matched_indicator'`).Scan(&matchedIndicatorColCount); err == nil && matchedIndicatorColCount == 0 {
+		db.Exec(`ALTER TABLE events ADD COLUMN matched_indicator TEXT DEFAULT ''`)
+	}
+	var matchTypeColCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'match_type'`).Scan(&matchTypeColCount); err == nil && matchTypeColCount == 0 {
+		db.Exec(`ALTER TABLE events ADD COLUMN match_type TEXT DEFAULT ''`)
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
@@ -44,8 +55,8 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 		INSERT OR IGNORE INTO events
 			(event_id, timestamp, event_type, source_hash, source_ip, server_ip, domain, query_type,
 			 resolved_ip, blocked, anomaly_score, tags, geo, device_vendor, network_segment,
-			 dns_source, threat_desc, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 dns_source, threat_desc, metadata, matched_indicator, match_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		tx.Rollback()
@@ -78,6 +89,7 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 			string(tagsJSON), nullableString(e.Geo),
 			nullableString(e.DeviceVendor), seg,
 			nullableString(e.DNSSource), nullableString(e.ThreatDesc), metadataStr,
+			nullableString(e.MatchedIndicator), nullableString(e.MatchType),
 		)
 		if err != nil {
 			continue // skip individual failures, don't abort the batch
@@ -219,7 +231,8 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 		       COALESCE(tags, '[]'), COALESCE(geo, ''),
 		       COALESCE(device_vendor, ''), COALESCE(network_segment, 'default'),
 		       COALESCE(dns_source, ''), COALESCE(threat_desc, ''), COALESCE(metadata, '{}'),
-		       COALESCE(acknowledged, FALSE), COALESCE(ack_reason, '')
+		       COALESCE(acknowledged, FALSE), COALESCE(ack_reason, ''),
+		       COALESCE(matched_indicator, ''), COALESCE(match_type, '')
 		FROM events %s
 		ORDER BY %s %s
 		LIMIT ? OFFSET ?
@@ -243,6 +256,7 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 			&e.DeviceVendor, &e.NetworkSegment,
 			&e.DNSSource, &e.ThreatDesc, &e.Metadata,
 			&e.Acknowledged, &e.AckReason,
+			&e.MatchedIndicator, &e.MatchType,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan event row: %w", err)

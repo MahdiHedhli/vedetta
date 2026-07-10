@@ -17,9 +17,11 @@ func TestGoldenBatchShapeMatchesContract(t *testing.T) {
 	events := []corereader.Event{
 		{EventID: "e1", Timestamp: base.Add(15 * time.Minute), EventType: "dns_query", SourceIP: "192.0.2.55",
 			Domain: "c2-payload.badzone.example", Blocked: true, AnomalyScore: 0.99,
+			MatchedIndicator: "c2-payload.badzone.example", MatchType: "domain",
 			Tags: []string{"known_bad", "threat_feed_match", "c2_candidate"}},
 		{EventID: "e1b", Timestamp: base.Add(20 * time.Minute), EventType: "dns_query", SourceIP: "192.0.2.60",
 			Domain: "c2-payload.badzone.example", Blocked: true, AnomalyScore: 0.90,
+			MatchedIndicator: "c2-payload.badzone.example", MatchType: "domain",
 			Tags: []string{"known_bad", "threat_feed_match", "c2_candidate"}},
 		{EventID: "e2", Timestamp: base.Add(15 * time.Minute), EventType: "dns_query", SourceIP: "192.0.2.56",
 			Domain: "sub.qxv-rotator.example", AnomalyScore: 0.91,

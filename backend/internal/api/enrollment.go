@@ -81,6 +81,13 @@ func newEnrollmentCode() string {
 	return strings.Join(groups, "-")
 }
 
+// NewSetupCode mints a first-admin bootstrap setup code (GHSA-6cmx), reusing the
+// same 80-bit grouped-base32 format as sensor enrollment codes so it is easy to
+// read from the boot log and type into the setup wizard.
+func NewSetupCode() string {
+	return newEnrollmentCode()
+}
+
 // handleGenerateEnrollmentCode mints a short-lived, single-use sensor enrollment
 // code. Admin only. POST /api/v1/enrollment-codes
 func (s *Server) handleGenerateEnrollmentCode(w http.ResponseWriter, r *http.Request) {

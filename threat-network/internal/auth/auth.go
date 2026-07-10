@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/vedetta-network/vedetta/threat-network/internal/store"
+	"github.com/vedetta-network/vedetta/threat-network/internal/valid"
 )
 
 // MaxSkew is the allowed timestamp drift for signed requests (±300s per contract).
@@ -38,6 +39,7 @@ const (
 	CodeReporterDenylisted = "REPORTER_DENYLISTED"
 	CodeUnknownReporter    = "UNKNOWN_REPORTER"
 	CodeMissingAuth        = "MISSING_AUTH"
+	CodeInvalidNonce       = "INVALID_NONCE"
 )
 
 // AuthError carries a machine-readable code alongside a message.
@@ -89,6 +91,13 @@ type SignedRequest struct {
 func (a *Authenticator) Verify(req SignedRequest) (*store.Reporter, error) {
 	if req.ReporterID == "" || req.Timestamp == "" || req.Nonce == "" || req.Signature == "" {
 		return nil, authErr(CodeMissingAuth, "missing required auth headers")
+	}
+
+	// Wire-format validation (GHSA-hx86): the X-Vedetta-Nonce must be a UUIDv4.
+	// Reject non-conforming nonces before any DB work — a malformed nonce cannot
+	// be a legitimate replay token and must not reach the replay store.
+	if !valid.UUIDv4(req.Nonce) {
+		return nil, authErr(CodeInvalidNonce, "nonce must be a UUIDv4")
 	}
 
 	// Timestamp skew check first (cheap, no DB).
@@ -179,6 +188,10 @@ func ValidateRegister(r RegisterRequest) error {
 	}
 	if r.InstallID == "" {
 		return errors.New("install_id required")
+	}
+	// Wire-format validation (GHSA-hx86): vedetta_version must be strict semver.
+	if !valid.Semver(r.VedettaVersion) {
+		return fmt.Errorf("vedetta_version %q is not strict semver", r.VedettaVersion)
 	}
 	if len(r.Capabilities) == 0 {
 		return errors.New("at least one capability required")

@@ -11,11 +11,16 @@ var gateCfg = GateConfig{CandidateMinScore: 0.85, BehaviorMinScore: 0.70}
 
 func ev(domain string, score float64, tags ...string) corereader.Event {
 	return corereader.Event{
-		EventType:    "dns_query",
-		Timestamp:    time.Now().UTC(),
-		Domain:       domain,
-		AnomalyScore: score,
-		Tags:         tags,
+		EventType: "dns_query",
+		Timestamp: time.Now().UTC(),
+		Domain:    domain,
+		// Default to a known-bad DOMAIN-list match: matched_indicator equals the
+		// observed FQDN for today's exact-match logic. Tests exercising
+		// resolved-IP matches override MatchType/MatchedIndicator explicitly.
+		MatchedIndicator: domain,
+		MatchType:        "domain",
+		AnomalyScore:     score,
+		Tags:             tags,
 	}
 }
 
@@ -81,6 +86,34 @@ func TestEligibleDeduplicatedOnlyWithheld(t *testing.T) {
 	e2 := ev("bad.badzone.example", 0.5, "deduplicated", "known_bad")
 	if _, ok := Eligible(e2, gateCfg); !ok {
 		t.Errorf("deduplicated + known_bad should pass")
+	}
+}
+
+func TestEligibleResolvedIPKnownBadWithheld(t *testing.T) {
+	// A known-bad RESOLVED-IP match must NOT be classified as a domain hit: the
+	// observed QNAME is not itself known-bad (GHSA-hx86). It is withheld.
+	e := ev("lookup.qxv-rotator.example", 0.99, "known_bad")
+	e.MatchType = "resolved_ip"
+	e.MatchedIndicator = "203.0.113.9"
+	if k, ok := Eligible(e, gateCfg); ok {
+		t.Errorf("resolved_ip known_bad should be withheld, got kind %q", k)
+	}
+	// Even with a candidate tag and a high score it must not be downgraded into
+	// an exportable domain candidate.
+	e2 := ev("lookup.qxv-rotator.example", 0.99, "known_bad", "c2_candidate")
+	e2.MatchType = "resolved_ip"
+	e2.MatchedIndicator = "203.0.113.9"
+	if k, ok := Eligible(e2, gateCfg); ok {
+		t.Errorf("resolved_ip known_bad+candidate should be withheld, got kind %q", k)
+	}
+}
+
+func TestEligibleKnownBadRequiresDomainMatchType(t *testing.T) {
+	// Missing/empty match_type on a known_bad event is not a domain hit.
+	e := ev("bad.badzone.example", 0.99, "known_bad")
+	e.MatchType = ""
+	if _, ok := Eligible(e, gateCfg); ok {
+		t.Errorf("known_bad without match_type==domain should be withheld")
 	}
 }
 

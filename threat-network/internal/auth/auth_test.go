@@ -43,7 +43,7 @@ func TestValidSignaturePasses(t *testing.T) {
 	a, db := newAuth(t, now)
 	id, key := registerReporter(t, db)
 	body := []byte(`{"batch_id":"b1"}`)
-	req := signed(id, key, now, "nonce-1", body)
+	req := signed(id, key, now, "11111111-1111-4111-8111-111111111111", body)
 	r, err := a.Verify(req)
 	if err != nil {
 		t.Fatalf("expected valid, got %v", err)
@@ -57,7 +57,7 @@ func TestTamperedBodyRejected(t *testing.T) {
 	now := time.Now()
 	a, db := newAuth(t, now)
 	id, key := registerReporter(t, db)
-	req := signed(id, key, now, "nonce-1", []byte(`{"batch_id":"b1"}`))
+	req := signed(id, key, now, "11111111-1111-4111-8111-111111111111", []byte(`{"batch_id":"b1"}`))
 	req.Body = []byte(`{"batch_id":"TAMPERED"}`) // signature no longer matches
 	_, err := a.Verify(req)
 	assertCode(t, err, CodeInvalidSignature)
@@ -68,7 +68,7 @@ func TestWrongSecretRejected(t *testing.T) {
 	a, db := newAuth(t, now)
 	id, _ := registerReporter(t, db)
 	body := []byte(`{"batch_id":"b1"}`)
-	req := signed(id, "wrong-key", now, "nonce-1", body)
+	req := signed(id, "wrong-key", now, "11111111-1111-4111-8111-111111111111", body)
 	_, err := a.Verify(req)
 	assertCode(t, err, CodeInvalidSignature)
 }
@@ -80,7 +80,7 @@ func TestStaleTimestampRejected(t *testing.T) {
 	body := []byte(`{"batch_id":"b1"}`)
 	// Sign with a timestamp 301s in the past.
 	past := now.Add(-301 * time.Second)
-	req := signed(id, key, past, "nonce-1", body)
+	req := signed(id, key, past, "11111111-1111-4111-8111-111111111111", body)
 	_, err := a.Verify(req)
 	assertCode(t, err, CodeStaleTimestamp)
 }
@@ -91,7 +91,7 @@ func TestFutureTimestampRejected(t *testing.T) {
 	id, key := registerReporter(t, db)
 	body := []byte(`{"batch_id":"b1"}`)
 	future := now.Add(301 * time.Second)
-	req := signed(id, key, future, "nonce-1", body)
+	req := signed(id, key, future, "11111111-1111-4111-8111-111111111111", body)
 	_, err := a.Verify(req)
 	assertCode(t, err, CodeStaleTimestamp)
 }
@@ -101,12 +101,12 @@ func TestNonceReuseRejected(t *testing.T) {
 	a, db := newAuth(t, now)
 	id, key := registerReporter(t, db)
 	body := []byte(`{"batch_id":"b1"}`)
-	req := signed(id, key, now, "nonce-dup", body)
+	req := signed(id, key, now, "22222222-2222-4222-8222-222222222222", body)
 	if _, err := a.Verify(req); err != nil {
 		t.Fatalf("first use should pass: %v", err)
 	}
 	// Second identical request → nonce reuse.
-	req2 := signed(id, key, now, "nonce-dup", body)
+	req2 := signed(id, key, now, "22222222-2222-4222-8222-222222222222", body)
 	_, err := a.Verify(req2)
 	assertCode(t, err, CodeNonceReused)
 }
@@ -119,7 +119,7 @@ func TestDenylistedReporterRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := []byte(`{"batch_id":"b1"}`)
-	req := signed(id, key, now, "nonce-1", body)
+	req := signed(id, key, now, "11111111-1111-4111-8111-111111111111", body)
 	_, err := a.Verify(req)
 	assertCode(t, err, CodeReporterDenylisted)
 }
@@ -128,7 +128,7 @@ func TestUnknownReporterRejected(t *testing.T) {
 	now := time.Now()
 	a, _ := newAuth(t, now)
 	body := []byte(`{"batch_id":"b1"}`)
-	req := signed("nope", "key", now, "nonce-1", body)
+	req := signed("nope", "key", now, "11111111-1111-4111-8111-111111111111", body)
 	_, err := a.Verify(req)
 	assertCode(t, err, CodeUnknownReporter)
 }
@@ -136,7 +136,8 @@ func TestUnknownReporterRejected(t *testing.T) {
 func TestRegisterStoresHashNotSecret(t *testing.T) {
 	_, db := newAuth(t, time.Now())
 	resp, err := Register(db, RegisterRequest{
-		SchemaVersion: 1, InstallID: "i", Capabilities: []string{"behavior_summary"},
+		SchemaVersion: 1, InstallID: "i", VedettaVersion: "0.1.0",
+		Capabilities: []string{"behavior_summary"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -155,9 +156,48 @@ func TestRegisterStoresHashNotSecret(t *testing.T) {
 
 func TestValidateRegisterRejectsUnknownCapability(t *testing.T) {
 	err := ValidateRegister(RegisterRequest{SchemaVersion: 1, InstallID: "i",
-		Capabilities: []string{"not_a_kind"}})
+		VedettaVersion: "0.1.0", Capabilities: []string{"not_a_kind"}})
 	if err == nil {
 		t.Fatal("expected unknown capability rejection")
+	}
+}
+
+// TestNonUUIDNonceRejected is the GHSA-hx86 regression: the X-Vedetta-Nonce must
+// be a UUIDv4. A non-conforming nonce is rejected before any DB/replay work.
+func TestNonUUIDNonceRejected(t *testing.T) {
+	now := time.Now()
+	a, db := newAuth(t, now)
+	id, key := registerReporter(t, db)
+	for _, bad := range []string{"nonce-1", "not-a-uuid", "", "11111111-1111-1111-8111-111111111111"} {
+		// Sign correctly so only the nonce format is under test. Empty nonce trips
+		// the missing-auth guard (also a rejection); both are acceptable failures.
+		req := signed(id, key, now, bad, []byte(`{"batch_id":"b1"}`))
+		if _, err := a.Verify(req); err == nil {
+			t.Fatalf("non-UUID nonce %q must be rejected", bad)
+		}
+	}
+	// A valid UUIDv4 nonce passes the format gate.
+	req := signed(id, key, now, "33333333-3333-4333-8333-333333333333", []byte(`{"batch_id":"b1"}`))
+	if _, err := a.Verify(req); err != nil {
+		t.Fatalf("valid UUIDv4 nonce must pass, got %v", err)
+	}
+}
+
+// TestValidateRegisterRejectsBadVersion is the GHSA-hx86 regression: vedetta_version
+// at registration must be strict semver.
+func TestValidateRegisterRejectsBadVersion(t *testing.T) {
+	for _, bad := range []string{"", "v1.2.3", "1", "1.2.3.4", "latest", "1.x"} {
+		err := ValidateRegister(RegisterRequest{SchemaVersion: 1, InstallID: "i",
+			VedettaVersion: bad, Capabilities: []string{"behavior_summary"}})
+		if err == nil {
+			t.Fatalf("non-semver vedetta_version %q must be rejected", bad)
+		}
+	}
+	for _, ok := range []string{"0.1", "0.1.0", "1.2.3", "10.20.30", "1.2.0-dev", "0.1.0-rc.1"} {
+		if err := ValidateRegister(RegisterRequest{SchemaVersion: 1, InstallID: "i",
+			VedettaVersion: ok, Capabilities: []string{"behavior_summary"}}); err != nil {
+			t.Fatalf("semver vedetta_version %q must be accepted, got %v", ok, err)
+		}
 	}
 }
 

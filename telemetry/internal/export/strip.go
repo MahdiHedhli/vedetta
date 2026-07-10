@@ -29,22 +29,37 @@ func Strip(ev corereader.Event, kind Kind, salt []byte) (ExportCandidate, bool) 
 		SourceHash:      sourceHash(ev.SourceIP, salt),
 	}
 
-	domain := strings.ToLower(strings.TrimSpace(ev.Domain))
-	domain = strings.TrimSuffix(domain, ".")
-	etld, ok := eTLDPlusOne(domain)
-	if !ok && kind != KindBehaviorSummary {
-		// Domain-bearing kinds require a reducible domain; refuse otherwise.
-		return ExportCandidate{}, false
-	}
-
 	switch kind {
 	case KindKnownBadDomainHit:
-		// Exact domain permitted for this kind only.
-		c.Domain = domain
+		// GHSA-hx86: never export the observed QNAME. Export the canonical
+		// matched indicator from Core provenance (the known-bad list entry that
+		// fired) instead. Fail closed if provenance is missing or the match was
+		// not a domain match — do NOT fall back to the QNAME.
+		if ev.MatchType != "domain" || ev.MatchedIndicator == "" {
+			return ExportCandidate{}, false
+		}
+		indicator := strings.ToLower(strings.TrimSpace(ev.MatchedIndicator))
+		indicator = strings.TrimSuffix(indicator, ".")
+		// The matched indicator must still pass the single public-domain gate.
+		if !isPublicDomain(indicator) {
+			return ExportCandidate{}, false
+		}
+		etld, ok := eTLDPlusOne(indicator)
+		if !ok {
+			return ExportCandidate{}, false
+		}
+		c.Domain = indicator
 		c.ETLDPlusOne = etld
 		c.Blocked = ev.Blocked
 	case KindHighConfCandidate:
-		// Exact domain WITHHELD; eTLD+1 only. Domain field left empty.
+		// Exact domain WITHHELD; eTLD+1 only, derived from the observed QNAME.
+		domain := strings.ToLower(strings.TrimSpace(ev.Domain))
+		domain = strings.TrimSuffix(domain, ".")
+		etld, ok := eTLDPlusOne(domain)
+		if !ok {
+			// Domain-bearing kind requires a reducible domain; refuse otherwise.
+			return ExportCandidate{}, false
+		}
 		c.ETLDPlusOne = etld
 	case KindBehaviorSummary:
 		// No domain material at all.

@@ -98,9 +98,18 @@ func NewScanner() (*Scanner, error) {
 // Uses -sn (ping scan) + -oX (XML output) for fast host discovery.
 // If withPorts is true, adds a quick top-100 port scan.
 func (s *Scanner) Scan(cidr string, withPorts bool) (*NmapResult, error) {
-	args := []string{"-sn", "-oX", "-", cidr}
+	// Defense-in-depth (GHSA-c5gj): validate the target even though callers should
+	// have validated at the API boundary — old DB rows or new call sites might not.
+	if err := ValidateScanTarget(cidr); err != nil {
+		return nil, fmt.Errorf("refusing to scan invalid target: %w", err)
+	}
+
+	// The literal "--" terminates option parsing so a target can never be smuggled
+	// in as an nmap flag; combined with exec.Command (never a shell) this closes the
+	// option-injection vector.
+	args := []string{"-sn", "-oX", "-", "--", cidr}
 	if withPorts {
-		args = []string{"-sS", "--top-ports", "100", "-T4", "-oX", "-", cidr}
+		args = []string{"-sS", "--top-ports", "100", "-T4", "-oX", "-", "--", cidr}
 	}
 
 	start := time.Now()

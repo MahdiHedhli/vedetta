@@ -21,10 +21,18 @@ const Window = 7 * 24 * time.Hour
 // unlimited independent reporter_ids with no operator identity, so the distinct-
 // reporter count alone is Sybil-forgeable: one actor can register several ids and
 // send the identical signal from each to force a promotion. Requiring each id to
-// pre-date the run by this delay means a Sybil cluster cannot promote on demand —
-// the attacker must sustain the ids for at least this long, and a
-// registration-velocity burst is detectable/deniable within it. See finding #1
-// and specs/003-threat-network FR-5 (a single reporter can never cause promotion).
+// pre-date the run by this delay raises the cost — a Sybil cluster cannot promote
+// on demand and a registration-velocity burst is detectable within the window.
+//
+// HONESTY / residual risk (GHSA-573f): this delay does NOT solve Sybil. It only
+// imposes a time cost. The distinctness gate is still identity-count based, and
+// the weakest promotion rule (rule 1, promote.go ~31) requires just distinct >= 2
+// mature reporters. An attacker who registers 2 reporter_ids and lets them age
+// past this delay (24h) fully satisfies that rule from a single operator — the
+// per-real-IP registration cap and detectable registration velocity are the only
+// friction, not any cryptographic or proof-of-independence guarantee. The delay
+// is a mitigation, not a proof that "a single actor can never promote"; treat the
+// community feed as advisory-only accordingly. See specs/003-threat-network FR-5.
 const ReporterMaturationDelay = 24 * time.Hour
 
 // Engine owns a consensus run against the store.

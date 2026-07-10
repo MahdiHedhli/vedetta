@@ -146,6 +146,25 @@ func main() {
 		ActivityLog: activityLog,
 	}
 
+	// First-admin bootstrap setup code (GHSA-6cmx). Before any admin token exists,
+	// POST /api/v1/auth/tokens is reachable unauthenticated on the LAN. To stop any
+	// LAN client from minting a permanent admin, minting the first admin now requires
+	// this single-use code. Generate one (or take VEDETTA_SETUP_CODE) ONLY while no
+	// active admin exists, and log it clearly like an enrollment code. Once an admin
+	// exists we leave SetupCode empty and never log it.
+	if hasAdmin, err := db.HasActiveAdminToken(); err == nil && !hasAdmin {
+		setupCode := strings.TrimSpace(os.Getenv("VEDETTA_SETUP_CODE"))
+		if setupCode == "" {
+			setupCode = api.NewSetupCode()
+		}
+		srv.SetupCode = setupCode
+		log.Printf("=====================================================================")
+		log.Printf("FIRST-ADMIN SETUP CODE: %s", setupCode)
+		log.Printf("Present it as the X-Vedetta-Setup-Code header when creating the first")
+		log.Printf("admin token (POST /api/v1/auth/tokens, scope=admin). Single use.")
+		log.Printf("=====================================================================")
+	}
+
 	// Optional: built-in scanner for Linux host-network deployments.
 	// The primary discovery path is via native sensors (vedetta-sensor).
 	scanner, scanErr := discovery.NewScanner()
@@ -153,6 +172,16 @@ func main() {
 		scanCIDR := os.Getenv("VEDETTA_SCAN_CIDR")
 		if scanCIDR == "" || scanCIDR == "auto" {
 			scanCIDR = discovery.BestSubnet("")
+		}
+
+		// GHSA-c5gj: refuse an operator-supplied scan CIDR that isn't a clean target
+		// before it can ever reach nmap. An invalid value disables the built-in
+		// scanner rather than risking option injection.
+		if scanCIDR != "" {
+			if err := discovery.ValidateScanTarget(scanCIDR); err != nil {
+				log.Printf("Ignoring invalid VEDETTA_SCAN_CIDR %q: %v — built-in scanner disabled", scanCIDR, err)
+				scanCIDR = ""
+			}
 		}
 
 		scanInterval := os.Getenv("VEDETTA_SCAN_INTERVAL")

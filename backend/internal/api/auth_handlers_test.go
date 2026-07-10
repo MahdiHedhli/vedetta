@@ -31,6 +31,10 @@ func createTokenRequest(t *testing.T, router http.Handler, bearer, scope string)
 	data, _ := json.Marshal(map[string]any{"scope": scope, "label": "test"})
 	req := httptest.NewRequest("POST", "/api/v1/auth/tokens", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
+	// Present the bootstrap setup code (GHSA-6cmx). Post-bootstrap (an active admin
+	// exists) this header is ignored, so sending it unconditionally is harmless and
+	// keeps the existing bootstrap cases exercising the real setup-code path.
+	req.Header.Set("X-Vedetta-Setup-Code", testSetupCode)
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}

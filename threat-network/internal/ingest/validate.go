@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/vedetta-network/vedetta/threat-network/internal/valid"
 )
 
 // Signal kinds (002 contract §4).
@@ -113,6 +115,12 @@ func ParseAndValidate(body []byte) (*Batch, int, error) {
 	if err := dec.Decode(&raw); err != nil {
 		return nil, 0, &EnvelopeError{Code: "INVALID_SCHEMA", Detail: "batch body is not a JSON object"}
 	}
+	// Strict single-object decode (GHSA-hx86): a well-formed first object must be
+	// the ENTIRE body. Trailing objects/tokens (e.g. JSON smuggling past the first
+	// value) reject the whole batch rather than being silently ignored.
+	if dec.More() {
+		return nil, 0, &EnvelopeError{Code: "INVALID_SCHEMA", Detail: "trailing data after batch object"}
+	}
 
 	// Strict top-level keys (002 §3/§5 rule 1) — the poisoning/privacy tripwire.
 	for k := range raw {
@@ -132,6 +140,10 @@ func ParseAndValidate(body []byte) (*Batch, int, error) {
 	}
 	if err := strField(raw, "batch_id", &b.BatchID); err != nil || b.BatchID == "" {
 		return nil, 0, &EnvelopeError{Code: "INVALID_SCHEMA", Detail: "batch_id required"}
+	}
+	// Wire-format validation (GHSA-hx86): batch_id must be a UUIDv4.
+	if !valid.UUIDv4(b.BatchID) {
+		return nil, 0, &EnvelopeError{Code: "INVALID_SCHEMA", Detail: "batch_id must be a UUIDv4"}
 	}
 	if err := timeField(raw, "generated_at", &b.GeneratedAt); err != nil {
 		return nil, 0, &EnvelopeError{Code: "INVALID_SCHEMA", Detail: "generated_at: " + err.Error()}

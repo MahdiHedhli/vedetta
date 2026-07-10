@@ -10,7 +10,9 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/vedetta-network/vedetta/threat-network/internal/auth"
@@ -32,6 +34,10 @@ type Server struct {
 	ingLimit  *RateLimiter
 	feedLimit *RateLimiter
 	logger    *log.Logger
+	// trustedProxy reports whether a socket peer is a trusted forwarding proxy
+	// (e.g. the co-located cloudflared tunnel). Only then are forwarding headers
+	// consulted for the rate-limit key — see clientIP (GHSA-573f).
+	trustedProxy func(net.IP) bool
 }
 
 // NewServer builds a Server with sensible per-IP limits.
@@ -40,10 +46,10 @@ func NewServer(db *store.DB, logger *log.Logger) *Server {
 		logger = log.Default()
 	}
 	return &Server{
-		DB:        db,
-		Auth:      auth.New(db),
-		Ingest:    ingest.NewProcessor(db),
-		Feed:      feed.New(db),
+		DB:     db,
+		Auth:   auth.New(db),
+		Ingest: ingest.NewProcessor(db),
+		Feed:   feed.New(db),
 		// Registration mints anti-poisoning-relevant identities, so keep this
 		// tight: ~1 registration / 5 min sustained, burst 2. This raises the cost
 		// of spraying reporter_ids across IPs; the primary Sybil defense is the
@@ -52,6 +58,9 @@ func NewServer(db *store.DB, logger *log.Logger) *Server {
 		ingLimit:  NewRateLimiter(1.0, 20), // 1 ingest/s sustained, burst 20
 		feedLimit: NewRateLimiter(2.0, 30), // feed reads, burst 30
 		logger:    logger,
+		// Trusted forwarding proxies for rate-limit keying (GHSA-573f). Default
+		// loopback: cloudflared is co-located, so only it may set CF-Connecting-IP.
+		trustedProxy: buildTrustedProxy(os.Getenv("THREAT_NETWORK_TRUSTED_PROXIES")),
 	}
 }
 
@@ -100,7 +109,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
 		return
 	}
-	if ok, retry := s.regLimit.Allow(clientIP(r)); !ok {
+	if ok, retry := s.regLimit.Allow(clientIP(r, s.trustedProxy)); !ok {
 		writeRateLimit(w, retry)
 		return
 	}
@@ -128,7 +137,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
 		return
 	}
-	if ok, retry := s.ingLimit.Allow(clientIP(r)); !ok {
+	if ok, retry := s.ingLimit.Allow(clientIP(r, s.trustedProxy)); !ok {
 		writeRateLimit(w, retry)
 		return
 	}
@@ -217,7 +226,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
 		return
 	}
-	if ok, retry := s.feedLimit.Allow(clientIP(r)); !ok {
+	if ok, retry := s.feedLimit.Allow(clientIP(r, s.trustedProxy)); !ok {
 		writeFeedRateLimit(w, retry)
 		return
 	}

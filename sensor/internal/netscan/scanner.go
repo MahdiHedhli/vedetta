@@ -3,11 +3,72 @@ package netscan
 import (
 	"encoding/xml"
 	"fmt"
+	"net"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// hostnameRe matches a strict DNS hostname: one or more labels separated by
+// dots, each label 1-63 chars of [A-Za-z0-9-] not starting/ending with a
+// hyphen. A trailing dot is not permitted.
+var hostnameRe = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
+
+// nmapRangeRe matches an nmap numeric octet-range target such as
+// 10.0.0.1-50 or 192.168.1-10.0-255. Each of the four octets is either a
+// single number or a low-high range.
+var nmapRangeRe = regexp.MustCompile(`^(?:\d{1,3}(?:-\d{1,3})?)(?:\.\d{1,3}(?:-\d{1,3})?){3}$`)
+
+// shellMeta holds characters that must never appear in a scan target. Their
+// presence indicates an attempt at shell or nmap-option injection.
+const shellMeta = ";|&$`<>()'\"\\"
+
+// ValidateTarget re-validates a scan target that crossed the trust boundary
+// from Core before it is handed to nmap. The sensor runs as root, so an
+// attacker-controlled target that reached an nmap argument could inject
+// options (e.g. --script=...) or, via a shell metacharacter, arbitrary
+// commands. These rules are intentionally duplicated from the backend: the
+// sensor is a separate Go module and cannot import it.
+//
+// A target is valid ONLY if it is one of:
+//   - a bare IP (net.ParseIP)
+//   - a CIDR block (net.ParseCIDR)
+//   - an nmap numeric octet range like 10.0.0.1-50
+//   - a strict DNS hostname
+//
+// Any value that begins with "-", contains whitespace, or contains a shell/
+// option metacharacter is rejected regardless of the above.
+func ValidateTarget(target string) error {
+	if target == "" {
+		return fmt.Errorf("empty scan target")
+	}
+	if strings.HasPrefix(target, "-") {
+		return fmt.Errorf("scan target may not begin with '-': %q", target)
+	}
+	if strings.ContainsAny(target, " \t\r\n\f\v") {
+		return fmt.Errorf("scan target may not contain whitespace: %q", target)
+	}
+	if strings.ContainsAny(target, shellMeta) {
+		return fmt.Errorf("scan target contains forbidden metacharacter: %q", target)
+	}
+
+	if net.ParseIP(target) != nil {
+		return nil
+	}
+	if _, _, err := net.ParseCIDR(target); err == nil {
+		return nil
+	}
+	if nmapRangeRe.MatchString(target) {
+		return nil
+	}
+	if hostnameRe.MatchString(target) {
+		return nil
+	}
+
+	return fmt.Errorf("scan target is not a valid IP, CIDR, range, or hostname: %q", target)
+}
 
 // ScanResult represents the parsed output of an nmap scan.
 type ScanResult struct {
@@ -50,9 +111,19 @@ func NewScanner() (*Scanner, error) {
 // Uses -sn (ping scan) for host discovery.
 // If withPorts is true, uses -sS with top-100 ports instead.
 func (s *Scanner) Scan(cidr string, withPorts bool) (*ScanResult, error) {
-	args := []string{"-sn", "-oX", "-", cidr}
+	// Re-validate the target here: it originates from Core work items and has
+	// crossed a trust boundary. The literal "--" below stops nmap from
+	// interpreting the target as an option, but "--" alone does not defend
+	// against a metacharacter payload, so validation is mandatory.
+	if err := ValidateTarget(cidr); err != nil {
+		return nil, fmt.Errorf("refusing to scan invalid target: %w", err)
+	}
+
+	// The "--" terminator immediately precedes the target operand so nmap
+	// treats it as a positional argument even if it began with '-'.
+	args := []string{"-sn", "-oX", "-", "--", cidr}
 	if withPorts {
-		args = []string{"-sS", "--top-ports", "100", "-T4", "-oX", "-", cidr}
+		args = []string{"-sS", "--top-ports", "100", "-T4", "-oX", "-", "--", cidr}
 	}
 
 	start := time.Now()

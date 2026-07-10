@@ -14,7 +14,13 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 )
 
-// setupTestServer creates a Server backed by an in-memory SQLite DB.
+// testSetupCode is the first-admin bootstrap setup code provisioned on the test
+// server (GHSA-6cmx). Real deployments generate this at boot; tests use a fixed
+// value so they can present it in the X-Vedetta-Setup-Code header.
+const testSetupCode = "TEST-SETUP-CODE-0001"
+
+// setupTestServer creates a Server backed by an in-memory SQLite DB, pre-loaded
+// with the bootstrap setup code so first-admin creation can be exercised.
 func setupTestServer(t *testing.T) (*Server, *store.DB) {
 	t.Helper()
 	db, err := store.Open(":memory:")
@@ -22,7 +28,7 @@ func setupTestServer(t *testing.T) (*Server, *store.DB) {
 		t.Fatalf("open test db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	srv := &Server{DB: db}
+	srv := &Server{DB: db, SetupCode: testSetupCode}
 	return srv, db
 }
 

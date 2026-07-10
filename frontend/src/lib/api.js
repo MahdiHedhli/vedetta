@@ -34,13 +34,19 @@ function resolveCoreUrl(url) {
 // community threat-network/feed) structurally impossible rather than relying on
 // every caller to only pass relative paths.
 function isCoreUrl(rawUrl, resolvedUrl) {
-  if (typeof rawUrl === 'string' && !/^https?:\/\//i.test(rawUrl)) return true;
   try {
-    const here =
-      (typeof window !== 'undefined' && window.location && window.location.href) || undefined;
-    const target = new URL(resolvedUrl, here);
-    const base = CORE_BASE ? new URL(CORE_BASE, here) : here ? new URL(here) : null;
-    return !!base && target.origin === base.origin;
+    if (typeof window === 'undefined' || !window.location) return false;
+    const loc = window.location;
+    // Core origin: explicit CORE_BASE (resolved against the real page URL, never
+    // an injected <base>), else the page's own origin.
+    const base = CORE_BASE ? new URL(CORE_BASE, loc.href) : new URL(loc.origin);
+    // Resolve the target EXACTLY as fetch() will: fetch resolves a relative URL
+    // against document.baseURI, so anchoring here to baseURI (not location.href)
+    // stops an injected <base href> from making the gate and the real request
+    // target disagree (GHSA-cm6m hardening).
+    const resolveBase = (typeof document !== 'undefined' && document.baseURI) || loc.href;
+    const target = new URL(resolvedUrl, resolveBase);
+    return target.origin === base.origin;
   } catch {
     return false;
   }

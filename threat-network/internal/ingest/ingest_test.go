@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -9,6 +10,17 @@ import (
 
 	"github.com/vedetta-network/vedetta/threat-network/internal/store"
 )
+
+// uuidFor deterministically derives a valid UUIDv4 from a friendly label so the
+// tests can keep using readable batch-id labels while satisfying the pinned
+// UUIDv4 wire format (batch_id validation, GHSA-hx86). The same label always maps
+// to the same UUID, so idempotency/dedup assertions still hold.
+func uuidFor(label string) string {
+	h := sha256.Sum256([]byte(label))
+	h[6] = (h[6] & 0x0f) | 0x40 // version 4
+	h[8] = (h[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
+}
 
 // validBatch returns a well-formed batch body with one signal per kind, matching
 // the 002 contract synthetic example.
@@ -36,7 +48,7 @@ func validBatch(batchID string) []byte {
 }
 
 func TestParseValidBatch(t *testing.T) {
-	b, rejected, err := ParseAndValidate(validBatch("b1"))
+	b, rejected, err := ParseAndValidate(validBatch(uuidFor("b1")))
 	if err != nil {
 		t.Fatalf("expected valid batch, got %v", err)
 	}
@@ -49,7 +61,7 @@ func TestParseValidBatch(t *testing.T) {
 }
 
 func TestUnknownTopLevelKeyRejectsWholeBatch(t *testing.T) {
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[],"evil_key":"x"}`)
 	_, _, err := ParseAndValidate(body)
@@ -63,7 +75,7 @@ func TestUnknownTopLevelKeyRejectsWholeBatch(t *testing.T) {
 }
 
 func TestUnknownSignalKeyRejectsWholeBatch(t *testing.T) {
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"behavior_summary","time_bucket":"2026-07-03T14:00:00Z",
         "behavior":"dns_beaconing_candidate","local_confidence":0.8,"local_reasons":["beaconing_candidate"],
@@ -93,7 +105,7 @@ func TestPrivacyReGateWholeBatch422(t *testing.T) {
               "observation_count":1,"distinct_asset_count":1}`, value)
 		}
 		_ = field
-		return []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+		return []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
           "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[%s]}`, sig))
 	}
 
@@ -132,7 +144,7 @@ func TestPrivacyReGateWholeBatch422(t *testing.T) {
 func TestMacLiteralAnywhereRejected(t *testing.T) {
 	// A MAC-shaped value smuggled into a reason-adjacent string is caught by the
 	// generic raw-string screen. Here we place it in etld_plus_one.
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
         "etld_plus_one":"00:00:5e:00:53:2a","local_confidence":0.9,"local_reasons":["dga_candidate"],
@@ -144,7 +156,7 @@ func TestMacLiteralAnywhereRejected(t *testing.T) {
 }
 
 func TestValidSubdomainAccepted(t *testing.T) {
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
         "domain":"sub.badhost.example","etld_plus_one":"badhost.example","local_confidence":0.9,
@@ -170,7 +182,7 @@ func TestCandidateFullSubdomainRejected(t *testing.T) {
 	}
 	for _, v := range cases {
 		t.Run(v, func(t *testing.T) {
-			body := []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+			body := []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
               "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
               "signals":[{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
                 "etld_plus_one":%q,"local_confidence":0.9,"local_reasons":["dga_candidate"],
@@ -190,7 +202,7 @@ func TestCandidateFullSubdomainRejected(t *testing.T) {
 // TestCandidateExactEtldAccepted verifies a candidate carrying its own eTLD+1 is
 // accepted (the withholding rule permits eTLD+1 only, and this IS the eTLD+1).
 func TestCandidateExactEtldAccepted(t *testing.T) {
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
         "etld_plus_one":"qxv-rotator.example","local_confidence":0.9,"local_reasons":["dga_candidate"],
@@ -203,7 +215,7 @@ func TestCandidateExactEtldAccepted(t *testing.T) {
 // TestNonPSLReducibleRejected covers §5.4: a value that is a bare public suffix
 // (no registrable eTLD+1) is not reducible under the PSL and rejects the batch.
 func TestNonPSLReducibleRejected(t *testing.T) {
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
         "etld_plus_one":"co.uk","local_confidence":0.9,"local_reasons":["dga_candidate"],
@@ -221,7 +233,7 @@ func TestNonPSLReducibleRejected(t *testing.T) {
 // TestKnownBadEtldMismatchRejected covers §4.1: etld_plus_one must be the PSL
 // reduction of the exact domain; a mismatched eTLD+1 rejects the batch.
 func TestKnownBadEtldMismatchRejected(t *testing.T) {
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
         "domain":"c2.badzone.example","etld_plus_one":"otherzone.example","local_confidence":0.9,
@@ -239,7 +251,7 @@ func TestKnownBadEtldMismatchRejected(t *testing.T) {
 func TestPerSignalStructuralRejection(t *testing.T) {
 	// One valid + several structurally invalid signals → rejected count reflects
 	// them, batch is NOT wholesale failed.
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[
         {"signal_id":"ok","kind":"behavior_summary","time_bucket":"2026-07-03T14:00:00Z",
          "behavior":"dns_beaconing_candidate","local_confidence":0.8,"local_reasons":["beaconing_candidate"],
@@ -280,7 +292,7 @@ func TestCountUpperBoundsRejected(t *testing.T) {
           "observation_count":%d,"distinct_asset_count":%d}`, obs, distinct)
 	}
 	batch := func(sig string) []byte {
-		return []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+		return []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
           "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[%s]}`, sig))
 	}
 
@@ -330,7 +342,7 @@ func TestCountUpperBoundsRejected(t *testing.T) {
 func TestDomainForbiddenOnCandidateKind(t *testing.T) {
 	// domain present on high_confidence_domain_candidate is a strict-schema
 	// unknown-key violation (domain not allowed for that kind) → whole batch 422.
-	body := []byte(`{"schema_version":1,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"high_confidence_domain_candidate","time_bucket":"2026-07-03T14:00:00Z",
         "domain":"exact.badhost.example","etld_plus_one":"badhost.example","local_confidence":0.9,
@@ -346,11 +358,67 @@ func TestDomainForbiddenOnCandidateKind(t *testing.T) {
 }
 
 func TestBadSchemaVersionEnvelope400(t *testing.T) {
-	body := []byte(`{"schema_version":2,"batch_id":"b1","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":2,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[]}`)
 	_, _, err := ParseAndValidate(body)
 	if _, ok := err.(*EnvelopeError); !ok {
 		t.Fatalf("expected EnvelopeError, got %T (%v)", err, err)
+	}
+}
+
+// TestTrailingJSONRejected is the GHSA-hx86 regression: a well-formed batch
+// object followed by trailing data (a second object / smuggled tokens) must
+// reject the WHOLE body with an envelope error, not silently ignore the tail.
+func TestTrailingJSONRejected(t *testing.T) {
+	for _, tail := range []string{`{}`, `{"schema_version":1}`, `[1,2,3]`, `"junk"`} {
+		t.Run(tail, func(t *testing.T) {
+			body := append(validBatch(uuidFor("trail")), []byte(" "+tail)...)
+			_, _, err := ParseAndValidate(body)
+			ee, ok := err.(*EnvelopeError)
+			if !ok {
+				t.Fatalf("expected *EnvelopeError for trailing data, got %T (%v)", err, err)
+			}
+			if ee.Code != "INVALID_SCHEMA" {
+				t.Fatalf("expected INVALID_SCHEMA, got %s", ee.Code)
+			}
+		})
+	}
+}
+
+// TestNonUUIDBatchIDRejected is the GHSA-hx86 wire-format regression: batch_id
+// must be a UUIDv4 (beyond merely non-empty). Non-conforming values reject the
+// batch via the envelope path.
+func TestNonUUIDBatchIDRejected(t *testing.T) {
+	for _, bad := range []string{
+		"b1", "not-a-uuid", "batch-1",
+		"6b2f4c8e1a3d4f5b9c7e2d4f6a8b0c1e",           // no hyphens
+		"6b2f4c8e-1a3d-1f5b-9c7e-2d4f6a8b0c1e",       // version 1, not 4
+		"6b2f4c8e-1a3d-4f5b-0c7e-2d4f6a8b0c1e",       // bad variant nibble
+		"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e-extra", // too long
+	} {
+		t.Run(bad, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":%q,"generated_at":"2026-07-03T14:15:02Z",
+              "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[
+                {"signal_id":"s1","kind":"behavior_summary","time_bucket":"2026-07-03T14:00:00Z",
+                 "behavior":"dns_beaconing_candidate","local_confidence":0.8,"local_reasons":["beaconing_candidate"],
+                 "observation_count":1,"distinct_asset_count":1}]}`, bad))
+			_, _, err := ParseAndValidate(body)
+			ee, ok := err.(*EnvelopeError)
+			if !ok {
+				t.Fatalf("expected *EnvelopeError for bad batch_id %q, got %T (%v)", bad, err, err)
+			}
+			if ee.Code != "INVALID_SCHEMA" {
+				t.Fatalf("expected INVALID_SCHEMA, got %s", ee.Code)
+			}
+		})
+	}
+}
+
+// TestUUIDBatchIDAccepted confirms a conforming UUIDv4 batch_id passes format
+// validation (the valid-fixture path stays green).
+func TestUUIDBatchIDAccepted(t *testing.T) {
+	if _, _, err := ParseAndValidate(validBatch("aa11bb22-cc33-4d44-8e55-ff66aa77bb88")); err != nil {
+		t.Fatalf("valid UUIDv4 batch_id must be accepted, got %v", err)
 	}
 }
 
@@ -369,7 +437,7 @@ func newProcessor(t *testing.T, now time.Time) (*Processor, *store.DB) {
 func TestProcessIdempotentDuplicateBatch(t *testing.T) {
 	now := time.Date(2026, 7, 3, 14, 30, 0, 0, time.UTC)
 	p, db := newProcessor(t, now)
-	body := validBatch("dup-batch")
+	body := validBatch(uuidFor("dup-batch"))
 
 	res, err := p.Process("r1", body)
 	if err != nil {
@@ -411,7 +479,8 @@ func TestProcessIdempotentDuplicateBatch(t *testing.T) {
 func TestProcessSameBatchIDTwoReporters(t *testing.T) {
 	now := time.Date(2026, 7, 3, 14, 30, 0, 0, time.UTC)
 	p, db := newProcessor(t, now)
-	body := validBatch("shared-batch-id")
+	sharedBID := uuidFor("shared-batch-id")
+	body := validBatch(sharedBID)
 
 	resA, err := p.Process("reporterA", body)
 	if err != nil {
@@ -442,7 +511,7 @@ func TestProcessSameBatchIDTwoReporters(t *testing.T) {
 
 	// Two independent receipts exist, keyed per reporter.
 	var receipts int
-	db.QueryRow(`SELECT COUNT(*) FROM ingest_receipts WHERE batch_id = 'shared-batch-id'`).Scan(&receipts)
+	db.QueryRow(`SELECT COUNT(*) FROM ingest_receipts WHERE batch_id = ?`, sharedBID).Scan(&receipts)
 	if receipts != 2 {
 		t.Fatalf("expected 2 per-reporter receipts for the shared batch_id, got %d", receipts)
 	}
@@ -462,10 +531,10 @@ func TestProcessDedupAcrossBatches(t *testing.T) {
 	p, db := newProcessor(t, now)
 
 	// Two different batch_ids carrying the SAME signal (reporter+kind+indicator+bucket).
-	if _, err := p.Process("r1", validBatch("batch-A")); err != nil {
+	if _, err := p.Process("r1", validBatch(uuidFor("batch-A"))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Process("r1", validBatch("batch-B")); err != nil {
+	if _, err := p.Process("r1", validBatch(uuidFor("batch-B"))); err != nil {
 		t.Fatal(err)
 	}
 	// Same signals dedupe to one row each (3 distinct indicators).
@@ -479,7 +548,7 @@ func TestProcessDedupAcrossBatches(t *testing.T) {
 func TestProcessPrivacyGateReturns422Error(t *testing.T) {
 	now := time.Date(2026, 7, 3, 14, 30, 0, 0, time.UTC)
 	p, _ := newProcessor(t, now)
-	body := []byte(`{"schema_version":1,"batch_id":"bp","generated_at":"2026-07-03T14:15:02Z",
+	body := []byte(`{"schema_version":1,"batch_id":"6b2f4c8e-1a3d-4f5b-9c7e-2d4f6a8b0c1e","generated_at":"2026-07-03T14:15:02Z",
       "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z",
       "signals":[{"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
         "domain":"printer.local","etld_plus_one":"badzone.example","local_confidence":0.9,
@@ -499,7 +568,7 @@ func TestSignalCapEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Batch has 3 signals; only 2 fit under the cap → 1 rejected.
-	res, err := p.Process("r1", validBatch("cap-batch"))
+	res, err := p.Process("r1", validBatch(uuidFor("cap-batch")))
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
@@ -508,7 +577,7 @@ func TestSignalCapEnforced(t *testing.T) {
 	}
 
 	// A second reporter is unaffected by r1's cap.
-	res2, err := p.Process("r2", validBatch("cap-batch-2"))
+	res2, err := p.Process("r2", validBatch(uuidFor("cap-batch-2")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +593,7 @@ func TestBatchCapEnforced(t *testing.T) {
 	if err := db.AddCounters("r1", day, MaxBatchesPerDay, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	_, err := p.Process("r1", validBatch("over-cap"))
+	_, err := p.Process("r1", validBatch(uuidFor("over-cap")))
 	if _, ok := err.(*CapError); !ok {
 		t.Fatalf("expected CapError, got %T (%v)", err, err)
 	}
@@ -543,7 +612,8 @@ func TestConcurrentDuplicateBatchCountsOnce(t *testing.T) {
 	// Repeat to shake out scheduling: every iteration must count exactly once.
 	for iter := 0; iter < 25; iter++ {
 		p, db := newProcessor(t, now)
-		body := validBatch(fmt.Sprintf("race-batch-%d", iter))
+		raceBID := uuidFor(fmt.Sprintf("race-batch-%d", iter))
+		body := validBatch(raceBID)
 
 		const racers = 8
 		var wg sync.WaitGroup
@@ -575,7 +645,7 @@ func TestConcurrentDuplicateBatchCountsOnce(t *testing.T) {
 		// Exactly one receipt exists for the batch.
 		var receipts int
 		db.QueryRow(`SELECT COUNT(*) FROM ingest_receipts WHERE batch_id = ?`,
-			fmt.Sprintf("race-batch-%d", iter)).Scan(&receipts)
+			raceBID).Scan(&receipts)
 		if receipts != 1 {
 			t.Fatalf("iter %d: expected exactly 1 receipt, got %d", iter, receipts)
 		}
@@ -585,7 +655,7 @@ func TestConcurrentDuplicateBatchCountsOnce(t *testing.T) {
 // sanity: ensure the fixture body itself is well-formed JSON
 func TestFixtureIsValidJSON(t *testing.T) {
 	var m map[string]any
-	if err := json.Unmarshal(validBatch("x"), &m); err != nil {
+	if err := json.Unmarshal(validBatch(uuidFor("x")), &m); err != nil {
 		t.Fatalf("fixture invalid: %v", err)
 	}
 }

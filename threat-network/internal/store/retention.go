@@ -4,10 +4,10 @@ import "time"
 
 // RetentionResult reports how many rows each purge removed.
 type RetentionResult struct {
-	Signals       int64
-	Receipts      int64
-	Nonces        int64
-	RevokedFeed   int64
+	Signals     int64
+	Receipts    int64
+	Nonces      int64
+	RevokedFeed int64
 }
 
 // Purge enforces retention per plan.md: signals & receipts >30d, nonces >24h,

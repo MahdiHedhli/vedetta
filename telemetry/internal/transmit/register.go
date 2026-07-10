@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -105,8 +106,14 @@ func EnsureReporter(ctx context.Context, stateDir, threatNetworkURL, vedettaVers
 		return Reporter{}, fmt.Errorf("reporter registration status %s", resp.Status)
 	}
 	var rr registerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&rr); err != nil {
+	dec := json.NewDecoder(resp.Body)
+	if err := dec.Decode(&rr); err != nil {
 		return Reporter{}, fmt.Errorf("decode registration response: %w", err)
+	}
+	// Trailing-data guard: exactly one JSON value is expected. A second decode
+	// must hit EOF; anything else means the body carried extra/garbage data.
+	if err := dec.Decode(new(struct{})); err != io.EOF {
+		return Reporter{}, fmt.Errorf("unexpected trailing data in registration response")
 	}
 	if rr.ReporterID == "" || rr.ReporterSecret == "" {
 		return Reporter{}, fmt.Errorf("registration response missing reporter_id/secret")

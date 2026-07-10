@@ -345,6 +345,10 @@ func (e *Enricher) Enrich(event *models.Event) {
 		result := e.ThreatDB.Lookup(event.Domain)
 		if result.Found {
 			event.Tags = appendUnique(event.Tags, "known_bad")
+			// Match provenance (GHSA-hx86): a DOMAIN-list hit. matched_indicator is the
+			// matched list entry (== the observed FQDN today's exact-match logic).
+			event.MatchType = "domain"
+			event.MatchedIndicator = result.Indicator.Value
 			for _, tag := range result.Indicator.Tags {
 				event.Tags = appendUnique(event.Tags, tag)
 			}
@@ -589,6 +593,14 @@ func (e *Enricher) enrichIP(event *models.Event) {
 	result := e.ThreatDB.Lookup(event.ResolvedIP)
 	if result.Found {
 		event.Tags = appendUnique(event.Tags, "known_bad")
+		// Match provenance (GHSA-hx86): a RESOLVED-IP hit. matched_indicator is the
+		// matched IP — never the observed QNAME, which previously leaked downstream.
+		// A domain match wins: don't overwrite provenance already set by the domain
+		// path (which runs before enrichIP on the same event).
+		if event.MatchType != "domain" {
+			event.MatchType = "resolved_ip"
+			event.MatchedIndicator = result.Indicator.Value
+		}
 		for _, tag := range result.Indicator.Tags {
 			event.Tags = appendUnique(event.Tags, tag)
 		}

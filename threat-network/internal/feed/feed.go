@@ -239,8 +239,8 @@ func toItem(r store.FeedItem) Item {
 		IndicatorType:     r.IndicatorType,
 		Confidence:        r.Confidence,
 		Severity:          r.Severity,
-		Advisory:          true,           // contractual invariant
-		RecommendedAction: "advise",       // only value in schema v1
+		Advisory:          true,     // contractual invariant
+		RecommendedAction: "advise", // only value in schema v1
 		SourcesRequired:   r.SourcesRequired,
 		SourcesObserved:   r.SourcesObserved,
 		Reasons:           reasons,

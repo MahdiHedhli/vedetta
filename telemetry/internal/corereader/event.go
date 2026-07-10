@@ -13,26 +13,34 @@ import "time"
 // Metadata, DNSSource) exists ONLY so the export gate/stripper can deliberately
 // refuse to forward it — none of it is allowed onto the wire.
 type Event struct {
-	EventID        string    `json:"event_id"`
-	Timestamp      time.Time `json:"timestamp"`
-	EventType      string    `json:"event_type"`
-	SourceHash     string    `json:"source_hash"`
-	SourceIP       string    `json:"source_ip,omitempty"`
-	ServerIP       string    `json:"server_ip,omitempty"`
-	Domain         string    `json:"domain,omitempty"`
-	QueryType      string    `json:"query_type,omitempty"`
-	ResolvedIP     string    `json:"resolved_ip,omitempty"`
-	Blocked        bool      `json:"blocked"`
-	AnomalyScore   float64   `json:"anomaly_score"`
-	Tags           []string  `json:"tags"`
-	Geo            string    `json:"geo,omitempty"`
-	DeviceVendor   string    `json:"device_vendor,omitempty"`
-	NetworkSegment string    `json:"network_segment,omitempty"`
-	DNSSource      string    `json:"dns_source,omitempty"`
-	ThreatDesc     string    `json:"threat_desc,omitempty"`
-	Metadata       string    `json:"metadata,omitempty"`
-	Acknowledged   bool      `json:"acknowledged"`
-	AckReason      string    `json:"ack_reason,omitempty"`
+	EventID      string    `json:"event_id"`
+	Timestamp    time.Time `json:"timestamp"`
+	EventType    string    `json:"event_type"`
+	SourceHash   string    `json:"source_hash"`
+	SourceIP     string    `json:"source_ip,omitempty"`
+	ServerIP     string    `json:"server_ip,omitempty"`
+	Domain       string    `json:"domain,omitempty"`
+	QueryType    string    `json:"query_type,omitempty"`
+	ResolvedIP   string    `json:"resolved_ip,omitempty"`
+	Blocked      bool      `json:"blocked"`
+	AnomalyScore float64   `json:"anomaly_score"`
+	Tags         []string  `json:"tags"`
+	// MatchedIndicator/MatchType carry Core's known-bad match provenance
+	// (contract-synced with Core). MatchType is "domain" for a known-bad
+	// DOMAIN-list match or "resolved_ip" for a known-bad RESOLVED-IP match.
+	// MatchedIndicator is the matched list entry (the FQDN for a domain match,
+	// the IP for a resolved_ip match). The export stripper forwards the matched
+	// DOMAIN indicator instead of the observed QNAME (GHSA-hx86).
+	MatchedIndicator string `json:"matched_indicator,omitempty"`
+	MatchType        string `json:"match_type,omitempty"`
+	Geo              string `json:"geo,omitempty"`
+	DeviceVendor     string `json:"device_vendor,omitempty"`
+	NetworkSegment   string `json:"network_segment,omitempty"`
+	DNSSource        string `json:"dns_source,omitempty"`
+	ThreatDesc       string `json:"threat_desc,omitempty"`
+	Metadata         string `json:"metadata,omitempty"`
+	Acknowledged     bool   `json:"acknowledged"`
+	AckReason        string `json:"ack_reason,omitempty"`
 }
 
 // EventPage mirrors backend store.EventQueryResult JSON.

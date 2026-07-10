@@ -2,9 +2,76 @@ package api
 
 import (
 	"fmt"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+// TestClientIPTrustsProxyHeaderOnlyFromTrustedPeer is the GHSA-573f regression:
+// behind the co-located cloudflared tunnel every socket peer is the tunnel, so
+// the limiter must key on CF-Connecting-IP — but ONLY when the socket peer is a
+// trusted proxy. From an untrusted peer the forwarding headers are attacker-
+// spoofable and must be ignored in favor of the socket peer.
+func TestClientIPTrustsProxyHeaderOnlyFromTrustedPeer(t *testing.T) {
+	trusted := buildTrustedProxy("127.0.0.0/8,::1/128")
+
+	// Trusted loopback peer → CF-Connecting-IP is honored as the client key.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "127.0.0.1:12345"
+	r.Header.Set("CF-Connecting-IP", "203.0.113.9")
+	if got := clientIP(r, trusted); got != "203.0.113.9" {
+		t.Fatalf("trusted peer: want client 203.0.113.9, got %s", got)
+	}
+
+	// Untrusted public peer → forwarding headers ignored, socket peer wins so a
+	// direct caller cannot spoof another client's key.
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.RemoteAddr = "198.51.100.7:443"
+	r2.Header.Set("CF-Connecting-IP", "203.0.113.9")
+	r2.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := clientIP(r2, trusted); got != "198.51.100.7" {
+		t.Fatalf("untrusted peer: want socket 198.51.100.7, got %s", got)
+	}
+
+	// Trusted peer, no CF header → fall back to the right-most X-Forwarded-For hop.
+	r3 := httptest.NewRequest("GET", "/", nil)
+	r3.RemoteAddr = "127.0.0.1:9"
+	r3.Header.Set("X-Forwarded-For", "203.0.113.1, 203.0.113.2")
+	if got := clientIP(r3, trusted); got != "203.0.113.2" {
+		t.Fatalf("trusted XFF: want right-most 203.0.113.2, got %s", got)
+	}
+
+	// Trusted peer but no forwarding headers → socket peer.
+	r4 := httptest.NewRequest("GET", "/", nil)
+	r4.RemoteAddr = "127.0.0.1:1"
+	if got := clientIP(r4, trusted); got != "127.0.0.1" {
+		t.Fatalf("trusted peer no headers: want 127.0.0.1, got %s", got)
+	}
+}
+
+// TestBuildTrustedProxyDefaultLoopback verifies the env default (loopback only)
+// and that a custom CIDR/bare-IP list is honored.
+func TestBuildTrustedProxyDefaultLoopback(t *testing.T) {
+	def := buildTrustedProxy("")
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "127.0.0.1:5"
+	r.Header.Set("CF-Connecting-IP", "203.0.113.5")
+	if got := clientIP(r, def); got != "203.0.113.5" {
+		t.Fatalf("default loopback must be trusted, got %s", got)
+	}
+	// A public peer is NOT trusted by default → header ignored.
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.RemoteAddr = "203.0.113.50:5"
+	r2.Header.Set("CF-Connecting-IP", "203.0.113.5")
+	if got := clientIP(r2, def); got != "203.0.113.50" {
+		t.Fatalf("public peer must not be trusted by default, got %s", got)
+	}
+	// Custom list with a bare IP.
+	custom := buildTrustedProxy("203.0.113.50")
+	if got := clientIP(r2, custom); got != "203.0.113.5" {
+		t.Fatalf("custom trusted proxy must honor CF header, got %s", got)
+	}
+}
 
 // TestRateLimiterSweepEvictsStaleBuckets is the finding #1 regression: the
 // per-IP token-bucket map must not grow without bound (memory-exhaustion DoS).
