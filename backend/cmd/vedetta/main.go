@@ -82,6 +82,16 @@ func main() {
 		log.Printf("Disabled %d invalid stored scan target(s) at startup", n)
 	}
 
+	// GHSA-9m7g: an upgraded DB may carry event rows written before the persistence
+	// clamp existed, including forged far-future timestamps that would strand the
+	// telemetry cursor. Clamp any such row back to now so the poison can't survive
+	// the upgrade.
+	if n, err := db.ScrubFutureEvents(); err != nil {
+		log.Printf("WARNING: failed to scrub future-dated events: %v", err)
+	} else if n > 0 {
+		log.Printf("Clamped %d future-dated event timestamp(s) at startup", n)
+	}
+
 	// Provision the collector's ingest credential from the shared VEDETTA_INGEST_TOKEN
 	// secret (the same value is given to the collector container). Without this,
 	// /ingest keeps working only until the first token is created (e.g. when a

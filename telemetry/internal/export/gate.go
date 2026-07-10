@@ -63,13 +63,19 @@ func Eligible(ev corereader.Event, cfg GateConfig) (Kind, bool) {
 		return "", false
 	}
 
-	score := ev.AnomalyScore
-	if score >= cfg.CandidateMinScore && hasAnyCandidateTag(ev.Tags) {
-		return KindHighConfCandidate, true
-	}
-	if score >= cfg.BehaviorMinScore && score < cfg.CandidateMinScore && hasAnyBehaviorTag(ev.Tags) {
-		return KindBehaviorSummary, true
-	}
+	// BETA: query-derived candidate + behavior signals are DISABLED (GHSA-hx86).
+	// They export a domain derived from the OBSERVED query name and depend on
+	// Core-side detection tags/score that a compromised ingest/sensor writer can
+	// forge to encode identity in the domain field (e.g. 198-51-100-77.com). The
+	// reset/recompute defenses in Core narrow this, but the trust boundary is
+	// fragile and drift-prone (the enricher reset list and this vocab can diverge).
+	// Until the candidate/behavior trust model is redesigned so Core provably owns
+	// those verdicts end-to-end, telemetry exports ONLY Core-confirmed known-bad
+	// block-list matches (above), whose indicator comes from the public block list
+	// and cannot carry a caller-supplied identifier. Re-enable by restoring the
+	// score/tag branches once that redesign lands. (cfg thresholds + the
+	// candidate/behavior vocab are retained for that.)
+	_ = cfg
 	return "", false
 }
 

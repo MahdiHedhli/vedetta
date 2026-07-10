@@ -96,23 +96,12 @@ func run(cfg *config.Config) error {
 		return err
 	}
 
-	// Register reporter. Failure is non-fatal: the loop keeps retrying on ticks
-	// (surfaced on /status).
-	reporter, regErr := transmit.EnsureReporter(ctx, cfg.StateDir, cfg.ThreatNetworkURL, cfg.VedettaVersion, nil)
-	if regErr != nil {
-		log.Printf("reporter registration deferred: %v", regErr)
-		st.Update(func(s *status.Snapshot) { s.LastError = "registration: " + regErr.Error() })
-	} else {
-		st.Update(func(s *status.Snapshot) { s.ReporterRegistered = true })
-	}
-
-	maxItems := cfg.MaxBatchItems
-	if reporter.MaxBatchItems > 0 && reporter.MaxBatchItems < maxItems {
-		maxItems = reporter.MaxBatchItems
-	}
-
+	// Build the transmitter with NO reporter identity yet. Registration is
+	// deferred and gated on the live effective opt-in (see ensureReporter below):
+	// an effectively opted-out node must make ZERO threat-network contact, and
+	// registration is one such contact path (GHSA-c776 residual).
 	spool := transmit.NewSpool(cfg.StateDir)
-	tx := transmit.New(cfg.ThreatNetworkURL, reporter, spool, cfg.DryRun, maxItems)
+	tx := transmit.New(cfg.ThreatNetworkURL, transmit.Reporter{}, spool, cfg.DryRun, cfg.MaxBatchItems)
 
 	p := &pipeline.Pipeline{
 		Cfg:      cfg,
@@ -125,6 +114,30 @@ func run(cfg *config.Config) error {
 
 	st.Update(func(s *status.Snapshot) { s.SpoolDepth = spool.Depth() })
 
+	// ensureReporter registers (or reuses) the reporter identity WITHOUT any
+	// egress while telemetry is effectively off. It returns true only once a valid
+	// identity is in hand. A live opt-in that reads off/unconfirmed leaves the node
+	// unregistered and silent — no threat-network contact at all.
+	ensureReporter := func() bool {
+		registered, err := p.EnsureReporter(ctx)
+		if err != nil {
+			log.Printf("reporter registration deferred: %v", err)
+			st.Update(func(s *status.Snapshot) { s.LastError = "registration: " + err.Error() })
+			return false
+		}
+		if !registered {
+			// Effectively opted out (or opt-in unconfirmed): nothing registered, no
+			// egress. Not an error — a later tick retries once Core confirms opt-in.
+			return false
+		}
+		// Honor a server-issued lower batch cap now that we have the identity.
+		if r := p.Tx.Reporter; r.MaxBatchItems > 0 && r.MaxBatchItems < p.Tx.MaxBatchItems {
+			p.Tx.MaxBatchItems = r.MaxBatchItems
+		}
+		st.Update(func(s *status.Snapshot) { s.ReporterRegistered = true; s.LastError = "" })
+		return true
+	}
+
 	// Graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -134,8 +147,9 @@ func run(cfg *config.Config) error {
 
 	// Run an initial tick immediately once registered so operators see activity
 	// without waiting a full interval. In dry-run this exercises the full
-	// pipeline to the spool with zero egress.
-	if regErr == nil {
+	// pipeline to the spool with zero egress. If we are not (yet) registered —
+	// including because telemetry is effectively opted out — skip it silently.
+	if ensureReporter() {
 		runTickSafely(ctx, p)
 	}
 
@@ -150,17 +164,16 @@ func run(cfg *config.Config) error {
 			return nil
 		case <-ticker.C:
 			if !st.Get().ReporterRegistered {
-				r, err := transmit.EnsureReporter(ctx, cfg.StateDir, cfg.ThreatNetworkURL, cfg.VedettaVersion, nil)
-				if err != nil {
-					// Still unregistered. Skip this tick entirely — do NOT read
-					// Core or advance the cursor (mirrors the initial-tick guard
-					// at startup). Running the tick here would read events, move
-					// the cursor past them, and drop the batch as 4xx poison
-					// because we have no reporter identity to sign with (issue #36).
+				// Attempt (opt-in-gated) registration. If it doesn't yield an
+				// identity — network error, or telemetry effectively off so we
+				// deliberately made NO threat-network contact — skip this tick
+				// entirely: do NOT read Core or advance the cursor (mirrors the
+				// initial-tick guard). Running the tick unregistered would read
+				// events, move the cursor past them, and drop the batch as 4xx
+				// poison for lack of a signing identity (issue #36).
+				if !ensureReporter() {
 					continue
 				}
-				p.Tx.Reporter = r
-				st.Update(func(s *status.Snapshot) { s.ReporterRegistered = true })
 			}
 			runTickSafely(ctx, p)
 		}

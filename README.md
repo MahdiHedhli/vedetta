@@ -125,14 +125,28 @@ code** to register a new sensor (admin-before-sensor). Generate one from the
 dashboard onboarding wizard (the "Connect a sensor" step) and pass it as
 `--enroll-code`.
 
-Review the installer, then run it against your Core instance:
+> **What address goes in `--core`?** Core is **loopback-only by default** (see the
+> transport note above), so the right value depends on where the sensor runs:
+>
+> - **Sensor on the SAME host as Core** (e.g. a dev box or single-node install):
+>   use `http://localhost:8080` — the loopback port is reachable locally.
+> - **Sensor on ANOTHER machine** (the usual case): Core's `127.0.0.1:8080` is
+>   *not* reachable across the network, and you should never send bearer tokens
+>   over plaintext HTTP on your LAN. Stand up the [TLS reverse proxy](docs/reverse-proxy.md)
+>   and point `--core` at that HTTPS hostname, e.g. `https://vedetta.example.com`.
+>   A plaintext `http://<CORE_IP>:8080` only works if you have *knowingly* rebound
+>   the port to `0.0.0.0` in `docker-compose.yml`, accepting cleartext tokens.
+
+Review the installer, then run it against your Core instance. Replace
+`https://vedetta.example.com` with your reverse-proxy hostname (or
+`http://localhost:8080` for a same-host sensor):
 
 ```bash
 curl -fsSL -o /tmp/vedetta-sensor-install.sh \
   https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
 
 sudo bash /tmp/vedetta-sensor-install.sh \
-  --core http://<CORE_IP>:8080 \
+  --core https://vedetta.example.com \
   --enroll-code <ENROLL_CODE>
 ```
 
@@ -154,17 +168,19 @@ If you prefer to build manually:
 ```bash
 cd sensor
 go build -o vedetta-sensor ./cmd/vedetta-sensor
-sudo ./vedetta-sensor --core http://<CORE_IP>:8080 --enroll-code <ENROLL_CODE>
+# --core: https://<your-reverse-proxy-host> for a remote sensor, or
+# http://localhost:8080 when the sensor runs on the same host as Core.
+sudo ./vedetta-sensor --core https://vedetta.example.com --enroll-code <ENROLL_CODE>
 ```
 
 (`--enroll-code` is required to register a new sensor once Core has an admin
 token; omit it only for the first sensor on a not-yet-bootstrapped Core. You can
 also set `VEDETTA_ENROLL_CODE` instead of the flag.)
 
-Useful sensor diagnostics:
+Useful sensor diagnostics (use the same `--core` address as above):
 
 ```bash
-./vedetta-sensor --core http://<CORE_IP>:8080 --cidr 10.0.0.0/24 --print-capture-plan
+./vedetta-sensor --core https://vedetta.example.com --cidr 10.0.0.0/24 --print-capture-plan
 ```
 
 That command prints the recommended DNS and passive-discovery interfaces, explains why they were chosen, and shows the override flags if you need to pin a different interface on a laptop, VPN client, or multi-homed host.

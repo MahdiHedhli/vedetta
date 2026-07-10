@@ -32,15 +32,14 @@ func TestEligible(t *testing.T) {
 		wantOK   bool
 	}{
 		{"known_bad any score", ev("bad.badzone.example", 0.1, "known_bad"), KindKnownBadDomainHit, true},
-		{"candidate at threshold", ev("x.qxv-rotator.example", 0.86, "dga_candidate"), KindHighConfCandidate, true},
-		// c2_candidate is a candidate-only tag (not a behavior tag): below the
-		// candidate floor it has no behavior fallback, so it is withheld.
-		{"candidate just below, no behavior fallback", ev("x.qxv-rotator.example", 0.84, "c2_candidate"), "", false},
-		// dga_candidate IS both a candidate tag and a behavior tag: below the
-		// candidate floor but in the behavior band it downgrades to a behavior_summary.
-		{"dga below candidate floor downgrades to behavior", ev("x.qxv-rotator.example", 0.84, "dga_candidate"), KindBehaviorSummary, true},
-		{"behavior in band", ev("x.qxv-rotator.example", 0.75, "beaconing_candidate"), KindBehaviorSummary, true},
-		{"behavior below floor", ev("x.qxv-rotator.example", 0.69, "beaconing_candidate"), "", false},
+		// BETA: query-derived candidate + behavior signals are DISABLED (GHSA-hx86).
+		// Every candidate/behavior event is withheld regardless of tag or score;
+		// only Core-confirmed known_bad domain matches are exported.
+		{"candidate at threshold withheld (beta)", ev("x.qxv-rotator.example", 0.86, "dga_candidate"), "", false},
+		{"candidate below floor withheld", ev("x.qxv-rotator.example", 0.84, "c2_candidate"), "", false},
+		{"dga in behavior band withheld (beta)", ev("x.qxv-rotator.example", 0.84, "dga_candidate"), "", false},
+		{"behavior in band withheld (beta)", ev("x.qxv-rotator.example", 0.75, "beaconing_candidate"), "", false},
+		{"behavior below floor withheld", ev("x.qxv-rotator.example", 0.69, "beaconing_candidate"), "", false},
 		{"private .local withheld", ev("nas-placeholder-01.local", 0.99, "known_bad"), "", false},
 		{"single label withheld", ev("localhost", 0.99, "known_bad"), "", false},
 		{"IP literal withheld", ev("192.0.2.10", 0.99, "known_bad"), "", false},

@@ -30,6 +30,49 @@ func TestCursorMissingIsZero(t *testing.T) {
 	}
 }
 
+// GHSA-9m7g: a persisted cursor dated implausibly in the future (beyond skew)
+// would make After() reject every real event forever, stranding telemetry. Such
+// a cursor must be reset to zero on load so telemetry re-reads from a sane point.
+func TestCursorFutureDatedIsReset(t *testing.T) {
+	dir := t.TempDir()
+
+	// Cursor two hours ahead of the local clock (beyond the 1h skew tolerance).
+	future := Cursor{LastTimestamp: nowUTC().Add(2 * time.Hour), LastEventID: "from-the-future"}
+	if err := future.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadCursor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastTimestamp.IsZero() || got.LastEventID != "" {
+		t.Errorf("future-dated cursor should reset to zero, got %+v", got)
+	}
+	// After reset it must be zero, so any real event is once again "after" it.
+	if !got.After(Event{Timestamp: nowUTC(), EventID: "real"}) {
+		t.Errorf("reset cursor must treat real events as After (not stranded)")
+	}
+}
+
+// A cursor within the tolerated skew window (slightly ahead of the clock) is a
+// legitimate value and must be preserved, not reset.
+func TestCursorWithinSkewIsKept(t *testing.T) {
+	dir := t.TempDir()
+	ts := nowUTC().Add(5 * time.Minute) // inside the 1h skew tolerance
+	cur := Cursor{LastTimestamp: ts, LastEventID: "recent"}
+	if err := cur.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadCursor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastEventID != "recent" || got.LastTimestamp.IsZero() {
+		t.Errorf("cursor within skew must be preserved, got %+v", got)
+	}
+}
+
 func TestCursorAfterTieBreaker(t *testing.T) {
 	base := time.Date(2026, 7, 3, 14, 0, 0, 0, time.UTC)
 	cur := Cursor{LastTimestamp: base, LastEventID: "seen"}

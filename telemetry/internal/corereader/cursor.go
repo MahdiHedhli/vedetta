@@ -19,8 +19,24 @@ type Cursor struct {
 
 const cursorFile = "cursor.json"
 
+// cursorFutureSkew bounds how far ahead of the local clock a persisted cursor
+// timestamp may sit before we treat it as bogus. A cursor dated beyond this is
+// impossible for any real Core event to be "after" (After() would reject every
+// event forever), so telemetry would silently stop exporting until a human
+// noticed. Such a value only appears via clock skew at write time, a corrupted
+// write, or a hand-edited/hostile state file that survives an upgrade — the
+// GHSA-9m7g "future-dated cursor strands telemetry" path.
+const cursorFutureSkew = time.Hour
+
+// nowUTC is overridable in tests so the future-skew guard is deterministic.
+var nowUTC = func() time.Time { return time.Now().UTC() }
+
 // LoadCursor reads the cursor from the state dir. A missing or corrupt file
-// yields a zero cursor (start from the beginning) with no error.
+// yields a zero cursor (start from the beginning) with no error. A persisted
+// cursor whose timestamp is implausibly in the future (beyond cursorFutureSkew)
+// is likewise reset to zero rather than trusted: keeping it would strand
+// telemetry forever (GHSA-9m7g), whereas resetting re-reads from a sane point
+// (at-least-once dedup absorbs any bounded replay).
 func LoadCursor(stateDir string) (Cursor, error) {
 	var c Cursor
 	found, err := config.ReadJSONFile(filepath.Join(stateDir, cursorFile), &c)
@@ -32,6 +48,11 @@ func LoadCursor(stateDir string) (Cursor, error) {
 	}
 	if err := config.CheckVersion(cursorFile, c.Version); err != nil {
 		// Newer than we understand: restart from scratch rather than misread.
+		return Cursor{Version: config.StateFileVersion}, nil
+	}
+	if !c.LastTimestamp.IsZero() && c.LastTimestamp.After(nowUTC().Add(cursorFutureSkew)) {
+		// Future-dated beyond tolerated skew: invalid. Reset so telemetry resumes
+		// from a sane point instead of being stranded forever (GHSA-9m7g).
 		return Cursor{Version: config.StateFileVersion}, nil
 	}
 	return c, nil

@@ -890,6 +890,97 @@ func TestDistinctCapAllowsMerges(t *testing.T) {
 	}
 }
 
+// distinctBatch builds a batch of n signals, each a NEW distinct indicator
+// (unique etld_plus_one), all in the same hour bucket. It lets a test drive the
+// per-reporter distinct-indicator cap with a controllable number of new rows.
+func distinctBatch(batchID string, prefix string, n int) []byte {
+	var sb strings.Builder
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		// Every etld is its own eTLD+1 under the PSL (label.example), so it passes
+		// the candidate withholding gate and stores as a distinct indicator.
+		fmt.Fprintf(&sb, `{"signal_id":"s%d","kind":"high_confidence_domain_candidate",
+          "time_bucket":"2026-07-03T14:00:00Z","etld_plus_one":"%s%d.example",
+          "local_confidence":0.9,"local_reasons":["dga_candidate"],
+          "observation_count":1,"distinct_asset_count":1}`, i, prefix, i)
+	}
+	return []byte(fmt.Sprintf(`{"schema_version":1,"batch_id":%q,"generated_at":"2026-07-03T14:15:02Z",
+      "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[%s]}`,
+		batchID, sb.String()))
+}
+
+// TestConcurrentDistinctCapNeverExceeded is the GHSA-7p69 storage-bound race
+// regression: a flood of concurrent SIGNED batches from a SINGLE reporter, each
+// carrying distinct indicators, must NEVER store more distinct rows than the daily
+// cap. Before the fix the cap was a non-transactional check-then-insert: N batches
+// each read distinct_indicators=0 and each stored up to the cap, so the DB blew
+// past it (e.g. 20 batches × 200 = 4000 rows against a 200 cap). PersistBatch now
+// enforces the cap inside a transaction, so the concurrent writers serialize and
+// the invariant holds.
+func TestConcurrentDistinctCapNeverExceeded(t *testing.T) {
+	now := time.Date(2026, 7, 3, 14, 30, 0, 0, time.UTC)
+
+	for iter := 0; iter < 10; iter++ {
+		p, db := newProcessor(t, now)
+
+		// Each batch alone carries more than the whole daily cap of NEW distinct
+		// indicators; many concurrent batches would, unguarded, multiply storage.
+		const (
+			batches        = 20
+			perBatch       = MaxDistinctPerDay // 200 distinct indicators per batch
+			overBatchLimit = MaxBatchesPerDay  // 96; keep batches under it
+		)
+		if batches > overBatchLimit {
+			t.Fatalf("test would trip the batch-rate cap first")
+		}
+
+		var wg sync.WaitGroup
+		errs := make([]error, batches)
+		for b := 0; b < batches; b++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				// Distinct batch_id and distinct indicator namespace per batch, so
+				// each batch is a fresh, non-duplicate flood of NEW indicators.
+				body := distinctBatch(uuidFor(fmt.Sprintf("flood-%d-%d", iter, idx)),
+					fmt.Sprintf("b%d-", idx), perBatch)
+				_, errs[idx] = p.Process("r1", body)
+			}(b)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("iter %d batch %d: concurrent Process errored: %v", iter, i, err)
+			}
+		}
+
+		// The stored distinct-indicator count for r1 must not exceed the cap.
+		var stored int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM signals WHERE reporter_id = 'r1'`).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored > MaxDistinctPerDay {
+			t.Fatalf("iter %d: concurrent flood exceeded the distinct cap: stored %d rows, cap %d",
+				iter, stored, MaxDistinctPerDay)
+		}
+
+		// The daily distinct-indicator counter must likewise stay at or under the cap
+		// and match the number of stored rows (no drift between counter and storage).
+		c, err := db.GetCounters("r1", "2026-07-03")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.DistinctIndicators > MaxDistinctPerDay {
+			t.Fatalf("iter %d: distinct counter %d exceeds cap %d", iter, c.DistinctIndicators, MaxDistinctPerDay)
+		}
+		if c.DistinctIndicators != stored {
+			t.Fatalf("iter %d: counter (%d) and stored rows (%d) disagree", iter, c.DistinctIndicators, stored)
+		}
+	}
+}
+
 // sanity: ensure the fixture body itself is well-formed JSON
 func TestFixtureIsValidJSON(t *testing.T) {
 	var m map[string]any

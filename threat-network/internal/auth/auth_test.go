@@ -2,10 +2,12 @@ package auth
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/vedetta-network/vedetta/threat-network/internal/store"
+	"github.com/vedetta-network/vedetta/threat-network/internal/valid"
 )
 
 func newAuth(t *testing.T, now time.Time) (*Authenticator, *store.DB) {
@@ -198,6 +200,63 @@ func TestValidateRegisterRejectsBadVersion(t *testing.T) {
 			VedettaVersion: ok, Capabilities: []string{"behavior_summary"}}); err != nil {
 			t.Fatalf("semver vedetta_version %q must be accepted, got %v", ok, err)
 		}
+	}
+}
+
+// TestRegisterRejectsOverLongFields is the GHSA-7p69 over-long-field regression:
+// the unbounded semver grammar accepted a ~3 MB all-digits "version" (under the
+// 4 MiB body cap), which was then persisted. Every registered string field now
+// has a small explicit max-length; over-long values are rejected and nothing is
+// stored.
+func TestRegisterRejectsOverLongFields(t *testing.T) {
+	// A ~3 MB version that matches the raw semver number grammar (1.<3M digits>).
+	giantVersion := "1." + strings.Repeat("9", 3<<20)
+
+	// ValidateRegister must reject it outright.
+	if err := ValidateRegister(RegisterRequest{SchemaVersion: 1, InstallID: "i",
+		VedettaVersion: giantVersion, Capabilities: []string{"behavior_summary"}}); err == nil {
+		t.Fatal("a ~3 MB vedetta_version must be rejected")
+	}
+
+	// The raw format validator must also reject it (defense in depth): an over-long
+	// numeric identifier must never be treated as valid semver.
+	if valid.Semver(giantVersion) {
+		t.Fatal("valid.Semver must reject an over-long version string")
+	}
+
+	// End-to-end: Register must fail and persist NO reporter row.
+	_, db := newAuth(t, time.Now())
+	if _, err := Register(db, RegisterRequest{SchemaVersion: 1, InstallID: "i",
+		VedettaVersion: giantVersion, Capabilities: []string{"behavior_summary"}}); err == nil {
+		t.Fatal("Register must reject a ~3 MB vedetta_version")
+	}
+	var reporters int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM reporters`).Scan(&reporters); err != nil {
+		t.Fatal(err)
+	}
+	if reporters != 0 {
+		t.Fatalf("no reporter must be persisted for a rejected registration, got %d", reporters)
+	}
+
+	// Other over-long fields are likewise rejected.
+	bigInstall := strings.Repeat("x", 1<<20)
+	if err := ValidateRegister(RegisterRequest{SchemaVersion: 1, InstallID: bigInstall,
+		VedettaVersion: "1.2.3", Capabilities: []string{"behavior_summary"}}); err == nil {
+		t.Fatal("an over-long install_id must be rejected")
+	}
+	manyCaps := make([]string, 1000)
+	for i := range manyCaps {
+		manyCaps[i] = "behavior_summary"
+	}
+	if err := ValidateRegister(RegisterRequest{SchemaVersion: 1, InstallID: "i",
+		VedettaVersion: "1.2.3", Capabilities: manyCaps}); err == nil {
+		t.Fatal("an over-long capabilities list must be rejected")
+	}
+
+	// A normal registration still succeeds (no over-blocking).
+	if err := ValidateRegister(RegisterRequest{SchemaVersion: 1, InstallID: "install-abc",
+		VedettaVersion: "1.2.3", Capabilities: []string{"behavior_summary"}}); err != nil {
+		t.Fatalf("a normal registration must still pass, got %v", err)
 	}
 }
 

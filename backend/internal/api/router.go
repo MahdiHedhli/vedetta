@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -802,36 +803,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", "attachment; filename=events.csv")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("event_id,timestamp,event_type,source_hash,source_ip,server_ip,domain,query_type,resolved_ip,blocked,anomaly_score,tags,geo,device_vendor,network_segment,dns_source,threat_desc,dns_answers,process\n"))
-		for _, e := range result.Events {
-			tagsStr := strings.Join(e.Tags, ";")
-			answersStr := ""
-			processStr := ""
-			if e.Metadata != "" {
-				var m map[string]any
-				if json.Unmarshal([]byte(e.Metadata), &m) == nil {
-					if ans, ok := m["dns_answers"].([]interface{}); ok {
-						strs := []string{}
-						for _, a := range ans {
-							if s, ok := a.(string); ok {
-								strs = append(strs, s)
-							}
-						}
-						answersStr = strings.Join(strs, ";")
-					}
-					if p, ok := m["process"].(string); ok {
-						processStr = p
-					}
-				}
-			}
-			line := strings.Join([]string{
-				e.EventID, e.Timestamp.Format(time.RFC3339), e.EventType, e.SourceHash,
-				e.SourceIP, e.ServerIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
-				strconv.FormatFloat(e.AnomalyScore, 'f', 4, 64), tagsStr, e.Geo,
-				e.DeviceVendor, e.NetworkSegment, e.DNSSource, e.ThreatDesc, answersStr, processStr,
-			}, ",")
-			w.Write([]byte(line + "\n"))
-		}
+		writeEventsCSV(w, result.Events)
 		return
 	}
 
@@ -1191,6 +1163,45 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Issue #44: idempotent enrollment recovery. Core consumes the single-use code
+	// and mints the sensor's only raw bearer BEFORE this response reaches the sensor.
+	// If that first response is lost, the code is spent and the token exists, so a
+	// normal retry lands in the "already enrolled" 401 branch below and the sensor is
+	// stranded forever. If the SAME code was already redeemed for THIS sensor_id and
+	// we still remember the minted token (within the code's TTL), return that same
+	// raw token now — before any of the state checks — so the sensor recovers without
+	// admin intervention. Bound to sensor_id, so a DIFFERENT caller replaying the code
+	// gets nothing (single-use preserved).
+	enrollCode := r.Header.Get("X-Vedetta-Enrollment-Code")
+	if s.Enroll != nil {
+		if rawToken, tokenID, ok := s.Enroll.LookupRedemption(enrollCode, body.SensorID); ok {
+			// Refresh sensor metadata idempotently, then hand back the same secret.
+			interfacesStr := ""
+			if len(body.Interfaces) > 0 {
+				interfacesStr = string(body.Interfaces)
+			}
+			_ = s.DB.RegisterSensor(models.Sensor{
+				SensorID:   body.SensorID,
+				Hostname:   body.Hostname,
+				OS:         body.OS,
+				Arch:       body.Arch,
+				CIDR:       body.CIDR,
+				Version:    body.Version,
+				IsPrimary:  body.IsPrimary,
+				Interfaces: interfacesStr,
+			})
+			log.Printf("Sensor %s re-registered via idempotent enrollment replay — returning existing token %s", body.SensorID, tokenID)
+			writeJSON(w, http.StatusOK, sensorRegistrationResponse{
+				Status:       "registered",
+				SensorID:     body.SensorID,
+				AuthToken:    rawToken,
+				TokenID:      tokenID,
+				TokenWarning: "save this token now — it will not be displayed again",
+			})
+			return
+		}
+	}
+
 	existingToken, err := s.DB.HasActiveSensorToken(body.SensorID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to check sensor token state"})
@@ -1244,6 +1255,10 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// consumedEnrollCode is set to the enrollment code (if any) this registration
+	// spends, so we can record the minted token for idempotent recovery (Issue #44).
+	consumedEnrollCode := ""
+
 	// New-sensor enrollment gate: once an admin exists, registering a brand-new
 	// sensor requires an admin bearer or a valid single-use enrollment code —
 	// otherwise any unauthenticated LAN host could mint a sensor token and push
@@ -1269,12 +1284,15 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case !isAdmin:
-			if s.Enroll == nil || !s.Enroll.Consume(r.Header.Get("X-Vedetta-Enrollment-Code")) {
+			if s.Enroll == nil || !s.Enroll.Consume(enrollCode) {
 				writeJSON(w, http.StatusUnauthorized, map[string]any{
 					"error": "new sensor enrollment requires an admin token or a valid enrollment code (an admin can mint one via POST /api/v1/enrollment-codes)",
 				})
 				return
 			}
+			// Remember which code this enrollment consumed so, once the token is
+			// minted below, we can make a lost-response retry idempotent (Issue #44).
+			consumedEnrollCode = enrollCode
 		}
 	}
 
@@ -1319,6 +1337,13 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		response.TokenID = token.TokenID
 		response.TokenWarning = "save this token now — it will not be displayed again"
 		log.Printf("Sensor token generated: %s (label: %s)", token.TokenID, token.Label)
+
+		// Issue #44: remember the (code -> raw token + sensor_id) so a sensor that
+		// loses THIS response can present the same code and get the same token back
+		// instead of a permanent 401. The memory expires with the code's TTL.
+		if consumedEnrollCode != "" && s.Enroll != nil {
+			s.Enroll.RecordRedemption(consumedEnrollCode, body.SensorID, rawToken, token.TokenID)
+		}
 	}
 
 	log.Printf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR)
@@ -1960,6 +1985,70 @@ func (s *Server) logError(category, message string) {
 	if s.ActivityLog != nil {
 		s.ActivityLog.Error(category, message)
 	}
+}
+
+// csvSanitizeCell neutralizes CSV formula injection (GHSA-45j4). A spreadsheet
+// treats any cell whose first character is =, +, -, @, or a leading tab/CR as a
+// formula, so an attacker-influenced value (e.g. a syslog-sourced domain or
+// threat description) beginning with one of those could execute when the export is
+// opened. We defang by prefixing such a cell with a single quote. Correct quoting
+// of commas/newlines/quotes is handled separately by encoding/csv.
+func csvSanitizeCell(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
+// writeEventsCSV serializes events as RFC 4180 CSV using encoding/csv (correct
+// quoting of embedded commas, quotes, and newlines) with every cell passed through
+// csvSanitizeCell to neutralize formula injection (GHSA-45j4).
+func writeEventsCSV(w io.Writer, events []models.Event) {
+	cw := csv.NewWriter(w)
+	header := []string{
+		"event_id", "timestamp", "event_type", "source_hash", "source_ip", "server_ip",
+		"domain", "query_type", "resolved_ip", "blocked", "anomaly_score", "tags", "geo",
+		"device_vendor", "network_segment", "dns_source", "threat_desc", "dns_answers", "process",
+	}
+	_ = cw.Write(header)
+
+	for _, e := range events {
+		tagsStr := strings.Join(e.Tags, ";")
+		answersStr := ""
+		processStr := ""
+		if e.Metadata != "" {
+			var m map[string]any
+			if json.Unmarshal([]byte(e.Metadata), &m) == nil {
+				if ans, ok := m["dns_answers"].([]interface{}); ok {
+					strs := []string{}
+					for _, a := range ans {
+						if s, ok := a.(string); ok {
+							strs = append(strs, s)
+						}
+					}
+					answersStr = strings.Join(strs, ";")
+				}
+				if p, ok := m["process"].(string); ok {
+					processStr = p
+				}
+			}
+		}
+		row := []string{
+			e.EventID, e.Timestamp.Format(time.RFC3339), e.EventType, e.SourceHash,
+			e.SourceIP, e.ServerIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
+			strconv.FormatFloat(e.AnomalyScore, 'f', 4, 64), tagsStr, e.Geo,
+			e.DeviceVendor, e.NetworkSegment, e.DNSSource, e.ThreatDesc, answersStr, processStr,
+		}
+		for i, cell := range row {
+			row[i] = csvSanitizeCell(cell)
+		}
+		_ = cw.Write(row)
+	}
+	cw.Flush()
 }
 
 // maxTimestampSkew is how far ahead of server time an event Timestamp may be before

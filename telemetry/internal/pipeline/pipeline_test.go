@@ -122,11 +122,13 @@ func TestPipelineEndToEnd(t *testing.T) {
 	if v := export.LeakScan(raw); len(v) > 0 {
 		t.Errorf("leak-scan violations in transmitted batch: %v\n%s", v, raw)
 	}
-	// Expect exactly 3 signals (known_bad, candidate, behavior); 2 withheld.
+	// BETA: candidate + behavior export is disabled (GHSA-hx86), so only the
+	// known_bad event exports — 1 signal; the candidate, behavior, private, and
+	// acknowledged events are all withheld.
 	var batch export.Batch
 	json.Unmarshal(raw, &batch)
-	if len(batch.Signals) != 3 {
-		t.Errorf("expected 3 signals, got %d: %+v", len(batch.Signals), batch.Signals)
+	if len(batch.Signals) != 1 {
+		t.Errorf("expected 1 signal (known_bad only), got %d: %+v", len(batch.Signals), batch.Signals)
 	}
 	// Cursor persisted.
 	cur, _ := corereader.LoadCursor(dir)
@@ -135,7 +137,7 @@ func TestPipelineEndToEnd(t *testing.T) {
 	}
 	// Status updated with counts only.
 	snap := st.Get()
-	if snap.LastBatch.Result != "accepted" || snap.LastBatch.SignalCount != 3 {
+	if snap.LastBatch.Result != "accepted" || snap.LastBatch.SignalCount != 1 {
 		t.Errorf("status last batch wrong: %+v", snap.LastBatch)
 	}
 }
@@ -513,6 +515,88 @@ func TestPipelineUnregisteredReporterDegraded(t *testing.T) {
 	snap := st.Get()
 	if !snap.Degraded || snap.DegradedReason != "reporter unregistered" {
 		t.Errorf("expected degraded=reporter unregistered, got %+v/%q", snap.Degraded, snap.DegradedReason)
+	}
+}
+
+// GHSA-c776 residual: reporter REGISTRATION is threat-network egress and must be
+// gated on the effective opt-in exactly like signal export. With no persisted
+// reporter identity and Core reporting effective==false, EnsureReporter must NOT
+// contact the threat-network at all — no registration attempt, no egress — and
+// must report "not registered". Once Core flips to effective==true, the same call
+// registers.
+func TestPipelineReporterRegistrationGatedOnEffectiveOptIn(t *testing.T) {
+	var effective atomic.Bool // starts false → opted out
+
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/settings/telemetry" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"opt_in": effective.Load(), "source": "setting", "effective": effective.Load(),
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer core.Close()
+
+	// Threat-network stub that records every registration attempt.
+	var registerCalls int32
+	tn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/reporters/register" {
+			atomic.AddInt32(&registerCalls, 1)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{
+				"reporter_id":     "11111111-2222-4333-8444-555555555555",
+				"reporter_secret": "c2VjcmV0LWJhc2U2NC1leGFtcGxlLW9ubHk=",
+				"config":          map[string]any{"min_upload_interval_seconds": 900, "max_batch_items": 250},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer tn.Close()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OptIn: true, CoreURL: core.URL, ThreatNetworkURL: tn.URL, StateDir: dir,
+		CandidateMinScore: 0.85, BehaviorMinScore: 0.70, ReadCapPerTick: 5000, MaxBatchItems: 250,
+		MaxBatchesTick: 4, VedettaVersion: "0.1.0-test"}
+	st := status.NewState(true, false)
+	// Empty reporter → no in-memory identity; no reporter.json on disk either.
+	tx := transmit.New(tn.URL, transmit.Reporter{}, transmit.NewSpool(dir), false, 250)
+	tx.HTTP = tn.Client()
+	tx.Sleep = func(time.Duration) {}
+	p := &Pipeline{Cfg: cfg, Reader: corereader.NewClient(core.URL, ""), Tx: tx,
+		Salt: []byte("salt"), State: st, StateDir: dir}
+
+	// Effective opt-OUT: registration must not be attempted (no egress).
+	registered, err := p.EnsureReporter(context.Background())
+	if err != nil {
+		t.Fatalf("gated EnsureReporter should not error on opt-out: %v", err)
+	}
+	if registered {
+		t.Errorf("must report not-registered while effectively opted out")
+	}
+	if got := atomic.LoadInt32(&registerCalls); got != 0 {
+		t.Errorf("effective opt-out must attempt NO registration, got %d calls", got)
+	}
+	if p.Tx.Reporter.ReporterID != "" {
+		t.Errorf("no reporter identity should be established while opted out")
+	}
+
+	// Admin flips the dashboard opt-IN. Now a live read confirms effective==true,
+	// so the same call registers.
+	effective.Store(true)
+	registered, err = p.EnsureReporter(context.Background())
+	if err != nil {
+		t.Fatalf("registration after opt-in should succeed: %v", err)
+	}
+	if !registered {
+		t.Errorf("expected registration once effectively opted in")
+	}
+	if got := atomic.LoadInt32(&registerCalls); got != 1 {
+		t.Errorf("expected exactly 1 registration after opt-in, got %d", got)
+	}
+	if p.Tx.Reporter.ReporterID == "" {
+		t.Errorf("reporter identity should be set after registration")
 	}
 }
 

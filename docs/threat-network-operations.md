@@ -85,9 +85,12 @@ A single Go binary with a service-local SQLite DB. It:
   idempotent replay, **re-applies the privacy gate server-side** (any batch containing a
   private/special-use/single-label name, a raw IP literal, or an asset identifier is
   rejected whole), and dedups.
-- **Builds consensus**: an indicator is promoted only when **multiple distinct, matured
-  reporters** corroborate it — a single reporter (or a burst of freshly-registered Sybil
-  reporters) can never cause promotion. It stores **no PII at rest**.
+- **Builds consensus**: an indicator is promoted only when **multiple distinct matured
+  reporter credentials** corroborate it — a single credential (or a burst of
+  freshly-registered credentials that have not aged past the maturation delay) can never
+  cause promotion. This raises the cost of manufacturing agreement but does not by itself
+  prove reporter independence, which is why the feed is mechanically advisory-only. It
+  stores **no PII at rest**.
 - **Serves an advisory-only feed** (`GET /api/v1/feed/community`, public read like an
   abuse.ch list): every item carries `advisory: true` / `recommended_action: "advise"`.
   Consumers must never auto-block on feed membership — it may only add context or nudge

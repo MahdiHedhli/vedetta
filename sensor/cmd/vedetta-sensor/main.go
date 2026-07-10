@@ -45,6 +45,16 @@ func main() {
 	enrollCode := flag.String("enroll-code", "", "One-time enrollment code from Core (or set VEDETTA_ENROLL_CODE). Required to register a NEW sensor once Core has admin auth configured.")
 	flag.Parse()
 
+	// Did the operator explicitly pass --core? A bare `--reset` (e.g. from the
+	// installer) just clears the token and exits; `--reset --core ...` clears and
+	// re-registers in the same process (see below).
+	coreExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "core" {
+			coreExplicit = true
+		}
+	})
+
 	if *showVersion {
 		fmt.Printf("vedetta-sensor %s\n", buildVersion)
 		os.Exit(0)
@@ -53,15 +63,31 @@ func main() {
 	log.SetPrefix("[vedetta-sensor] ")
 	log.SetFlags(log.Ldate | log.Ltime)
 
-	// Handle --reset flag (very important for home users when auth gets into a bad state)
+	// Handle --reset flag (very important for home users when auth gets into a bad state).
 	if *reset {
 		tokenPath, err := client.DefaultTokenPath()
 		if err == nil {
-			_ = os.Remove(tokenPath)
+			if rmErr := os.Remove(tokenPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				log.Printf("WARNING: could not remove sensor token %s: %v", tokenPath, rmErr)
+			}
 		}
 		log.Println("Sensor authentication token has been cleared.")
-		log.Println("You can now restart the sensor normally to perform a fresh registration.")
-		os.Exit(0)
+		if !coreExplicit {
+			// Bare `--reset` (the installer's reset step): clear and exit. The
+			// service (re)start then re-registers, supplying the enrollment code.
+			log.Println("Restart the sensor with --core and — if Core has admin auth — the SAME --enroll-code to re-register cleanly.")
+			os.Exit(0)
+		}
+		// `--reset --core ...`: fall through and re-register in THIS process so a
+		// reset never strands the sensor (issue #44). The sensor's registration
+		// response for its original enrollment may have been lost after the backend
+		// consumed the code; re-supplying the SAME --enroll-code lets the backend
+		// hand back the idempotent token instead of rejecting an "already enrolled"
+		// sensor.
+		log.Println("Re-registering after reset ...")
+		if strings.TrimSpace(*enrollCode) == "" && strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE")) == "" {
+			log.Println("NOTE: no --enroll-code supplied. If this sensor was already enrolled and Core has admin auth, re-registration needs the SAME enrollment code to recover its token.")
+		}
 	}
 
 	// Resolve scan target
@@ -233,6 +259,12 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
+			// If registration never succeeded (transient Core outage at boot, or a
+			// registration whose response was lost after the backend consumed the
+			// enrollment code), keep retrying with the SAME retained enrollment code
+			// so the sensor recovers the idempotent token instead of running
+			// unregistered forever (issue #44).
+			ensureRegistered(core, scanCIDR, *primary, interfaces)
 			runScan(scanner, core, scanCIDR, *scanPorts)
 			if d, h := droppedDNS.Load(), droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Cumulative dropped events (capture buffers overflowed): %d DNS queries, %d passive hosts", d, h)
@@ -248,12 +280,19 @@ func main() {
 	}
 }
 
+// registerRetryBaseDelay is the initial backoff between registration attempts.
+// It is a variable (not a const) so tests can shrink it.
+var registerRetryBaseDelay = 2 * time.Second
+
 // registerWithRetry registers the sensor with Core, retrying with exponential
 // backoff so a transient Core outage at boot does not leave the sensor
-// permanently unregistered. Returns true once registration succeeds.
+// permanently unregistered. Every attempt reuses the same enrollment code held on
+// the client, so if the backend already consumed the code and minted a token the
+// sensor never received, a retry recovers that idempotent token (issue #44).
+// Returns true once registration succeeds.
 func registerWithRetry(core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
 	const maxAttempts = 4
-	delay := 2 * time.Second
+	delay := registerRetryBaseDelay
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := core.Register(cidr, primary, interfaces); err == nil {
 			return true
@@ -266,6 +305,24 @@ func registerWithRetry(core *client.CoreClient, cidr string, primary bool, inter
 		}
 	}
 	return false
+}
+
+// ensureRegistered performs one registration attempt when the sensor still has no
+// persisted token. It reuses the enrollment code retained on the client, so a
+// registration whose response was lost — the backend consumed the code and minted
+// a token the sensor never saw — recovers the idempotent token on a later attempt
+// rather than stranding the sensor (issue #44). It is a no-op (returns true) once
+// a token is configured. Returns true when the sensor is registered.
+func ensureRegistered(core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
+	if core.TokenConfigured() {
+		return true
+	}
+	if err := core.Register(cidr, primary, interfaces); err != nil {
+		log.Printf("Re-registration attempt failed (will retry next cycle): %v", err)
+		return false
+	}
+	log.Printf("Recovered registration with Core — persisted sensor token")
+	return true
 }
 
 // shutdownCaptures stops the capturers, closes the capture channels so their push

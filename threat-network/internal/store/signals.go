@@ -1,8 +1,19 @@
 package store
 
 import (
+	"database/sql"
 	"time"
 )
+
+// querier is the subset of *sql.DB / *sql.Tx used by the signal helpers, so the
+// exact same existence-check and upsert logic runs both standalone (autocommit)
+// and inside a transaction. The atomic per-batch cap enforcement (GHSA-7p69) runs
+// these against a *sql.Tx that holds the single writer connection for its whole
+// life, making the cap-check + insert one indivisible step.
+type querier interface {
+	QueryRow(query string, args ...any) *sql.Row
+	Exec(query string, args ...any) (sql.Result, error)
+}
 
 // SignalRow is a stored, deduplicated per-reporter signal observation.
 // Fields are counts only — no asset identifiers are ever stored.
@@ -31,16 +42,22 @@ type SignalRow struct {
 // never overwritten on merge — it is the immutable retention anchor, so a re-sent
 // hour-bucket row cannot keep bumping its way past the 30-day retention.
 func (db *DB) UpsertSignal(s SignalRow) (created bool, err error) {
+	return upsertSignal(db, s)
+}
+
+// upsertSignal is the shared implementation of UpsertSignal, parameterized over a
+// querier so it can run on the DB (autocommit) or inside a transaction.
+func upsertSignal(q querier, s SignalRow) (created bool, err error) {
 	// Detect prior existence to report created vs merged for cap accounting.
 	var existing int
-	err = db.QueryRow(`SELECT COUNT(1) FROM signals
+	err = q.QueryRow(`SELECT COUNT(1) FROM signals
         WHERE reporter_id = ? AND kind = ? AND indicator_key = ? AND time_bucket = ?`,
 		s.ReporterID, s.Kind, s.IndicatorKey, s.TimeBucket).Scan(&existing)
 	if err != nil {
 		return false, err
 	}
 	now := nowRFC3339()
-	_, err = db.Exec(`INSERT INTO signals
+	_, err = q.Exec(`INSERT INTO signals
         (reporter_id, kind, indicator_key, domain, etld_plus_one, behavior,
          time_bucket, local_confidence, local_reasons, observation_count,
          distinct_asset_count, blocked_count, received_at, first_received_at)
@@ -69,8 +86,15 @@ func (db *DB) UpsertSignal(s SignalRow) (created bool, err error) {
 // a signal that would create a NEW distinct row is refused once the daily budget
 // is exhausted, so a single reporter/batch cannot grow storage without bound.
 func (db *DB) SignalExists(reporterID, kind, indicatorKey, timeBucket string) (bool, error) {
+	return signalExists(db, reporterID, kind, indicatorKey, timeBucket)
+}
+
+// signalExists is the shared implementation of SignalExists, parameterized over a
+// querier so the distinct-indicator cap can count stored indicators inside the
+// same transaction that performs the insert.
+func signalExists(q querier, reporterID, kind, indicatorKey, timeBucket string) (bool, error) {
 	var n int
-	err := db.QueryRow(`SELECT COUNT(1) FROM signals
+	err := q.QueryRow(`SELECT COUNT(1) FROM signals
         WHERE reporter_id = ? AND kind = ? AND indicator_key = ? AND time_bucket = ?`,
 		reporterID, kind, indicatorKey, timeBucket).Scan(&n)
 	if err != nil {

@@ -46,6 +46,14 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 		db.Exec(`ALTER TABLE events ADD COLUMN match_type TEXT DEFAULT ''`)
 	}
 
+	// GHSA-9m7g: this is the SINGLE persistence choke point for events. Every write
+	// path (HTTP /ingest, sensor DNS ingest, Pi-hole/AdGuard pollers, direct-UniFi)
+	// funnels through InsertEvents, so clamping far-future timestamps here — not only
+	// in the HTTP handlers — guarantees no writer can plant a forged/skewed future
+	// cursor that strands all later normal events behind it. The handler clamps are
+	// kept as a harmless first line of defense.
+	now := time.Now().UTC()
+
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
@@ -82,7 +90,7 @@ func (db *DB) InsertEvents(events []models.Event) (int, error) {
 		}
 
 		result, err := stmt.Exec(
-			e.EventID, e.Timestamp.UTC(), e.EventType, e.SourceHash,
+			e.EventID, clampFutureEventTimestamp(e.Timestamp, now).UTC(), e.EventType, e.SourceHash,
 			nullableString(e.SourceIP), nullableString(e.ServerIP),
 			nullableString(e.Domain), nullableString(e.QueryType),
 			nullableString(e.ResolvedIP), e.Blocked, e.AnomalyScore,
@@ -480,6 +488,36 @@ func (db *DB) GetEventTimeline() ([]TimelineEntry, error) {
 	}
 
 	return allHours, nil
+}
+
+// maxEventFutureSkew is how far ahead of server time an event timestamp may be
+// before InsertEvents treats it as clock skew or forgery and clamps it to now
+// (GHSA-9m7g). Mirrors the HTTP-handler bound; kept here so EVERY writer is covered.
+const maxEventFutureSkew = time.Hour
+
+// clampFutureEventTimestamp returns ts, or now when ts is more than
+// maxEventFutureSkew ahead of now. A zero ts is returned unchanged so callers can
+// apply their own default.
+func clampFutureEventTimestamp(ts, now time.Time) time.Time {
+	if !ts.IsZero() && ts.After(now.Add(maxEventFutureSkew)) {
+		return now
+	}
+	return ts
+}
+
+// ScrubFutureEvents repairs poisoned rows left by pre-clamp writers (GHSA-9m7g):
+// on startup it clamps any existing event whose timestamp is more than
+// maxEventFutureSkew ahead of server time back to now, so a forged far-future row
+// written by an older build can no longer strand the telemetry cursor after an
+// upgrade. Returns the number of rows repaired. Idempotent.
+func (db *DB) ScrubFutureEvents() (int64, error) {
+	now := time.Now().UTC()
+	threshold := now.Add(maxEventFutureSkew)
+	res, err := db.Exec("UPDATE events SET timestamp = ? WHERE timestamp > ?", now, threshold)
+	if err != nil {
+		return 0, fmt.Errorf("scrub future events: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // nullableString returns nil for empty strings so SQLite stores NULL.

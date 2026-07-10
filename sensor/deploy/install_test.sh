@@ -96,6 +96,70 @@ check  "plist references --core"           "--core"                      "$PLIST
 refute "plist omits --enroll-code"         "--enroll-code"               "$PLIST2"
 check  "plist still enables --dns"         "--dns"                       "$PLIST2"
 
+# --- Case 3: brew must NEVER run as root (issue #45). ------------------------
+# Simulate running under sudo (id -u == 0, SUDO_USER set) on macOS with nmap
+# ABSENT so ensure_nmap must install it via Homebrew. Assert brew is invoked as
+# the invoking user through `sudo -u`, never directly as root.
+echo "case: macOS brew dependency install does not run brew as root"
+BREWROOT="${WORK}/brewroot"
+mkdir -p "$BREWROOT/bin"
+SUDO_LOG="${BREWROOT}/sudo.log"
+BREW_LOG="${BREWROOT}/brew.log"
+
+# id: pretend we are root.
+cat >"${BREWROOT}/bin/id" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = "-u" ] && { echo 0; exit 0; }
+echo 0
+EOF
+
+# uname: Darwin/arm64 (same as the other cases).
+cp "${MOCKBIN}/uname" "${BREWROOT}/bin/uname"
+
+# sudo: log every invocation, then exec the remainder (handles `-u <user> cmd`).
+cat >"${BREWROOT}/bin/sudo" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >>"${SUDO_LOG}"
+if [ "\${1:-}" = "-u" ]; then shift 2; fi
+exec "\$@"
+EOF
+
+# brew: record args; \`list\` reports "not installed" so \`install\` runs.
+cat >"${BREWROOT}/bin/brew" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >>"${BREW_LOG}"
+[ "\${1:-}" = "list" ] && exit 1
+exit 0
+EOF
+
+# launchctl no-op (no nmap mock here => ensure_nmap must reach brew).
+printf '#!/usr/bin/env bash\nexit 0\n' >"${BREWROOT}/bin/launchctl"
+chmod +x "${BREWROOT}/bin/"*
+
+PLIST3="${WORK}/brew-root.plist"
+# Constrained PATH: BREWROOT mocks + core utils only. Deliberately EXCLUDES
+# ${MOCKBIN} (its nmap stub would short-circuit ensure_nmap) and the host's real
+# nmap, so ensure_nmap must install it via brew. The fake sensor binary is passed
+# by absolute path via VEDETTA_SENSOR_BINARY, so it needs no PATH entry.
+PATH="${BREWROOT}/bin:/usr/bin:/bin" \
+SUDO_USER="operator" \
+VEDETTA_SENSOR_BINARY="${MOCKBIN}/fake-vedetta-sensor" \
+VEDETTA_BIN_DIR="${WORK}/prefix3" \
+VEDETTA_PLIST_PATH="$PLIST3" \
+  bash "$INSTALL_SH" --core http://198.51.100.10:8080 >"${PLIST3}.log" 2>&1 || true
+
+check  "brew was invoked (nmap install attempted)" "install" "$BREW_LOG"
+check  "brew ran via 'sudo -u operator'"           "-u operator" "$SUDO_LOG"
+# The brew invocation logged by sudo must carry the invoking user, proving brew
+# was not exec'd directly as root.
+if grep -E -- '-u operator .*brew (list|install)' "$SUDO_LOG" >/dev/null; then
+  echo "  ok: brew dependency command dropped to the invoking user"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: brew was not run as the invoking user via sudo -u"
+  FAIL=$((FAIL + 1))
+fi
+
 echo ""
 echo "installer test: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

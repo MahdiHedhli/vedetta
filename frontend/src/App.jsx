@@ -507,7 +507,8 @@ export default function App() {
       </header>
 
       {/* First-run telemetry disclosure (issue #37c): honest, visible notice that
-          anonymous telemetry is ON by default before we rely on the silent default. */}
+          pseudonymous / privacy-reduced telemetry is ON by default before we rely
+          on the silent default. */}
       {showTelemetryNotice && (
         <div className="bg-amber-950/40 border-b border-amber-900/60 px-6 py-3">
           <div className="max-w-7xl mx-auto flex items-start gap-3 text-sm">
@@ -515,8 +516,8 @@ export default function App() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <div className="flex-1 text-amber-100/90">
-              <span className="font-medium text-amber-100">Anonymous telemetry is on by default.</span>{' '}
-              Vedetta contributes anonymized advisory signals — identifiers are stripped to the reviewed guarantees — to improve community threat detection. You can turn it off at any time.{' '}
+              <span className="font-medium text-amber-100">Pseudonymous telemetry is on by default.</span>{' '}
+              Vedetta contributes privacy-reduced, advisory-only signals — source IPs, MACs, and hostnames are stripped at the source, but a stable per-instance reporter pseudonym is retained server-side, so this is pseudonymous, not anonymous — to improve community threat detection. You can turn it off at any time.{' '}
               <button onClick={() => { setView('settings'); }} className="underline hover:text-white">Manage in Settings</button>{' · '}
               <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" className="underline hover:text-white">Read the privacy notice</a>
             </div>
@@ -2315,9 +2316,19 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
     }
   };
 
-  // Core URL to bake into the copy-paste installer command. Prefer an explicit
-  // build-time CORE_BASE, else the page origin the dashboard is served from.
-  const coreUrl = CORE_BASE || (typeof window !== 'undefined' && window.location ? window.location.origin : 'http://YOUR-CORE-IP:8080');
+  // Core URL to bake into the copy-paste installer command that runs on ANOTHER
+  // host (issue #39). The dashboard's own origin is almost always wrong for a
+  // remote sensor: Core is loopback-only by default, so the operator is usually
+  // viewing this page at http://localhost:3107 (or a 127.0.0.1 / *.local origin)
+  // that no other machine can reach. Only reuse the page origin when it is a real
+  // routable address (e.g. the TLS reverse-proxy hostname the operator browses
+  // to); otherwise fall back to a clear placeholder the operator must edit —
+  // never localhost. An explicit build-time CORE_BASE always wins.
+  const CORE_HOST_PLACEHOLDER = 'https://vedetta.example.com';
+  const pageOrigin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+  const originIsLocal = /^https?:\/\/(localhost|127(?:\.\d+){3}|0\.0\.0\.0|\[::1\]|[^/]*\.local)(?::\d+)?$/i.test(pageOrigin);
+  const coreUrl = CORE_BASE || (pageOrigin && !originIsLocal ? pageOrigin : CORE_HOST_PLACEHOLDER);
+  const coreUrlIsPlaceholder = !CORE_BASE && (!pageOrigin || originIsLocal);
   const installerCmd = enrollCode
     ? `curl -fsSL https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core ${coreUrl} --enroll-code ${enrollCode}`
     : '';
@@ -2428,6 +2439,13 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
                 <div className="bg-gray-950 rounded-lg p-3 border border-gray-700">
                   <code className="text-xs text-teal-400 font-mono block whitespace-pre-wrap break-words">{installerCmd}</code>
                 </div>
+                {coreUrlIsPlaceholder && (
+                  <p className="text-[10px] text-amber-400/80">
+                    Replace <span className="font-mono">{CORE_HOST_PLACEHOLDER}</span> with the address the sensor host can actually reach.
+                    If the sensor runs on <span className="text-gray-300">this same machine</span>, use <span className="font-mono">http://localhost:8080</span>.
+                    For a sensor on <span className="text-gray-300">another machine</span>, Core is loopback-only by default — point it at your TLS reverse-proxy hostname (see the Reverse Proxy &amp; TLS guide).
+                  </p>
+                )}
                 <button
                   onClick={copyInstaller}
                   className="text-xs px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
@@ -2443,8 +2461,11 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
             <p className="text-xs text-gray-400 mb-2 font-medium">Or build from source (macOS / Linux):</p>
             <code className="text-sm text-teal-400 font-mono block whitespace-pre-wrap break-words">
 {`cd sensor && go build -o vedetta-sensor ./cmd/vedetta-sensor
-sudo ./vedetta-sensor --core http://localhost:8080`}
+sudo ./vedetta-sensor --core ${coreUrl}${enrollCode ? ` --enroll-code ${enrollCode}` : ''}`}
             </code>
+            <p className="text-[10px] text-gray-500 mt-2">
+              Same host as Core? Use <span className="font-mono">http://localhost:8080</span>. A sensor on another machine can't reach Core's loopback port — point <span className="font-mono">--core</span> at your TLS reverse-proxy hostname instead.
+            </p>
           </div>
           <div className="bg-gray-800 rounded-lg p-4">
             <p className="text-xs text-gray-400 mb-2 font-medium">Common options:</p>
@@ -3698,9 +3719,9 @@ function TelemetrySettings() {
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
-      <h3 className="text-sm font-medium mb-1">Anonymous Telemetry</h3>
+      <h3 className="text-sm font-medium mb-1">Pseudonymous Telemetry</h3>
       <p className="text-xs text-gray-500 mb-3">
-        Telemetry is <span className="text-gray-300 font-medium">on by default</span> (opt-out). Vedetta contributes anonymized advisory signals to improve community threat detection; identifiers are stripped to the reviewed guarantees.{' '}
+        Telemetry is <span className="text-gray-300 font-medium">on by default</span> (opt-out). Vedetta contributes privacy-reduced, advisory-only signals to improve community threat detection; source IPs, MACs, and hostnames are stripped at the source, but a stable per-instance reporter pseudonym is kept server-side — this is <span className="text-gray-300">pseudonymous, not anonymous</span>.{' '}
         <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" className="text-teal-400 hover:text-teal-300 underline">Privacy notice</a>
       </p>
 

@@ -204,6 +204,52 @@ func (p *Pipeline) RunTick(ctx context.Context) {
 	}
 }
 
+// EnsureReporter makes the daemon's reporter identity available WITHOUT leaking
+// any threat-network egress while telemetry is effectively OFF. It returns true
+// once a valid reporter is in hand (loaded from disk or freshly registered).
+//
+// GHSA-c776 residual: a dashboard opt-OUT already suppresses signal/spool egress
+// (RunTick fails closed), but reporter *registration* — the one other path that
+// contacts the threat-network — used to run unconditionally at startup and on
+// ticks, so an opted-out node still phoned home to register. This gates that:
+//
+//   - An already-known identity (in memory) needs no contact — return.
+//   - A persisted identity on disk is loaded with ZERO egress — always allowed.
+//   - Otherwise registration means contacting the threat-network, so we do a
+//     LIVE Core read of the effective opt-in first and register ONLY when it
+//     confirms effective==true. If the read errors (opt-in unconfirmable) or
+//     reports off, we do NOT register and make NO threat-network request —
+//     failing closed exactly like the export path.
+func (p *Pipeline) EnsureReporter(ctx context.Context) (bool, error) {
+	if p.Tx.Reporter.ReporterID != "" {
+		return true, nil
+	}
+	// Loading a previously persisted identity is egress-free; allow it regardless
+	// of the live opt-in so a re-opted-in node reuses its existing identity.
+	if r, ok, err := transmit.LoadReporter(p.StateDir); err != nil {
+		return false, err
+	} else if ok {
+		p.Tx.Reporter = r
+		return true, nil
+	}
+	// No identity yet: registering contacts the threat-network. Gate on a live,
+	// in-process read of Core's effective opt-in and fail closed.
+	effective, err := p.Reader.EffectiveOptIn(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !effective {
+		// Telemetry effectively OFF: register nothing, contact no one.
+		return false, nil
+	}
+	r, err := transmit.EnsureReporter(ctx, p.StateDir, p.Cfg.ThreatNetworkURL, p.Cfg.VedettaVersion, p.Tx.HTTP)
+	if err != nil {
+		return false, err
+	}
+	p.Tx.Reporter = r
+	return true, nil
+}
+
 // setHealth surfaces a degraded state when the daemon is running but not fully
 // functional: the reporter is unregistered, or ingest is auth-failing
 // (401/403/429). It reports state only — never any signal payload. Issue #36 (3).

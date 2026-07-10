@@ -80,6 +80,76 @@ func TestSensorEnrollmentRequiredAfterAdmin(t *testing.T) {
 	}
 }
 
+// TestEnrollmentIdempotentReplay is the Issue #44 regression: Core consumes the
+// single-use code and mints the sensor's only raw bearer before the HTTP response
+// reaches the sensor. If that first response is lost, a retry with the SAME code
+// must return the SAME raw token (200), not a 401 — otherwise the first sensor is
+// permanently stranded. A DIFFERENT caller replaying the code must still be denied.
+func TestEnrollmentIdempotentReplay(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+
+	admin := createTestToken(t, db, auth.ScopeAdmin, "") // an admin now exists
+
+	ipN := 0
+	register := func(id, code string) *httptest.ResponseRecorder {
+		ipN++
+		body := []byte(fmt.Sprintf(`{"sensor_id":%q,"hostname":"h","os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"t"}`, id))
+		req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if code != "" {
+			req.Header.Set("X-Vedetta-Enrollment-Code", code)
+		}
+		req.RemoteAddr = fmt.Sprintf("203.0.113.%d:1234", 10+ipN) // distinct IP: dodge the 5/min limiter
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	tokenOf := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var m map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&m); err != nil {
+			t.Fatalf("decode register response: %v", err)
+		}
+		tok, _ := m["auth_token"].(string)
+		return tok
+	}
+
+	code := mintEnrollmentCode(t, router, admin)
+
+	// First registration succeeds and mints the sensor's only raw token.
+	w1 := register("sensor-idem", code)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first register: expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+	tok1 := tokenOf(w1)
+	if tok1 == "" {
+		t.Fatal("first register did not return an auth_token")
+	}
+
+	// The sensor "lost" that response. It retries with the SAME code and SAME
+	// sensor_id — it must recover the SAME token, not a 401.
+	w2 := register("sensor-idem", code)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("idempotent retry: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	tok2 := tokenOf(w2)
+	if tok2 != tok1 {
+		t.Fatalf("idempotent retry returned a different token: %q vs %q", tok2, tok1)
+	}
+
+	// The recovered token must actually authenticate.
+	if _, err := auth.ValidateAuthorizationHeader(db, "Bearer "+tok2); err != nil {
+		t.Fatalf("recovered token does not validate: %v", err)
+	}
+
+	// Single-use against a DIFFERENT caller is preserved: another sensor_id
+	// replaying the same consumed code gets nothing.
+	if w := register("sensor-other", code); w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a different sensor replaying a consumed code, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func mintEnrollmentCode(t *testing.T, router http.Handler, adminBearer string) string {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/api/v1/enrollment-codes", nil)

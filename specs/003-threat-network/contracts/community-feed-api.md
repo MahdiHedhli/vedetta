@@ -132,7 +132,7 @@ Response headers: `ETag: "feed-v1-<opaque>"`, `Cache-Control: max-age=900`.
 | `kind` | enum | `domain_indicator` \| `etld1_indicator` \| `behavior_cluster`. |
 | `indicator` | string | Exact domain, registered domain (eTLD+1), or behavior tag. Never an IP, never an internal/special-use name. |
 | `indicator_type` | enum | `domain` \| `etld_plus_one` \| `behavior` — maps to Core `threatintel.Indicator.Type`. |
-| `confidence` | float 0–1 | Consensus confidence (see plan.md model). Rises with independent reporters; capped at 0.99. |
+| `confidence` | float 0–1 | Consensus confidence (see plan.md model). Rises with the number of distinct matured reporter credentials (not proof of distinct operators); capped at 0.99. |
 | `severity` | enum | `high` \| `medium` \| `low` — context for scoring, not an action level. |
 | `advisory` | bool | Always `true` in v1. |
 | `recommended_action` | enum | Always `"advise"` in v1. |

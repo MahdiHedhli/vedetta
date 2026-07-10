@@ -17,16 +17,111 @@ import (
 type EnrollmentStore struct {
 	mu    sync.Mutex
 	codes map[string]time.Time // code -> expiry
-	ttl   time.Duration
-	now   func() time.Time
+	// redemptions remembers, for a consumed code, the raw token + sensor_id it minted
+	// (Issue #44). This makes first-sensor enrollment idempotent: if the sensor lost
+	// the registration response, retrying with the SAME code returns the SAME token
+	// instead of a permanent 401. Bound and expired via the code's TTL and a size cap
+	// so it cannot grow without limit.
+	redemptions map[string]redemption
+	ttl         time.Duration
+	now         func() time.Time
 }
+
+// redemption is the memory of a single consumed enrollment code.
+type redemption struct {
+	rawToken string
+	tokenID  string
+	sensorID string
+	exp      time.Time
+}
+
+// maxRedemptions caps how many consumed-code memories we retain, bounding the
+// idempotency map even under a flood of distinct codes. Oldest-expiring entries
+// are swept first; a fresh record still evicts when the cap is hit.
+const maxRedemptions = 1024
 
 // NewEnrollmentStore creates a store with a 15-minute code TTL.
 func NewEnrollmentStore() *EnrollmentStore {
 	return &EnrollmentStore{
-		codes: make(map[string]time.Time),
-		ttl:   15 * time.Minute,
-		now:   time.Now,
+		codes:       make(map[string]time.Time),
+		redemptions: make(map[string]redemption),
+		ttl:         15 * time.Minute,
+		now:         time.Now,
+	}
+}
+
+// normalizeCode canonicalizes a presented code the same way Consume does, so the
+// redemption map keys line up with what Consume removed.
+func normalizeCode(code string) string {
+	return strings.TrimSpace(strings.ToUpper(code))
+}
+
+// LookupRedemption returns the raw token + token_id previously minted for this
+// code, but ONLY when it was redeemed by the SAME sensor_id and has not expired.
+// Binding to sensor_id preserves the single-use guarantee against a DIFFERENT
+// caller replaying the code while letting the original sensor recover a lost
+// response. Returns ok=false when there is no matching, unexpired redemption.
+func (s *EnrollmentStore) LookupRedemption(code, sensorID string) (rawToken, tokenID string, ok bool) {
+	code = normalizeCode(code)
+	if code == "" || sensorID == "" {
+		return "", "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepRedemptionsLocked()
+	r, found := s.redemptions[code]
+	if !found || r.sensorID != sensorID || s.now().After(r.exp) {
+		return "", "", false
+	}
+	return r.rawToken, r.tokenID, true
+}
+
+// RecordRedemption remembers the token minted for a just-consumed code so a
+// retry from the same sensor can recover it. The memory expires with the code's
+// TTL. No-op for empty inputs.
+func (s *EnrollmentStore) RecordRedemption(code, sensorID, rawToken, tokenID string) {
+	code = normalizeCode(code)
+	if code == "" || sensorID == "" || rawToken == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepRedemptionsLocked()
+	s.evictRedemptionsLocked()
+	s.redemptions[code] = redemption{
+		rawToken: rawToken,
+		tokenID:  tokenID,
+		sensorID: sensorID,
+		exp:      s.now().Add(s.ttl),
+	}
+}
+
+// sweepRedemptionsLocked drops expired redemption memories. Caller holds s.mu.
+func (s *EnrollmentStore) sweepRedemptionsLocked() {
+	now := s.now()
+	for c, r := range s.redemptions {
+		if now.After(r.exp) {
+			delete(s.redemptions, c)
+		}
+	}
+}
+
+// evictRedemptionsLocked enforces maxRedemptions by removing the soonest-to-expire
+// entry when the map is full. Caller holds s.mu.
+func (s *EnrollmentStore) evictRedemptionsLocked() {
+	for len(s.redemptions) >= maxRedemptions {
+		var oldestCode string
+		var oldestExp time.Time
+		first := true
+		for c, r := range s.redemptions {
+			if first || r.exp.Before(oldestExp) {
+				oldestCode, oldestExp, first = c, r.exp, false
+			}
+		}
+		if first {
+			return
+		}
+		delete(s.redemptions, oldestCode)
 	}
 }
 

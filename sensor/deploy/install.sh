@@ -2,9 +2,12 @@
 #
 # Vedetta Sensor installer.
 #
-# Prefers a checksummed prebuilt binary from the latest GitHub release; falls
-# back to building from source (installing Go + libpcap) when no release asset is
-# available for this OS/arch. Safe to pipe from curl.
+# On Linux, prefers a checksummed prebuilt binary from the latest GitHub release
+# and falls back to building from source (installing Go + libpcap) when no asset
+# matches this arch. On macOS there is no prebuilt Darwin release asset, so the
+# sensor is always built from source (Go via go.dev; macOS ships libpcap).
+# Homebrew, when needed for nmap, is run as the invoking user — never as root.
+# Safe to pipe from curl.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh \
@@ -69,11 +72,39 @@ echo "    Target: ${GOOS}/${GOARCH}"
 # ---------------------------------------------------------------------------
 # Runtime dependency: nmap (active scanning).
 # ---------------------------------------------------------------------------
+# Locate the Homebrew binary even when running under sudo: root's PATH usually
+# omits /opt/homebrew/bin (Apple Silicon) and /usr/local/bin (Intel) where brew
+# lives, so `command -v brew` alone fails after `sudo`.
+find_brew() {
+  local b
+  b="$(command -v brew 2>/dev/null)" && { echo "$b"; return 0; }
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    [ -x "$b" ] && { echo "$b"; return 0; }
+  done
+  return 1
+}
+
+# Run Homebrew SAFELY. Homebrew refuses to run as root and doing so is unsafe,
+# but this installer normally runs under sudo. Invoke brew as the original
+# non-root user ($SUDO_USER); never as root (issue #45).
+brew_run() {
+  local brew_bin
+  brew_bin="$(find_brew)" || die "Homebrew is required on macOS but 'brew' was not found. Install it from https://brew.sh (or pre-install the dependency), then re-run."
+  if [ "$(id -u)" -ne 0 ]; then
+    "$brew_bin" "$@"
+    return
+  fi
+  local brew_user="${SUDO_USER:-}"
+  if [ -z "$brew_user" ] || [ "$brew_user" = "root" ]; then
+    die "Refusing to run Homebrew as root (brew forbids it). Re-run this installer with sudo from your normal account — e.g. 'sudo bash install.sh --core ...' so \$SUDO_USER is set — or pre-install the dependency yourself: brew install <pkg>."
+  fi
+  sudo -u "$brew_user" "$brew_bin" "$@"
+}
+
 pkg_install() {
   # pkg_install <apt-name> <dnf-name> <pacman-name> <brew-name>
   if [ "$OS" = "Darwin" ]; then
-    command -v brew >/dev/null 2>&1 || die "Homebrew required on macOS: https://brew.sh"
-    brew list "$4" >/dev/null 2>&1 || brew install "$4"
+    brew_run list "$4" >/dev/null 2>&1 || brew_run install "$4"
   elif command -v apt-get >/dev/null 2>&1; then
     $SUDO apt-get update -qq && $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$1"
   elif command -v dnf >/dev/null 2>&1; then
@@ -121,10 +152,10 @@ try_prebuilt() {
 ensure_go() {
   if command -v go >/dev/null 2>&1; then return; fi
   echo "==> installing Go (latest stable)"
-  if [ "$OS" = "Darwin" ]; then
-    pkg_install go golang go go
-    return
-  fi
+  # Use the official go.dev tarball for BOTH Linux and macOS. On macOS this
+  # deliberately avoids Homebrew so the toolchain install never depends on brew
+  # (which cannot run as root — see issue #45); go.dev ships darwin-arm64 and
+  # darwin-amd64 builds too.
   local ver tgz tmp
   ver="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
   [ -n "$ver" ] || die "could not resolve latest Go version"
@@ -162,6 +193,12 @@ if [ -n "${VEDETTA_SENSOR_BINARY:-}" ]; then
   # instead of downloading or building one.
   BINARY="$VEDETTA_SENSOR_BINARY"
   echo "==> using caller-supplied binary: $BINARY"
+elif [ "$OS" = "Darwin" ] && [ "$FORCE_SOURCE" != "1" ]; then
+  # No prebuilt Darwin release asset is published, so don't probe the releases
+  # API for one — build macOS from source directly (issue #45). macOS ships
+  # libpcap; this installs Go (via go.dev, not brew) and compiles the sensor.
+  echo "==> macOS: building the sensor from source (no prebuilt Darwin release asset)"
+  build_from_source
 elif [ "$FORCE_SOURCE" != "1" ] && try_prebuilt; then
   echo "==> using checksum-verified prebuilt binary"
 else

@@ -80,17 +80,27 @@ that does not touch the `Authorization` header:
 
 ## 3. Proxy examples (TLS, bearer preserved)
 
-Assumptions: Core (or the frontend container that proxies `/api` to Core) is
-reachable from the proxy at `127.0.0.1:8080`; your public hostname is
-`vedetta.example.com` (replace with your own).
+**Proxy the FRONTEND, not the API-only backend.** In the Docker deployment Core
+(`backend`, port 8080) serves only the JSON API — it does not serve the dashboard
+HTML. The `frontend` container both **serves the dashboard** and **proxies `/api/*`
+to Core** on the same origin, so pointing your TLS proxy at the frontend gives you
+the whole journey (dashboard + API) over HTTPS. Pointing it at `8080` would serve
+the API but no dashboard.
+
+Assumptions: the **frontend** container is published loopback-only at
+`127.0.0.1:3107` (the default — `${VEDETTA_FRONTEND_PORT:-3107}`); your public
+hostname is `vedetta.example.com` (replace with your own). If you followed §4 to
+keep Core unpublished, the frontend is republished at `127.0.0.1:8088` instead —
+use that port below.
 
 ### Option A — Caddy (automatic HTTPS)
 
 ```caddy
 vedetta.example.com {
-    # Terminate TLS (Caddy provisions the cert automatically) and forward to Core,
-    # preserving the Authorization: Bearer header. NO basic_auth here.
-    reverse_proxy 127.0.0.1:8080
+    # Terminate TLS (Caddy provisions the cert automatically) and forward to the
+    # FRONTEND, which serves the dashboard and proxies /api/* to Core, preserving
+    # the Authorization: Bearer header. NO basic_auth here.
+    reverse_proxy 127.0.0.1:3107
 
     # Optional outer control — network policy (allow only your LAN/VPN):
     @untrusted not remote_ip 10.0.0.0/8 192.168.0.0/16 100.64.0.0/10
@@ -121,7 +131,9 @@ server {
     # allow 10.0.0.0/8; allow 192.168.0.0/16; deny all;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        # Forward to the FRONTEND (serves the dashboard + proxies /api/* to Core),
+        # NOT the API-only backend on 8080.
+        proxy_pass http://127.0.0.1:3107;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;

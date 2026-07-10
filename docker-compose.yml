@@ -42,6 +42,15 @@ services:
       # read-scope token on startup so the telemetry reader keeps authenticating
       # against GET /api/v1/events once the read gate turns on (beta-gate B6).
       VEDETTA_CORE_TOKEN: "${VEDETTA_CORE_TOKEN:-}"
+      # Telemetry opt-in (issue #37c consent honesty). Core computes the EFFECTIVE
+      # opt-in the dashboard reports (GET /api/v1/settings/telemetry) from this same
+      # env var whenever no dashboard toggle has been persisted. It MUST be passed
+      # here, not only to the telemetry service below: without it Core always sees
+      # an empty value and defaults to "on", so the dashboard shows Enabled even
+      # when .env set it false and the daemon (which DOES read this var) is off —
+      # the two would disagree. Passing the same value keeps the reported state and
+      # the daemon's real behavior consistent.
+      VEDETTA_TELEMETRY_OPTIN: "${VEDETTA_TELEMETRY_OPTIN:-true}"
     # Core receives device data from sensors — no direct network scanning needed.
     volumes:
       - vedetta-data:/data

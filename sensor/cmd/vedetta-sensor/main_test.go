@@ -1,10 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/vedetta-network/vedetta/sensor/internal/client"
 	"github.com/vedetta-network/vedetta/sensor/internal/dnscap"
 	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
@@ -96,6 +101,105 @@ func TestShutdownCapturesClosesDNSChannel(t *testing.T) {
 		// Both goroutines drained and returned → no deadlock.
 	case <-time.After(3 * time.Second):
 		t.Fatal("shutdownCaptures did not return within 3s — a capture channel was left open (B8 deadlock)")
+	}
+}
+
+// TestRegisterWithRetryReusesEnrollmentCode is the regression test for the sensor
+// side of enrollment recovery (issue #44). It models a lost/failed registration
+// response: the first attempt fails after the backend would have consumed the
+// enrollment code, and the retry must present the SAME code so the idempotent
+// backend can hand the sensor its token back — rather than discarding the code or
+// switching to a fresh one.
+func TestRegisterWithRetryReusesEnrollmentCode(t *testing.T) {
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", filepath.Join(t.TempDir(), "sensor-token"))
+	old := registerRetryBaseDelay
+	registerRetryBaseDelay = time.Millisecond
+	defer func() { registerRetryBaseDelay = old }()
+
+	var attempts int
+	var seenCodes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		seenCodes = append(seenCodes, r.Header.Get("X-Vedetta-Enrollment-Code"))
+		if attempts == 1 {
+			// Backend consumed the code and minted a token, but the response is
+			// "lost" from the sensor's perspective.
+			http.Error(w, "core hiccup", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":     "registered",
+			"sensor_id":  "sensor-test",
+			"auth_token": "idempotent-token",
+			"token_id":   "tok-1",
+		})
+	}))
+	defer srv.Close()
+
+	core, err := client.New(srv.URL)
+	if err != nil {
+		t.Fatalf("new core client: %v", err)
+	}
+	core.SensorID = "sensor-test"
+	core.EnrollCode = "ENROLL-CODE-1"
+
+	if !registerWithRetry(core, "192.0.2.0/24", false, nil) {
+		t.Fatal("expected registration to recover on retry")
+	}
+	if attempts < 2 {
+		t.Fatalf("expected a retry after the lost response, got %d attempt(s)", attempts)
+	}
+	for i, c := range seenCodes {
+		if c != "ENROLL-CODE-1" {
+			t.Fatalf("attempt %d presented code %q, want the SAME enrollment code reused", i+1, c)
+		}
+	}
+	if !core.TokenConfigured() {
+		t.Fatal("expected the idempotent token to be persisted after recovery")
+	}
+}
+
+// TestEnsureRegisteredRecoversThenIsNoOp verifies the scan-loop recovery path:
+// while unregistered it retries (reusing the enrollment code) and, once a token is
+// persisted, becomes a no-op that does not hit the network again (issue #44).
+func TestEnsureRegisteredRecoversThenIsNoOp(t *testing.T) {
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", filepath.Join(t.TempDir(), "sensor-token"))
+
+	var registerHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		registerHits++
+		if got := r.Header.Get("X-Vedetta-Enrollment-Code"); got != "ENROLL-CODE-2" {
+			t.Errorf("expected enrollment code reused, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":     "registered",
+			"sensor_id":  "sensor-test",
+			"auth_token": "recovered-token",
+		})
+	}))
+	defer srv.Close()
+
+	core, err := client.New(srv.URL)
+	if err != nil {
+		t.Fatalf("new core client: %v", err)
+	}
+	core.SensorID = "sensor-test"
+	core.EnrollCode = "ENROLL-CODE-2"
+
+	if !ensureRegistered(core, "192.0.2.0/24", false, nil) {
+		t.Fatal("expected ensureRegistered to succeed")
+	}
+	if registerHits != 1 {
+		t.Fatalf("expected exactly one register call, got %d", registerHits)
+	}
+	// Second call must be a no-op now that a token is configured.
+	if !ensureRegistered(core, "192.0.2.0/24", false, nil) {
+		t.Fatal("expected ensureRegistered to remain true once registered")
+	}
+	if registerHits != 1 {
+		t.Fatalf("ensureRegistered re-hit Core after a token was configured (%d calls)", registerHits)
 	}
 }
 

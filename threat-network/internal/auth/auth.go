@@ -181,6 +181,21 @@ type RegisterConfig struct {
 	MaxBatchItems            int `json:"max_batch_items"`
 }
 
+// Explicit small max-lengths for every registered string field (GHSA-7p69).
+// The 4 MiB body cap alone let a registered/anonymous caller persist a megabyte-
+// sized field (e.g. a ~3 MB all-digits "semver", which the unbounded semver
+// grammar accepts). Each field gets a tight bound and over-long values are
+// rejected before anything is stored.
+const (
+	// maxInstallIDLen bounds install_id (an opaque client-supplied handle; it is
+	// never persisted, but must not be able to carry a megabyte of data).
+	maxInstallIDLen = 128
+	// maxVedettaVersionLen bounds vedetta_version. Mirrors valid.MaxSemverLen.
+	maxVedettaVersionLen = valid.MaxSemverLen
+	// maxCapabilities bounds the capability list (there are only 3 known kinds).
+	maxCapabilities = 16
+)
+
 // ValidateRegister checks a registration request against the contract.
 func ValidateRegister(r RegisterRequest) error {
 	if r.SchemaVersion != 1 {
@@ -189,12 +204,25 @@ func ValidateRegister(r RegisterRequest) error {
 	if r.InstallID == "" {
 		return errors.New("install_id required")
 	}
-	// Wire-format validation (GHSA-hx86): vedetta_version must be strict semver.
+	// Explicit field-length cap (GHSA-7p69): reject an over-long install_id rather
+	// than reading it into memory / passing it further.
+	if len(r.InstallID) > maxInstallIDLen {
+		return fmt.Errorf("install_id exceeds max length %d", maxInstallIDLen)
+	}
+	// Wire-format validation (GHSA-hx86) + explicit length cap (GHSA-7p69):
+	// vedetta_version must be strict semver AND small. valid.Semver now also caps
+	// length, but keep an explicit check here for a clear, early rejection.
+	if len(r.VedettaVersion) > maxVedettaVersionLen {
+		return fmt.Errorf("vedetta_version exceeds max length %d", maxVedettaVersionLen)
+	}
 	if !valid.Semver(r.VedettaVersion) {
 		return fmt.Errorf("vedetta_version %q is not strict semver", r.VedettaVersion)
 	}
 	if len(r.Capabilities) == 0 {
 		return errors.New("at least one capability required")
+	}
+	if len(r.Capabilities) > maxCapabilities {
+		return fmt.Errorf("too many capabilities (max %d)", maxCapabilities)
 	}
 	for _, c := range r.Capabilities {
 		if !knownKinds[c] {

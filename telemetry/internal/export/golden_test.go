@@ -52,8 +52,11 @@ func TestGoldenBatchShapeMatchesContract(t *testing.T) {
 	})
 	SortSignals(sigs)
 
-	if len(sigs) != 3 {
-		t.Fatalf("expected 3 aggregated signals, got %d", len(sigs))
+	// BETA: candidate + behavior export is DISABLED (GHSA-hx86), so only the two
+	// known_bad events (e1, e1b — same domain) survive and aggregate to ONE signal;
+	// the candidate (e2) and behavior (e3) inputs are withheld.
+	if len(sigs) != 1 {
+		t.Fatalf("expected 1 aggregated signal (known_bad only; candidate/behavior disabled), got %d", len(sigs))
 	}
 
 	batch := Batch{
@@ -71,7 +74,6 @@ func TestGoldenBatchShapeMatchesContract(t *testing.T) {
 		t.Fatalf("golden batch has leaks: %v\n%s", v, data)
 	}
 
-	// Shape assertions against the contract.
 	byKind := map[Kind]Signal{}
 	for _, s := range sigs {
 		byKind[s.Kind] = s
@@ -88,22 +90,11 @@ func TestGoldenBatchShapeMatchesContract(t *testing.T) {
 		t.Errorf("known_bad blocked_count wrong: %v", kb.BlockedCount)
 	}
 
-	cand := byKind[KindHighConfCandidate]
-	if cand.Domain != "" {
-		t.Errorf("candidate must NOT carry exact domain: %q", cand.Domain)
+	// Candidate + behavior inputs must produce NO signal while disabled for beta.
+	if _, ok := byKind[KindHighConfCandidate]; ok {
+		t.Errorf("candidate signal must not be emitted while disabled for beta")
 	}
-	if cand.ETLDPlusOne != "qxv-rotator.example" {
-		t.Errorf("candidate etld wrong: %q", cand.ETLDPlusOne)
-	}
-	if cand.BlockedCount != nil {
-		t.Errorf("candidate must not carry blocked_count")
-	}
-
-	beh := byKind[KindBehaviorSummary]
-	if beh.Behavior != BehaviorBeaconing {
-		t.Errorf("behavior wrong: %q", beh.Behavior)
-	}
-	if beh.Domain != "" || beh.ETLDPlusOne != "" {
-		t.Errorf("behavior_summary must carry no domain material")
+	if _, ok := byKind[KindBehaviorSummary]; ok {
+		t.Errorf("behavior signal must not be emitted while disabled for beta")
 	}
 }

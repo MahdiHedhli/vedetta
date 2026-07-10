@@ -45,7 +45,7 @@ anything.
   the same C2/DGA domains — without my IPs, MACs, hostnames, or query history leaving
   my network.
 - As a small business operator, I want Vedetta to consume a community feed of
-  indicators corroborated by multiple independent reporters so that local alerts on
+  indicators corroborated by multiple distinct matured reporter credentials so that local alerts on
   those indicators get better context/scoring, while nothing is auto-blocked on
   community say-so alone.
 - As the threat-network operator, I want signed requests, replay protection, rate
@@ -84,7 +84,7 @@ anything.
   thresholds from `docs/threat-intel-mvp.md` (≥2 reporters for locally-known-bad exact
   domains; ≥3 reporters at aggregate confidence ≥0.90 for exact domains; ≥4 reporters
   at ≥0.80 for eTLD+1/behavior clusters). Confidence rises with the number of
-  independent reporters; a single reporter can never cause promotion.
+  distinct matured reporter credentials (not proof of distinct operators); a single reporter can never cause promotion.
 - FR-6: Feed items decay: candidates expire after 7 days without refresh,
   known-bad-corroborated items after 30 days; expired items drop out of the feed.
 - FR-7: `GET /api/v1/feed/community` publishes promoted items: versioned

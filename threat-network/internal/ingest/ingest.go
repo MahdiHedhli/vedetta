@@ -81,7 +81,8 @@ func (p *Processor) Process(reporterID string, body []byte) (*Result, error) {
 	}
 
 	// Re-check duplicate now that we have the authoritative batch_id (parse may
-	// have normalized/confirmed it). Guards a race where peek missed it.
+	// have normalized/confirmed it). This is a cheap fast-path; PersistBatch
+	// re-checks authoritatively inside the transaction.
 	if rc, found, err := p.DB.GetReceipt(reporterID, batch.BatchID); err != nil {
 		return nil, err
 	} else if found {
@@ -90,91 +91,54 @@ func (p *Processor) Process(reporterID string, body []byte) (*Result, error) {
 	}
 
 	day := p.now().UTC().Format("2006-01-02")
-	counters, err := p.DB.GetCounters(reporterID, day)
-	if err != nil {
-		return nil, err
-	}
 
-	// Batch-rate cap.
-	if counters.BatchesAccepted >= MaxBatchesPerDay {
-		return nil, &CapError{RetryAfterSeconds: 3600, Detail: "daily batch cap reached"}
-	}
-
-	accepted := 0
-	newDistinct := 0
+	// Build the candidate rows once, then persist the whole batch ATOMICALLY.
+	// Enforcing the per-reporter caps (batch/signal/distinct-indicator) inside a
+	// single transaction that also writes the rows, receipt and counters closes the
+	// GHSA-7p69 non-transactional cap race: a concurrent flood of signed batches can
+	// never exceed the distinct-indicator cap, because each batch's cap-check and
+	// inserts are one indivisible, serialized step (see store.PersistBatch).
+	rows := make([]store.SignalRow, 0, len(batch.Signals))
 	for _, sig := range batch.Signals {
-		// Signal-count cap (stop accepting once over daily budget; overflow → rejected).
-		if counters.SignalsAccepted+accepted >= MaxSignalsPerDay {
-			rejected++
-			continue
-		}
-		timeBucket := sig.TimeBucket.UTC().Format(time.RFC3339)
-
-		// Distinct-indicator cap enforced BEFORE persistence (GHSA-7p69): once the
-		// reporter's daily distinct-indicator budget is exhausted, a signal that
-		// would create a NEW distinct stored row is refused (counted in rejected),
-		// so a single reporter/batch cannot grow storage without bound. Merges into
-		// an already-stored row add no new distinct indicator and are still allowed.
-		if counters.DistinctIndicators+newDistinct >= MaxDistinctPerDay {
-			exists, err := p.DB.SignalExists(reporterID, sig.Kind, sig.IndicatorKey, timeBucket)
-			if err != nil {
-				return nil, err
-			}
-			if !exists {
-				rejected++
-				continue
-			}
-		}
-
-		created, err := p.DB.UpsertSignal(store.SignalRow{
+		rows = append(rows, store.SignalRow{
 			ReporterID:         reporterID,
 			Kind:               sig.Kind,
 			IndicatorKey:       sig.IndicatorKey,
 			Domain:             sig.Domain,
 			EtldPlusOne:        sig.EtldPlusOne,
 			Behavior:           sig.Behavior,
-			TimeBucket:         timeBucket,
+			TimeBucket:         sig.TimeBucket.UTC().Format(time.RFC3339),
 			LocalConfidence:    sig.LocalConfidence,
 			LocalReasons:       marshalReasons(sig.LocalReasons),
 			ObservationCount:   sig.ObservationCount,
 			DistinctAssetCount: sig.DistinctAssetCount,
 			BlockedCount:       sig.BlockedCount,
 		})
-		if err != nil {
-			return nil, err
-		}
-		accepted++
-		if created {
-			newDistinct++
-		}
 	}
 
-	won, err := p.DB.InsertReceipt(store.Receipt{
-		BatchID:       batch.BatchID,
-		ReporterID:    reporterID,
-		SignalCount:   len(batch.Signals) + rejected,
-		AcceptedCount: accepted,
-		RejectedCount: rejected,
+	out, err := p.DB.PersistBatch(store.PersistBatchInput{
+		ReporterID:        reporterID,
+		Day:               day,
+		BatchID:           batch.BatchID,
+		Rows:              rows,
+		ParseRejected:     rejected,
+		MaxBatchesPerDay:  MaxBatchesPerDay,
+		MaxSignalsPerDay:  MaxSignalsPerDay,
+		MaxDistinctPerDay: MaxDistinctPerDay,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if !won {
-		// Another concurrent request for the SAME (reporter_id, batch_id) already
-		// wrote the receipt (INSERT OR IGNORE no-op). Treat this as the idempotent
-		// replay it is: return the recorded counts and, crucially, do NOT bump the
-		// per-reporter counters — otherwise a race double-counts a single batch.
-		if rc, found, gerr := p.DB.GetReceipt(reporterID, batch.BatchID); gerr == nil && found {
-			return &Result{Accepted: rc.AcceptedCount, Rejected: rc.RejectedCount,
-				BatchID: batch.BatchID, Duplicate: true}, nil
-		}
-		return &Result{Accepted: accepted, Rejected: rejected, BatchID: batch.BatchID, Duplicate: true}, nil
-	}
-	if err := p.DB.AddCounters(reporterID, day, 1, accepted, newDistinct, 0); err != nil {
-		return nil, err
+	if out.BatchCapReached {
+		return nil, &CapError{RetryAfterSeconds: 3600, Detail: "daily batch cap reached"}
 	}
 
-	return &Result{Accepted: accepted, Rejected: rejected, BatchID: batch.BatchID, Duplicate: false}, nil
+	return &Result{
+		Accepted:  out.Accepted,
+		Rejected:  out.Rejected,
+		BatchID:   batch.BatchID,
+		Duplicate: out.Duplicate,
+	}, nil
 }
 
 func peekBatchID(body []byte) (string, bool) {
