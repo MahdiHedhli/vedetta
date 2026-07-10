@@ -37,9 +37,11 @@ Vedetta contributes to a **community threat feed** by default. This is:
   hostnames are stripped before anything leaves your network and are **never
   transmitted**. What is shared for a known-bad hit is the **matched indicator from
   the public block-list** — never the raw observed query name (which could embed a
-  hostname or address) — plus coarse aggregate counts. For high-confidence
-  candidates the payload also carries the **query-derived eTLD+1** (the registrable
-  domain of the observed name), so a shared signal is reduced, not empty;
+  hostname or address) — plus coarse aggregate counts. **For beta,
+  telemetry shares ONLY these Core-confirmed block-list matches** — the
+  query-derived high-confidence-candidate (eTLD+1) and behavior-summary signals are
+  temporarily DISABLED pending a trust-model redesign, so nothing derived from your
+  own observed queries is shared today;
 - **salted-HMAC counting stays local**: the per-source identifier used to count
   distinct assets is a salted HMAC computed locally with a 256-bit per-instance
   secret and is **never forwarded**; the published feed exposes only the indicator

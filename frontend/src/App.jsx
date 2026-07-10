@@ -2785,8 +2785,18 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
       (d.services && d.services.length ? d.services.join(';') : ''),
       d.risk_category || '',
     ]);
+    // Neutralize spreadsheet formula injection (GHSA-45j4): device fields like
+    // hostname / vendor / model / services are attacker-influenceable (mDNS, DHCP,
+    // discovery), so a cell beginning with = + - @ (or tab/CR) — which Excel/Sheets
+    // would execute as a formula — is prefixed with a single quote before CSV
+    // quoting/escaping. Mirrors the backend events-CSV csvSanitizeCell.
+    const csvCell = (v) => {
+      let s = String(v);
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+      return `"${s.replace(/"/g, '""')}"`;
+    };
     const csvContent = [headers, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+      .map((row) => row.map(csvCell).join(','))
       .join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);

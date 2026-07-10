@@ -1,4 +1,10 @@
-# Vedetta Threat Network — Anonymization Send + Reversal Proof
+# Vedetta Threat Network — Privacy-Reduction & Residual-Linkability Analysis
+
+> **Scope note:** This is **not** an anonymity proof. Sharing is **pseudonymous,
+> not anonymous** (consistent with [PRIVACY.md](../../PRIVACY.md)). The analysis
+> below establishes what is *removed* by construction (direct device identifiers)
+> and what *residual linkage* remains (a stable per-instance pseudonym). Do not
+> read any result here as a claim of mathematical anonymity.
 
 **Date:** 2026-07-09  **Environment:** live prod feed (`feed.vedettas.com`) + a
 local instance of the exact production binary, fed synthetic data.
@@ -7,9 +13,10 @@ local instance of the exact production binary, fed synthetic data.
 Two questions were tested:
 
 1. **Can threat data be sent** through the zero-inbound path end-to-end?
-2. **Is it truly anonymous** — can an adversary *reverse* any published/stored
-   artifact back to a source identity (a household IP, a device MAC, or "which
-   reporter saw what")?
+2. **What residual linkage remains** — which *direct* source identifiers (a
+   household IP, a device MAC, a hostname) are removed by construction, and what
+   *pseudonymous* linkage (a stable `reporter_id` mapped to "which reporter saw
+   what, at which hour") an adversary can still reconstruct?
 
 ---
 
@@ -30,7 +37,7 @@ only via the outbound tunnel; no public IP, no inbound port.
 
 ---
 
-## 2. Anonymity — what an adversary can observe
+## 2. Residual linkability — what an adversary can observe
 
 Three surfaces an attacker could reach, and every field on each:
 
@@ -47,8 +54,10 @@ no MAC, no reporter id. Live prod feed scanned: **0 IPv4, 0 MAC**.
 `signals[{signal_id, kind, time_bucket, domain, etld_plus_one, local_confidence,
 local_reasons, observation_count, distinct_asset_count}]`.
 → **No `ip` / `mac` / `hostname` field exists in the schema.** Device involvement
-is a bare integer (`distinct_asset_count`). The `reporter_id` is a random opaque
-credential with no operator identity attached.
+is a bare integer (`distinct_asset_count`). The `reporter_id` carries no operator
+identity (no name/IP/email), but it is **stable per instance and reused across
+submissions** — so it is a **pseudonym**, not an anonymous nonce: the server can
+link everything one reporter sends over time under that one id.
 
 ### c) Full server store compromise (worst case — attacker dumps the SQLite DB)
 Scanned **all 9 tables** for IPv4 / MAC / hostname patterns → **0 matches.**
@@ -61,9 +70,13 @@ Scanned **all 9 tables** for IPv4 / MAC / hostname patterns → **0 matches.**
 | `feed_items` | published indicator + aggregate counts + timestamps. |
 | others | allowlist domains, nonces, counters, migrations — no PII. |
 
-Even a total server breach yields: *random UUIDs reported some bad domains, N of
-them, at hour-granularity.* It does **not** yield who the reporters are, their
-IPs, their devices, or any victim.
+Even a total server breach yields: *stable pseudonymous reporter UUIDs reported
+some bad domains, N of them, at hour-granularity.* It does **not** yield the
+reporters' real-world identity, their IPs, their devices, or any victim — but it
+**does** yield a per-pseudonym history: because each `reporter_id` is stable and
+reused, a DB dump lets an adversary group "everything this one reporter ever
+reported, and when." That is the residual **linkability** (a pseudonym trail),
+distinct from the absent **direct identifiers**.
 
 ---
 
@@ -95,12 +108,26 @@ defence in depth.
 
 ---
 
-## 4. Residual considerations (disclosed, not hidden)
+## 4. Residual linkage (disclosed, not hidden)
 
-- **Aggregate counts are intentional.** `sources_observed` reveals "≥2 anonymous
-  reporters saw X." That is the point of consensus and leaks nothing about *who*.
+- **Stable pseudonym, linkable over time (the primary residual).** Each instance
+  registers one stable `reporter_id`, reused for every submission. The server
+  stores the relationship between that id and the indicators it reported, at
+  hourly time-bucket granularity — so contributions are **linkable to a pseudonym
+  over time** ("the same reporter reported X at hour H and Y at hour H+3"). This
+  is why the model is **pseudonymous, not anonymous**. The pseudonym carries no
+  name, IP, or device, but it is not a fresh nonce per submission.
+- **Cloudflare sees the connection.** Submissions egress over an outbound-only
+  Cloudflare tunnel, so Cloudflare (as the network intermediary) observes each
+  reporter's **connection source address and timing**, independent of the payload.
+- **Retention/expiry is incomplete today.** Reporter identities and the stored
+  aggregates do **not** yet have complete, enforced expiry, so the pseudonymous
+  linkage above is retained rather than aged out.
+- **Aggregate counts are intentional.** `sources_observed` reveals "≥2 pseudonymous
+  reporters saw X." That is the point of consensus and leaks nothing about a
+  reporter's real-world identity.
 - **Traffic analysis** of a very rare indicator seen by exactly 2 sources tells an
-  observer only that two unidentified reporters exist — no linkage to a household.
+  observer only that two pseudonymous reporters exist — no linkage to a household.
 - **Not yet tested live:** an end-to-end run through `telemetry/export/strip.go`
   with realistic raw input (the strip step that produces the export candidate).
   The structural guarantee — an allowlisted `ExportCandidate` that *cannot* carry
@@ -112,8 +139,15 @@ defence in depth.
 ## Verdict
 
 ✅ **Data sends** end-to-end over the zero-inbound path.
-✅ **No observable surface** (feed, wire, or full DB) carries a source identity.
-✅ **The one internal hashed identifier is unforwarded AND 256-bit-salted** —
-reversal is computationally infeasible.
+✅ **No observable surface** (feed, wire, or full DB) carries a *direct* source
+identifier — no IP, MAC, or hostname.
+⚠️ **A stable pseudonym remains.** The wire and the server store carry a stable
+per-instance `reporter_id`; the server links it to the indicators/hour it
+reported. Sharing is therefore **pseudonymous, not anonymous** — reconstructable
+to a pseudonym over time, though not to a real-world identity. Cloudflare (the
+outbound tunnel) additionally sees connection source/timing, and reporter
+identities/aggregates lack complete expiry today.
+✅ **The one internal hashed source identifier is unforwarded AND 256-bit-salted**
+— reversal of *that* value is computationally infeasible (it is never exposed).
 
-Reproduce: `reverse_attack.py` (reversal proof) and the loadsmoke send test.
+Reproduce: `reverse_attack.py` (source-hash reversal proof) and the loadsmoke send test.

@@ -2,6 +2,13 @@
 
 > Feature directory: `specs/003-threat-network/`
 > Status: Draft
+> **Superseded notes (#37 / #43):** this design doc predates two shipped decisions.
+> (1) Telemetry ships **ON by default (opt-out)**, not opt-in/off-by-default; and
+> sharing is **pseudonymous, not anonymous** (a stable per-instance `reporter_id`
+> is stored server-side — see PRIVACY.md). (2) Consensus corroboration is by
+> **distinct matured reporter credentials**, which is *not* proof of independent
+> operators (advisory-only; see SECURITY.md). Where the text below says
+> "anonymous"/"opt-in"/"independent reporters", read it through these notes.
 > Backlog: VED-008 (contract), VED-011 (implementation)
 > Created: 2026-07-03
 

@@ -41,11 +41,11 @@ design and are documented, accepted trade-offs rather than defects:
 
 ### 1. The community threat feed is advisory-only (no Sybil resistance) — GHSA-573f
 
-The community threat network aggregates anonymized, **pseudonymous** reports and
+The community threat network aggregates privacy-reduced, **pseudonymous** reports and
 promotes an indicator only after **≥2 distinct, matured (24 h) reporter
 credentials** corroborate it, with per-source-IP registration rate limiting.
 (Note: "distinct credentials" is not proof of distinct operators.) This raises the
-*cost* of manipulation but does **not** make the feed Sybil-proof: an anonymous,
+*cost* of manipulation but does **not** make the feed Sybil-proof: a pseudonymous,
 permissionless P2P feed cannot cryptographically prove two reporters are distinct
 operators without identity, proof-of-work, or a web of trust — none of which fit a
 privacy-preserving, zero-signup design.

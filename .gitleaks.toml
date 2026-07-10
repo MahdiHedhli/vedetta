@@ -30,6 +30,7 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 paths = [
   '''telemetry/internal/transmit/register_test\.go''',
+  '''telemetry/internal/pipeline/pipeline_test\.go''',
   '''specs/002-telemetry-service/contracts/telemetry-export\.md''',
 ]
 # The exact synthetic placeholder; a real/different secret in these files is

@@ -150,6 +150,76 @@ func TestEnrollmentIdempotentReplay(t *testing.T) {
 	}
 }
 
+// TestSensorReset_ViaFreshEnrollmentCode is the Issue #44 RECOVERY regression: a
+// sensor stranded (--reset, a lost response past the idempotency window, a Core
+// restart, or local token corruption) has no local token while the server-side
+// token still exists. It must be able to re-enroll by presenting a FRESH
+// admin-minted single-use enrollment code — Core revokes the stale token and
+// issues a new one, so recovery needs no hidden admin reset API. A bogus code
+// must NOT reset it or revoke the real token.
+func TestSensorReset_ViaFreshEnrollmentCode(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	ipN := 0
+	register := func(id, code string) *httptest.ResponseRecorder {
+		ipN++
+		body := []byte(fmt.Sprintf(`{"sensor_id":%q,"hostname":"h","os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"t"}`, id))
+		req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if code != "" {
+			req.Header.Set("X-Vedetta-Enrollment-Code", code)
+		}
+		req.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", 10+ipN) // distinct IP: dodge the limiter
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	tokenOf := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var m map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&m)
+		tok, _ := m["auth_token"].(string)
+		return tok
+	}
+
+	// Enroll the sensor for the first time.
+	tok1 := tokenOf(register("sensor-reset", mintEnrollmentCode(t, router, admin)))
+	if tok1 == "" {
+		t.Fatal("first enroll returned no token")
+	}
+
+	// Stranded: no local token, but the server token still exists. Re-register with
+	// nothing -> 401 (not silently reset); a BOGUS code -> 401 and the real token
+	// must survive (no revoke-before-validate DoS).
+	if w := register("sensor-reset", ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("stranded re-register with nothing: expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := register("sensor-reset", "WRONG-WRONG-WRONG-WRONG"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("stranded re-register with a bogus code: expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := auth.ValidateAuthorizationHeader(db, "Bearer "+tok1); err != nil {
+		t.Fatalf("original token must survive a failed reset attempt: %v", err)
+	}
+
+	// A FRESH admin-minted code recovers: revoke the stale token, issue a NEW one.
+	w2 := register("sensor-reset", mintEnrollmentCode(t, router, admin))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("reset via fresh code: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	tok2 := tokenOf(w2)
+	if tok2 == "" || tok2 == tok1 {
+		t.Fatalf("reset must issue a NEW token: tok1=%q tok2=%q", tok1, tok2)
+	}
+	if _, err := auth.ValidateAuthorizationHeader(db, "Bearer "+tok2); err != nil {
+		t.Fatalf("new token must validate: %v", err)
+	}
+	if _, err := auth.ValidateAuthorizationHeader(db, "Bearer "+tok1); err == nil {
+		t.Fatal("the stale token must be revoked after a successful reset")
+	}
+}
+
 func mintEnrollmentCode(t *testing.T, router http.Handler, adminBearer string) string {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/api/v1/enrollment-codes", nil)

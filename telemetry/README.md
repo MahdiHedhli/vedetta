@@ -1,18 +1,21 @@
-# Vedetta Telemetry Service (opt-in, privacy-reduced export)
+# Vedetta Telemetry Service (on by default / opt-out, privacy-reduced export)
 
 > Implements `specs/002-telemetry-service/`. Frozen wire contract:
 > `specs/002-telemetry-service/contracts/telemetry-export.md`.
 
-The telemetry daemon lets an **explicitly opted-in** Vedetta Core deployment
-contribute a small set of privacy-reduced, domain-level threat observations to
-the community threat network. It is **OFF by default**, **advisory-only**
-downstream, and revocable at any time with zero impact on local monitoring.
+The telemetry daemon lets a Vedetta Core deployment contribute a small set of
+privacy-reduced, domain-level threat observations to the community threat
+network. It is **ON by default (opt-out)**, **advisory-only** downstream,
+**pseudonymous (not anonymous)** — see PRIVACY.md — and disable-able at any time
+with zero impact on local monitoring.
 
-## OFF by default
+## ON by default (opt-out)
 
-Unless `VEDETTA_TELEMETRY_OPTIN=true` (exact string), the daemon does nothing:
-no Core reads, no network egress, no reporter registration, no state writes
-beyond a single log line. It blocks until a signal, exactly like the prior stub.
+The daemon contributes unless it is explicitly disabled. Only the exact string
+`VEDETTA_TELEMETRY_OPTIN=false` (or flipping the dashboard toggle off) disables
+it; when disabled it does nothing: no Core reads, no network egress, no reporter
+registration, no state writes beyond a single log line — it blocks until a
+signal, exactly like the prior stub.
 
 ## What leaves the node
 
@@ -21,9 +24,16 @@ one-page trust boundary is the contract file. In short:
 
 | Kind | Domain material | Notes |
 | --- | --- | --- |
-| `known_bad_domain_hit` | exact FQDN | only when already matched a trusted local threat source |
-| `high_confidence_domain_candidate` | eTLD+1 only | exact domain withheld |
-| `behavior_summary` | none | e.g. `dns_beaconing_candidate` |
+| `known_bad_domain_hit` | matched block-list indicator | only when already matched a trusted local threat source |
+| `high_confidence_domain_candidate` | eTLD+1 only | **DISABLED for beta** (see note) |
+| `behavior_summary` | none | **DISABLED for beta** (see note) |
+
+> **Beta:** telemetry currently exports **only `known_bad_domain_hit`** — the
+> Core-confirmed block-list indicator, which cannot carry a caller-supplied
+> identifier. The `high_confidence_domain_candidate` and `behavior_summary` kinds
+> derive from observed queries and depend on Core-side verdicts a compromised
+> writer could forge (GHSA-hx86), so they are temporarily disabled pending a
+> trust-model redesign. The kinds remain in the contract for when they re-enable.
 
 **Never exported:** raw source IPs, resolved/server IPs, MAC addresses,
 hostnames, device inventories/vendors/models, network segments, SSIDs, exact
@@ -38,13 +48,14 @@ value, so forbidden data is dropped by construction, not by a blocklist. A
 `LeakScan` helper (`internal/export/leakscan.go`) runs over every serialized
 batch in the test suite as a privacy regression gate.
 
-## How to opt in
+## Configuration
 
-Set environment variables on the `telemetry` container:
+Telemetry is on by default, so no env var is needed to enable it. Set these on
+the `telemetry` container to point it at Core and the threat network (and set
+`VEDETTA_TELEMETRY_OPTIN=false` only if you want to disable contribution):
 
 ```sh
-VEDETTA_TELEMETRY_OPTIN=true
-VEDETTA_CORE_TOKEN=<least-privilege read token>   # required when opted in
+VEDETTA_CORE_TOKEN=<least-privilege read token>   # required while enabled
 VEDETTA_CORE_URL=http://backend:8080              # default
 VEDETTA_THREAT_NETWORK_URL=http://threat-network:9090  # default
 ```
@@ -76,16 +87,17 @@ in gitignored `analysis-notes/` — never in tracked files.
 
 `GET http://127.0.0.1:9091/healthz` → `200` while the loop is alive.
 `GET http://127.0.0.1:9091/status` → JSON with **counts and states only**:
-opt-in, dry-run, reporter-registered, cursor position, last tick, last batch
+telemetry-enabled state, dry-run, reporter-registered, cursor position, last tick, last batch
 `{time, signal_count, result}`, spool depth, malformed-events skipped, last
 error. No exported payload (no domains) ever appears here.
 
-## How to revoke
+## How to disable
 
-Unset `VEDETTA_TELEMETRY_OPTIN` (or set it to anything other than `true`) and
-restart the container. The daemon returns to fully inert on next start. To fully
-sever the reporter identity, also delete `reporter.json` and `salt` from the
-state dir; the community-side identity ages out server-side.
+Set `VEDETTA_TELEMETRY_OPTIN=false` (exact string — any other value leaves it on)
+or flip the dashboard telemetry toggle off, then restart the container. The daemon
+returns to fully inert on next start. To fully sever the pseudonymous reporter
+identity, also delete `reporter.json` and `salt` from the state dir; the
+community-side identity ages out server-side.
 
 ## Failure behavior (best-effort by design)
 

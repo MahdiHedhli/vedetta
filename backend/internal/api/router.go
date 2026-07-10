@@ -1230,34 +1230,45 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// consumedEnrollCode is set to the enrollment code (if any) this registration
+	// spends, so we can record the minted token for idempotent recovery (Issue #44).
+	consumedEnrollCode := ""
+
 	if existingToken {
 		// This sensor_id is already enrolled with an active token. Re-registration
 		// MUST be authenticated: sensor_ids are derived from hostname-os-arch and are
 		// therefore guessable, so an unauthenticated re-register used to revoke the
 		// real sensor's credential and hand a replacement to the caller — a silent
-		// credential hijack (beta-gate B1a). Recovery/reset is now an authenticated,
-		// admin-initiated action.
+		// credential hijack (beta-gate B1a). Recovery/reset is an authenticated action.
 		switch {
-		case presentedToken == nil:
-			writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error": "sensor already enrolled; present its current sensor token or an admin token to re-register or reset it",
-			})
-			return
-		case presentedToken.Scope == auth.ScopeAdmin:
+		case presentedToken != nil && presentedToken.Scope == auth.ScopeAdmin:
 			// Admin-initiated reset: revoke the sensor's existing tokens and issue a
 			// fresh one below.
 			log.Printf("Sensor %s reset by admin token %s — revoking old tokens and issuing a new one", body.SensorID, presentedToken.TokenID)
 			_ = s.DB.DeleteTokensBySensor(body.SensorID)
 			existingToken = false // force new token generation
-		default:
+		case presentedToken != nil:
 			// Matching sensor token presented: metadata refresh; keep the existing
 			// credential (no reissue).
+		case s.Enroll != nil && s.Enroll.Consume(enrollCode):
+			// RECOVERY (#44): a sensor stranded by `--reset`, a lost enrollment response
+			// after the idempotency window, a Core restart, or local token corruption
+			// can re-enroll by presenting a FRESH admin-minted, single-use enrollment
+			// code. It is admin-gated + single-use (validated AND consumed here, so the
+			// stale token is only revoked once the code checks out — no revoke-before-
+			// validate DoS), so this is not the guessable-sensor_id hijack and needs no
+			// hidden admin reset API. Revoke the stale token; a new one is minted below.
+			log.Printf("Sensor %s reset via a fresh enrollment code — revoking old token, issuing a new one", body.SensorID)
+			_ = s.DB.DeleteTokensBySensor(body.SensorID)
+			existingToken = false
+			consumedEnrollCode = enrollCode // already consumed; the gate below must not re-consume
+		default:
+			writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"error": "sensor already enrolled; present its current sensor token, an admin token, or a fresh admin-minted enrollment code (X-Vedetta-Enrollment-Code) to reset it",
+			})
+			return
 		}
 	}
-
-	// consumedEnrollCode is set to the enrollment code (if any) this registration
-	// spends, so we can record the minted token for idempotent recovery (Issue #44).
-	consumedEnrollCode := ""
 
 	// New-sensor enrollment gate: once an admin exists, registering a brand-new
 	// sensor requires an admin bearer or a valid single-use enrollment code —
@@ -1284,15 +1295,19 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case !isAdmin:
-			if s.Enroll == nil || !s.Enroll.Consume(enrollCode) {
-				writeJSON(w, http.StatusUnauthorized, map[string]any{
-					"error": "new sensor enrollment requires an admin token or a valid enrollment code (an admin can mint one via POST /api/v1/enrollment-codes)",
-				})
-				return
+			// If the reset-via-code recovery path above already consumed this code,
+			// don't consume again (single-use would fail and wrongly 401).
+			if consumedEnrollCode == "" {
+				if s.Enroll == nil || !s.Enroll.Consume(enrollCode) {
+					writeJSON(w, http.StatusUnauthorized, map[string]any{
+						"error": "new sensor enrollment requires an admin token or a valid enrollment code (an admin can mint one via POST /api/v1/enrollment-codes)",
+					})
+					return
+				}
+				// Remember which code this enrollment consumed so, once the token is
+				// minted below, we can make a lost-response retry idempotent (Issue #44).
+				consumedEnrollCode = enrollCode
 			}
-			// Remember which code this enrollment consumed so, once the token is
-			// minted below, we can make a lost-response retry idempotent (Issue #44).
-			consumedEnrollCode = enrollCode
 		}
 	}
 

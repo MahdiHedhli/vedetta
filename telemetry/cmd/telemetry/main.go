@@ -1,4 +1,4 @@
-// Command telemetry is the Vedetta opt-in, privacy-reduced threat-export daemon.
+// Command telemetry is the Vedetta on-by-default (opt-out), privacy-reduced threat-export daemon.
 //
 // It is ON by default (opt-out): only VEDETTA_TELEMETRY_OPTIN=false disables it,
 // in which case it performs no Core reads, no network egress, no reporter
@@ -53,7 +53,7 @@ func main() {
 	}
 
 	// Loud disclosure — on-by-default sharing must never be silent.
-	log.Println("Telemetry: ON — contributing anonymized, advisory-only threat signals to the community feed.")
+	log.Println("Telemetry: ON by default (opt-out) — contributing privacy-reduced, pseudonymous (not anonymous), advisory-only threat signals to the community feed.")
 	log.Println("           No source IPs / MACs / hostnames ever leave your network (see PRIVACY.md and")
 	log.Println("           specs/003-threat-network/anonymization-proof.md). Opt out any time:")
 	log.Println("           set VEDETTA_TELEMETRY_OPTIN=false and restart.")
