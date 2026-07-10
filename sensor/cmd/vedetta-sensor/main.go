@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -110,12 +111,14 @@ func main() {
 		}
 	}
 
-	// Register this sensor with Core
-	if err := core.Register(scanCIDR, *primary, interfaces); err != nil {
-		log.Printf("WARNING: Could not register with Core at %s: %v", *coreURL, err)
-		log.Printf("Scans will continue — results will be pushed when Core becomes available")
-	} else {
+	// Register this sensor with Core, retrying with backoff. A transient Core
+	// outage at boot must not permanently leave the sensor unregistered (it was
+	// previously attempted exactly once).
+	if registerWithRetry(core, scanCIDR, *primary, interfaces) {
 		log.Printf("Registered with Core at %s", *coreURL)
+	} else {
+		log.Printf("WARNING: Could not register with Core at %s after retries", *coreURL)
+		log.Printf("Scans will continue — results will be pushed when Core becomes available")
 	}
 
 	log.Printf("Starting scan loop: cidr=%s interval=%s ports=%v", scanCIDR, *interval, *scanPorts)
@@ -125,9 +128,14 @@ func main() {
 	var capturer *dnscap.Capturer
 	var passiveCapturer *passive.Capturer
 	var passiveHosts chan netscan.DiscoveredHost
+	var dnsQueries chan dnscap.Query
+	// Dropped-event counters. The capture channels are bounded; an overflowing
+	// capture burst previously vanished with a bare `default:` and no trace. Count
+	// drops so an operator can see when the sensor is shedding load.
+	var droppedDNS, droppedHosts atomic.Int64
 
 	if *dnsEnabled {
-		dnsQueries := make(chan dnscap.Query, 100)
+		dnsQueries = make(chan dnscap.Query, 100)
 
 		capturer, err = dnscap.NewCapturer(dnscap.Config{
 			Interface:    *dnsIface,
@@ -139,7 +147,7 @@ func main() {
 				select {
 				case dnsQueries <- q:
 				default:
-					// Queue full, skip
+					droppedDNS.Add(1) // queue full — shedding load, reported below
 				}
 			},
 		})
@@ -180,6 +188,7 @@ func main() {
 				select {
 				case passiveHosts <- host:
 				default:
+					droppedHosts.Add(1) // queue full — shedding load, reported below
 				}
 			},
 		})
@@ -205,16 +214,7 @@ func main() {
 	runScan(scanner, core, scanCIDR, *scanPorts)
 
 	if *oneshot {
-		if capturer != nil {
-			capturer.Stop()
-		}
-		if passiveCapturer != nil {
-			passiveCapturer.Stop()
-		}
-		if passiveHosts != nil {
-			close(passiveHosts)
-		}
-		wg.Wait()
+		shutdownCaptures(capturer, passiveCapturer, dnsQueries, passiveHosts, &wg)
 		return
 	}
 
@@ -229,20 +229,70 @@ func main() {
 		select {
 		case <-ticker.C:
 			runScan(scanner, core, scanCIDR, *scanPorts)
+			if d, h := droppedDNS.Load(), droppedHosts.Load(); d > 0 || h > 0 {
+				log.Printf("Cumulative dropped events (capture buffers overflowed): %d DNS queries, %d passive hosts", d, h)
+			}
 		case s := <-sig:
 			log.Printf("Received %s, shutting down", s)
-			if capturer != nil {
-				capturer.Stop()
+			if d, h := droppedDNS.Load(), droppedHosts.Load(); d > 0 || h > 0 {
+				log.Printf("Dropped during run: %d DNS queries, %d passive hosts", d, h)
 			}
-			if passiveCapturer != nil {
-				passiveCapturer.Stop()
-			}
-			if passiveHosts != nil {
-				close(passiveHosts)
-			}
-			wg.Wait()
+			shutdownCaptures(capturer, passiveCapturer, dnsQueries, passiveHosts, &wg)
 			return
 		}
+	}
+}
+
+// registerWithRetry registers the sensor with Core, retrying with exponential
+// backoff so a transient Core outage at boot does not leave the sensor
+// permanently unregistered. Returns true once registration succeeds.
+func registerWithRetry(core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
+	const maxAttempts = 4
+	delay := 2 * time.Second
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := core.Register(cidr, primary, interfaces); err == nil {
+			return true
+		} else {
+			log.Printf("Register attempt %d/%d failed: %v", attempt, maxAttempts, err)
+		}
+		if attempt < maxAttempts {
+			time.Sleep(delay)
+			delay *= 2
+		}
+	}
+	return false
+}
+
+// shutdownCaptures stops the capturers, closes the capture channels so their push
+// goroutines drain and return, and waits with a bounded timeout. Closing
+// dnsQueries — not just passiveHosts — is essential: pushDNSQueries only returns
+// when its channel is closed, so leaving it open deadlocked wg.Wait() forever on
+// SIGTERM whenever DNS capture had started (beta-gate B8). The timeout guarantees
+// shutdown even if a push goroutine is wedged on a slow Core.
+func shutdownCaptures(capturer *dnscap.Capturer, passiveCapturer *passive.Capturer,
+	dnsQueries chan dnscap.Query, passiveHosts chan netscan.DiscoveredHost, wg *sync.WaitGroup) {
+	if capturer != nil {
+		capturer.Stop()
+	}
+	if passiveCapturer != nil {
+		passiveCapturer.Stop()
+	}
+	if dnsQueries != nil {
+		close(dnsQueries)
+	}
+	if passiveHosts != nil {
+		close(passiveHosts)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		log.Printf("WARNING: capture push goroutines did not finish within 10s — forcing shutdown")
 	}
 }
 

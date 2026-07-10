@@ -1,8 +1,11 @@
 package main
 
 import (
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/vedetta-network/vedetta/sensor/internal/dnscap"
 	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
 
@@ -56,5 +59,58 @@ func TestMergePassiveHostFromEmpty(t *testing.T) {
 	merged := mergePassiveHost(netscan.DiscoveredHost{}, observed)
 	if merged.FriendlyName != "Kitchen Display" {
 		t.Fatalf("friendly name lost from empty merge: got %q", merged.FriendlyName)
+	}
+}
+
+// TestShutdownCapturesClosesDNSChannel is the regression test for the beta-gate
+// B8 shutdown deadlock: pushDNSQueries only returns when its channel is closed,
+// and shutdown used to close only passiveHosts, so wg.Wait() blocked forever
+// whenever DNS capture had started. shutdownCaptures must close the DNS channel
+// too and return promptly.
+func TestShutdownCapturesClosesDNSChannel(t *testing.T) {
+	dnsQueries := make(chan dnscap.Query, 8)
+	passiveHosts := make(chan netscan.DiscoveredHost, 8)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	// Model both push goroutines: each returns only when its channel is closed.
+	go func() {
+		defer wg.Done()
+		for range dnsQueries {
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range passiveHosts {
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		shutdownCaptures(nil, nil, dnsQueries, passiveHosts, &wg) // nil capturers are guarded
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Both goroutines drained and returned → no deadlock.
+	case <-time.After(3 * time.Second):
+		t.Fatal("shutdownCaptures did not return within 3s — a capture channel was left open (B8 deadlock)")
+	}
+}
+
+// TestShutdownCapturesNilChannels ensures shutdown is safe when capture is
+// disabled (channels never created).
+func TestShutdownCapturesNilChannels(t *testing.T) {
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+	go func() {
+		shutdownCaptures(nil, nil, nil, nil, &wg)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdownCaptures hung with nil channels")
 	}
 }
