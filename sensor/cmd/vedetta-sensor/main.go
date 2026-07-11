@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -249,12 +250,62 @@ func main() {
 		return
 	}
 
-	// Periodic scan loop with graceful shutdown
-	ticker := time.NewTicker(*interval)
-	defer ticker.Stop()
+	// Assemble the periodic-scan run state so the loop can be driven identically by
+	// the interactive/Unix front-end here and by the Windows service front-end
+	// (service_windows.go), each supplying its own cancellation context.
+	run := &sensorRun{
+		scanner:         scanner,
+		core:            core,
+		scanCIDR:        scanCIDR,
+		primary:         *primary,
+		scanPorts:       *scanPorts,
+		interval:        *interval,
+		interfaces:      interfaces,
+		capturer:        capturer,
+		passiveCapturer: passiveCapturer,
+		dnsQueries:      dnsQueries,
+		passiveHosts:    passiveHosts,
+		wg:              &wg,
+		droppedDNS:      &droppedDNS,
+		droppedHosts:    &droppedHosts,
+	}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	// Interactive / Unix front-end: cancel the run on SIGINT/SIGTERM. os.Interrupt
+	// is SIGINT; SIGTERM is delivered on Unix and is a harmless, never-delivered
+	// no-op on Windows (the Windows service handles stop via the SCM instead).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	run.loop(ctx)
+}
+
+// sensorRun holds the state the periodic scan loop needs so the loop can be driven
+// identically from the interactive/Unix front-end (main) and, later, the Windows
+// service front-end (service_windows.go) — each supplying its own cancellation
+// context (signal-cancelled on Unix; SCM-cancelled under the Windows SCM).
+type sensorRun struct {
+	scanner         *netscan.Scanner
+	core            *client.CoreClient
+	scanCIDR        string
+	primary         bool
+	scanPorts       bool
+	interval        time.Duration
+	interfaces      []netinfo.NetworkInterface
+	capturer        *dnscap.Capturer
+	passiveCapturer *passive.Capturer
+	dnsQueries      chan dnscap.Query
+	passiveHosts    chan netscan.DiscoveredHost
+	wg              *sync.WaitGroup
+	droppedDNS      *atomic.Int64
+	droppedHosts    *atomic.Int64
+}
+
+// loop runs periodic scans until ctx is cancelled, then drains captures within the
+// bounded shutdown window. This is the single run body shared by every platform
+// front-end; cancellation source (signal vs SCM) is the front-end's concern.
+func (r *sensorRun) loop(ctx context.Context) {
+	ticker := time.NewTicker(r.interval)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -264,17 +315,17 @@ func main() {
 			// enrollment code), keep retrying with the SAME retained enrollment code
 			// so the sensor recovers the idempotent token instead of running
 			// unregistered forever (issue #44).
-			ensureRegistered(core, scanCIDR, *primary, interfaces)
-			runScan(scanner, core, scanCIDR, *scanPorts)
-			if d, h := droppedDNS.Load(), droppedHosts.Load(); d > 0 || h > 0 {
+			ensureRegistered(r.core, r.scanCIDR, r.primary, r.interfaces)
+			runScan(r.scanner, r.core, r.scanCIDR, r.scanPorts)
+			if d, h := r.droppedDNS.Load(), r.droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Cumulative dropped events (capture buffers overflowed): %d DNS queries, %d passive hosts", d, h)
 			}
-		case s := <-sig:
-			log.Printf("Received %s, shutting down", s)
-			if d, h := droppedDNS.Load(), droppedHosts.Load(); d > 0 || h > 0 {
+		case <-ctx.Done():
+			log.Printf("Shutdown requested, draining captures")
+			if d, h := r.droppedDNS.Load(), r.droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Dropped during run: %d DNS queries, %d passive hosts", d, h)
 			}
-			shutdownCaptures(capturer, passiveCapturer, dnsQueries, passiveHosts, &wg)
+			shutdownCaptures(r.capturer, r.passiveCapturer, r.dnsQueries, r.passiveHosts, r.wg)
 			return
 		}
 	}

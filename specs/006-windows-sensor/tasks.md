@@ -8,15 +8,16 @@ Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Wind
 - [ ] **W0.1** ETW spike: minimal `main` on a Win 11 VM that opens a real-time
   `Microsoft-Windows-DNS-Client` session and prints event 3006/3008 with qname/type/
   answers, using the candidate pure-Go ETW lib. Decide lib-vs-hand-rolled. `[S]`
-- [ ] **W0.2** Confirm CI can emit a `CGO_ENABLED=0 GOOS=windows GOARCH=amd64` binary +
-  checksum with no MinGW.
+- [x] **W0.2** Confirm a `CGO_ENABLED=0 GOOS=windows GOARCH=amd64` binary builds with no
+  MinGW. **Done** — `go build ./...` for windows/amd64 succeeds today (gopacket/pcap loads
+  `wpcap.dll` at runtime on Windows, so no cgo at build time). CI wiring is W6.2.
 
-## W1 — Cross-platform refactor (no behavior change)
-- [ ] **W1.1** Extract `main.go` post-setup body into `runLoop(ctx)`.
-- [ ] **W1.2** Unix/interactive front-end via `signal.NotifyContext(os.Interrupt, SIGTERM)`
-  (`SIGTERM` behind `!windows`).
-- [ ] **W1.3** Verify: full Linux/macOS `go build/vet/test` unchanged; graceful shutdown
-  still drains captures.
+## W1 — Cross-platform refactor (no behavior change) ✅
+- [x] **W1.1** Extract `main.go`'s periodic loop into `sensorRun.loop(ctx)`.
+- [x] **W1.2** Unix/interactive front-end via `signal.NotifyContext(os.Interrupt, SIGTERM)`.
+  (SIGTERM compiles + is a harmless no-op on Windows, so no build tag was needed here.)
+- [x] **W1.3** Verified: Linux/macOS `go build/vet/test` green (6 pkgs); windows/amd64
+  cross-compiles clean; shutdown drain unchanged.
 
 ## W2 — Windows service front-end (`//go:build windows`)
 - [ ] **W2.1** `service_windows.go`: `svc.Handler` mapping `Stop/Shutdown`→`cancel(ctx)`,

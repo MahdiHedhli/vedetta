@@ -18,11 +18,15 @@ handshake, HTTP/JSON client, `runtime.GOOS/GOARCH` identity, `net.Interfaces()`
 enumeration, and the nmap XML parser — is already portable and compiles on
 Windows unchanged. The Windows-specific work concentrates in four areas:
 
-1. **Packet capture.** `internal/dnscap` and `internal/passive` bind to libpcap via
-   cgo (`gopacket/pcap`). Windows has no libpcap; the equivalent is **Npcap**, a
-   kernel driver whose free license forbids redistribution/silent install and caps
-   at 5 installs. Rather than take that dependency, the Windows DNS path uses the
-   built-in **ETW `Microsoft-Windows-DNS-Client` provider** (no driver, no cgo).
+1. **Packet capture.** `internal/dnscap` and `internal/passive` use `gopacket/pcap`.
+   On Unix that binds libpcap via cgo; on **Windows** `gopacket/pcap` loads
+   `wpcap.dll` at **runtime** (no cgo, no SDK) — so the sensor *already*
+   cross-compiles to `windows/amd64` with `CGO_ENABLED=0` (verified), but the pcap
+   path *runs* only if **Npcap** (whose free license forbids redistribution/silent
+   install, caps at 5 installs) is installed. Rather than take that runtime
+   dependency, the default Windows DNS path uses the built-in **ETW
+   `Microsoft-Windows-DNS-Client` provider** (no driver, no `wpcap.dll`); the
+   pcap path becomes the Phase-3 opt-in when the user has installed Npcap.
 2. **Service lifecycle.** `cmd/vedetta-sensor/main.go` shuts down on `SIGINT/SIGTERM`.
    Under the Windows Service Control Manager (SCM) those signals are never delivered,
    so today's graceful `shutdownCaptures` path would never fire on `net stop`. Needs
