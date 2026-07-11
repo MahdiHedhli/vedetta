@@ -445,6 +445,22 @@
       margin-top: 0.375rem;
     }
 
+    .beta-cta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      margin-top: 1.25rem;
+    }
+
+    .beta-cta a {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .beta-cta a:hover {
+      color: var(--accent-bright);
+    }
+
     .feature-note {
       font-size: 0.9375rem;
       color: var(--muted);
@@ -665,7 +681,7 @@
 
       <div class="badge">
         <span class="badge-dot"></span>
-        In active development
+        Public beta
       </div>
 
       <h1>A Network Watchtower <span>for <span class="accent-e">e</span>veryone</span></h1>
@@ -674,6 +690,45 @@
         Vedetta is practical security visibility for your networks. <br>
         Open-source SIEM and threat intelligence for home networks and small businesses. Know every device. Detect Threats. Own your data.
       </p>
+    </section>
+
+    <!-- Public Beta Announcement -->
+    <section id="beta">
+      <div class="badge"><span class="badge-dot"></span> Public beta — now live</div>
+      <h2>Vedetta is in <span class="accent-e">p</span>ublic beta</h2>
+      <p class="section-copy">Nine rounds of independent security review, and the watchtower is open.<br>Self-hosted, LAN-first visibility you fully control — free, open-source, and ready for real networks.</p>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-kicker">What you get today</div>
+          <h3>Monitoring that stands on its own</h3>
+          <ul class="feature-list">
+            <li>Device discovery across ARP, DHCP, mDNS, and SSDP/UPnP</li>
+            <li>Passive DNS capture with local threat scoring and enrichment</li>
+            <li>EOL router &amp; camera risk detection (FBI IC3 advisory models)</li>
+            <li>Docker Core + native macOS/Linux sensor, loopback-first by default</li>
+            <li>Opt-out community threat network &mdash; pseudonymous, known-bad indicators only</li>
+          </ul>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-kicker">What beta means</div>
+          <h3>Honest about the edges</h3>
+          <ul class="feature-list">
+            <li>Local detection works with zero cloud dependency</li>
+            <li>Hardened auth: scoped tokens, admin-gated sensor enrollment, loopback-default transport</li>
+            <li>Telemetry is on by default and opt-out &mdash; see <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer">Privacy</a></li>
+            <li>The native sensor install still assumes some networking comfort</li>
+            <li>AGPLv3 &mdash; audit it, fork it, run it on your own hardware</li>
+          </ul>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-kicker">Get started</div>
+          <h3>Stand up your watchtower</h3>
+          <p>Clone the repo, generate credentials, and bring up Core with Docker Compose &mdash; the <a href="#start">Start</a> section has the exact commands. Deploy on a Raspberry Pi, a Linux box, or a Mac.</p>
+          <p class="beta-cta"><a href="#start">Start Vedetta Core &rarr;</a><a href="https://github.com/MahdiHedhli/vedetta" target="_blank" rel="noreferrer">Star it on GitHub &rarr;</a></p>
+        </div>
+      </div>
     </section>
 
     <!-- Features Section -->
@@ -726,7 +781,7 @@
 
     <section id="status">
       <h2>Status</h2>
-      <p class="section-copy">Clear lines between shipped work and roadmap work.<br>Vedetta is in active development. These buckets are the honest version of the product state right now.</p>
+      <p class="section-copy">Clear lines between shipped work and roadmap work.<br>Vedetta is in public beta. These buckets are the honest version of the product state right now.</p>
       <div class="features-grid">
         <div class="feature-card">
           <div class="feature-kicker">Available Now</div>
@@ -748,7 +803,7 @@
           <h3>Validating the newest work</h3>
           <ul class="feature-list">
             <li>Real-world SNR validation of UniFi ingestion and discovery correlation on live deployments</li>
-            <li>Community telemetry and threat network &mdash; implemented, on by default (opt-out), awaiting an operational validation pass</li>
+            <li>Community telemetry and threat network &mdash; implemented, on by default (opt-out), security-reviewed for beta; growing the reporter base toward useful consensus</li>
             <li>Install and onboarding polish</li>
             <li>Token rotation and broader admin/dashboard auth hardening</li>
             <li>More durable docs and setup guidance</li>
