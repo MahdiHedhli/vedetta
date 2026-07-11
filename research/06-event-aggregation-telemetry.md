@@ -1,6 +1,13 @@
 # Event Aggregation & Telemetry for the Vedetta Threat Network
 
 > Priority: P1 — Unique competitive moat; first crowdsourced threat intel corpus from home/SMB networks
+>
+> **Historical (design-era research).** The "Current State" section below describes the
+> ORIGINAL stubbed telemetry (off unless `VEDETTA_TELEMETRY_OPTIN=true`, discarded ingest).
+> The shipped system has since changed: telemetry is **on by default (opt-out)** — disabled
+> only by exact `VEDETTA_TELEMETRY_OPTIN=false` — the daemon is fully built, and the threat
+> network ingests/aggregates real signals. Read this file as design rationale, not current
+> behavior; see [PRIVACY.md](../PRIVACY.md) and [docs/threat-network-operations.md](../docs/threat-network-operations.md).
 
 ## Current State in Vedetta
 

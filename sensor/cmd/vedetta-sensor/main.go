@@ -86,7 +86,7 @@ func main() {
 		// generic new-sensor code will not reactivate an existing sensor.
 		log.Println("Re-registering after reset ...")
 		if strings.TrimSpace(*enrollCode) == "" && strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE")) == "" {
-			log.Println("NOTE: no --enroll-code supplied. If this sensor was already enrolled and Core has admin auth, re-registration needs the SAME enrollment code to recover its token.")
+			log.Println("NOTE: no --enroll-code supplied. If this sensor was already enrolled, recovery within a few minutes of the original enrollment still works with the ORIGINAL code; after that window an admin must mint a FRESH reset code bound to this sensor_id (POST /api/v1/enrollment-codes with {\"sensor_id\":...}) and you pass it as --enroll-code. A generic new-sensor code will not reactivate an existing sensor.")
 		}
 	}
 
