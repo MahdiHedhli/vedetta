@@ -461,6 +461,27 @@
       color: var(--accent-bright);
     }
 
+    .dashboard-preview {
+      max-width: 1040px;
+      margin: 2.5rem auto 0;
+    }
+
+    .dashboard-preview img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+    }
+
+    .dashboard-preview figcaption {
+      margin-top: 0.85rem;
+      text-align: center;
+      font-size: 0.8125rem;
+      color: var(--muted);
+    }
+
     .feature-note {
       font-size: 0.9375rem;
       color: var(--muted);
@@ -697,6 +718,10 @@
       <div class="badge"><span class="badge-dot"></span> Public beta — now live</div>
       <h2>Vedetta is in <span class="accent-e">p</span>ublic beta</h2>
       <p class="section-copy">Nine rounds of independent security review, and the watchtower is open.<br>Self-hosted, LAN-first visibility you fully control — free, open-source, and ready for real networks.</p>
+      <figure class="dashboard-preview">
+        <img src="assets/dashboard-tour.gif" alt="Vedetta dashboard tour: overview, device inventory with end-of-life risk flags, and DNS threat detection" loading="lazy" width="1280" height="800" />
+        <figcaption>The dashboard — overview, device inventory, and DNS threat detection (shown with synthetic demo data).</figcaption>
+      </figure>
       <div class="features-grid">
         <div class="feature-card">
           <div class="feature-kicker">What you get today</div>
