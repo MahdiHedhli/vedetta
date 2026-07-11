@@ -221,7 +221,7 @@ This split is deliberate. The local network is the strongest source of truth Ved
 
 - **Core:** Raspberry Pi 4 (4 GB RAM) or a small x86 box is a reasonable target for public beta deployments.
 - **Sensor:** macOS or Linux host with `nmap` on the network segment you want to inspect.
-- **Windows:** not yet a supported public install path.
+- **Windows:** Core runs on Windows via Docker (Desktop/WSL2); the native sensor that provides LAN visibility is macOS/Linux today, with Windows sensor support on the roadmap.
 
 ## Router And Firewall Integrations
 

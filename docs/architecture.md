@@ -73,7 +73,7 @@ vedetta-core (Docker Compose)
 
 - **Public install path:** macOS and Linux
 - **Current workflow:** native install, local network access, and elevated privileges for the strongest visibility
-- **Windows:** not yet a supported public install story
+- **Windows:** Core runs under Docker (Desktop/WSL2); the native sensor is macOS/Linux today — Windows sensor support (an Npcap-based capture path) is on the roadmap
 
 ## Data Sources
 
