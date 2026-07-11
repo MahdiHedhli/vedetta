@@ -17,6 +17,23 @@ function isNewDevice(firstSeen) {
   return Date.now() - new Date(firstSeen).getTime() < 24 * 60 * 60 * 1000;
 }
 
+// Small label helper for a device's discovery_source (passive discovery vs active
+// scan). Module-scoped so EVERY component that renders a device row can use it —
+// it was previously defined inside one component and referenced from another,
+// which threw "discoveryLabel is not defined" and blanked the dashboard whenever a
+// device had a non-nmap discovery_source (e.g. ARP/DHCP/mDNS/SSDP passive finds).
+function discoveryLabel(src) {
+  const labels = {
+    passive: 'passive',
+    dhcp: 'DHCP',
+    mdns: 'mDNS',
+    ssdp: 'SSDP',
+    arp: 'ARP',
+    nmap_active: 'active scan',
+  };
+  return labels[src] || src || '—';
+}
+
 const SEGMENT_COLORS = {
   default: 'bg-teal-500/20 text-teal-300',
   iot: 'bg-amber-500/20 text-amber-300',
@@ -926,19 +943,6 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       adguard: 'AdGuard Home',
       embedded_resolver: 'Embedded DNS',
       iptables_intercept: 'iptables',
-    };
-    return labels[src] || src || '—';
-  };
-
-  // Small label helper for L5 discovery_source (additive, read-only reference from salvage L5)
-  const discoveryLabel = (src) => {
-    const labels = {
-      passive: 'passive',
-      dhcp: 'DHCP',
-      mdns: 'mDNS',
-      ssdp: 'SSDP',
-      arp: 'ARP',
-      nmap_active: 'active scan',
     };
     return labels[src] || src || '—';
   };
