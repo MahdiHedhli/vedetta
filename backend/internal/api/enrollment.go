@@ -266,18 +266,20 @@ func (s *Server) handleGenerateEnrollmentCode(w http.ResponseWriter, r *http.Req
 	sensorID := strings.TrimSpace(body.SensorID)
 
 	if sensorID != "" {
-		// Bind only to a sensor that currently has an active token — that is the
-		// exact "stranded but Core still holds the credential" state a reset
-		// recovers. If there is no active token, it is a fresh enrollment: the
-		// admin should mint a generic code instead.
-		exists, err := s.DB.HasActiveSensorToken(sensorID)
+		// Bind to any EXISTING sensor identity — whether its token is currently active
+		// (stranded local copy) OR was revoked by an admin (deliberate reactivation).
+		// Keying on row existence (not active-token state) is what lets an admin bring
+		// a revoked sensor back on purpose, while still refusing generic re-enrollment
+		// of that same id (beta-gate B1a). If the id never existed, it is a fresh
+		// enrollment: the admin should mint a generic code instead.
+		exists, err := s.DB.SensorExists(sensorID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to check sensor state"})
 			return
 		}
 		if !exists {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "no active sensor with that sensor_id to reset; omit sensor_id to mint a generic new-sensor code",
+				"error": "no sensor with that sensor_id exists to reset; omit sensor_id to mint a generic new-sensor code",
 			})
 			return
 		}

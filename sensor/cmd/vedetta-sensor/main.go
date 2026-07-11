@@ -73,17 +73,17 @@ func main() {
 		}
 		log.Println("Sensor authentication token has been cleared.")
 		if !coreExplicit {
-			// Bare `--reset` (the installer's reset step): clear and exit. The
-			// service (re)start then re-registers, supplying the enrollment code.
-			log.Println("Restart the sensor with --core and — if Core has admin auth — the SAME --enroll-code to re-register cleanly.")
+			// Bare `--reset` (the installer's reset step): clear and exit. The service
+			// (re)start then re-registers, supplying the enrollment code.
+			log.Println("Restart the sensor with --core to re-register. Within a few minutes the ORIGINAL --enroll-code still works (idempotent recovery); after that window — or once an admin has revoked the sensor — ask an admin for a FRESH reset code bound to this sensor (POST /api/v1/enrollment-codes with {\"sensor_id\":...}) and pass it as --enroll-code. A generic new-sensor code will not reactivate an existing sensor.")
 			os.Exit(0)
 		}
-		// `--reset --core ...`: fall through and re-register in THIS process so a
-		// reset never strands the sensor (issue #44). The sensor's registration
-		// response for its original enrollment may have been lost after the backend
-		// consumed the code; re-supplying the SAME --enroll-code lets the backend
-		// hand back the idempotent token instead of rejecting an "already enrolled"
-		// sensor.
+		// `--reset --core ...`: fall through and re-register in THIS process so a reset
+		// never strands the sensor (issue #44). If the original registration response
+		// was lost, re-supplying the SAME --enroll-code within its short TTL returns the
+		// same idempotent token. After that window (or once the token was revoked), the
+		// sensor needs a FRESH admin-minted RESET code bound to this sensor_id — a
+		// generic new-sensor code will not reactivate an existing sensor.
 		log.Println("Re-registering after reset ...")
 		if strings.TrimSpace(*enrollCode) == "" && strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE")) == "" {
 			log.Println("NOTE: no --enroll-code supplied. If this sensor was already enrolled and Core has admin auth, re-registration needs the SAME enrollment code to recover its token.")

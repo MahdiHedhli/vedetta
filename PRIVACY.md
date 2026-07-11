@@ -22,7 +22,10 @@ information.
 
 Vedetta is **local-first**. When you run it, your network data — devices,
 events, DNS/firewall logs, scan results — stays in **your** Core's database on
-**your** infrastructure. The project operators never receive it.
+**your** infrastructure. The project operators never receive that data, with one
+narrow, controllable exception: the **community telemetry** described immediately
+below, which (while enabled) shares only privacy-reduced known-bad indicators and
+aggregate counts — never your devices, logs, or query history.
 
 ### Community telemetry (on by default, opt-out)
 
@@ -40,8 +43,11 @@ Vedetta contributes to a **community threat feed** by default. This is:
   hostname or address) — plus coarse aggregate counts. **For beta,
   telemetry shares ONLY these Core-confirmed block-list matches** — the
   query-derived high-confidence-candidate (eTLD+1) and behavior-summary signals are
-  temporarily DISABLED pending a trust-model redesign, so nothing derived from your
-  own observed queries is shared today;
+  temporarily DISABLED pending a trust-model redesign. To be precise: the aggregate
+  counts and the hourly bucket *are* derived from your traffic (they report **that**,
+  and how often, a public known-bad indicator was observed), but **no query-derived
+  or caller-supplied domain string is exported beyond the matched public block-list
+  indicator itself** — your raw query names never leave the node;
 - **salted-HMAC counting stays local**: the per-source identifier used to count
   distinct assets is a salted HMAC computed locally with a 256-bit per-instance
   secret and is **never forwarded**; the published feed exposes only the indicator

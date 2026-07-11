@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -45,17 +46,25 @@ func TestProvisionSensorToken_Atomicity(t *testing.T) {
 		t.Fatalf("after first provision want 1 active, got %d", active())
 	}
 
-	// Provisioning a SECOND active token WITHOUT revoking must fail on the partial
-	// unique index — and must roll back, leaving the first token intact.
+	// Provisioning as a NEW enrollment again must fail the identity precondition
+	// (the row already exists) — ErrSensorExists — and roll back, leaving the first
+	// token intact. This is the guard that stops a generic code re-enrolling an
+	// existing (even revoked) sensor.
 	_, tok2 := mint()
-	if err := db.ProvisionSensorToken(sensor, tok2, false); err == nil {
-		t.Fatal("expected provisioning a second active token without revoke to fail the unique index")
+	if err := db.ProvisionSensorToken(sensor, tok2, false); !errors.Is(err, ErrSensorExists) {
+		t.Fatalf("expected ErrSensorExists provisioning a new token for an existing identity, got %v", err)
 	}
 	if active() != 1 {
 		t.Fatalf("after a failed second provision want 1 active (rollback), got %d", active())
 	}
 	if _, err := db.ValidateToken(raw1); err != nil {
 		t.Fatalf("the original token must survive a failed provision: %v", err)
+	}
+
+	// A reset against a NON-existent identity must fail with ErrSensorNotFound.
+	_, tokX := mint()
+	if err := db.ProvisionSensorToken(models.Sensor{SensorID: "ghost"}, tokX, true); !errors.Is(err, ErrSensorNotFound) {
+		t.Fatalf("expected ErrSensorNotFound resetting a non-existent sensor, got %v", err)
 	}
 
 	// A reset (revokeExisting=true) succeeds: old revoked, new active, still one.

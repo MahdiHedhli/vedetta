@@ -232,12 +232,16 @@ func (db *DB) migrate() error {
 // and safe to run on every Open. The dedup MUST precede the index: a partial
 // UNIQUE index cannot be created while the table already violates it.
 func (db *DB) ensureSingleActiveSensorToken() {
-	db.Exec(`UPDATE api_tokens SET revoked = 1
+	if _, err := db.Exec(`UPDATE api_tokens SET revoked = 1
 		WHERE scope = 'sensor' AND revoked = 0 AND rowid NOT IN (
 			SELECT MAX(rowid) FROM api_tokens
-			WHERE scope = 'sensor' AND revoked = 0 GROUP BY sensor_id)`)
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_api_tokens_active_sensor
-		ON api_tokens (sensor_id) WHERE scope = 'sensor' AND revoked = 0`)
+			WHERE scope = 'sensor' AND revoked = 0 GROUP BY sensor_id)`); err != nil {
+		log.Printf("ensureSingleActiveSensorToken: dedup of active sensor tokens failed: %v", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_api_tokens_active_sensor
+		ON api_tokens (sensor_id) WHERE scope = 'sensor' AND revoked = 0`); err != nil {
+		log.Printf("ensureSingleActiveSensorToken: creating the unique sensor-token index failed: %v", err)
+	}
 }
 
 // settingsDDL is the runtime-ensure definition of the generic key/value settings

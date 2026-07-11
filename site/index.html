@@ -797,7 +797,7 @@
         <div class="feature-card">
           <div class="feature-kicker">Privacy And Trust</div>
           <h3>Self-hosted first</h3>
-          <p>The local deployment stays fully useful with no cloud dependency. Community telemetry is on by default but trivially opt-out, advisory-only, and privacy-reduced and pseudonymous (not anonymous) — no source IPs, MACs, or hostnames ever leave your network.</p>
+          <p>The local deployment stays fully useful with no cloud dependency. Community telemetry is on by default but trivially opt-out, advisory-only, and privacy-reduced and pseudonymous (not anonymous) — no internal/device source IPs, MACs, or hostnames are ever serialized into the payload. (As with any outbound connection, the network intermediary — Cloudflare — sees your Core's public WAN address; that is transport metadata, not part of what is shared.)</p>
         </div>
 
         <div class="feature-card">

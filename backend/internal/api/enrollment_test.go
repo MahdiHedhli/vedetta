@@ -480,3 +480,68 @@ func TestReplayAfterResetDoesNotReturnDeadToken(t *testing.T) {
 		t.Fatalf("replay of original code after reset: expected 401, got %d: %s", w3.Code, w3.Body.String())
 	}
 }
+
+// TestRevokedSensorCannotBeReEnrolledWithGenericCode is the beta-gate B1a
+// regression Sol found: after an admin REVOKES a sensor, its row still exists but
+// has no active token. Keying new-vs-reset on active-token existence let a generic
+// new-sensor code re-enroll it, silently undoing the revocation and overwriting
+// metadata. It must now be rejected; only an admin-minted bound reset code may
+// reactivate it.
+func TestRevokedSensorCannotBeReEnrolledWithGenericCode(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	ipN := 0
+	register := func(id, hostname, code string) *httptest.ResponseRecorder {
+		ipN++
+		body := []byte(fmt.Sprintf(`{"sensor_id":%q,"hostname":%q,"os":"linux","arch":"amd64","cidr":"192.168.1.0/24","version":"t"}`, id, hostname))
+		req := httptest.NewRequest("POST", "/api/v1/sensor/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if code != "" {
+			req.Header.Set("X-Vedetta-Enrollment-Code", code)
+		}
+		req.RemoteAddr = fmt.Sprintf("203.0.113.%d:1234", 30+ipN)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	hostnameOf := func() string {
+		var h string
+		_ = db.QueryRow(`SELECT hostname FROM sensors WHERE sensor_id = ?`, "revoked-target").Scan(&h)
+		return h
+	}
+
+	// 1. Enroll the target.
+	if w := register("revoked-target", "orig-host", mintEnrollmentCode(t, router, admin)); w.Code != http.StatusOK {
+		t.Fatalf("initial enroll: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 2. Admin revokes the target's sensor token. Row remains; no active token.
+	if err := db.DeleteTokensBySensor("revoked-target"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if n := activeSensorTokenCount(t, db, "revoked-target"); n != 0 {
+		t.Fatalf("after revoke want 0 active tokens, got %d", n)
+	}
+
+	// 3. A generic new-sensor code must NOT re-enroll the revoked id, and must not
+	//    overwrite its metadata.
+	if w := register("revoked-target", "attacker-host", mintEnrollmentCode(t, router, admin)); w.Code != http.StatusUnauthorized {
+		t.Fatalf("generic re-enroll of a revoked sensor: expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := hostnameOf(); got != "orig-host" {
+		t.Fatalf("revoked sensor metadata was overwritten via a generic code: hostname=%q", got)
+	}
+	if n := activeSensorTokenCount(t, db, "revoked-target"); n != 0 {
+		t.Fatalf("a token was minted for a revoked sensor via a generic code: %d active", n)
+	}
+
+	// 4. An admin-minted bound reset/reactivation code succeeds.
+	if w := register("revoked-target", "orig-host", mintResetCode(t, router, admin, "revoked-target")); w.Code != http.StatusOK {
+		t.Fatalf("bound reset of a revoked sensor: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if n := activeSensorTokenCount(t, db, "revoked-target"); n != 1 {
+		t.Fatalf("after bound reset want exactly 1 active token, got %d", n)
+	}
+}

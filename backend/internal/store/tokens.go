@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -228,23 +229,51 @@ func (db *DB) DeleteTokensBySensor(sensorID string) error {
 	return err
 }
 
+// ErrSensorExists is returned by ProvisionSensorToken for a NEW enrollment whose
+// sensor_id identity already exists (active or revoked). A generic new-sensor
+// code must not claim or reactivate an existing identity — that would defeat an
+// admin revocation (beta-gate B1a).
+var ErrSensorExists = errors.New("sensor identity already exists")
+
+// ErrSensorNotFound is returned by ProvisionSensorToken for a RESET whose
+// sensor_id identity does not exist. There is nothing to reset/reactivate.
+var ErrSensorNotFound = errors.New("sensor identity does not exist")
+
 // ProvisionSensorToken atomically issues a sensor's single active bearer token.
-// In ONE transaction it optionally revokes every existing active sensor token for
-// the sensor, upserts the sensor row, and inserts the new token. The partial
-// unique index ux_api_tokens_active_sensor (migration 024) guarantees at most one
-// active sensor token per sensor_id, so racing resets cannot leave several valid
-// tokens behind (beta-gate B1a concurrent-reset probe). ANY failure — including
-// the revoke or a uniqueness violation from a concurrent registration — rolls the
-// whole thing back and returns an error, so a caller that receives nil can trust
-// that exactly one fresh token is now active and no partial state leaked.
-func (db *DB) ProvisionSensorToken(sensor models.Sensor, token auth.Token, revokeExisting bool) error {
+// In ONE transaction it enforces the new-vs-reset precondition on the sensor
+// IDENTITY (row existence) and installs exactly one active token:
+//   - isReset=false (NEW): the identity MUST NOT already exist (ErrSensorExists
+//     otherwise). A plain INSERT is used, so a concurrently-created identity also
+//     conflicts — a generic code can never overwrite or reactivate an existing id.
+//   - isReset=true (RESET/REACTIVATION): the identity MUST exist (ErrSensorNotFound
+//     otherwise). Existing active tokens are revoked and the row is upserted.
+//
+// The partial unique index ux_api_tokens_active_sensor (migration 024) is the
+// backstop guaranteeing at most one active sensor token per sensor_id even under
+// racing resets. ANY failure rolls the whole thing back, so a caller that
+// receives nil can trust exactly one fresh token is active and no partial state
+// leaked.
+func (db *DB) ProvisionSensorToken(sensor models.Sensor, token auth.Token, isReset bool) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() // no-op after a successful Commit
 
-	if revokeExisting {
+	// Enforce the identity precondition INSIDE the tx so it cannot be raced apart
+	// from the token install (beta-gate B1a).
+	var rows int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sensors WHERE sensor_id = ?`, sensor.SensorID).Scan(&rows); err != nil {
+		return fmt.Errorf("check sensor identity: %w", err)
+	}
+	if isReset && rows == 0 {
+		return ErrSensorNotFound
+	}
+	if !isReset && rows > 0 {
+		return ErrSensorExists
+	}
+
+	if isReset {
 		if _, err := tx.Exec(
 			`UPDATE api_tokens SET revoked = 1 WHERE sensor_id = ? AND scope = ? AND revoked = 0`,
 			sensor.SensorID, auth.ScopeSensor,
@@ -253,8 +282,10 @@ func (db *DB) ProvisionSensorToken(sensor models.Sensor, token auth.Token, revok
 		}
 	}
 
-	if err := registerSensorOn(tx, sensor); err != nil {
-		return fmt.Errorf("upsert sensor: %w", err)
+	// upsert only on reset; a NEW enrollment uses a plain INSERT so a racing
+	// creation of the same identity conflicts instead of silently overwriting it.
+	if err := registerSensorOn(tx, sensor, isReset); err != nil {
+		return fmt.Errorf("write sensor row: %w", err)
 	}
 
 	var sensorID any

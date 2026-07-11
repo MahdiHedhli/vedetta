@@ -16,15 +16,32 @@ type execQuerier interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-// RegisterSensor creates or updates a sensor record.
+// RegisterSensor creates or updates a sensor record (upsert).
 // If this is the first sensor ever registered, it becomes the primary.
 func (db *DB) RegisterSensor(sensor models.Sensor) error {
-	return registerSensorOn(db, sensor)
+	return registerSensorOn(db, sensor, true)
 }
 
-// registerSensorOn performs the sensor upsert (and primary-promotion) against any
+// SensorExists reports whether a sensor row exists for this id, REGARDLESS of
+// whether it currently has an active token. This is the identity check that
+// governs new-vs-reset enrollment: a generic code may enroll only a never-seen
+// id, while any existing id — active OR revoked — requires an admin-minted bound
+// reset code, so an admin revocation cannot be silently undone by a generic code
+// (beta-gate B1a).
+func (db *DB) SensorExists(sensorID string) (bool, error) {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sensors WHERE sensor_id = ?`, sensorID).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// registerSensorOn writes the sensor row (and primary-promotion) against any
 // execQuerier, so it composes into a larger transaction without duplicating SQL.
-func registerSensorOn(q execQuerier, sensor models.Sensor) error {
+// When upsert is true an existing row is updated; when false a plain INSERT is
+// used so a pre-existing identity causes a primary-key conflict — that is how a
+// NEW enrollment atomically refuses to overwrite/reactivate an existing sensor.
+func registerSensorOn(q execQuerier, sensor models.Sensor, upsert bool) error {
 	now := time.Now()
 
 	// Auto-promote to primary if: no sensors exist yet, or no primary is set, or flag requested
@@ -34,9 +51,11 @@ func registerSensorOn(q execQuerier, sensor models.Sensor) error {
 	_ = q.QueryRow(`SELECT COUNT(*) FROM sensors WHERE is_primary = TRUE`).Scan(&primaryCount)
 	makePrimary := count == 0 || primaryCount == 0 || sensor.IsPrimary
 
-	_, err := q.Exec(`
+	insertSQL := `
 		INSERT INTO sensors (sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary, interfaces)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online', ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'online', ?, ?)`
+	if upsert {
+		insertSQL += `
 		ON CONFLICT(sensor_id) DO UPDATE SET
 			hostname = excluded.hostname,
 			os = excluded.os,
@@ -45,18 +64,21 @@ func registerSensorOn(q execQuerier, sensor models.Sensor) error {
 			version = excluded.version,
 			last_seen = excluded.last_seen,
 			status = 'online',
-			interfaces = excluded.interfaces
-	`, sensor.SensorID, sensor.Hostname, sensor.OS, sensor.Arch, sensor.CIDR, sensor.Version, now, now, makePrimary, sensor.Interfaces)
-	if err != nil {
+			interfaces = excluded.interfaces`
+	}
+
+	if _, err := q.Exec(insertSQL, sensor.SensorID, sensor.Hostname, sensor.OS, sensor.Arch, sensor.CIDR, sensor.Version, now, now, makePrimary, sensor.Interfaces); err != nil {
 		return err
 	}
 
 	// If this sensor should be primary, demote all others
 	if makePrimary {
-		_, err = q.Exec(`UPDATE sensors SET is_primary = FALSE WHERE sensor_id != ?`, sensor.SensorID)
+		if _, err := q.Exec(`UPDATE sensors SET is_primary = FALSE WHERE sensor_id != ?`, sensor.SensorID); err != nil {
+			return err
+		}
 	}
 
-	return err
+	return nil
 }
 
 // TouchSensor updates the last_seen timestamp for a sensor.
