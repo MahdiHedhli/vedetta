@@ -5,9 +5,16 @@
 Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Windows VM.
 
 ## W0 — De-risk (spike, do first)
-- [ ] **W0.1** ETW spike: minimal `main` on a Win 11 VM that opens a real-time
-  `Microsoft-Windows-DNS-Client` session and prints event 3006/3008 with qname/type/
-  answers, using the candidate pure-Go ETW lib. Decide lib-vs-hand-rolled. `[S]`
+- [x] **W0.1** ETW spike — **DONE, confirmed on Win 11 (VEDETTA-WIN).** A cgo-free
+  Go probe using `github.com/0xrawsec/golang-etw` v1.6.2 opened a real-time
+  `Microsoft-Windows-DNS-Client` session (GUID `{1C95126E-...DB4D}`) and captured, run
+  elevated over SSH: **3006** = query (`QueryName`, `QueryType`), **3008** = response
+  (`QueryName`, `QueryType`, `QueryResults`, `QueryStatus`), plus 3009/3010/3016/3018/3020.
+  71 events / 65 with query names in 15s. **Lib decision: golang-etw** (pure-Go, no
+  hand-roll needed). W4 mapping: `3006 → {Domain, QueryType}`, `3008 → {Domain,
+  QueryType, Answers=QueryResults, Status}`. Probe: `scratchpad/etwspike/`.
+  NOTE (dev tooling): Windows OpenSSH with DefaultShell=PowerShell **breaks legacy
+  `scp`** — use `sftp` to push binaries to the VMs.
 - [x] **W0.2** Confirm a `CGO_ENABLED=0 GOOS=windows GOARCH=amd64` binary builds with no
   MinGW. **Done** — `go build ./...` for windows/amd64 succeeds today (gopacket/pcap loads
   `wpcap.dll` at runtime on Windows, so no cgo at build time). CI wiring is W6.2.

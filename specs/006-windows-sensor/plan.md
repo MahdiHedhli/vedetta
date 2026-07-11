@@ -37,15 +37,13 @@ Every step keeps Linux/macOS green (build tags isolate all Windows code).
 
 ## Technical approach
 
-- **ETW consumer library.** Prefer a vetted **pure-Go** ETW consumer (candidate:
-  `github.com/0xrawsec/golang-etw`) so we don't hand-roll `StartTrace`/`ProcessTrace`
-  + TDH event parsing. A new Go-module dependency is acceptable (cgo-free, like
-  gopacket) — the "no new required dependency" goal is specifically about kernel
-  drivers (Npcap) / external binaries (nmap), not Go modules. **Spike first** (task
-  W1): confirm the lib cleanly yields 3006/3008 fields; fall back to a minimal
-  hand-rolled consumer on `golang.org/x/sys/windows` if it is unsuitable or
-  unmaintained. Whatever we pick is vendored/pinned and license-checked (must be
-  permissive).
+- **ETW consumer library — CONFIRMED: `github.com/0xrawsec/golang-etw` v1.6.2.** The
+  W0.1 spike proved this pure-Go consumer cleanly yields 3006/3008 (+3009/3016/3018/
+  3020) with QueryName/QueryType/QueryResults/QueryStatus on Win 11, cgo-free. A new
+  Go-module dependency is fine (cgo-free, like gopacket) — the "no new required
+  dependency" goal is about kernel drivers (Npcap) / external binaries (nmap), not Go
+  modules. Pin it; confirm its license is permissive before W4 lands (spike used it
+  fine; do the formal license check at import time).
 - **Service.** `golang.org/x/sys/windows/svc` (std-adjacent, already a transitive dep)
   over `kardianos/service` — fewer moving parts, no extra dependency, direct SCM
   control for the `WaitHint` drain.
