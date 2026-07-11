@@ -412,7 +412,7 @@ export default function App() {
           <div className="flex items-center gap-3">
             <RookMark size={28} />
             <h1 className="text-xl font-display tracking-wide">Vedetta</h1>
-            <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded font-mono">v0.1.0-dev</span>
+            <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded font-mono">v0.1.0-beta.1</span>
           </div>
           <div className="flex items-center gap-4">
             {/* Admin auth status badge */}
@@ -3875,7 +3875,7 @@ function SettingsView() {
         </div>
 
         <p className="text-xs text-gray-600 text-center pt-2">
-          Some settings are still placeholders in v0.1.0-dev.
+          Some settings are still placeholders in v0.1.0-beta.1.
         </p>
       </div>
     </>
