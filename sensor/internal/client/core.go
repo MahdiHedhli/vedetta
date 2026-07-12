@@ -264,13 +264,13 @@ func (c *CoreClient) persistToken(rawToken string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create sensor token directory: %w", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := securePath(dir, true); err != nil {
 		return fmt.Errorf("secure sensor token directory: %w", err)
 	}
 	if err := os.WriteFile(c.TokenPath, []byte(token), 0o600); err != nil {
 		return fmt.Errorf("write sensor token file: %w", err)
 	}
-	if err := os.Chmod(c.TokenPath, 0o600); err != nil {
+	if err := securePath(c.TokenPath, false); err != nil {
 		return fmt.Errorf("secure sensor token permissions: %w", err)
 	}
 
@@ -281,6 +281,17 @@ func (c *CoreClient) persistToken(rawToken string) error {
 func DefaultTokenPath() (string, error) {
 	if override := strings.TrimSpace(os.Getenv("VEDETTA_SENSOR_TOKEN_FILE")); override != "" {
 		return override, nil
+	}
+
+	if runtime.GOOS == "windows" {
+		// The sensor runs as a LocalSystem service, whose %USERPROFILE% is the odd
+		// C:\Windows\System32\config\systemprofile; machine service state belongs in
+		// %ProgramData%. The installer additionally locks the ACL down (spec 006 W6).
+		base := strings.TrimSpace(os.Getenv("ProgramData"))
+		if base == "" {
+			base = `C:\ProgramData`
+		}
+		return filepath.Join(base, "Vedetta", "sensor-token"), nil
 	}
 
 	homeDir, err := os.UserHomeDir()
@@ -302,8 +313,8 @@ func loadToken(path string) (string, error) {
 	if info.IsDir() {
 		return "", fmt.Errorf("sensor token path %s is a directory", path)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		if err := os.Chmod(path, 0o600); err != nil {
+	if hasInsecurePerms(info.Mode()) {
+		if err := securePath(path, false); err != nil {
 			return "", fmt.Errorf("secure sensor token permissions: %w", err)
 		}
 	}

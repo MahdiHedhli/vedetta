@@ -32,10 +32,15 @@ Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Wind
 - [ ] **W2.2** `--install-service` / `--uninstall-service` via `svc/mgr`.
 - [ ] **W2.3** `[S]` `net stop`/`net start` drain cleanly on a VM.
 
-## W3 — Token path + ACL (security fix)
-- [ ] **W3.1** `client/core.go`: `%ProgramData%\Vedetta\sensor-token` on Windows
-  (`VEDETTA_SENSOR_TOKEN_FILE` override still wins); warn if the dir is world-readable.
-- [ ] **W3.2** `[S]` confirm a non-admin user cannot read the token after install (`icacls`).
+## W3 — Token path + ACL (security fix) ✅
+- [x] **W3.1** `client/core.go`: `%ProgramData%\Vedetta\sensor-token` on Windows
+  (`VEDETTA_SENSOR_TOKEN_FILE` override still wins). Perm-hardening split into build-tagged
+  `securePath`/`hasInsecurePerms` — POSIX `chmod` (`token_perms_other.go`) vs an NTFS ACL
+  via `icacls /inheritance:r /grant:r *S-1-5-18:(F) *S-1-5-32-544:(F)` (`token_perms_windows.go`),
+  since `os.Chmod` is a no-op on NTFS. Unix + windows cross-compile green; client tests pass.
+- [x] **W3.2** `[S]` **validated on Win 11:** after `securePath`, the file ACL is exactly
+  `NT AUTHORITY\SYSTEM:(F)` + `BUILTIN\Administrators:(F)` with inheritance removed — non-admins
+  have no access.
 
 ## W4 — ETW DNS capture (`//go:build windows`)
 - [ ] **W4.1** `dnscap/capture_windows.go` implementing the `Capturer` interface via ETW;
