@@ -12,27 +12,27 @@ func TestInsertEvents_Basic(t *testing.T) {
 
 	events := []models.Event{
 		{
-			EventID:        "evt-001",
-			Timestamp:      time.Now().UTC(),
-			EventType:      "dns_query",
-			SourceHash:     "sha256:abc123",
-			Domain:         "example.com",
-			QueryType:      "A",
-			ResolvedIP:     "93.184.216.34",
-			Blocked:        false,
-			AnomalyScore:   0.1,
-			Tags:           []string{"test"},
+			EventID:      "evt-001",
+			Timestamp:    time.Now().UTC(),
+			EventType:    "dns_query",
+			SourceHash:   "sha256:abc123",
+			Domain:       "example.com",
+			QueryType:    "A",
+			ResolvedIP:   "192.0.2.34",
+			Blocked:      false,
+			AnomalyScore: 0.1,
+			Tags:         []string{"test"},
 		},
 		{
-			EventID:        "evt-002",
-			Timestamp:      time.Now().UTC(),
-			EventType:      "dns_query",
-			SourceHash:     "sha256:abc123",
-			Domain:         "suspicious.xyz",
-			QueryType:      "A",
-			Blocked:        true,
-			AnomalyScore:   0.85,
-			Tags:           []string{"dga_candidate", "known_bad"},
+			EventID:      "evt-002",
+			Timestamp:    time.Now().UTC(),
+			EventType:    "dns_query",
+			SourceHash:   "sha256:abc123",
+			Domain:       "suspicious.xyz",
+			QueryType:    "A",
+			Blocked:      true,
+			AnomalyScore: 0.85,
+			Tags:         []string{"dga_candidate", "known_bad"},
 		},
 	}
 
@@ -305,13 +305,13 @@ func seedEvents(t *testing.T, db *DB, n int) {
 	events := make([]models.Event, n)
 	for i := range events {
 		events[i] = models.Event{
-			EventID:        "seed-" + time.Now().Format("150405.000000000") + "-" + string(rune('a'+i)),
-			Timestamp:      time.Now().UTC().Add(-time.Duration(i) * time.Minute),
-			EventType:      "dns_query",
-			SourceHash:     "seed-hash",
-			Domain:         "example.com",
-			AnomalyScore:   float64(i) * 0.1,
-			Tags:           []string{},
+			EventID:      "seed-" + time.Now().Format("150405.000000000") + "-" + string(rune('a'+i)),
+			Timestamp:    time.Now().UTC().Add(-time.Duration(i) * time.Minute),
+			EventType:    "dns_query",
+			SourceHash:   "seed-hash",
+			Domain:       "example.com",
+			AnomalyScore: float64(i) * 0.1,
+			Tags:         []string{},
 		}
 	}
 	inserted, err := db.InsertEvents(events)
@@ -367,5 +367,3 @@ func TestInsertEvents_FirewallAndDNSPayloads(t *testing.T) {
 		t.Errorf("partial: expected 1, got %d", inserted)
 	}
 }
-
-

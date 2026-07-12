@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -17,6 +18,8 @@ import (
 // DB wraps the SQLite connection.
 type DB struct {
 	*sql.DB
+	identityKeyMu sync.RWMutex
+	identityKey   []byte
 }
 
 // Open opens (or creates) the SQLite database and runs migrations.
@@ -35,7 +38,7 @@ func Open(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	store := &DB{db}
+	store := &DB{DB: db}
 	if err := store.migrate(); err != nil {
 		return nil, fmt.Errorf("migration failed: %w", err)
 	}
@@ -223,6 +226,13 @@ func (db *DB) migrate() error {
 	// self-heals even without the migration files present.
 	db.ensureSingleActiveSensorToken()
 
+	// Spec 007 is additive, but the binary is also distributed without the SQL
+	// migration directory. Keep the runtime and inline schemas at exact parity,
+	// and self-heal an older database whose migration files were unavailable.
+	if err := db.ensureAssetCenteredSchema(); err != nil {
+		return fmt.Errorf("ensure asset-centered schema: %w", err)
+	}
+
 	return nil
 }
 
@@ -359,6 +369,9 @@ func (db *DB) applyInlineFallback() error {
 	// The inline path returns before the migrate() safety-net runs, so enforce the
 	// one-active-token-per-sensor invariant (migration 024) here too.
 	db.ensureSingleActiveSensorToken()
+	if err := db.ensureAssetCenteredSchema(); err != nil {
+		return fmt.Errorf("ensure inline asset-centered schema: %w", err)
+	}
 	log.Println("Inline fallback migration applied")
 	return nil
 }

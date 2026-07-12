@@ -55,7 +55,7 @@ func NewFirewallFirstSeen(ttl time.Duration) *FirewallFirstSeen {
 // Observe records the tuple and reports whether it was first-seen (not present,
 // or last seen longer ago than ttl).
 func (f *FirewallFirstSeen) Observe(srcIP, dstIP, rule string, now time.Time) bool {
-	key := srcIP + "|" + dstIP + "|" + rule
+	key := firewallSeenKey(srcIP, dstIP, rule)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -73,6 +73,10 @@ func (f *FirewallFirstSeen) Observe(srcIP, dstIP, rule string, now time.Time) bo
 		}
 	}
 	return isFirst
+}
+
+func firewallSeenKey(srcIP, dstIP, rule string) string {
+	return srcIP + "|" + dstIP + "|" + rule
 }
 
 // EvictStale removes tuples older than ttl.
@@ -104,8 +108,8 @@ func (f *FirewallFirstSeen) EntryCount() int {
 //   - referenced device has a risk_category:           +0.3 (cap 1.0) + risky_device_fw_block
 //   - IPS event (dialect rest) severity 1/2/3:         0.4 / 0.7 / 1.0 + tag ips
 //
-// Whitelist suppression (tag_match / source_ip_pattern) zeroes the score and
-// tags the event whitelisted, matching the DNS-path semantics.
+// Whitelist context changes disposition for ordinary noise, but never bypasses
+// IPS or destination-IOC evaluation.
 func (e *Enricher) enrichFirewall(event *models.Event) {
 	// Ensure required source tags exist even if the collector omitted them.
 	event.Tags = appendUnique(event.Tags, "source:unifi")
@@ -131,21 +135,37 @@ func (e *Enricher) enrichFirewall(event *models.Event) {
 		event.Tags = appendUnique(event.Tags, "dir:"+fm.Direction)
 	}
 
-	// Whitelist suppression: rollups and multicast/self-scan defaults live here.
+	// Capture whitelist context without returning yet. Strong IPS/IOC evidence must
+	// be evaluated first; the unified processor persists it even when disposition is
+	// suppressed.
+	whitelistName := ""
+	whitelisted := false
 	if e.FirewallWhitelisted != nil {
 		if name, ok := e.FirewallWhitelisted(event.Tags, srcIP); ok {
-			event.AnomalyScore = 0.0
+			whitelistName, whitelisted = name, true
 			event.Tags = appendUnique(event.Tags, "whitelisted")
-			if event.ThreatDesc == "" {
-				event.ThreatDesc = "Suppressed by whitelist rule: " + name
-			}
-			return
 		}
+	}
+
+	// Firewall destination-IP intelligence parity. The legacy Event field is retained
+	// as the single primary IP projection; the processor separately extracts every
+	// typed firewall observable from metadata.
+	if event.ResolvedIP == "" {
+		event.ResolvedIP = fm.DstIP
+	}
+	e.enrichIP(event)
+	strongEvidence := containsTag(event.Tags, "known_bad") || containsTag(event.Tags, "ips")
+	if whitelisted && !strongEvidence {
+		event.AnomalyScore = 0.0
+		if event.ThreatDesc == "" {
+			event.ThreatDesc = "Suppressed by whitelist rule: " + whitelistName
+		}
+		return
 	}
 
 	// WAN-scan rollup events stay at score 0 regardless (belt-and-suspenders in
 	// case the whitelist rule is disabled by the user).
-	if fm.Rollup || containsTag(event.Tags, "wan_scan_noise") {
+	if (fm.Rollup || containsTag(event.Tags, "wan_scan_noise")) && !strongEvidence {
 		event.AnomalyScore = 0.0
 		return
 	}
@@ -207,6 +227,17 @@ func (e *Enricher) enrichFirewall(event *models.Event) {
 // applyFirewallDeviceContext looks up the referenced device by source IP and,
 // when the device carries a risk_category, boosts the score and tags the event.
 func (e *Enricher) applyFirewallDeviceContext(event *models.Event, srcIP string) {
+	// The unified processor attaches a stable, timestamp-resolved DeviceID and
+	// Core-owned context before enrichment. Never replace that association with
+	// a lookup of the device that happens to own the IP right now.
+	if event.DeviceID != "" {
+		hasRisk := containsTag(event.Tags, "eol_router") || containsTag(event.Tags, "high_risk_iot") || containsTag(event.Tags, "known_exploited")
+		if hasRisk {
+			event.Tags = appendUnique(event.Tags, "risky_device_fw_block")
+			event.AnomalyScore = math.Min(1.0, event.AnomalyScore+0.3)
+		}
+		return
+	}
 	if e.DeviceByIP == nil || srcIP == "" {
 		return
 	}

@@ -10,18 +10,43 @@
 --
 -- Output fields (Vedetta Event):
 --   event_type    = "dns_query"
---   source_hash   = client IP (hashed by Core in future; raw for now)
+--   source_ip     = client IP (kept local; Core derives its private HMAC)
+--   source_hash   = empty (caller-controlled pseudonyms are not trusted)
+--   dns_source    = "pihole"
 --   domain        = domain
 --   query_type    = query_type
 --   blocked       = true if action contains "blocked" (Pi-hole gravity)
 
+-- Assign an occurrence boundary in the filter before Fluent Bit buffers the
+-- transformed record. Output retries then retain the same ID, while two
+-- legitimate identical log lines in Pi-hole's second-resolution timestamp
+-- remain distinct.
+local function pihole_boot_nonce()
+    local f = io.open("/proc/sys/kernel/random/uuid", "r")
+    if f then
+        local value = (f:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        f:close()
+        if value ~= "" then return value end
+    end
+    local address = tostring({}):gsub("[^%w]", "")
+    return string.format("%x-%s", os.time(), address)
+end
+
+local pihole_observation_boot_id = pihole_boot_nonce()
+local pihole_observation_sequence = 0
+
 function pihole_to_event(tag, timestamp, record)
     local new = {}
 
+    pihole_observation_sequence = pihole_observation_sequence + 1
+    new["event_id"]     = "pihole-" .. pihole_observation_boot_id .. "-" .. tostring(pihole_observation_sequence)
     new["event_type"]   = "dns_query"
     new["domain"]       = record["domain"] or ""
     new["query_type"]   = record["query_type"] or ""
-    new["source_hash"]  = record["client"] or "unknown"
+    new["source_ip"]    = record["client"] or ""
+    new["source_hash"]  = ""
+    new["dns_source"]   = "pihole"
+    new["network_segment"] = "default"
 
     -- Pi-hole logs "gravity blocked" or "/etc/pihole/gravity" for blocked queries
     local action = record["action"] or ""

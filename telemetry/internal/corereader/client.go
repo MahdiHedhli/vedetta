@@ -65,6 +65,7 @@ func (c *Client) EffectiveOptIn(ctx context.Context) (bool, error) {
 // FetchPageResult is the outcome of reading one page of events.
 type FetchPageResult struct {
 	Events           []Event
+	Received         int
 	Total            int
 	Page             int
 	Limit            int
@@ -78,7 +79,7 @@ type FetchPageResult struct {
 func (c *Client) FetchPage(ctx context.Context, from time.Time, page, limit int) (*FetchPageResult, error) {
 	q := url.Values{}
 	if !from.IsZero() {
-		q.Set("from", from.UTC().Format(time.RFC3339))
+		q.Set("from", from.UTC().Format(time.RFC3339Nano))
 	}
 	q.Set("sort", "timestamp")
 	q.Set("order", "asc")
@@ -120,7 +121,7 @@ func (c *Client) FetchPage(ctx context.Context, from time.Time, page, limit int)
 		return nil, fmt.Errorf("decode core events page: %w", err)
 	}
 
-	out := &FetchPageResult{Total: raw.Total, Page: raw.Page, Limit: raw.Limit}
+	out := &FetchPageResult{Received: len(raw.Events), Total: raw.Total, Page: raw.Page, Limit: raw.Limit}
 	for _, rm := range raw.Events {
 		var ev Event
 		if err := json.Unmarshal(rm, &ev); err != nil || ev.EventID == "" || ev.Timestamp.IsZero() {

@@ -3,11 +3,14 @@ package firewall
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
 // newUniFiTestServer stands up a synthetic UniFi controller. All values are
@@ -73,7 +76,9 @@ func testConnector(t *testing.T, ts *httptest.Server, apiKey string) *UniFiConne
 	}
 	uc := NewUniFiConnector(cfg)
 	// Reuse the test server's TLS client so the self-signed cert is trusted.
-	uc.client = ts.Client()
+	client := *ts.Client()
+	client.CheckRedirect = refuseUniFiRedirect
+	uc.client = &client
 	return uc
 }
 
@@ -156,6 +161,63 @@ func TestUniFiConnector_CookieFallback(t *testing.T) {
 	}
 }
 
+func TestUniFiConnector_APIKeyDoesNotFollowRedirect(t *testing.T) {
+	redirected := 0
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected++
+		if r.Header.Get("X-API-KEY") != "" {
+			t.Errorf("redirect target received X-API-KEY")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/credential", http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	uc := testConnector(t, source, "synthetic-api-key")
+	if err := uc.Connect(context.Background()); err == nil {
+		t.Fatal("redirecting controller unexpectedly connected")
+	}
+	if redirected != 0 {
+		t.Fatalf("redirect target received %d requests", redirected)
+	}
+}
+
+func TestUniFiConnector_LoginBodyDoesNotFollowRedirect(t *testing.T) {
+	redirected := 0
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected++
+		t.Error("redirect target received UniFi login request")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/proxy/network/api/self":
+			writeData(w, []map[string]any{{"name": "admin"}})
+		case "/proxy/network/api/auth/login":
+			http.Redirect(w, r, target.URL+"/login", http.StatusTemporaryRedirect)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer source.Close()
+
+	uc := testConnector(t, source, "")
+	uc.cfg.Username = "synthetic-read-only-user"
+	uc.cfg.Password = "synthetic-password"
+	if err := uc.Connect(context.Background()); err == nil {
+		t.Fatal("redirecting login unexpectedly connected")
+	}
+	if redirected != 0 {
+		t.Fatalf("redirect target received %d requests", redirected)
+	}
+}
+
 func TestUniFiConnector_IPSDedupHighWaterMark(t *testing.T) {
 	evt := map[string]any{"timestamp": float64(1_700_000_000), "proto": "tcp",
 		"srcip": "203.0.113.10", "srcport": float64(1), "dstip": "198.51.100.5",
@@ -174,9 +236,99 @@ func TestUniFiConnector_IPSDedupHighWaterMark(t *testing.T) {
 	if len(first) != 1 {
 		t.Fatalf("first poll: expected 1 event, got %d", len(first))
 	}
+	uc.AcknowledgeEvents(first)
 	second, _ := uc.Poll(ctx)
 	if len(second) != 0 {
 		t.Fatalf("second poll: expected 0 (deduped), got %d", len(second))
+	}
+}
+
+func TestUniFiConnector_QuietSuccessfulPollClearsTransportError(t *testing.T) {
+	fake := &fakeUniFi{}
+	ts := httptest.NewTLSServer(fake.handler())
+	defer ts.Close()
+
+	uc := testConnector(t, ts, "k")
+	ctx := context.Background()
+	if err := uc.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	uc.mu.Lock()
+	uc.lastError = "synthetic prior fetch failure"
+	uc.mu.Unlock()
+
+	events, err := uc.Poll(ctx)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("quiet recovery poll events=%d err=%v", len(events), err)
+	}
+	if health := uc.Health(); health.LastError != "" || health.LastPoll.IsZero() {
+		t.Fatalf("quiet successful poll did not recover health: %+v", health)
+	}
+}
+
+type retryConnector struct {
+	events   []FirewallEvent
+	acked    int
+	pollRuns int
+}
+
+func (c *retryConnector) Name() string                                    { return "retry" }
+func (c *retryConnector) Discover(context.Context) (*FirewallInfo, error) { return nil, nil }
+func (c *retryConnector) Connect(context.Context) error                   { return nil }
+func (c *retryConnector) Disconnect() error                               { return nil }
+func (c *retryConnector) Health() ConnectorHealth {
+	return ConnectorHealth{Connected: true, LastPoll: time.Now().UTC()}
+}
+func (c *retryConnector) Poll(context.Context) ([]FirewallEvent, error) {
+	c.pollRuns++
+	if c.acked > 0 {
+		return nil, nil
+	}
+	return append([]FirewallEvent(nil), c.events...), nil
+}
+func (c *retryConnector) AcknowledgeEvents(events []FirewallEvent) { c.acked += len(events) }
+
+func TestManagerAcknowledgesOnlyAfterSinkCommit(t *testing.T) {
+	upstream := FirewallEvent{
+		Timestamp: time.Unix(1_700_000_000, 123).UTC(), Action: "allow", Protocol: "tcp",
+		SrcIP: "192.0.2.10", SrcPort: 52341, DstIP: "198.51.100.5", DstPort: 443,
+		Rule: "allow-web", RawLog: "synthetic-controller-event",
+	}
+	conn := &retryConnector{events: []FirewallEvent{upstream}}
+	var attempts int
+	var ids []string
+	mgr := NewManager(func(events []models.Event) error {
+		attempts++
+		ids = append(ids, events[0].EventID)
+		if attempts == 1 {
+			return fmt.Errorf("synthetic transient store failure")
+		}
+		return nil
+	})
+	mgr.Register(ConnectorConfig{Name: "retry", Type: "test"}, conn)
+
+	mgr.doPoll("retry", conn)
+	if conn.acked != 0 {
+		t.Fatalf("failed sink must not acknowledge upstream; acked=%d", conn.acked)
+	}
+	failedHealth, err := mgr.Health("retry")
+	if err != nil || !strings.Contains(failedHealth.LastError, "Core event persistence failed") {
+		t.Fatalf("sink failure not surfaced in connector health: %+v err=%v", failedHealth, err)
+	}
+	mgr.doPoll("retry", conn)
+	if conn.acked != 1 {
+		t.Fatalf("successful retry must acknowledge once; acked=%d", conn.acked)
+	}
+	recoveredHealth, err := mgr.Health("retry")
+	if err != nil || recoveredHealth.LastError != "" {
+		t.Fatalf("successful commit did not recover connector health: %+v err=%v", recoveredHealth, err)
+	}
+	if len(ids) != 2 || ids[0] != ids[1] {
+		t.Fatalf("retry event IDs must be deterministic, got %v", ids)
+	}
+	mgr.doPoll("retry", conn)
+	if attempts != 2 {
+		t.Fatalf("acknowledged event must not be submitted again; attempts=%d", attempts)
 	}
 }
 

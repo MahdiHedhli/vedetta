@@ -71,6 +71,13 @@ type Connector interface {
 	Health() ConnectorHealth
 }
 
+// EventAcknowledger is implemented by connectors whose upstream API returns a
+// lookback window. Manager calls it only after the processor sink succeeds, so
+// a transient persistence failure cannot permanently advance connector dedup.
+type EventAcknowledger interface {
+	AcknowledgeEvents([]FirewallEvent)
+}
+
 // FirewallInfo describes a discovered firewall.
 type FirewallInfo struct {
 	Model      string
@@ -151,7 +158,10 @@ func (fe *FirewallEvent) ToEvent(sourceHash string) models.Event {
 	}
 
 	return models.Event{
-		EventID:    uuid.New().String(),
+		// Controller lookback APIs can return the same event after a Core-side
+		// persistence retry or process restart. Derive the ID from the normalized
+		// upstream event so the database remains the final idempotency backstop.
+		EventID:    uuid.NewSHA1(uuid.NameSpaceOID, []byte(firewallEventIdentity(*fe))).String(),
 		Timestamp:  fe.Timestamp,
 		EventType:  "firewall_log",
 		SourceHash: sourceHash,
@@ -161,4 +171,17 @@ func (fe *FirewallEvent) ToEvent(sourceHash string) models.Event {
 		ThreatDesc: desc,
 		Metadata:   mustJSON(meta),
 	}
+}
+
+// firewallEventIdentity is deliberately complete: omitting action, protocol,
+// source port, or the controller payload could collapse distinct events that
+// happened in the same timestamp bucket. It contains no secret and is used only
+// as input to a deterministic UUID and the in-memory connector dedup set.
+func firewallEventIdentity(fe FirewallEvent) string {
+	return fmt.Sprintf(
+		"%d|%q|%q|%q|%d|%q|%d|%q|%q|%q|%d|%d|%q|%q|%t|%d",
+		fe.Timestamp.UTC().UnixNano(), fe.Action, fe.Protocol, fe.SrcIP, fe.SrcPort,
+		fe.DstIP, fe.DstPort, fe.Interface, fe.Direction, fe.Rule,
+		fe.BytesSent, fe.BytesRecv, fe.Application, fe.RawLog, fe.IPS, fe.Severity,
+	)
 }

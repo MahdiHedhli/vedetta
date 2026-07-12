@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,8 +35,14 @@ type LookupResult struct {
 
 // ThreatIntelDB manages the local threat indicator database.
 type ThreatIntelDB struct {
-	db    *sql.DB
-	bloom *BloomFilter
+	db *sql.DB
+
+	// Feed refreshes run concurrently with event enrichment. BloomFilter mutates
+	// a shared bitset, so guard it explicitly; serialize source mutations so a
+	// purge/rebuild cannot overwrite additions from a concurrent import.
+	mutateMu sync.Mutex
+	bloomMu  sync.RWMutex
+	bloom    *BloomFilter
 }
 
 // NewThreatIntelDB wraps an existing sql.DB connection (the same vedetta.db)
@@ -64,7 +71,7 @@ func (t *ThreatIntelDB) Lookup(value string) LookupResult {
 	}
 
 	// Fast path: Bloom filter says "definitely not present"
-	if !t.bloom.MayContain(value) {
+	if !t.mayContain(value) {
 		return LookupResult{}
 	}
 
@@ -116,6 +123,8 @@ func (t *ThreatIntelDB) BulkImport(indicators []Indicator) (int, error) {
 	if len(indicators) == 0 {
 		return 0, nil
 	}
+	t.mutateMu.Lock()
+	defer t.mutateMu.Unlock()
 
 	tx, err := t.db.Begin()
 	if err != nil {
@@ -165,7 +174,7 @@ func (t *ThreatIntelDB) BulkImport(indicators []Indicator) (int, error) {
 			continue
 		}
 
-		t.bloom.Add(value)
+		t.addToBloom(value)
 		imported++
 	}
 
@@ -176,9 +185,82 @@ func (t *ThreatIntelDB) BulkImport(indicators []Indicator) (int, error) {
 	return imported, nil
 }
 
+// ReplaceSource atomically replaces the complete snapshot for one feed source.
+// Unlike BulkImport, a disappeared indicator is removed immediately rather than
+// remaining actionable until its old TTL expires. It is used for bounded feeds
+// whose response explicitly guarantees a complete snapshot.
+func (t *ThreatIntelDB) ReplaceSource(source string, indicators []Indicator) (int, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return 0, fmt.Errorf("replace source: source is required")
+	}
+
+	t.mutateMu.Lock()
+	defer t.mutateMu.Unlock()
+
+	tx, err := t.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("replace source: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM threat_indicators WHERE source = ?`, source); err != nil {
+		return 0, fmt.Errorf("replace source: delete old snapshot: %w", err)
+	}
+	stmt, err := tx.Prepare(`
+		INSERT INTO threat_indicators
+			(indicator, type, source, confidence, tags, first_seen, last_seen, ttl_hours)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("replace source: prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC()
+	for i, ind := range indicators {
+		value := strings.ToLower(strings.TrimSpace(ind.Value))
+		if value == "" {
+			return 0, fmt.Errorf("replace source: indicator %d has empty value", i)
+		}
+		tagsJSON, err := json.Marshal(ind.Tags)
+		if err != nil {
+			return 0, fmt.Errorf("replace source: indicator %d tags: %w", i, err)
+		}
+		if ind.Tags == nil {
+			tagsJSON = []byte("[]")
+		}
+		firstSeen := ind.FirstSeen
+		if firstSeen.IsZero() {
+			firstSeen = now
+		}
+		lastSeen := ind.LastSeen
+		if lastSeen.IsZero() {
+			lastSeen = now
+		}
+		ttl := ind.TTLHours
+		if ttl == 0 {
+			ttl = 168
+		}
+		if _, err := stmt.Exec(value, ind.Type, source, ind.Confidence,
+			string(tagsJSON), firstSeen, lastSeen, ttl); err != nil {
+			return 0, fmt.Errorf("replace source: indicator %d: %w", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("replace source: commit: %w", err)
+	}
+	if err := t.rebuildBloom(); err != nil {
+		return 0, fmt.Errorf("replace source: rebuild bloom: %w", err)
+	}
+	return len(indicators), nil
+}
+
 // PurgeExpired removes indicators whose TTL has expired and they haven't
 // been refreshed. Returns the count of deleted indicators.
 func (t *ThreatIntelDB) PurgeExpired() (int64, error) {
+	t.mutateMu.Lock()
+	defer t.mutateMu.Unlock()
 	result, err := t.db.Exec(`
 		DELETE FROM threat_indicators
 		WHERE datetime(last_seen, '+' || ttl_hours || ' hours') < datetime('now')
@@ -233,11 +315,25 @@ func (t *ThreatIntelDB) rebuildBloom() error {
 		count++
 	}
 
+	t.bloomMu.Lock()
 	t.bloom = bloom
+	t.bloomMu.Unlock()
 	if count > 0 {
 		log.Printf("threatintel: Bloom filter rebuilt with %d indicators", count)
 	}
 	return rows.Err()
+}
+
+func (t *ThreatIntelDB) mayContain(value string) bool {
+	t.bloomMu.RLock()
+	defer t.bloomMu.RUnlock()
+	return t.bloom.MayContain(value)
+}
+
+func (t *ThreatIntelDB) addToBloom(value string) {
+	t.bloomMu.Lock()
+	t.bloom.Add(value)
+	t.bloomMu.Unlock()
 }
 
 // parseTimestamp tries multiple formats that mattn/go-sqlite3 may use

@@ -1,23 +1,34 @@
 package corereader
 
 import (
+	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/vedetta-network/vedetta/telemetry/internal/config"
 )
 
-// Cursor tracks the poll position into Core's event stream. It is persisted so a
-// restart resumes without re-reading everything. The tie-breaker (LastEventID)
-// disambiguates events sharing the same timestamp: on resume we skip events at
-// exactly LastTimestamp whose ID we already processed.
+// Cursor tracks the poll position into Core's event stream. Core's `from`
+// filter is inclusive, so every event ID consumed at LastTimestamp is retained
+// as the exact tie-breaker cohort. LastEventID remains for compatibility with
+// cursor files written by older releases; new readers migrate it into
+// SeenEventIDs when that field is absent.
 type Cursor struct {
 	Version       int       `json:"version"`
 	LastTimestamp time.Time `json:"last_timestamp"`
 	LastEventID   string    `json:"last_event_id"`
+	SeenEventIDs  []string  `json:"seen_event_ids,omitempty"`
 }
 
 const cursorFile = "cursor.json"
+
+// maxCursorTimestampCohort bounds both the persisted cursor and its in-memory
+// lookup set. More than 50,000 events at one exact timestamp is far beyond the
+// expected LAN workload. If it occurs, Read fails visibly and holds the prior
+// cursor rather than silently losing an event or replaying a partial cohort.
+const maxCursorTimestampCohort = 50_000
 
 // cursorFutureSkew bounds how far ahead of the local clock a persisted cursor
 // timestamp may sit before we treat it as bogus. A cursor dated beyond this is
@@ -55,39 +66,145 @@ func LoadCursor(stateDir string) (Cursor, error) {
 		// from a sane point instead of being stranded forever (GHSA-9m7g).
 		return Cursor{Version: config.StateFileVersion}, nil
 	}
-	return c, nil
+	return normalizeCursor(c)
 }
 
 // Save persists the cursor atomically (0644 — cursor is not a secret).
 func (c Cursor) Save(stateDir string) error {
-	c.Version = config.StateFileVersion
-	return config.WriteJSONFile(filepath.Join(stateDir, cursorFile), c, 0o644)
-}
-
-// Advance updates the cursor to the last event of a fully processed page.
-func (c Cursor) Advance(ev Event) Cursor {
-	return Cursor{
-		Version:       config.StateFileVersion,
-		LastTimestamp: ev.Timestamp.UTC(),
-		LastEventID:   ev.EventID,
+	normalized, err := normalizeCursor(c)
+	if err != nil {
+		return err
 	}
+	normalized.Version = config.StateFileVersion
+	return config.WriteJSONFile(filepath.Join(stateDir, cursorFile), normalized, 0o644)
 }
 
-// After reports whether ev is strictly after the cursor position. Events at
-// exactly LastTimestamp are only "after" if their ID differs AND we treat the
-// stored ID as the last-seen — so the exact LastEventID is filtered out. This is
-// the at-least-once tie-breaker: duplicates are bounded, none are lost.
+// Advance returns a cursor that includes ev. At a newer timestamp the prior
+// cohort can be discarded; at the current timestamp ev is added to the exact
+// seen-ID set. An over-cap cohort returns an error so callers hold the previous
+// durable cursor rather than accepting replay or loss.
+func (c Cursor) Advance(ev Event) (Cursor, error) {
+	watermark, err := newCursorWatermark(c)
+	if err != nil {
+		return c, err
+	}
+	if err := watermark.advance(ev); err != nil {
+		return c, err
+	}
+	return watermark.snapshot(), nil
+}
+
+// After reports whether ev is beyond the cursor watermark. At LastTimestamp an
+// event is new only when its ID is absent from the complete persisted cohort.
 func (c Cursor) After(ev Event) bool {
-	t := ev.Timestamp.UTC()
+	watermark, err := newCursorWatermark(c)
+	return err == nil && watermark.after(ev)
+}
+
+// normalizeCursor canonicalizes the optional v1 cohort extension. A legacy
+// file has only LastEventID; treating that ID as the initial one-element cohort
+// preserves its old durable position while allowing other equal-time events to
+// be consumed once and recorded on the next save.
+func normalizeCursor(c Cursor) (Cursor, error) {
+	c.Version = config.StateFileVersion
 	if c.LastTimestamp.IsZero() {
+		c.LastEventID = ""
+		c.SeenEventIDs = nil
+		return c, nil
+	}
+	c.LastTimestamp = c.LastTimestamp.UTC()
+	c.LastEventID = strings.TrimSpace(c.LastEventID)
+
+	seen := make(map[string]struct{}, len(c.SeenEventIDs)+1)
+	ids := make([]string, 0, len(c.SeenEventIDs)+1)
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for _, id := range c.SeenEventIDs {
+		add(id)
+	}
+	add(c.LastEventID)
+	if len(ids) > maxCursorTimestampCohort {
+		return Cursor{}, fmt.Errorf("cursor timestamp cohort exceeds bounded maximum of %d event IDs", maxCursorTimestampCohort)
+	}
+	sort.Strings(ids)
+	c.SeenEventIDs = ids
+	if c.LastEventID == "" && len(ids) > 0 {
+		c.LastEventID = ids[len(ids)-1]
+	}
+	return c, nil
+}
+
+// cursorWatermark is the efficient per-read form of Cursor. The persisted form
+// stays a deterministic JSON slice, while ingestion uses an O(1) membership set
+// across page boundaries.
+type cursorWatermark struct {
+	cursor Cursor
+	seen   map[string]struct{}
+}
+
+func newCursorWatermark(c Cursor) (*cursorWatermark, error) {
+	normalized, err := normalizeCursor(c)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(normalized.SeenEventIDs))
+	for _, id := range normalized.SeenEventIDs {
+		seen[id] = struct{}{}
+	}
+	return &cursorWatermark{cursor: normalized, seen: seen}, nil
+}
+
+func (w *cursorWatermark) after(ev Event) bool {
+	id := strings.TrimSpace(ev.EventID)
+	if id == "" || ev.Timestamp.IsZero() {
+		return false
+	}
+	t := ev.Timestamp.UTC()
+	if w.cursor.LastTimestamp.IsZero() || t.After(w.cursor.LastTimestamp) {
 		return true
 	}
-	if t.After(c.LastTimestamp) {
-		return true
+	if t.Before(w.cursor.LastTimestamp) {
+		return false
 	}
-	if t.Equal(c.LastTimestamp) {
-		// Same instant: skip the exact event we last recorded; keep others.
-		return ev.EventID != c.LastEventID
+	_, exists := w.seen[id]
+	return !exists
+}
+
+func (w *cursorWatermark) advance(ev Event) error {
+	if !w.after(ev) {
+		return nil
 	}
-	return false
+	id := strings.TrimSpace(ev.EventID)
+	t := ev.Timestamp.UTC()
+	if w.cursor.LastTimestamp.IsZero() || t.After(w.cursor.LastTimestamp) {
+		w.cursor.LastTimestamp = t
+		w.cursor.LastEventID = id
+		w.cursor.SeenEventIDs = []string{id}
+		w.seen = map[string]struct{}{id: {}}
+		return nil
+	}
+	if len(w.seen) >= maxCursorTimestampCohort {
+		return fmt.Errorf("cursor timestamp %s exceeds bounded maximum of %d event IDs",
+			w.cursor.LastTimestamp.Format(time.RFC3339Nano), maxCursorTimestampCohort)
+	}
+	w.seen[id] = struct{}{}
+	w.cursor.SeenEventIDs = append(w.cursor.SeenEventIDs, id)
+	w.cursor.LastEventID = id
+	return nil
+}
+
+func (w *cursorWatermark) snapshot() Cursor {
+	result := w.cursor
+	result.SeenEventIDs = append([]string(nil), result.SeenEventIDs...)
+	sort.Strings(result.SeenEventIDs)
+	return result
 }

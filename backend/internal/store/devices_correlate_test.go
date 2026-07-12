@@ -28,7 +28,7 @@ func newCorrelationDB(t *testing.T) *DB {
 }
 
 type devRow struct {
-	FirstSeen                                               time.Time
+	FirstSeen                                                time.Time
 	MAC, Hostname, Vendor, Model, Segment, Display, Friendly string
 }
 
@@ -47,8 +47,8 @@ func getDevice(t *testing.T, db *DB, ip string) *devRow {
 
 func countDevices(t *testing.T, db *DB) int {
 	t.Helper()
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM devices`).Scan(&n); err != nil {
+	n, err := db.CountDevices()
+	if err != nil {
 		t.Fatalf("count devices: %v", err)
 	}
 	return n
@@ -347,9 +347,9 @@ func TestUpsert_IdenticalGenericHostname_NotMerged(t *testing.T) {
 
 func TestDeriveDisplayName_Precedence(t *testing.T) {
 	cases := []struct {
-		name                                          string
+		name                                           string
 		custom, friendly, model, vendor, host, mac, ip string
-		want                                          string
+		want                                           string
 	}{
 		{"custom wins", "My TV", "Living Room TV", "Chromecast Ultra", "Google", "chromecast-hall", "00:00:5E:00:53:0A", "192.0.2.10", "My TV"},
 		{"friendly next", "", "Living Room TV", "Chromecast Ultra", "Google", "chromecast-hall", "00:00:5E:00:53:0A", "192.0.2.10", "Living Room TV"},

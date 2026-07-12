@@ -1,9 +1,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +32,27 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 	if len(segment) > 0 && segment[0] != "" {
 		seg = segment[0]
 	}
+	return db.ObserveDevice(DeviceObservation{Host: host, Segment: seg, ObservedAt: scanTime})
+}
+
+// ObserveDevice is the context-rich inventory entry point. Authenticated sensor
+// identity and observation time are retained in temporal address/evidence rows;
+// UpsertDevice above remains source compatible for legacy callers.
+func (db *DB) ObserveDevice(observation DeviceObservation) (bool, error) {
+	host := observation.Host
+	scanTime := observation.ObservedAt.UTC()
+	if scanTime.IsZero() {
+		scanTime = time.Now().UTC()
+	}
+	seg := normalizeSegment(observation.Segment)
+	sensorID := observation.SensorID
+	evidence := append([]DeviceIdentityEvidenceInput(nil), observation.Evidence...)
+	for _, wire := range host.IdentityEvidence {
+		evidence = append(evidence, DeviceIdentityEvidenceInput{
+			Type: wire.Type, Value: wire.Value, Source: wire.Source,
+			Confidence: wire.Confidence, Sensitive: wire.Sensitive,
+		})
+	}
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -49,9 +72,36 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 		mdnsName: mdnsName,
 	}
 
-	res, err := db.resolveIdentity(tx, in, seg, scanTime)
+	// Spec 007 precedence: operator/stable typed evidence outranks the legacy
+	// MAC/name/IP resolver. A strong conflict vetoes automatic attachment.
+	typedResolution, err := db.resolveDeviceAtTx(context.Background(), tx, DeviceIdentityResolutionRequest{
+		Timestamp: scanTime, IPAddress: host.IPAddress, MACAddress: host.MACAddress,
+		Segment: seg, SensorID: sensorID, Evidence: evidence,
+	})
 	if err != nil {
 		return false, err
+	}
+	res := resolvedIdentity{}
+	if typedResolution.DeviceID != "" {
+		res.deviceID = typedResolution.DeviceID
+		res.matchRule = typedResolution.Reason
+		// Preserve the conservative spec-004 duplicate probe when the typed
+		// winner is the exact MAC record. It may find a distinct MAC-less alias
+		// row to soft-link without changing the evidence precedence.
+		if typedResolution.Reason == "mac_identity_evidence" {
+			legacy, legacyErr := db.resolveIdentity(tx, in, seg, scanTime)
+			if legacyErr != nil {
+				return false, legacyErr
+			}
+			if legacy.macMatchID == typedResolution.DeviceID && legacy.deviceID != "" && legacy.deviceID != typedResolution.DeviceID {
+				res = legacy
+			}
+		}
+	} else if !strings.HasPrefix(typedResolution.Reason, "conflicting_") && typedResolution.Reason != "ambiguous_temporal_address" {
+		res, err = db.resolveIdentity(tx, in, seg, scanTime)
+		if err != nil {
+			return false, err
+		}
 	}
 
 	isNew := res.deviceID == ""
@@ -102,7 +152,7 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 
 	// Multi-network attachment (T3.5): device x segment, most-recent wins on the
 	// canonical devices.segment/ip_address below.
-	if err := db.upsertNetworkTx(tx, deviceID, seg, host.IPAddress, "", scanTime); err != nil {
+	if err := db.upsertNetworkTx(tx, deviceID, seg, host.IPAddress, sensorID, scanTime); err != nil {
 		return false, err
 	}
 
@@ -202,22 +252,25 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 	// Canonical devices row: segment/ip_address track the MOST RECENT attachment
 	// (this observation). MAC is adopted only when the row had none or matches.
 	if _, err := tx.Exec(`
-		UPDATE devices SET
-			last_seen = ?,
-			ip_address = ?,
-			mac_address = CASE WHEN ? != '' THEN ? ELSE mac_address END,
-			hostname = ?,
-			vendor = ?,
-			model = ?,
-			friendly_name = ?,
-			display_name = ?,
-			device_type = ?,
-			os_family = ?,
-			os_version = COALESCE(NULLIF(?, ''), os_version),
-			segment = ?,
-			open_ports = CASE WHEN ? != '[]' THEN ? ELSE open_ports END,
-			services = CASE WHEN ? != '[]' THEN ? ELSE services END,
-			discovery_method = COALESCE(NULLIF(?, ''), discovery_method),
+			UPDATE devices SET
+				first_seen = CASE WHEN first_seen > ? THEN ? ELSE first_seen END,
+				last_seen = CASE WHEN last_seen < ? THEN ? ELSE last_seen END,
+				ip_address = CASE WHEN last_seen <= ? THEN ? ELSE ip_address END,
+				mac_address = CASE
+					WHEN ? != '' AND (mac_address = '' OR last_seen <= ?) THEN ?
+					ELSE mac_address END,
+				hostname = ?,
+				vendor = ?,
+				model = ?,
+				friendly_name = ?,
+				display_name = CASE WHEN last_seen <= ? THEN ? ELSE display_name END,
+				device_type = ?,
+				os_family = ?,
+				os_version = COALESCE(NULLIF(?, ''), os_version),
+				segment = CASE WHEN last_seen <= ? THEN ? ELSE segment END,
+				open_ports = CASE WHEN last_seen <= ? AND ? != '[]' THEN ? ELSE open_ports END,
+				services = CASE WHEN last_seen <= ? AND ? != '[]' THEN ? ELSE services END,
+				discovery_method = CASE WHEN last_seen <= ? AND ? != '' THEN ? ELSE discovery_method END,
 			fingerprint_confidence = MAX(fingerprint_confidence, ?),
 			eol_risk = CASE WHEN ? = 1 THEN 1 ELSE eol_risk END,
 			eol_model = CASE WHEN ? != '' THEN ? ELSE eol_model END,
@@ -225,21 +278,22 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 			risk_model = CASE WHEN risk_model = '' AND ? != '' THEN ? ELSE risk_model END,
 			risk_reasons = CASE WHEN risk_reasons IN ('', '[]') AND ? != '[]' THEN ? ELSE risk_reasons END
 		WHERE device_id = ?`,
-		scanTime,
-		host.IPAddress,
-		host.MACAddress, host.MACAddress,
+		scanTime, scanTime,
+		scanTime, scanTime,
+		scanTime, host.IPAddress,
+		host.MACAddress, scanTime, host.MACAddress,
 		finalHostname,
 		finalVendor,
 		finalModel,
 		finalFriendly,
-		displayName,
+		scanTime, displayName,
 		finalDeviceType,
 		finalOSFamily,
 		fpResult.OSVersion,
-		seg,
-		marshalPorts(host.OpenPorts), marshalPorts(host.OpenPorts),
-		string(servicesJSON), string(servicesJSON),
-		firstNonEmpty(host.DiscoverySource, ""),
+		scanTime, seg,
+		scanTime, marshalPorts(host.OpenPorts), marshalPorts(host.OpenPorts),
+		scanTime, string(servicesJSON), string(servicesJSON),
+		scanTime, firstNonEmpty(host.DiscoverySource, ""), firstNonEmpty(host.DiscoverySource, ""),
 		fpResult.FingerprintConfidence,
 		boolToInt(fpResult.EOLRisk),
 		fpResult.EOLModel, fpResult.EOLModel,
@@ -249,6 +303,50 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 		deviceID,
 	); err != nil {
 		return false, fmt.Errorf("update device: %w", err)
+	}
+
+	// Temporal address ownership is authoritative for event-time resolution.
+	// Current devices.ip_address remains only a compatibility projection.
+	addressConfidence := ConfidenceForSource(sigSource)
+	if addressConfidence < 0.55 {
+		addressConfidence = 0.55
+	}
+	if sensorID != "" && addressConfidence < 0.75 {
+		addressConfidence = 0.75
+	}
+	if err := db.recordAddressBindingTx(tx, deviceID, "ip", host.IPAddress, seg, sensorID,
+		firstNonEmpty(host.DiscoverySource, "device_observation"), addressConfidence, scanTime); err != nil {
+		return false, err
+	}
+	if err := db.recordAddressBindingTx(tx, deviceID, "mac", host.MACAddress, seg, sensorID,
+		firstNonEmpty(host.DiscoverySource, "device_observation"), 0.95, scanTime); err != nil {
+		return false, err
+	}
+
+	if host.MACAddress != "" {
+		evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mac", Value: host.MACAddress,
+			Source: firstNonEmpty(host.DiscoverySource, "device_observation"), Confidence: 0.95, Sensitive: true})
+		if oui := identityOUI(host.MACAddress); oui != "" {
+			evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "oui", Value: oui,
+				Source: SourceOUI, Confidence: 0.2})
+		}
+	}
+	if host.Hostname != "" && !IsGenericHostname(host.Hostname) {
+		evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "hostname", Value: host.Hostname,
+			Source: firstNonEmpty(host.DiscoverySource, "device_observation"), Confidence: 0.65, Sensitive: true})
+	}
+	if mdnsName != "" {
+		evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mdns_name", Value: mdnsName,
+			Source: SourceMDNSTxt, Confidence: 0.75, Sensitive: true})
+	}
+	for _, service := range host.Services {
+		evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mdns_service", Value: service,
+			DisplayValue: service, Source: SourceMDNSPtr, Confidence: 0.45})
+	}
+	for _, item := range evidence {
+		if _, err := db.upsertIdentityEvidenceTx(tx, deviceID, seg, sensorID, item, scanTime, false); err != nil {
+			return false, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -290,7 +388,7 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
 		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]'),
 		       COALESCE(services, '[]'), COALESCE(display_name, ''), COALESCE(friendly_name, '')
-		FROM devices ORDER BY last_seen DESC`)
+		FROM devices WHERE merged_into_device_id IS NULL ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query devices: %w", err)
 	}
@@ -342,18 +440,56 @@ func (db *DB) ListDevices() ([]models.Device, error) {
 // attachCorrelation populates the spec-004 Segments + Signals fields on a device
 // (best-effort; errors leave the slices empty rather than failing the read).
 func (db *DB) attachCorrelation(d *models.Device) {
+	d.CanonicalDeviceID = d.DeviceID
 	if segs, err := db.GetDeviceSegments(d.DeviceID); err == nil {
 		d.Segments = segs
 	}
 	if sigs, err := db.GetDeviceSignals(d.DeviceID); err == nil && len(sigs) > 0 {
 		out := make([]models.DeviceSignal, 0, len(sigs))
+		best := make(map[string]DeviceSignalRow)
 		for _, s := range sigs {
 			out = append(out, models.DeviceSignal{
 				Field: s.Field, Value: s.Value, Source: s.Source,
 				Confidence: s.Confidence, LastObserved: s.LastObserved,
 			})
+			current, ok := best[s.Field]
+			if !ok || s.Confidence > current.Confidence ||
+				(s.Confidence == current.Confidence && s.LastObserved.After(current.LastObserved)) {
+				best[s.Field] = s
+			}
 		}
 		d.Signals = out
+		// A soft merge is a pure redirect. Aggregate redirected children's
+		// signals at read time so the canonical inventory is useful without
+		// irreversibly copying values into the target row.
+		if s := best["vendor"]; s.Value != "" {
+			d.Vendor = s.Value
+		}
+		if s := best["model"]; s.Value != "" {
+			d.Model = s.Value
+		}
+		if s := best["hostname"]; s.Value != "" {
+			d.Hostname = s.Value
+		}
+		if s := best["friendly_name"]; s.Value != "" {
+			d.FriendlyName = s.Value
+		}
+		if s := best["device_type"]; s.Value != "" {
+			d.DeviceType = s.Value
+		}
+		if s := best["os_family"]; s.Value != "" {
+			d.OSFamily = s.Value
+		}
+		d.DisplayName = deriveDisplayName(d.CustomName, d.FriendlyName, d.Model, d.Vendor,
+			d.Hostname, d.MACAddress, d.IPAddress)
+	}
+	if err := db.attachIdentitySummary(d); err != nil {
+		// Inventory reads should remain available if the identity projection is
+		// temporarily unavailable, but must never look confidently identified.
+		d.IdentityConfidence = 0
+		d.IdentityStatus = "unresolved"
+		d.IdentityReason = "identity_summary_unavailable"
+		d.NeedsIdentification = true
 	}
 }
 
@@ -362,6 +498,13 @@ func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
 	var d models.Device
 	var portsJSON, riskReasonsJSON, servicesJSON string
 	err := db.QueryRow(`
+		WITH RECURSIVE redirect(device_id, depth) AS (
+			SELECT (SELECT device_id FROM devices WHERE ip_address = ? ORDER BY last_seen DESC LIMIT 1), 0
+			UNION ALL
+			SELECT d.merged_into_device_id, redirect.depth + 1
+			FROM devices d JOIN redirect ON d.device_id = redirect.device_id
+			WHERE d.merged_into_device_id IS NOT NULL AND redirect.depth < 31
+		)
 		SELECT device_id, first_seen, last_seen, ip_address, mac_address,
 		       COALESCE(hostname, ''), COALESCE(vendor, ''), COALESCE(open_ports, '[]'), segment,
 		       COALESCE(device_type, ''), COALESCE(os_family, ''), COALESCE(os_version, ''),
@@ -371,7 +514,9 @@ func (db *DB) GetDeviceByIP(ip string) (*models.Device, error) {
 		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
 		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]'),
 		       COALESCE(services, '[]'), COALESCE(display_name, ''), COALESCE(friendly_name, '')
-		FROM devices WHERE ip_address = ? ORDER BY last_seen DESC LIMIT 1`, ip).Scan(
+		FROM devices WHERE device_id = (
+			SELECT device_id FROM redirect WHERE device_id IS NOT NULL ORDER BY depth DESC LIMIT 1
+		)`, ip).Scan(
 		&d.DeviceID, &d.FirstSeen, &d.LastSeen, &d.IPAddress,
 		&d.MACAddress, &d.Hostname, &d.Vendor, &portsJSON, &d.Segment,
 		&d.DeviceType, &d.OSFamily, &d.OSVersion, &d.Model,
@@ -492,7 +637,7 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 		       COALESCE(eol_risk, 0), COALESCE(eol_model, ''),
 		       COALESCE(risk_category, ''), COALESCE(risk_model, ''), COALESCE(risk_reasons, '[]'),
 		       COALESCE(display_name, ''), COALESCE(friendly_name, '')
-		FROM devices WHERE first_seen > ? ORDER BY first_seen DESC`, cutoff)
+		FROM devices WHERE merged_into_device_id IS NULL AND first_seen > ? ORDER BY first_seen DESC`, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("query new devices: %w", err)
 	}
@@ -528,7 +673,7 @@ func (db *DB) GetNewDevices(since time.Duration) ([]models.Device, error) {
 // CountDevices returns total device count.
 func (db *DB) CountDevices() (int, error) {
 	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM devices").Scan(&count)
+	err := db.QueryRow("SELECT COUNT(*) FROM devices WHERE merged_into_device_id IS NULL").Scan(&count)
 	return count, err
 }
 
@@ -536,14 +681,14 @@ func (db *DB) CountDevices() (int, error) {
 func (db *DB) CountDevicesNewSince(d time.Duration) (int, error) {
 	var count int
 	cutoff := time.Now().UTC().Add(-d)
-	err := db.QueryRow("SELECT COUNT(*) FROM devices WHERE first_seen > ?", cutoff).Scan(&count)
+	err := db.QueryRow("SELECT COUNT(*) FROM devices WHERE merged_into_device_id IS NULL AND first_seen > ?", cutoff).Scan(&count)
 	return count, err
 }
 
 // CountDevicesBySegment returns count of devices in a specific segment (e.g. "iot").
 func (db *DB) CountDevicesBySegment(segment string) (int, error) {
 	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM devices WHERE segment = ?", segment).Scan(&count)
+	err := db.QueryRow("SELECT COUNT(*) FROM devices WHERE merged_into_device_id IS NULL AND segment = ?", segment).Scan(&count)
 	return count, err
 }
 

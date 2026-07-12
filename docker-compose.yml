@@ -51,6 +51,30 @@ services:
       # the two would disagree. Passing the same value keeps the reported state and
       # the daemon's real behavior consistent.
       VEDETTA_TELEMETRY_OPTIN: "${VEDETTA_TELEMETRY_OPTIN:-true}"
+      # Pull the public advisory community snapshot into local enrichment. This
+      # is the same base URL telemetry contributes to; no credential is sent.
+      VEDETTA_THREAT_NETWORK_URL: "${VEDETTA_THREAT_NETWORK_URL:-https://feed.vedettas.com}"
+      # Optional offline mode for community-feed downloads. This is independent
+      # from telemetry contribution; only exact "false" disables polling.
+      VEDETTA_COMMUNITY_FEED_ENABLED: "${VEDETTA_COMMUNITY_FEED_ENABLED:-true}"
+      # Optional DNS pollers (all off when their URL is blank). Pi-hole v6 uses
+      # session auth: TOKEN is an application password (recommended) or regular
+      # password. The same variable remains the static token for a v5 api.php URL.
+      VEDETTA_PIHOLE_URL: "${VEDETTA_PIHOLE_URL:-}"
+      VEDETTA_PIHOLE_TOKEN: "${VEDETTA_PIHOLE_TOKEN:-}"
+      VEDETTA_PIHOLE_INTERVAL: "${VEDETTA_PIHOLE_INTERVAL:-60s}"
+      VEDETTA_ADGUARD_URL: "${VEDETTA_ADGUARD_URL:-}"
+      VEDETTA_ADGUARD_USER: "${VEDETTA_ADGUARD_USER:-}"
+      VEDETTA_ADGUARD_PASS: "${VEDETTA_ADGUARD_PASS:-}"
+      VEDETTA_ADGUARD_INTERVAL: "${VEDETTA_ADGUARD_INTERVAL:-60s}"
+      # Optional, experimental read-only UniFi REST enrichment. Syslog/CEF ingest
+      # does not require these. Prefer a read-only API key over user/password.
+      VEDETTA_UNIFI_HOST: "${VEDETTA_UNIFI_HOST:-}"
+      VEDETTA_UNIFI_PORT: "${VEDETTA_UNIFI_PORT:-443}"
+      VEDETTA_UNIFI_USER: "${VEDETTA_UNIFI_USER:-}"
+      VEDETTA_UNIFI_PASS: "${VEDETTA_UNIFI_PASS:-}"
+      VEDETTA_UNIFI_API_KEY: "${VEDETTA_UNIFI_API_KEY:-}"
+      VEDETTA_UNIFI_TLS_SKIP_VERIFY: "${VEDETTA_UNIFI_TLS_SKIP_VERIFY:-false}"
     # Core receives device data from sensors — no direct network scanning needed.
     volumes:
       - vedetta-data:/data

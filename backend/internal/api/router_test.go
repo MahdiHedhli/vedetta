@@ -87,6 +87,41 @@ func createTestToken(t *testing.T, db *store.DB, scope auth.TokenScope, sensorID
 	return rawToken
 }
 
+func TestSensorHeartbeatRefreshesLastSeenWithoutDrainingWork(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	authToken := registerTestSensor(t, router, "sensor-heartbeat")
+
+	before := time.Now().UTC().Add(-10 * time.Minute)
+	if _, err := db.Exec(`UPDATE sensors SET last_seen = ? WHERE sensor_id = ?`, before, "sensor-heartbeat"); err != nil {
+		t.Fatalf("age sensor heartbeat: %v", err)
+	}
+	if srv.ScanQueue == nil {
+		srv.ScanQueue = &ScanQueue{}
+	}
+	srv.ScanQueue.Enqueue("192.0.2.0/24", "default", false)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sensor/heartbeat", nil)
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("X-Sensor-ID", "sensor-heartbeat")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("heartbeat: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	sensors, err := db.ListSensors()
+	if err != nil {
+		t.Fatalf("list sensors: %v", err)
+	}
+	if len(sensors) != 1 || !sensors[0].LastSeen.After(before.Add(5*time.Minute)) {
+		t.Fatalf("heartbeat did not refresh last_seen: %+v", sensors)
+	}
+	if got := srv.ScanQueue.Drain(); len(got) != 1 {
+		t.Fatalf("heartbeat drained queued scan work: %+v", got)
+	}
+}
+
 // --- Ingest Endpoint Tests ---
 
 func TestHandleIngest_SingleEvent(t *testing.T) {
@@ -170,6 +205,131 @@ func TestHandleIngest_InvalidEventType(t *testing.T) {
 	}
 }
 
+func TestHandleIngest_WhollyMalformedBatchIsRejectedAndAccounted(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+
+	payload := []byte(`[
+		{"message":"missing normalized event fields"},
+		[1773310272,{"raw_log":"pair missing event_type"}],
+		"not-an-event"
+	]`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("malformed-only ingest = %d, want 422: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["received"] != float64(3) || resp["accepted"] != float64(0) ||
+		resp["rejected"] != float64(3) || resp["ignored"] != float64(0) {
+		t.Fatalf("malformed-only accounting = %#v", resp)
+	}
+
+	health, err := db.ListCollectionSourceHealth(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(health) != 1 || health[0].SourceID != "collector" || health[0].Status != "error" || health[0].LastSuccess != nil {
+		t.Fatalf("malformed-only collector health = %+v", health)
+	}
+}
+
+func TestHandleIngest_MixedValidAndMalformedBatchIsPartialSuccess(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+
+	payload := []byte(`[
+		{"timestamp":"2025-07-12T10:11:12Z","event_type":"dns_query","source_ip":"192.0.2.20","domain":"mixed-valid.example","query_type":"A"},
+		{"message":"missing normalized event fields"},
+		{"timestamp":"2025-07-12T10:11:13Z","event_type":"unsupported_type"}
+	]`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("mixed ingest = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["received"] != float64(3) || resp["accepted"] != float64(1) ||
+		resp["inserted"] != float64(1) || resp["rejected"] != float64(2) ||
+		resp["ignored"] != float64(0) {
+		t.Fatalf("mixed accounting = %#v", resp)
+	}
+	result, err := db.QueryEvents(store.EventQueryParams{Domain: "mixed-valid.example"})
+	if err != nil || result.Total != 1 {
+		t.Fatalf("valid mixed-batch sibling total=%d err=%v", result.Total, err)
+	}
+	health, err := db.ListCollectionSourceHealth(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(health) != 1 || health[0].Status != "healthy" || health[0].ItemCount != 1 || health[0].LastSuccess == nil {
+		t.Fatalf("mixed collector health = %+v", health)
+	}
+}
+
+func TestHandleIngest_MalformedBatchChangesHealthyCollectorToError(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+
+	valid := []byte(`{"timestamp":"2025-07-12T10:11:12Z","event_type":"dns_query","source_ip":"192.0.2.21","domain":"health-seed.example","query_type":"A"}`)
+	validReq := httptest.NewRequest(http.MethodPost, "/api/v1/ingest", bytes.NewReader(valid))
+	validReq.Header.Set("Content-Type", "application/json")
+	validW := httptest.NewRecorder()
+	router.ServeHTTP(validW, validReq)
+	if validW.Code != http.StatusAccepted {
+		t.Fatalf("health seed = %d: %s", validW.Code, validW.Body.String())
+	}
+
+	malformedReq := httptest.NewRequest(http.MethodPost, "/api/v1/ingest", bytes.NewReader([]byte(`[]`)))
+	malformedReq.Header.Set("Content-Type", "application/json")
+	malformedW := httptest.NewRecorder()
+	router.ServeHTTP(malformedW, malformedReq)
+	if malformedW.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("empty collector batch = %d, want 422: %s", malformedW.Code, malformedW.Body.String())
+	}
+
+	health, err := db.ListCollectionSourceHealth(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(health) != 1 || health[0].Status != "error" || health[0].LastSuccess == nil || health[0].ItemCount != 1 {
+		t.Fatalf("collector health after malformed batch = %+v", health)
+	}
+
+	healthReq := httptest.NewRequest(http.MethodGet, "/api/v1/health/detection", nil)
+	healthW := httptest.NewRecorder()
+	router.ServeHTTP(healthW, healthReq)
+	if healthW.Code != http.StatusOK {
+		t.Fatalf("detection health = %d: %s", healthW.Code, healthW.Body.String())
+	}
+	var detection struct {
+		State   string `json:"state"`
+		Sources []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"sources"`
+	}
+	if err := json.NewDecoder(healthW.Body).Decode(&detection); err != nil {
+		t.Fatal(err)
+	}
+	if detection.State != "error" || len(detection.Sources) != 1 ||
+		detection.Sources[0].ID != "collector" || detection.Sources[0].State != "error" {
+		t.Fatalf("detection health did not surface collector error: %s", healthW.Body.String())
+	}
+}
+
 func TestHandleIngest_EmptyBody(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	router := NewRouter(srv)
@@ -184,12 +344,14 @@ func TestHandleIngest_EmptyBody(t *testing.T) {
 	}
 }
 
-func TestHandleIngest_AutoGeneratesFields(t *testing.T) {
+func TestHandleIngest_UpstreamIDAllowsReceiptTimestamp(t *testing.T) {
 	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
 
-	// Event with no event_id or timestamp — should be auto-filled
-	body := []byte(`{"event_type": "dns_query", "source_hash": "h", "domain": "auto.test"}`)
+	// An upstream ID provides the replay boundary when the collector cannot
+	// provide event time. Core still namespaces the database key and records the
+	// local receipt timestamp.
+	body := []byte(`{"event_id":"upstream-auto","event_type":"dns_query","source_hash":"h","domain":"auto.test"}`)
 	req := httptest.NewRequest("POST", "/api/v1/ingest", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -199,14 +361,14 @@ func TestHandleIngest_AutoGeneratesFields(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify the event was stored with auto-generated fields
+	// Verify the event was stored with Core-owned fields.
 	result, _ := db.QueryEvents(store.EventQueryParams{Domain: "auto.test"})
 	if result.Total != 1 {
 		t.Fatalf("expected 1 event, got %d", result.Total)
 	}
 	evt := result.Events[0]
-	if evt.EventID == "" {
-		t.Error("expected auto-generated event_id")
+	if evt.EventID == "" || evt.EventID == "upstream-auto" {
+		t.Errorf("expected namespaced event_id, got %q", evt.EventID)
 	}
 	if evt.Timestamp.IsZero() {
 		t.Error("expected auto-generated timestamp")
@@ -491,6 +653,7 @@ func TestHandleIngest_FirewallFieldsRoundtrip_FaithfulCollectorShape(t *testing.
 	// the payload includes them at top-level as the "if emitted top-level" case (actual collector leaves in raw_log CSV;
 	// see STEP 1). After fix, top-level non-Event go to metadata for filter json_extract.
 	payload := []byte(`{
+		"timestamp": "2026-07-12T12:00:00Z",
 		"event_type": "firewall_log",
 		"source_hash": "pfsense-host",
 		"raw_log": "5,16777216,,1000000103,igb1,match,block,in,4,0x10,,128,0,0,none,17,udp,328,198.51.100.1,198.51.100.2,67,68,308",

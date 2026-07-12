@@ -32,10 +32,14 @@ aggregate counts — never your devices, logs, or query history.
 Vedetta contributes to a **community threat feed** by default. This is:
 
 - **On by default, and trivially disabled** — set `VEDETTA_TELEMETRY_OPTIN=false`
-  (or toggle it off in the dashboard) and nothing leaves your network. We default
-  it on because the shared feed only becomes useful when instances contribute, and
-  what they contribute is **privacy-reduced and pseudonymous** — never your device
-  identities (below);
+  (or toggle it off in the dashboard) to stop all telemetry contributions. Core
+  separately downloads public threat-intelligence lists, including the advisory
+  community feed, using credential-free HTTPS GETs; those requests contain no
+  device/event/query data, but the remote services can observe your connection IP
+  and timing. Set `VEDETTA_COMMUNITY_FEED_ENABLED=false` to disable the Vedetta
+  community download as well. We default contribution on because the shared feed
+  only becomes useful when instances contribute, and what they contribute is
+  **privacy-reduced and pseudonymous** — never your device identities (below);
 - **privacy-reduced at the source**: source IP addresses, MAC addresses, and
   hostnames are stripped before anything leaves your network and are **never
   transmitted**. What is shared for a known-bad hit is the **matched indicator from

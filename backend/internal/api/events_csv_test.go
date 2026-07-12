@@ -21,9 +21,10 @@ func TestWriteEventsCSV_FormulaInjectionAndQuoting(t *testing.T) {
 			Timestamp:  time.Unix(1700000000, 0).UTC(),
 			EventType:  "dns_query",
 			SourceHash: "sha256:x",
-			Domain:     "=CMD()|'/c calc'!A1", // formula injection attempt
+			Domain:     "=CMD()|'/c calc'!A1",             // formula injection attempt
 			ThreatDesc: "malware, \"evil\", line1\nline2", // commas, quotes, newline
-			DNSSource:  "@SUM(1+1)", // another formula lead char
+			DNSSource:  "@SUM(1+1)",                       // another formula lead char
+			Outcome:    "observed",
 		},
 	}
 
@@ -63,6 +64,9 @@ func TestWriteEventsCSV_FormulaInjectionAndQuoting(t *testing.T) {
 	}
 	if got := col("dns_source"); !strings.HasPrefix(got, "'@SUM") {
 		t.Fatalf("dns_source cell not defanged with leading quote: %q", got)
+	}
+	if got := col("outcome"); got != "observed" {
+		t.Fatalf("outcome missing from CSV: %q", got)
 	}
 	// The comma/quote/newline field must survive round-trip intact.
 	if got := col("threat_desc"); got != "malware, \"evil\", line1\nline2" {

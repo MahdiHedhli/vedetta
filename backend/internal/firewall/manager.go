@@ -32,6 +32,7 @@ type Manager struct {
 	inventoryEvery time.Duration
 	mu             sync.RWMutex
 	stopChs        map[string]chan struct{}
+	sinkErrors     map[string]string
 	running        bool
 }
 
@@ -43,6 +44,7 @@ func NewManager(sink EventSink) *Manager {
 		sink:           sink,
 		inventoryEvery: 300 * time.Second,
 		stopChs:        make(map[string]chan struct{}),
+		sinkErrors:     make(map[string]string),
 	}
 }
 
@@ -63,6 +65,7 @@ func (m *Manager) Register(cfg ConnectorConfig, conn Connector) {
 	defer m.mu.Unlock()
 	m.connectors[cfg.Name] = conn
 	m.configs[cfg.Name] = cfg
+	delete(m.sinkErrors, cfg.Name)
 }
 
 // Start begins polling all enabled firewall connectors.
@@ -207,8 +210,17 @@ func (m *Manager) doPoll(name string, conn Connector) {
 
 	// Submit to sink
 	if err := m.sink(vedettaEvents); err != nil {
+		m.mu.Lock()
+		m.sinkErrors[name] = fmt.Sprintf("Core event persistence failed: %v", err)
+		m.mu.Unlock()
 		log.Printf("Firewall connector %q sink error: %v", name, err)
 		return
+	}
+	m.mu.Lock()
+	delete(m.sinkErrors, name)
+	m.mu.Unlock()
+	if acknowledger, ok := conn.(EventAcknowledger); ok {
+		acknowledger.AcknowledgeEvents(events)
 	}
 
 	log.Printf("Firewall connector %q ingested %d events", name, len(vedettaEvents))
@@ -219,8 +231,8 @@ func (m *Manager) List() []ConnectorHealth {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []ConnectorHealth
-	for _, conn := range m.connectors {
-		out = append(out, conn.Health())
+	for name, conn := range m.connectors {
+		out = append(out, m.connectorHealthLocked(name, conn))
 	}
 	return out
 }
@@ -242,7 +254,7 @@ func (m *Manager) ListNamed() []NamedHealth {
 		out = append(out, NamedHealth{
 			Name:   name,
 			Type:   m.configs[name].Type,
-			Health: conn.Health(),
+			Health: m.connectorHealthLocked(name, conn),
 		})
 	}
 	return out
@@ -256,5 +268,17 @@ func (m *Manager) Health(name string) (ConnectorHealth, error) {
 	if !ok {
 		return ConnectorHealth{}, fmt.Errorf("connector %q not found", name)
 	}
-	return conn.Health(), nil
+	return m.connectorHealthLocked(name, conn), nil
+}
+
+// connectorHealthLocked overlays Core-side persistence failures on transport
+// health reported by the connector. A successful controller HTTP poll is not a
+// successful collection cycle until the unified processor commits its events.
+// Caller must hold m.mu for reading.
+func (m *Manager) connectorHealthLocked(name string, conn Connector) ConnectorHealth {
+	health := conn.Health()
+	if sinkError := m.sinkErrors[name]; sinkError != "" {
+		health.LastError = sinkError
+	}
+	return health
 }

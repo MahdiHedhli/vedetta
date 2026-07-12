@@ -27,24 +27,35 @@ type DiscoveredHost struct {
 
 	// Actionability fields populated by sensor passive discovery (mDNS, DHCP, SSDP, etc.).
 	// These flow through to the Device model and UI for richer context (model, advertised services, discovery source).
-	Model           string
-	Services        []string
-	FriendlyName    string // human-friendly instance name from mDNS TXT fn=/n= or SSDP (spec 004)
-	DiscoverySource string // e.g. "passive_mdns", "passive_ssdp", "nmap_active"
+	Model            string
+	Services         []string
+	FriendlyName     string             // human-friendly instance name from mDNS TXT fn=/n= or SSDP (spec 004)
+	DiscoverySource  string             // e.g. "passive_mdns", "passive_ssdp", "nmap_active"
+	IdentityEvidence []IdentityEvidence // optional passive-only stable evidence; Core HMACs Value before persistence
+}
+
+// IdentityEvidence is carried over the authenticated sensor channel. Values
+// may be raw on the wire but are never persisted raw by the Core identity store.
+type IdentityEvidence struct {
+	Type       string
+	Value      string
+	Source     string
+	Confidence float64
+	Sensitive  bool
 }
 
 // nmapRun is the top-level XML element from nmap -oX output.
 type nmapRun struct {
-	XMLName xml.Name   `xml:"nmaprun"`
-	Hosts   []nmapHost `xml:"host"`
+	XMLName  xml.Name     `xml:"nmaprun"`
+	Hosts    []nmapHost   `xml:"host"`
 	RunStats nmapRunStats `xml:"runstats"`
 }
 
 type nmapHost struct {
-	Status    nmapStatus    `xml:"status"`
-	Addresses []nmapAddress `xml:"address"`
+	Status    nmapStatus     `xml:"status"`
+	Addresses []nmapAddress  `xml:"address"`
 	Hostnames []nmapHostname `xml:"hostnames>hostname"`
-	Ports     []nmapPort    `xml:"ports>port"`
+	Ports     []nmapPort     `xml:"ports>port"`
 }
 
 type nmapStatus struct {
@@ -63,8 +74,8 @@ type nmapHostname struct {
 }
 
 type nmapPort struct {
-	Protocol string      `xml:"protocol,attr"`
-	PortID   int         `xml:"portid,attr"`
+	Protocol string        `xml:"protocol,attr"`
+	PortID   int           `xml:"portid,attr"`
 	State    nmapPortState `xml:"state"`
 }
 

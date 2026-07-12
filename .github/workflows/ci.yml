@@ -141,11 +141,11 @@ jobs:
       # free of high/critical advisories.
       - name: npm audit (production deps)
         run: npm audit --omit=dev --audit-level=high
-      # Informational: dev/build-toolchain advisories (e.g. esbuild via vite)
-      # are surfaced here but do not block — the vite major bump that clears
-      # them is tracked separately (VED-B2, human-owned breaking change).
+      # Keep the complete development toolchain visible as well. Production
+      # advisories remain the blocking policy above.
       - name: npm audit (all deps, informational)
         run: npm audit || true
+      - run: npm test
       - run: npm run build
 
   # ---- Collector: Lua + Python parser regression guards ----------------------

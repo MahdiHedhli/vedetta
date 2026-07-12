@@ -20,8 +20,20 @@ type DiscoveredHost struct {
 	Status     string `json:"status"` // up | down
 
 	// Actionability fields from passive discovery (mDNS/DHCP/SSDP etc).
-	Model           string   `json:"model,omitempty"`
-	FriendlyName    string   `json:"friendly_name,omitempty"` // human-readable label derived from mDNS instance / TXT fn=/n= / SSDP (spec 004)
-	Services        []string `json:"services,omitempty"`
-	DiscoverySource string   `json:"discovery_source,omitempty"`
+	Model            string             `json:"model,omitempty"`
+	FriendlyName     string             `json:"friendly_name,omitempty"` // human-readable label derived from mDNS instance / TXT fn=/n= / SSDP (spec 004)
+	Services         []string           `json:"services,omitempty"`
+	DiscoverySource  string             `json:"discovery_source,omitempty"`
+	IdentityEvidence []IdentityEvidence `json:"identity_evidence,omitempty"`
+}
+
+// IdentityEvidence carries optional passive identity observations to Core.
+// Core applies its per-install keyed HMAC before persistence; the sensor does
+// not log or retain Value.
+type IdentityEvidence struct {
+	Type       string  `json:"type"`
+	Value      string  `json:"value"`
+	Source     string  `json:"source,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+	Sensitive  bool    `json:"sensitive,omitempty"`
 }

@@ -110,14 +110,15 @@ func TestReadGate_ReadTokenCannotWrite(t *testing.T) {
 }
 
 // TestReadGate_ReadTokenCannotIngest: a read token must NOT write events via the
-// collector ingest path (POST /ingest). DenyReadScope rejects it (403) while
-// admin/ingest/sensor tokens still pass the gate (beta-gate B6).
+// collector ingest path (POST /ingest). Only ingest/admin credentials pass;
+// read and sensor credentials are rejected at the trust-domain boundary.
 func TestReadGate_ReadTokenCannotIngest(t *testing.T) {
 	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
-	_ = createTestToken(t, db, auth.ScopeAdmin, "")
+	adminToken := createTestToken(t, db, auth.ScopeAdmin, "")
 	readToken := createTestToken(t, db, auth.ScopeRead, "")
 	ingestToken := createTestToken(t, db, auth.ScopeIngest, "")
+	sensorToken := createTestToken(t, db, auth.ScopeSensor, "")
 
 	// A read token is rejected by the scope gate before the body is even parsed.
 	reqRead := httptest.NewRequest("POST", "/api/v1/ingest", bytes.NewReader([]byte(`[]`)))
@@ -137,6 +138,20 @@ func TestReadGate_ReadTokenCannotIngest(t *testing.T) {
 	router.ServeHTTP(wIngest, reqIngest)
 	if wIngest.Code == http.StatusForbidden {
 		t.Fatalf("ingest token must pass the /ingest scope gate, got 403: %s", wIngest.Body.String())
+	}
+
+	for label, token := range map[string]string{"sensor": sensorToken, "admin": adminToken} {
+		req := httptest.NewRequest("POST", "/api/v1/ingest", bytes.NewReader([]byte(`[]`)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if label == "sensor" && w.Code != http.StatusForbidden {
+			t.Fatalf("sensor token must not ingest, got %d: %s", w.Code, w.Body.String())
+		}
+		if label == "admin" && w.Code == http.StatusForbidden {
+			t.Fatalf("admin token must pass the /ingest scope gate: %s", w.Body.String())
+		}
 	}
 }
 

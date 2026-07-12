@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/models"
@@ -16,6 +17,7 @@ import (
 // pipeline. For each event, it runs applicable detectors and updates the
 // event's anomaly_score and tags in place.
 type Enricher struct {
+	stateMu       sync.Mutex
 	Beacon        *BeaconDetector
 	ThreatDB      *threatintel.ThreatIntelDB
 	Rebinding     *RebindingDetector
@@ -90,6 +92,27 @@ func NewEnricher(threatDB *threatintel.ThreatIntelDB) *Enricher {
 	}
 }
 
+// EnsureDefaults fills optional detector dependencies for callers that build an
+// Enricher struct directly (notably compatibility tests and embedders). Call it
+// during single-threaded construction before the Enricher is shared.
+func (e *Enricher) EnsureDefaults() {
+	if e == nil {
+		return
+	}
+	if e.Beacon == nil {
+		e.Beacon = NewBeaconDetector()
+	}
+	if e.Rebinding == nil {
+		e.Rebinding = NewRebindingDetector(24 * time.Hour)
+	}
+	if e.Bypass == nil {
+		e.Bypass = NewBypassDetector(nil, []string{}, time.Hour)
+	}
+	if e.FirewallSeen == nil {
+		e.FirewallSeen = NewFirewallFirstSeen(24 * time.Hour)
+	}
+}
+
 // NewEnricherWithWhitelist is like NewEnricher but also accepts a whitelist
 // checker function. This allows the Enricher to skip scoring on known-good
 // domains early, dramatically improving signal-to-noise.
@@ -159,6 +182,14 @@ type bypassMeta struct {
 // modifies it in place (tags, anomaly_score, threat_desc, metadata).
 // This is called during ingest, before the event is written to the database.
 func (e *Enricher) Enrich(event *models.Event) {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	e.enrichEvent(event)
+}
+
+// enrichEvent runs with stateMu held, either by Enrich for direct callers or by
+// BeginEventState for the processor's checkpoint-through-persistence window.
+func (e *Enricher) enrichEvent(event *models.Event) {
 	// GHSA-hx86: Core OWNS threat provenance and the verdict signals telemetry
 	// trusts. /ingest deserializes caller-controlled fields directly onto the
 	// Event, so a forged match_type / matched_indicator / known_bad tag (and, for
@@ -184,23 +215,26 @@ func (e *Enricher) Enrich(event *models.Event) {
 		return
 	}
 
-	// Early exit for whitelisted domains — this is one of the highest-impact
-	// changes for signal-to-noise. Known-good traffic should never generate
-	// high anomaly scores.
-	if e.IsWhitelisted != nil && e.IsWhitelisted(event.Domain) {
-		return
-	}
-
-	// Early exit for known-good update/telemetry domains (SNR-20)
-	// These produce regular beaconing, high-entropy subdomains, and sometimes
-	// long subdomains that can look like tunneling, all legitimately.
-	// Use proper domain suffix matching (dot + base) to preserve detection power
-	// on lookalike domains while still excluding legitimate subdomains (e.g. foo.tuya.com).
+	// Benign context is evaluated before the heuristic work only to decide which
+	// noisy behavioral detectors to skip. It MUST NOT return before threat-intel
+	// evaluation: an operator allowlist or a normally-benign vendor domain can be
+	// compromised, and strong IOC evidence must remain visible. The processor later
+	// turns these tags into disposition/priority context without erasing evidence.
+	operatorWhitelisted := e.IsWhitelisted != nil && e.IsWhitelisted(event.Domain)
+	knownGoodContext := false
 	for _, good := range knownGoodUpdateDomains {
 		if event.Domain == good || strings.HasSuffix(event.Domain, "."+good) {
-			return
+			knownGoodContext = true
+			break
 		}
 	}
+	if operatorWhitelisted {
+		event.Tags = appendUnique(event.Tags, "whitelisted")
+	}
+	if knownGoodContext {
+		event.Tags = appendUnique(event.Tags, "known_good_context")
+	}
+	skipBehaviorHeuristics := operatorWhitelisted || knownGoodContext
 
 	var scores []float64
 	var descriptions []string
@@ -213,7 +247,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	isPrivatePTR := isPrivateReverseDNS(event.Domain)
 
 	// 1. DGA detection on the domain
-	if event.Domain != "" && !isPrivatePTR {
+	if event.Domain != "" && !isPrivatePTR && !skipBehaviorHeuristics {
 		dgaResult := ScoreDGA(event.Domain)
 		if dgaResult.IsDGA {
 			event.Tags = appendUnique(event.Tags, "dga_candidate")
@@ -234,7 +268,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	}
 
 	// 2. DNS tunnel detection
-	if event.Domain != "" && !isPrivatePTR {
+	if event.Domain != "" && !isPrivatePTR && !skipBehaviorHeuristics {
 		tunnelResult := ScoreTunnel(event.Domain)
 		if tunnelResult.IsTunnel {
 			event.Tags = appendUnique(event.Tags, "dns_tunnel")
@@ -258,7 +292,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	}
 
 	// 3. Beaconing detection
-	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR {
+	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBehaviorHeuristics {
 		beaconResult := e.Beacon.RecordAndScore(event.SourceHash, event.Domain, event.Timestamp)
 		if beaconResult.IsBeaconing {
 			event.Tags = appendUnique(event.Tags, "beaconing")
@@ -279,7 +313,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	}
 
 	// 4. DNS rebinding detection
-	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil {
+	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipBehaviorHeuristics {
 		rebindResult := e.Rebinding.Check(event.Domain, event.ResolvedIP)
 		if rebindResult != nil && rebindResult.IsRebinding {
 			event.Tags = appendUnique(event.Tags, "dns_rebinding")
@@ -318,7 +352,7 @@ func (e *Enricher) Enrich(event *models.Event) {
 	// bypassing the local network DNS (Pi-hole, router, etc.).
 	// This is a strong signal of IoT devices with hardcoded resolvers, or
 	// compromised devices trying to evade DNS-level security controls.
-	if event.Domain != "" && e.Bypass != nil {
+	if event.Domain != "" && e.Bypass != nil && !skipBehaviorHeuristics {
 		// Check for hardcoded public DNS resolver IPs
 		if event.ResolvedIP != "" {
 			resolverIP, provider := e.Bypass.DetectPublicResolverBypass(event.ResolvedIP)
@@ -570,7 +604,11 @@ func (e *Enricher) Enrich(event *models.Event) {
 		// - Three+ signals or strong threat intel: allow up to 1.0
 		var composite float64
 
-		if signalCount <= 1 {
+		if meta.ThreatDB != nil {
+			// A confirmed feed match is already strong, sourced evidence; do not
+			// demote its confidence merely because it is the only detector firing.
+			composite = maxScore
+		} else if signalCount <= 1 {
 			// Single signal — be conservative (biggest false positive reducer)
 			composite = math.Min(0.65, maxScore)
 		} else if signalCount == 2 {
@@ -592,12 +630,37 @@ func (e *Enricher) Enrich(event *models.Event) {
 		event.ThreatDesc = strings.Join(descriptions, " ")
 	}
 
-	// Serialize detection metadata as JSON
+	// Merge detection metadata into the source document instead of replacing it.
+	// Sensor dns_answers/process fields and collector firewall/raw fields are evidence;
+	// dropping them during enrichment made the result less actionable. Detector keys
+	// remain at the root for one-release API compatibility and are also namespaced under
+	// "detections" for the unified processor.
 	if meta.DGA != nil || meta.Tunnel != nil || meta.Beacon != nil || meta.Rebinding != nil || meta.Bypass != nil || meta.ThreatDB != nil {
-		if metaJSON, err := json.Marshal(meta); err == nil {
-			event.Metadata = string(metaJSON)
-		}
+		event.Metadata = mergeDetectionMetadata(event.Metadata, meta)
 	}
+}
+
+func mergeDetectionMetadata(existing string, detection *detectionMeta) string {
+	merged := map[string]any{}
+	if strings.TrimSpace(existing) != "" {
+		_ = json.Unmarshal([]byte(existing), &merged)
+	}
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	detectionMap := map[string]any{}
+	if raw, err := json.Marshal(detection); err == nil {
+		_ = json.Unmarshal(raw, &detectionMap)
+	}
+	for key, value := range detectionMap {
+		// Core-owned values replace any caller-supplied lookalike key.
+		merged[key] = value
+	}
+	merged["detections"] = detectionMap
+	if raw, err := json.Marshal(merged); err == nil {
+		return string(raw)
+	}
+	return existing
 }
 
 // enrichIP checks the resolved IP against threat intel.
@@ -636,10 +699,12 @@ func (e *Enricher) StartEviction() func() {
 		for {
 			select {
 			case <-ticker.C:
+				e.stateMu.Lock()
 				e.Beacon.EvictStale(time.Now())
 				if e.FirewallSeen != nil {
 					e.FirewallSeen.EvictStale(time.Now())
 				}
+				e.stateMu.Unlock()
 			case <-done:
 				return
 			}
