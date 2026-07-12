@@ -6,9 +6,9 @@
 
 Vedetta is a lightweight, self-hosted security monitoring platform. Today it is strongest at DNS-first visibility and detection, active and passive device discovery, and local threat scoring. The current product stands on its own locally, can optionally pull value from existing DNS infrastructure such as Pi-hole or AdGuard Home, and is currently public beta software for homelabs, technical home users, small businesses, and hands-on operators.
 
-![Vedetta dashboard — overview, device inventory, and DNS threat detection](site/assets/dashboard-overview.png)
+![Vedetta dashboard tour — asset-centered findings, supporting evidence, and stable device identity](site/assets/dashboard-findings-tour.gif)
 
-_Dashboard shown with synthetic demo data._
+_Animated tour shown with synthetic documentation-only demo data._
 
 ## What Vedetta Is Today
 
