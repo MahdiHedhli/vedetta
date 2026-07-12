@@ -54,13 +54,25 @@ Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Wind
   answers=[1.0.0.1 1.1.1.1]`, plus the synthetic `vedetta-etw-test.example`. (Core round-trip
   folds into the W6 end-to-end install test.)
 
-## W5 — Native discovery (`//go:build windows`)
-- [ ] **W5.1** Windows `netscan`: `GetIpNetTable2` neighbor read + `IcmpSendEcho` sweep →
-  same host/MAC observations as the Unix nmap path.
-- [ ] **W5.2** Windows interface classifier (`capture_selection_windows.go`).
-- [ ] **W5.3** Parsing unit tests (synthetic fixtures).
-- [ ] **W5.4** `[S]` discovers other VMs on a test segment with MACs, no admin/Npcap;
-  document firewalled-host ceiling.
+## W5 — Native discovery (`//go:build windows`) ✅
+- [x] **W5.1** Windows `netscan` native `Scanner`: bounded concurrent **`IcmpSendEcho`**
+  (iphlpapi) sweep + **`arp -a`** MAC resolution, unioned with ARP-known neighbors (so
+  firewalled hosts that drop ICMP but answer ARP are still found). `NewScanner()` no
+  longer fatals on Windows (no nmap). `ScanResult`/`DiscoveredHost` → shared `types.go`;
+  `scanner.go`/`scanner_test.go` tagged `!windows`; `main.go` scanner log made
+  platform-neutral.
+- [x] **W5.2** ~~Interface classifier~~ — **N/A for v1.** ETW DNS is host-scoped and the
+  native ICMP scan isn't interface-bound, so there's no capture-interface to classify on
+  Windows v1. (Only relevant if the Phase-3 pcap path lands.)
+- [x] **W5.3** Unit tests for `enumerateHosts` + `isRealNeighbor` (RFC 5737/3849 fixtures),
+  green in the Unix CI.
+- [x] **W5.4** `[S]` **validated on Win 11:** discovered 8 hosts on the lab segment in ~2s
+  with no admin/Npcap — 6 via ICMP + 2 firewalled Windows VMs via ARP; documented ceiling
+  confirmed (Windows hosts drop ICMP but the sweep's ARP resolution still finds them).
+
+### W5 follow-up (not blocking v1)
+- [ ] Passive ARP/DHCP discovery on Windows uses `internal/passive` (pcap) → Npcap-gated
+  (Phase 3). Decouple the mDNS/SSDP UDP listeners from pcap so they run driver-free in v1.
 
 ## W6 — Installer + CI + UX
 - [ ] **W6.1** `deploy/install.ps1`: self-elevate, checksum-verify asset, drop to

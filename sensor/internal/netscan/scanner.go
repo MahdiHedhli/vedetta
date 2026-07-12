@@ -1,3 +1,5 @@
+//go:build !windows
+
 package netscan
 
 import (
@@ -123,28 +125,7 @@ func nmapRangeBreadth(target string) int64 {
 	return total
 }
 
-// ScanResult represents the parsed output of an nmap scan.
-type ScanResult struct {
-	Hosts    []DiscoveredHost `json:"hosts"`
-	ScanTime time.Time        `json:"scan_time"`
-	Duration time.Duration    `json:"duration"`
-}
-
-// DiscoveredHost represents a single host found by nmap (or passive discovery).
-type DiscoveredHost struct {
-	IPAddress  string `json:"ip_address"`
-	MACAddress string `json:"mac_address"`
-	Hostname   string `json:"hostname,omitempty"`
-	Vendor     string `json:"vendor,omitempty"`
-	OpenPorts  []int  `json:"open_ports,omitempty"`
-	Status     string `json:"status"` // up | down
-
-	// Actionability fields from passive discovery (mDNS/DHCP/SSDP etc).
-	Model           string   `json:"model,omitempty"`
-	FriendlyName    string   `json:"friendly_name,omitempty"` // human-readable label derived from mDNS instance / TXT fn=/n= / SSDP (spec 004)
-	Services        []string `json:"services,omitempty"`
-	DiscoverySource string   `json:"discovery_source,omitempty"`
-}
+// ScanResult and DiscoveredHost are defined in types.go (shared across backends).
 
 // Scanner wraps nmap execution.
 type Scanner struct {

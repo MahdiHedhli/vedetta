@@ -111,12 +111,12 @@ func main() {
 		return
 	}
 
-	// Verify nmap is available
+	// Set up the device scanner (nmap on Unix; native ICMP/ARP on Windows).
 	scanner, err := netscan.NewScanner()
 	if err != nil {
-		log.Fatalf("nmap not available: %v", err)
+		log.Fatalf("device scanner unavailable: %v", err)
 	}
-	log.Printf("nmap found: %s", scanner.BinaryPath)
+	log.Printf("Device scanner ready: %s", scanner.BinaryPath)
 
 	// Set up Core API client
 	core, err := client.New(*coreURL)
