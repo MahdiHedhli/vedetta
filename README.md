@@ -145,6 +145,8 @@ Review the installer, then run it against your Core instance. Replace
 `https://vedetta.example.com` with your reverse-proxy hostname (or
 `http://localhost:8080` for a same-host sensor):
 
+**macOS / Linux:**
+
 ```bash
 curl -fsSL -o /tmp/vedetta-sensor-install.sh \
   https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
@@ -154,19 +156,38 @@ sudo bash /tmp/vedetta-sensor-install.sh \
   --enroll-code <ENROLL_CODE>
 ```
 
+**Windows** (driver-free — no Npcap, no nmap). Run in an **elevated** PowerShell; pin
+the release with `-Tag`:
+
+```powershell
+# review the script first: https://github.com/MahdiHedhli/vedetta/blob/main/sensor/deploy/install.ps1
+irm https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.ps1 -OutFile install.ps1
+.\install.ps1 -Core https://vedetta.example.com -EnrollCode <ENROLL_CODE> -Tag v0.1.0-beta.2
+
+# update an already-enrolled sensor (no code needed):   .\install.ps1 -Core https://vedetta.example.com
+# override LAN auto-detection:                           -CIDR 192.168.1.0/24
+# reset a stranded sensor (then re-enroll with a code):  .\install.ps1 -Core https://... -Reset -EnrollCode <CODE>
+# uninstall:  Stop-Service VedettaSensor; sc.exe delete VedettaSensor; Remove-Item 'C:\Program Files\Vedetta','C:\ProgramData\Vedetta' -Recurse -Force
+```
+
 > **Always go admin-first — there is no open bootstrap.** Create your admin via the
 > dashboard onboarding wizard (using the setup code from `gen-env.sh`), mint a
 > one-time enrollment code in the wizard's "Connect a sensor" step, then enroll the
-> sensor with `--enroll-code`. The installer bakes the code into the service
-> definition only for the initial registration; re-run it without the flag to
-> update an already-enrolled sensor.
+> sensor with the code. The **enrollment code is never stored in the service
+> configuration**: the installer spends it in a one-shot elevated enrollment step
+> (with the code passed via the environment, not a command line) and the service runs
+> only with the persisted token. Re-run the installer without the code to update an
+> already-enrolled sensor.
 
-Current public install path:
+Current public install paths:
 
-- macOS and Linux
-- installs dependencies, builds the sensor from source, and can register a persistent service
-- uses elevated privileges for the strongest local visibility
-- prints a capture-interface recommendation during install and supports `--dns-iface` / `--passive-iface` if auto-selection needs to be pinned
+- **macOS / Linux** (`install.sh`): installs dependencies, downloads a checksum-verified
+  binary (or builds from source), registers a launchd/systemd service; prints a
+  capture-interface recommendation and supports `--dns-iface` / `--passive-iface`.
+- **Windows 11 / 10 22H2 / Server 2022** (`install.ps1`): driver-free — DNS via the
+  `Microsoft-Windows-DNS-Client` ETW provider, discovery via native ICMP/ARP (no Npcap,
+  no nmap). Registers a LocalSystem service; host-scoped capture in v1.
+- All paths use elevated privileges for the strongest local visibility.
 
 If you prefer to build manually:
 

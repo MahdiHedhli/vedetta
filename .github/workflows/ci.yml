@@ -81,6 +81,43 @@ jobs:
             "$bin" -mode=binary "$out"
           done
 
+  # ---- Sensor (Windows): gate the //go:build windows code ---------------------
+  # The matrix job above only builds the sensor for Linux, so Windows-tagged files
+  # (front_windows.go service handler, capture_windows.go ETW, netscan/passive stubs)
+  # were never compiled, vetted, or tested in CI — a go-vet lostcancel regression in
+  # the service handler shipped undetected. This job builds/vets/tests the cgo-free
+  # Windows binary natively and binary-scans the actual .exe.
+  sensor-windows:
+    name: sensor (windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: sensor
+    env:
+      CGO_ENABLED: "0" # the Windows sensor is driver-free: no cgo, no Npcap, no pcap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: sensor/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Build the release executable
+        run: go build -trimpath -ldflags="-s -w" -o vedetta-sensor.exe ./cmd/vedetta-sensor
+      - name: Assert the binary links no pcap (driver-free guarantee)
+        shell: bash
+        run: |
+          n="$(go tool nm vedetta-sensor.exe | grep -ic pcap || true)"
+          echo "pcap symbols: $n"
+          if [ "$n" != "0" ]; then echo "::error::Windows sensor unexpectedly links pcap ($n symbols)"; exit 1; fi
+      - name: govulncheck (binary mode on the .exe)
+        shell: bash
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" -mode=binary vedetta-sensor.exe
+
   # ---- Frontend: install + audit + build -------------------------------------
   frontend:
     name: frontend
