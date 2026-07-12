@@ -22,7 +22,7 @@ const etwSessionName = "VedettaDnsCapture"
 // sensor has when it runs as a LocalSystem service.
 type Capturer struct {
 	onQuery func(Query)
-	hostIP  string // this host's primary IP — the client for every host-scoped query
+	cidr    string // sensor scan CIDR — used to pick this host's LAN IP for attribution
 
 	mu       sync.Mutex
 	running  bool
@@ -30,22 +30,45 @@ type Capturer struct {
 	consumer *etw.Consumer
 	cancel   context.CancelFunc
 	doneCh   chan struct{}
+
+	ipMu       sync.Mutex
+	cachedIP   string
+	cachedIPAt time.Time
 }
 
-// NewCapturer creates a Windows ETW DNS capturer. Config.Interface/Filter/CIDR are
-// ignored — ETW is host-scoped, not bound to a NIC.
+// NewCapturer creates a Windows ETW DNS capturer. Config.Interface/Filter are ignored
+// (ETW is host-scoped, not bound to a NIC); Config.CIDR selects which local address to
+// attribute this host's DNS to.
 func NewCapturer(cfg Config) (*Capturer, error) {
-	hostIP := primaryHostIP()
-	if hostIP == "" {
-		// Without a client IP Core drops every query (it attributes DNS to a device
-		// by client IP), so make the degenerate no-route case loud rather than silent.
-		log.Printf("dnscap: could not resolve this host's primary IP; DNS queries will lack a client IP")
-	}
-	return &Capturer{
+	c := &Capturer{
 		onQuery: cfg.OnQuery,
-		hostIP:  hostIP,
+		cidr:    cfg.CIDR,
 		doneCh:  make(chan struct{}),
-	}, nil
+	}
+	if c.clientIP() == "" {
+		// Core drops any query with an empty client IP; surface the transient no-route
+		// case loudly. clientIP re-resolves, so this recovers once networking is up.
+		log.Printf("dnscap: no host IP available yet — DNS events are dropped by Core until an address appears (re-checking continuously)")
+	}
+	return c, nil
+}
+
+// clientIP returns this host's LAN IP for host-scoped DNS attribution, re-resolving at
+// most every 15s. Refreshing (rather than sampling once at startup) means DHCP/Wi-Fi/
+// VPN changes are reflected and a no-route-at-boot recovers once networking comes up,
+// instead of stamping an empty or stale address on every event forever.
+func (c *Capturer) clientIP() string {
+	c.ipMu.Lock()
+	defer c.ipMu.Unlock()
+	if c.cachedIP != "" && time.Since(c.cachedIPAt) < 15*time.Second {
+		return c.cachedIP
+	}
+	if ip := lanHostIP(c.cidr); ip != "" {
+		c.cachedIP = ip
+		c.cachedIPAt = time.Now()
+		return ip
+	}
+	return "" // keep re-resolving until an address is available
 }
 
 // Start opens a real-time ETW session on the DNS-Client provider and begins
@@ -136,7 +159,7 @@ func (c *Capturer) eventToQuery(e *etw.Event) *Query {
 		Timestamp: time.Now(),
 		Domain:    name,
 		QueryType: dnsTypeName(eventStr(e, "QueryType")),
-		ClientIP:  c.hostIP, // host-scoped: this host is the client for every query
+		ClientIP:  c.clientIP(), // host-scoped: this host is the client for every query
 		Source:    "etw_dns_client",
 	}
 	if id == 3008 {

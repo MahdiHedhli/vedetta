@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -144,7 +145,7 @@ func TestRegisterWithRetryReusesEnrollmentCode(t *testing.T) {
 	core.SensorID = "sensor-test"
 	core.EnrollCode = "ENROLL-CODE-1"
 
-	if !registerWithRetry(core, "192.0.2.0/24", false, nil) {
+	if !registerWithRetry(context.Background(), core, "192.0.2.0/24", false, nil) {
 		t.Fatal("expected registration to recover on retry")
 	}
 	if attempts < 2 {
@@ -188,14 +189,14 @@ func TestEnsureRegisteredRecoversThenIsNoOp(t *testing.T) {
 	core.SensorID = "sensor-test"
 	core.EnrollCode = "ENROLL-CODE-2"
 
-	if !ensureRegistered(core, "192.0.2.0/24", false, nil) {
+	if !ensureRegistered(context.Background(), core, "192.0.2.0/24", false, nil) {
 		t.Fatal("expected ensureRegistered to succeed")
 	}
 	if registerHits != 1 {
 		t.Fatalf("expected exactly one register call, got %d", registerHits)
 	}
 	// Second call must be a no-op now that a token is configured.
-	if !ensureRegistered(core, "192.0.2.0/24", false, nil) {
+	if !ensureRegistered(context.Background(), core, "192.0.2.0/24", false, nil) {
 		t.Fatal("expected ensureRegistered to remain true once registered")
 	}
 	if registerHits != 1 {

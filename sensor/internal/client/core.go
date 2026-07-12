@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,12 @@ import (
 	"github.com/vedetta-network/vedetta/sensor/internal/netinfo"
 	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
+
+// Version is the sensor version reported to Core at registration. main() overrides
+// it with the linker-stamped buildVersion; the "dev" default marks a source build.
+// (Previously a "0.1.0-dev" string literal was hardcoded in Register, so every
+// released sensor mis-reported its version to Core regardless of the PE stamp.)
+var Version = "dev"
 
 // CoreClient communicates with the Vedetta Core API.
 type CoreClient struct {
@@ -118,7 +125,7 @@ func (c *CoreClient) TokenConfigured() bool {
 }
 
 // Register announces this sensor to the Core API and persists the one-time bootstrap token.
-func (c *CoreClient) Register(cidr string, primary bool, interfaces []netinfo.NetworkInterface) error {
+func (c *CoreClient) Register(ctx context.Context, cidr string, primary bool, interfaces []netinfo.NetworkInterface) error {
 	hostname, _ := os.Hostname()
 	reg := SensorRegistration{
 		SensorID:   c.SensorID,
@@ -126,13 +133,13 @@ func (c *CoreClient) Register(cidr string, primary bool, interfaces []netinfo.Ne
 		OS:         runtime.GOOS,
 		Arch:       runtime.GOARCH,
 		CIDR:       cidr,
-		Version:    "0.1.0-dev",
+		Version:    Version,
 		IsPrimary:  primary,
 		Interfaces: interfaces,
 	}
 
 	var resp sensorRegistrationResponse
-	if err := c.doJSON(http.MethodPost, "/api/v1/sensor/register", reg, &resp, true); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/sensor/register", reg, &resp, true); err != nil {
 		return err
 	}
 
@@ -150,7 +157,7 @@ func (c *CoreClient) Register(cidr string, primary bool, interfaces []netinfo.Ne
 }
 
 // PushDevices sends discovered hosts to Core for storage.
-func (c *CoreClient) PushDevices(result *netscan.ScanResult, cidr string, segment ...string) error {
+func (c *CoreClient) PushDevices(ctx context.Context, result *netscan.ScanResult, cidr string, segment ...string) error {
 	seg := "default"
 	if len(segment) > 0 {
 		seg = segment[0]
@@ -163,25 +170,26 @@ func (c *CoreClient) PushDevices(result *netscan.ScanResult, cidr string, segmen
 		Duration: result.Duration.String(),
 		Hosts:    result.Hosts,
 	}
-	return c.doJSON(http.MethodPost, "/api/v1/sensor/devices", report, nil, false)
+	return c.doJSON(ctx, http.MethodPost, "/api/v1/sensor/devices", report, nil, false)
 }
 
 // FetchWork retrieves pending scan requests and enabled targets from Core.
-func (c *CoreClient) FetchWork() (*WorkResponse, error) {
+func (c *CoreClient) FetchWork(ctx context.Context) (*WorkResponse, error) {
 	var work WorkResponse
-	if err := c.doJSON(http.MethodGet, "/api/v1/sensor/work", nil, &work, false); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/sensor/work", nil, &work, false); err != nil {
 		return nil, err
 	}
 	return &work, nil
 }
 
-// PushDNS sends captured DNS queries to Core for ingestion.
-func (c *CoreClient) PushDNS(payload any) error {
-	return c.doJSON(http.MethodPost, "/api/v1/sensor/dns", payload, nil, false)
+// PushDNS sends captured DNS queries to Core for ingestion. Callers that must flush
+// during shutdown pass a non-cancelled context so the final drain still completes.
+func (c *CoreClient) PushDNS(ctx context.Context, payload any) error {
+	return c.doJSON(ctx, http.MethodPost, "/api/v1/sensor/dns", payload, nil, false)
 }
 
-func (c *CoreClient) doJSON(method, path string, payload any, response any, allowBootstrap bool) error {
-	req, err := c.newJSONRequest(method, path, payload, allowBootstrap)
+func (c *CoreClient) doJSON(ctx context.Context, method, path string, payload any, response any, allowBootstrap bool) error {
+	req, err := c.newJSONRequest(ctx, method, path, payload, allowBootstrap)
 	if err != nil {
 		return err
 	}
@@ -212,7 +220,7 @@ func (c *CoreClient) doJSON(method, path string, payload any, response any, allo
 	return nil
 }
 
-func (c *CoreClient) newJSONRequest(method, path string, payload any, allowBootstrap bool) (*http.Request, error) {
+func (c *CoreClient) newJSONRequest(ctx context.Context, method, path string, payload any, allowBootstrap bool) (*http.Request, error) {
 	var body io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)
@@ -222,7 +230,7 @@ func (c *CoreClient) newJSONRequest(method, path string, payload any, allowBoots
 		body = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, c.BaseURL+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

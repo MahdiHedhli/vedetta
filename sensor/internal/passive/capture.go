@@ -1,3 +1,9 @@
+//go:build !windows
+
+// Passive discovery is pcap-backed (libpcap) and therefore Unix-only. On Windows the
+// same pcap path would require Npcap AND would run untested parsing as LocalSystem, so
+// the Windows build gets a driver-free no-op stub (capture_windows.go) until Npcap is
+// an explicit, opt-in tier (spec 006 Phase 3).
 package passive
 
 import (
@@ -10,20 +16,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/pcap"
 	"github.com/vedetta-network/vedetta/sensor/internal/netinfo"
-	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
-
-// Config controls passive device discovery.
-type Config struct {
-	Interface  string
-	CoreURL    string
-	CIDR       string
-	EnableARP  bool
-	EnableDHCP bool
-	EnableMDNS bool
-	EnableSSDP bool
-	OnHost     func(netscan.DiscoveredHost)
-}
 
 // Capturer listens for passive discovery signals on the local network.
 type Capturer struct {

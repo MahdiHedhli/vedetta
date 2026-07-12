@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +57,7 @@ func TestCoreClientRegisterPersistsAndReloadsToken(t *testing.T) {
 	}
 	core.SensorID = "sensor-test"
 
-	if err := core.Register("192.168.1.0/24", true, nil); err != nil {
+	if err := core.Register(context.Background(), "192.168.1.0/24", true, nil); err != nil {
 		t.Fatalf("register sensor: %v", err)
 	}
 	if !core.TokenConfigured() {
@@ -88,7 +89,7 @@ func TestCoreClientRegisterPersistsAndReloadsToken(t *testing.T) {
 	if reloaded.authToken != "bootstrap-token" {
 		t.Fatalf("expected reloaded token, got %q", reloaded.authToken)
 	}
-	if err := reloaded.Register("192.168.1.0/24", true, nil); err != nil {
+	if err := reloaded.Register(context.Background(), "192.168.1.0/24", true, nil); err != nil {
 		t.Fatalf("re-register sensor: %v", err)
 	}
 }

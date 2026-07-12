@@ -1,3 +1,9 @@
+//go:build !windows
+
+// pcap-backed capture-interface selection (Unix only). The Windows sensor uses
+// host-scoped ETW DNS capture and native ICMP/ARP discovery, so it never links or runs
+// pcap; capture_selection_windows.go stubs this API. The public result types live in
+// capture_selection_types.go so both builds share them.
 package netinfo
 
 import (
@@ -9,32 +15,6 @@ import (
 
 	"github.com/google/gopacket/pcap"
 )
-
-// CaptureSelectionOptions controls automatic capture-interface selection.
-type CaptureSelectionOptions struct {
-	Preferred string
-	CoreURL   string
-	ScanCIDR  string
-	Purpose   string
-}
-
-// CaptureSelection is the result of choosing a capture interface.
-type CaptureSelection struct {
-	Name         string
-	Reason       string
-	RouteSource  string
-	ScanCIDR     string
-	Candidates   []CaptureCandidate
-	WasPreferred bool
-}
-
-// CaptureCandidate summarizes one ranked capture-interface candidate.
-type CaptureCandidate struct {
-	Name    string
-	Score   int
-	IPs     []string
-	Reasons []string
-}
 
 type captureCandidate struct {
 	Name          string

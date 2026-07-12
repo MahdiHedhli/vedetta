@@ -53,6 +53,7 @@ func main() {
 	printCapturePlan := flag.Bool("print-capture-plan", false, "Print the recommended DNS/passive capture interfaces and exit")
 	showVersion := flag.Bool("version", false, "Show version")
 	enrollCode := flag.String("enroll-code", "", "One-time enrollment code from Core (or set VEDETTA_ENROLL_CODE). Required to register a NEW sensor once Core has admin auth configured.")
+	enrollOnly := flag.Bool("enroll-only", false, "Register with Core using the enrollment code, persist the sensor token, and exit. The installer runs this (with the code in the environment, not on the command line) so the secret never lives in the long-running service configuration.")
 	flag.Parse()
 
 	// Did the operator explicitly pass --core? A bare `--reset` (e.g. from the
@@ -72,6 +73,10 @@ func main() {
 
 	log.SetPrefix("[vedetta-sensor] ")
 	log.SetFlags(log.Ldate | log.Ltime)
+
+	// Report the linker-stamped build version to Core at registration (a "0.1.0-dev"
+	// literal was previously hardcoded, so released sensors mis-reported their version).
+	client.Version = buildVersion
 
 	// Handle --reset flag (very important for home users when auth gets into a bad state).
 	if *reset {
@@ -152,17 +157,25 @@ func main() {
 		}
 	}
 
-	// Register this sensor with Core, retrying with backoff. A transient Core
-	// outage at boot must not permanently leave the sensor unregistered (it was
-	// previously attempted exactly once).
-	if registerWithRetry(core, scanCIDR, *primary, interfaces) {
-		log.Printf("Registered with Core at %s", *coreURL)
-	} else {
-		log.Printf("WARNING: Could not register with Core at %s after retries", *coreURL)
-		log.Printf("Scans will continue — results will be pushed when Core becomes available")
+	// Enrollment-only mode (installer step): register with Core, persist the token,
+	// and exit — so the enrollment secret is spent here (with the code supplied via
+	// the environment, not a command line) and NEVER lives in the long-running
+	// service's configuration where a standard user could read it via `sc qc`.
+	if *enrollOnly {
+		if registerWithRetry(context.Background(), core, scanCIDR, *primary, interfaces) {
+			log.Printf("Enrollment complete — sensor token persisted to %s", core.TokenPath)
+			return
+		}
+		log.Fatalf("enrollment failed: could not register with Core at %s (check --core, the enrollment code, and connectivity)", *coreURL)
 	}
 
 	log.Printf("Starting scan loop: cidr=%s interval=%s ports=%v", scanCIDR, *interval, *scanPorts)
+
+	// NOTE: registration and the first scan are deliberately NOT done here. They are
+	// Core I/O that can block for minutes against an unreachable Core, and on Windows
+	// this function must reach the service dispatcher (svc.Run, via runFrontend)
+	// within the SCM connect deadline (~30s). They run in sensorRun.serve, after the
+	// front-end has connected to its control channel.
 
 	// Set up passive DNS capture (if enabled)
 	var wg sync.WaitGroup
@@ -251,20 +264,13 @@ func main() {
 		}
 	}
 
-	// Run first scan immediately
-	runScan(scanner, core, scanCIDR, *scanPorts)
-
-	if *oneshot {
-		shutdownCaptures(capturer, passiveCapturer, dnsQueries, passiveHosts, &wg)
-		return
-	}
-
-	// Assemble the periodic-scan run state so the loop can be driven identically by
-	// the interactive/Unix front-end here and by the Windows service front-end
-	// (service_windows.go), each supplying its own cancellation context.
+	// Assemble the run state so the operational lifecycle can be driven identically by
+	// the interactive/Unix front-end (front_unix.go) and the Windows service front-end
+	// (front_windows.go), each supplying its own cancellation context.
 	run := &sensorRun{
 		scanner:         scanner,
 		core:            core,
+		coreURL:         *coreURL,
 		scanCIDR:        scanCIDR,
 		primary:         *primary,
 		scanPorts:       *scanPorts,
@@ -279,10 +285,20 @@ func main() {
 		droppedHosts:    &droppedHosts,
 	}
 
-	// Hand off to the platform front-end (front_unix.go / front_windows.go): on Unix
-	// (and a Windows console) the run is cancelled by SIGINT/SIGTERM; under the
-	// Windows Service Control Manager it is cancelled by the service Stop/Shutdown
-	// control. Both drive the same run.loop.
+	if *oneshot {
+		// One scan and exit: register, scan once, drain. Not a service, so no SCM.
+		ctx := context.Background()
+		run.register(ctx)
+		runScan(ctx, scanner, core, scanCIDR, *scanPorts)
+		shutdownCaptures(capturer, passiveCapturer, dnsQueries, passiveHosts, &wg)
+		return
+	}
+
+	// Hand off to the platform front-end. On Unix (and a Windows console) the run is
+	// cancelled by SIGINT/SIGTERM; under the Windows Service Control Manager it is
+	// cancelled by the Stop/Shutdown control. Both call run.serve, which does the
+	// registration + first scan + periodic loop AFTER the front-end has connected to
+	// its control channel.
 	runFrontend(run)
 }
 
@@ -293,6 +309,7 @@ func main() {
 type sensorRun struct {
 	scanner         *netscan.Scanner
 	core            *client.CoreClient
+	coreURL         string
 	scanCIDR        string
 	primary         bool
 	scanPorts       bool
@@ -305,6 +322,29 @@ type sensorRun struct {
 	wg              *sync.WaitGroup
 	droppedDNS      *atomic.Int64
 	droppedHosts    *atomic.Int64
+}
+
+// serve runs the operational lifecycle: initial registration, the first scan, and
+// the periodic loop. It is called by the platform front-end AFTER that front-end has
+// connected to its control channel — on Windows, after svc.Run has reached the SCM.
+// Keeping all Core I/O here (not in main) is what lets the Windows service dispatch
+// within the SCM connect deadline even when Core is unreachable at boot (a blackholed
+// Core previously blocked registration for minutes before dispatch → Error 1053).
+func (r *sensorRun) serve(ctx context.Context) {
+	r.register(ctx)
+	runScan(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts)
+	r.loop(ctx)
+}
+
+// register performs the initial registration with bounded, context-aware retries. A
+// failure is not fatal — the sensor stays up (Running, in a retrying state) and the
+// loop re-attempts registration each cycle (issue #44 idempotent recovery).
+func (r *sensorRun) register(ctx context.Context) {
+	if registerWithRetry(ctx, r.core, r.scanCIDR, r.primary, r.interfaces) {
+		log.Printf("Registered with Core at %s", r.coreURL)
+	} else {
+		log.Printf("WARNING: could not register with Core at %s yet; staying up and retrying each scan cycle", r.coreURL)
+	}
 }
 
 // loop runs periodic scans until ctx is cancelled, then drains captures within the
@@ -322,8 +362,8 @@ func (r *sensorRun) loop(ctx context.Context) {
 			// enrollment code), keep retrying with the SAME retained enrollment code
 			// so the sensor recovers the idempotent token instead of running
 			// unregistered forever (issue #44).
-			ensureRegistered(r.core, r.scanCIDR, r.primary, r.interfaces)
-			runScan(r.scanner, r.core, r.scanCIDR, r.scanPorts)
+			ensureRegistered(ctx, r.core, r.scanCIDR, r.primary, r.interfaces)
+			runScan(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts)
 			if d, h := r.droppedDNS.Load(), r.droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Cumulative dropped events (capture buffers overflowed): %d DNS queries, %d passive hosts", d, h)
 			}
@@ -348,18 +388,25 @@ var registerRetryBaseDelay = 2 * time.Second
 // the client, so if the backend already consumed the code and minted a token the
 // sensor never received, a retry recovers that idempotent token (issue #44).
 // Returns true once registration succeeds.
-func registerWithRetry(core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
+func registerWithRetry(ctx context.Context, core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
 	const maxAttempts = 4
 	delay := registerRetryBaseDelay
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if err := core.Register(cidr, primary, interfaces); err == nil {
+		if ctx.Err() != nil {
+			return false // cancelled (e.g. service Stop during boot) — abort promptly
+		}
+		if err := core.Register(ctx, cidr, primary, interfaces); err == nil {
 			return true
 		} else {
 			log.Printf("Register attempt %d/%d failed: %v", attempt, maxAttempts, err)
 		}
 		if attempt < maxAttempts {
-			time.Sleep(delay)
-			delay *= 2
+			select {
+			case <-time.After(delay):
+				delay *= 2
+			case <-ctx.Done():
+				return false // don't sleep out the backoff after a Stop request
+			}
 		}
 	}
 	return false
@@ -371,11 +418,11 @@ func registerWithRetry(core *client.CoreClient, cidr string, primary bool, inter
 // a token the sensor never saw — recovers the idempotent token on a later attempt
 // rather than stranding the sensor (issue #44). It is a no-op (returns true) once
 // a token is configured. Returns true when the sensor is registered.
-func ensureRegistered(core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
+func ensureRegistered(ctx context.Context, core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
 	if core.TokenConfigured() {
 		return true
 	}
-	if err := core.Register(cidr, primary, interfaces); err != nil {
+	if err := core.Register(ctx, cidr, primary, interfaces); err != nil {
 		log.Printf("Re-registration attempt failed (will retry next cycle): %v", err)
 		return false
 	}
@@ -444,10 +491,13 @@ func printCaptureRecommendations(coreURL, scanCIDR, dnsIface, passiveIface strin
 	return nil
 }
 
-func runScan(scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR string, withPorts bool) {
+func runScan(ctx context.Context, scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR string, withPorts bool) {
+	if ctx.Err() != nil {
+		return
+	}
 	// Fetch work from Core (queued scans and enabled targets)
 	var work *client.WorkResponse
-	if w, err := core.FetchWork(); err == nil {
+	if w, err := core.FetchWork(ctx); err == nil {
 		work = w
 		if len(work.ScanQueue) > 0 {
 			log.Printf("Fetched %d queued scans from Core", len(work.ScanQueue))
@@ -497,6 +547,9 @@ func runScan(scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR stri
 	// Execute all scans
 	totalHosts := 0
 	for _, task := range scansMap {
+		if ctx.Err() != nil {
+			return // stop between targets on a Stop/Shutdown request (bounded drain)
+		}
 		log.Printf("Scanning %s (segment=%s) ...", task.cidr, task.segment)
 
 		result, err := scanner.Scan(task.cidr, task.scanPorts)
@@ -514,7 +567,7 @@ func runScan(scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR stri
 		totalHosts += len(result.Hosts)
 
 		// Push results to Core with the correct segment
-		if err := core.PushDevices(result, task.cidr, task.segment); err != nil {
+		if err := core.PushDevices(ctx, result, task.cidr, task.segment); err != nil {
 			log.Printf("Failed to push results to Core for %s: %v", task.cidr, err)
 		} else {
 			log.Printf("Pushed %d devices to Core for %s", len(result.Hosts), task.cidr)
@@ -585,7 +638,9 @@ func pushBatch(core *client.CoreClient, queries []dnscap.DNSQuery) {
 		Queries:  queries,
 	}
 
-	if err := core.PushDNS(req); err != nil {
+	// context.Background (not the run ctx): this also runs during the shutdown drain,
+	// where the final batch must still flush. shutdownCaptures bounds it with a 10s cap.
+	if err := core.PushDNS(context.Background(), req); err != nil {
 		log.Printf("Failed to push %d DNS queries to Core: %v", len(queries), err)
 	} else {
 		log.Printf("Pushed %d DNS queries to Core", len(queries))
@@ -613,7 +668,8 @@ func pushPassiveHosts(core *client.CoreClient, cidr string, observations chan ne
 			ScanTime: time.Now(),
 			Duration: 0,
 		}
-		if err := core.PushDevices(result, cidr, "default"); err != nil {
+		// context.Background so the shutdown drain still flushes (bounded by shutdownCaptures).
+		if err := core.PushDevices(context.Background(), result, cidr, "default"); err != nil {
 			log.Printf("Failed to push %d passive discovery hosts to Core: %v", len(hosts), err)
 		} else {
 			log.Printf("Pushed %d passive discovery hosts to Core", len(hosts))

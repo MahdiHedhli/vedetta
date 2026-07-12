@@ -12,8 +12,9 @@ import (
 const maxSweepHosts = 1024
 
 // enumerateHosts lists the usable IPv4 host addresses in cidr (excluding network and
-// broadcast), capped at maxSweepHosts. A bare IPv4 address returns itself; IPv6 and
-// over-wide subnets (>20 host bits) return nil / an error.
+// broadcast). A bare IPv4 address returns itself; IPv6 returns nil. A subnet with more
+// than maxSweepHosts usable addresses is REJECTED with an error rather than silently
+// truncated — a partial sweep reported as complete would hide devices in the range.
 func enumerateHosts(cidr string) ([]string, error) {
 	if ip := net.ParseIP(cidr); ip != nil {
 		if v4 := ip.To4(); v4 != nil {
@@ -29,8 +30,11 @@ func enumerateHosts(cidr string) ([]string, error) {
 	if base == nil {
 		return nil, nil // native sweep is IPv4-only for v1
 	}
-	if ones, bits := ipnet.Mask.Size(); bits-ones > 20 {
-		return nil, fmt.Errorf("subnet %s too large for the native ICMP sweep (%d host bits)", cidr, bits-ones)
+	// Reject oversized ranges outright. A /22 (1022 usable hosts) fits under the cap; a
+	// /21 or wider would exceed it, so error instead of scanning only the first 1024 and
+	// reporting the range as fully swept.
+	if ones, bits := ipnet.Mask.Size(); (1<<uint(bits-ones))-2 > maxSweepHosts {
+		return nil, fmt.Errorf("subnet %s has more than %d hosts and is too large for the native ICMP sweep; scan a /22 or tighter --cidr, or split the range", cidr, maxSweepHosts)
 	}
 	bcast := make(net.IP, 4)
 	for i := range base {

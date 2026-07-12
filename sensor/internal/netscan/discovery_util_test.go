@@ -25,6 +25,14 @@ func TestEnumerateHosts(t *testing.T) {
 	if _, err := enumerateHosts("198.51.100.0/8"); err == nil {
 		t.Error("enumerateHosts(/8) should error as too wide")
 	}
+	// Oversized ranges are rejected, not silently truncated: /21 (2046 hosts) errors,
+	// /22 (1022 hosts, under the 1024 cap) is allowed.
+	if _, err := enumerateHosts("198.51.100.0/21"); err == nil {
+		t.Error("enumerateHosts(/21) should error (over the sweep cap), not truncate")
+	}
+	if got, err := enumerateHosts("198.51.104.0/22"); err != nil || len(got) != 1022 {
+		t.Errorf("enumerateHosts(/22) = %d hosts, err %v; want 1022, nil", len(got), err)
+	}
 	if got, _ := enumerateHosts("198.51.100.0/24"); len(got) != 254 {
 		t.Errorf("enumerateHosts(/24) count = %d, want 254", len(got))
 	}
