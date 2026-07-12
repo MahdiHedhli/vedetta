@@ -80,14 +80,22 @@ Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Wind
 - [ ] Passive ARP/DHCP discovery on Windows uses `internal/passive` (pcap) → Npcap-gated
   (Phase 3). Decouple the mDNS/SSDP UDP listeners from pcap so they run driver-free in v1.
 
-## W6 — Installer + CI + UX
-- [ ] **W6.1** `deploy/install.ps1`: self-elevate, checksum-verify asset, drop to
-  `%ProgramFiles%\Vedetta`, `New-Service` with flags inlined, `sc.exe failure` restart,
-  `icacls` token ACL, single-use enroll-code caveat print.
-- [ ] **W6.2** CI: cgo-free `windows/amd64` release asset + checksum entry.
-- [ ] **W6.3** `runtime.GOOS`-keyed "Run as Administrator" messaging in `main.go`.
-- [ ] **W6.4** `[S]` clean-VM install → enroll → running service; re-run without
-  `--enroll-code` rewrites the service command line (no consumed-code replay).
+## W6 — Installer + CI + UX ✅
+- [x] **W6.1** `deploy/install.ps1`: self-elevates (`Start-Process -Verb RunAs`),
+  checksum-verifies the release zip (or `-Binary` escape hatch), drops to
+  `%ProgramFiles%\Vedetta`, `New-Service` (LocalSystem, auto-start) with flags inlined,
+  `sc.exe failure … restart/10000`, `icacls` token-dir ACL (SYSTEM + Administrators),
+  single-use enroll-code caveat print. Pure ASCII (PS 5.1 reads without a BOM).
+- [x] **W6.2** CI (`release.yml`): cgo-free `windows/amd64` matrix entry cross-compiled on
+  ubuntu (no MinGW), packaged as `.zip`, stamp asserted via embedded string (the .exe can't
+  run on the linux runner), added to `checksums.txt` + release files.
+- [x] **W6.3** `runtime.GOOS`-keyed `elevationHint()` in `main.go` — "Run as Administrator,
+  or install as a service" on Windows vs "sudo" elsewhere (Windows DNS elevation already
+  comes from the ETW start error).
+- [x] **W6.4** `[S]` **validated on Win 11:** `install.ps1 -Binary … -EnrollCode CODE` →
+  service **Running**, binPath carries the code; re-run **without** `-EnrollCode` rewrites
+  the binPath to drop it (no consumed-code replay); token dir ACL = `Administrators`+`SYSTEM`
+  (OI)(CI)(F) only; service uninstalls clean.
 
 ## W7 — Docs + release
 - [ ] **W7.1** README/architecture: Windows now a supported sensor (endpoint scope; ETW

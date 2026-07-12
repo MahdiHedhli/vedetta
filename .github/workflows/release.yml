@@ -1,12 +1,14 @@
 name: Release
 
-# Publishes checksummed, per-OS/arch sensor binaries for install.sh to download.
+# Publishes checksummed, per-OS/arch sensor binaries for install.sh / install.ps1.
 #
-# Note on tooling: the sensor links libpcap via cgo, so it CANNOT be cleanly
-# cross-compiled (GoReleaser OSS can't merge multi-runner cgo builds). Instead we
-# build each target NATIVELY on its own runner (amd64 + arm64), then assemble a
-# single DRAFT release + checksums. The release is always a draft — a human
-# reviews and publishes it. Nothing here runs until a `v*` tag is pushed.
+# Note on tooling: the Linux sensor links libpcap via cgo, so it CANNOT be cleanly
+# cross-compiled (GoReleaser OSS can't merge multi-runner cgo builds) — each Linux
+# target is built NATIVELY on its own runner (amd64 + arm64). The Windows sensor is
+# driver-free (DNS via ETW, discovery via native ICMP/ARP), so it builds cgo-free and
+# is cross-compiled from an ubuntu runner (no MinGW). We then assemble a single DRAFT
+# release + checksums. The release is always a draft — a human reviews and publishes
+# it. Nothing here runs until a `v*` tag is pushed.
 
 on:
   push:
@@ -28,8 +30,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: ubuntu-latest, goos: linux, goarch: amd64 }
-          - { runner: ubuntu-24.04-arm, goos: linux, goarch: arm64 }
+          - { runner: ubuntu-latest, goos: linux, goarch: amd64, cgo: "1" }
+          - { runner: ubuntu-24.04-arm, goos: linux, goarch: arm64, cgo: "1" }
+          # Windows is cgo-free (ETW + native ICMP/ARP) → cross-compile on ubuntu.
+          - { runner: ubuntu-latest, goos: windows, goarch: amd64, cgo: "0" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,35 +43,48 @@ jobs:
           go-version: stable
           cache-dependency-path: sensor/go.sum
       - name: Install libpcap (cgo dependency)
+        if: matrix.cgo == '1'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap-dev
       - name: Build + package
         working-directory: sensor
         env:
-          CGO_ENABLED: "1"
+          CGO_ENABLED: ${{ matrix.cgo }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           # The tag being released: github.ref_name on a tag push (e.g. v1.2.3),
           # or the workflow_dispatch ref input for a manual run.
           VERSION: ${{ github.event.inputs.ref || github.ref_name }}
         run: |
+          bin=vedetta-sensor
+          [ "$GOOS" = "windows" ] && bin=vedetta-sensor.exe
           # Stamp the version into the binary per the build-version contract:
           # `var buildVersion = "dev"` in package main, overridden at link time.
           go build -trimpath \
             -ldflags="-s -w -X main.buildVersion=${VERSION}" \
-            -o vedetta-sensor ./cmd/vedetta-sensor
-          # Assert the built binary actually reports the tag — a mismatch means the
-          # ldflags path silently broke (wrong package/var), so fail the job.
-          reported="$(./vedetta-sensor --version)"
-          echo "binary reports: ${reported}"
-          if [ "${reported}" != "vedetta-sensor ${VERSION}" ]; then
-            echo "::error::version stamp mismatch: got '${reported}', want 'vedetta-sensor ${VERSION}'"
-            exit 1
+            -o "$bin" ./cmd/vedetta-sensor
+          # Assert the built binary reports the tag — a mismatch means the ldflags
+          # path silently broke. The Windows .exe can't run on the ubuntu runner
+          # (the amd64 Linux job's --version check is the authoritative proof the
+          # -X path works); here we assert the tag string is embedded in the binary.
+          if [ "$GOOS" = "windows" ]; then
+            strings -a "$bin" | grep -qF "${VERSION}" \
+              || { echo "::error::version stamp '${VERSION}' not embedded in ${bin}"; exit 1; }
+            zip -q "vedetta-sensor_${GOOS}_${GOARCH}.zip" "$bin"
+          else
+            reported="$(./$bin --version)"
+            echo "binary reports: ${reported}"
+            if [ "${reported}" != "vedetta-sensor ${VERSION}" ]; then
+              echo "::error::version stamp mismatch: got '${reported}', want 'vedetta-sensor ${VERSION}'"
+              exit 1
+            fi
+            tar -czf "vedetta-sensor_${GOOS}_${GOARCH}.tar.gz" "$bin"
           fi
-          tar -czf "vedetta-sensor_${GOOS}_${GOARCH}.tar.gz" vedetta-sensor
       - uses: actions/upload-artifact@v4
         with:
           name: sensor-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: sensor/vedetta-sensor_*.tar.gz
+          path: |
+            sensor/vedetta-sensor_*.tar.gz
+            sensor/vedetta-sensor_*.zip
 
   release:
     name: assemble draft release
@@ -78,10 +95,10 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Checksums (the file install.sh verifies against)
+      - name: Checksums (the file install.sh / install.ps1 verify against)
         working-directory: dist
         run: |
-          sha256sum vedetta-sensor_*.tar.gz > checksums.txt
+          sha256sum vedetta-sensor_*.tar.gz vedetta-sensor_*.zip > checksums.txt
           cat checksums.txt
       - name: Create/refresh DRAFT release
         uses: softprops/action-gh-release@v2
@@ -90,4 +107,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/vedetta-sensor_*.tar.gz
+            dist/vedetta-sensor_*.zip
             dist/checksums.txt

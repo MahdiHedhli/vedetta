@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,16 @@ import (
 // buildVersion is stamped by release CI via -ldflags "-X main.buildVersion=<tag>".
 // It defaults to "dev" for local/source builds.
 var buildVersion = "dev"
+
+// elevationHint returns an OS-appropriate "re-run with privileges" instruction for
+// a capture that was denied permission — "Run as Administrator" on Windows (where
+// there is no sudo and captures run under an elevated service), "sudo" elsewhere.
+func elevationHint(argv string) string {
+	if runtime.GOOS == "windows" {
+		return "Run as Administrator, or install as a service: " + argv
+	}
+	return "Run with sudo for packet capture: sudo " + argv
+}
 
 func main() {
 	// CLI flags
@@ -187,7 +198,7 @@ func main() {
 		} else {
 			if err := capturer.Start(); err != nil {
 				if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "operation not permitted") {
-					log.Printf("WARNING: Failed to start DNS capture on %s (permission denied). Run with sudo for packet capture: sudo %s --core %s --dns-iface %s", *dnsIface, os.Args[0], *coreURL, *dnsIface)
+					log.Printf("WARNING: Failed to start DNS capture on %s (permission denied). %s", *dnsIface, elevationHint(fmt.Sprintf("%s --core %s --dns-iface %s", os.Args[0], *coreURL, *dnsIface)))
 				} else {
 					log.Printf("WARNING: Failed to start DNS capture: %v", err)
 				}
@@ -226,7 +237,7 @@ func main() {
 			log.Printf("WARNING: Failed to initialize passive discovery: %v", err)
 		} else if err := passiveCapturer.Start(); err != nil {
 			if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "operation not permitted") {
-				log.Printf("WARNING: Failed to start passive discovery on %s (permission denied). Run with sudo for packet capture: sudo %s --core %s --passive-iface %s", *passiveIface, os.Args[0], *coreURL, *passiveIface)
+				log.Printf("WARNING: Failed to start passive discovery on %s (permission denied). %s", *passiveIface, elevationHint(fmt.Sprintf("%s --core %s --passive-iface %s", os.Args[0], *coreURL, *passiveIface)))
 			} else {
 				log.Printf("WARNING: Failed to start passive discovery: %v", err)
 			}
