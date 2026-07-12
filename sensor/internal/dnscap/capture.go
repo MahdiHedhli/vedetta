@@ -1,3 +1,5 @@
+//go:build !windows
+
 package dnscap
 
 import (
@@ -27,29 +29,7 @@ type Capturer struct {
 	onQuery      func(Query)
 }
 
-// Query represents a captured DNS query (or resolution from response).
-type Query struct {
-	Timestamp time.Time
-	Domain    string
-	QueryType string
-	ClientIP  string
-	ServerIP  string
-	Blocked   bool
-	Source    string   // e.g., "passive_capture"
-	Answers   []string // resolved destinations from answer records (populated for responses)
-	Process   string   // originating process (future for local agent modes)
-}
-
-// Config contains settings for DNS capture.
-type Config struct {
-	Interface    string        // Network interface to capture on (or "auto" for best match)
-	CoreURL      string        // Vedetta Core URL used as a route hint
-	CIDR         string        // Scan CIDR used to prefer the local LAN interface
-	Filter       string        // BPF filter string (optional, overrides default)
-	BatchSize    int           // Number of queries to batch before sending
-	BatchTimeout time.Duration // Max time to wait before sending a batch
-	OnQuery      func(Query)   // Callback for each captured query
-}
+// Query and Config are defined in types.go (shared across capture backends).
 
 // NewCapturer creates a new passive DNS capturer.
 func NewCapturer(cfg Config) (*Capturer, error) {

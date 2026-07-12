@@ -42,12 +42,17 @@ Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Wind
   `NT AUTHORITY\SYSTEM:(F)` + `BUILTIN\Administrators:(F)` with inheritance removed — non-admins
   have no access.
 
-## W4 — ETW DNS capture (`//go:build windows`)
-- [ ] **W4.1** `dnscap/capture_windows.go` implementing the `Capturer` interface via ETW;
-  map 3006/3008 → `Query`. Existing `capture.go` → `//go:build !windows`.
-- [ ] **W4.2** Table tests for event→`Query` mapping with synthetic/RFC-5737 fixtures.
-- [ ] **W4.3** `[S]` DNS from the VM (`nslookup`, browser) reaches Core with correct
-  qname/type/answers.
+## W4 — ETW DNS capture (`//go:build windows`) ✅
+- [x] **W4.1** `dnscap/capture_windows.go` implements the `Capturer` (Start/Stop/Interface)
+  via `golang-etw` on Microsoft-Windows-DNS-Client; `eventToQuery` maps 3006→{Domain,Type}
+  and 3008→{Domain,Type,Answers}. `capture.go`/`capture_test.go` tagged `//go:build !windows`;
+  `Query`/`Config` moved to shared `types.go`; pure parsers in shared `dns_parse.go`.
+- [x] **W4.2** Table tests for `dnsTypeName` + `parseQueryResults` (RFC 5737/3849 fixtures) —
+  run in the Unix CI (shared file). Green.
+- [x] **W4.3** `[S]` **validated on Win 11:** the real `dnscap.Capturer` emitted Query objects
+  from live DNS — e.g. `example.com A`, `example.com AAAA answers=[…]`, `one.one.one.one AAAA
+  answers=[1.0.0.1 1.1.1.1]`, plus the synthetic `vedetta-etw-test.example`. (Core round-trip
+  folds into the W6 end-to-end install test.)
 
 ## W5 — Native discovery (`//go:build windows`)
 - [ ] **W5.1** Windows `netscan`: `GetIpNetTable2` neighbor read + `IcmpSendEcho` sweep →

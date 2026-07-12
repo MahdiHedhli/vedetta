@@ -114,6 +114,13 @@ together as the first Windows release. It comprises:
   **nmap**-backed deep scan (`-sS`, fingerprinting) — **only** when the user has
   installed Npcap + nmap themselves. Gated behind a detection check; never required.
   This is the only path that could later justify an OEM license.
+  - **Npcap is necessary-but-not-sufficient for network-wide DNS.** On a normal
+    endpoint a NIC sees only this host's + broadcast/multicast traffic, so Npcap there
+    buys roughly what ETW already gives for DNS (plus L2 discovery). Capturing *other*
+    devices' resolver DNS additionally requires network **placement** — a switch
+    SPAN/mirror port, a TAP, or the host acting as gateway/resolver. It is not a
+    "see everything" toggle; that network-sensor mode stays the Linux/macOS
+    on-a-gateway story.
 
 ### Out of scope
 
