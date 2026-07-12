@@ -29,7 +29,7 @@ $ErrorActionPreference = "Stop"
 
 # If the self-elevation handed the enrollment code through a file (so it never appears on
 # the elevated process command line, where audit tooling would capture it), read and
-# delete it now — the caller wrote it to a per-user TEMP path.
+# delete it now - the caller wrote it to a per-user TEMP path.
 if ($EnrollCodeFile -and (Test-Path $EnrollCodeFile)) {
     $EnrollCode = (Get-Content -Raw $EnrollCodeFile).Trim()
     Remove-Item $EnrollCodeFile -Force -ErrorAction SilentlyContinue
@@ -65,6 +65,19 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
     if ($Binary)    { $a += @("-Binary", $Binary) }
     Start-Process powershell -Verb RunAs -ArgumentList $a
     exit
+}
+
+# --- Guards that prevent stranding a sensor (must run before any destructive step) ---
+$TokenPath = Join-Path $DataDir "sensor-token"
+# -Reset deletes the working token; refuse unless a replacement code is supplied, so a
+# reset can't leave the sensor unable to re-enroll.
+if ($Reset -and -not $EnrollCode) {
+    Die "-Reset clears the sensor's auth token. Pass -EnrollCode <bound reset code> too so it can re-enroll (an admin mints one: POST /api/v1/enrollment-codes {sensor_id}). Refusing to strand the sensor."
+}
+# A fresh install with neither a code nor an existing token would create a service that
+# can never register. Require a code unless a token is already persisted (a re-run/update).
+if (-not $NoService -and -not $EnrollCode -and -not (Test-Path $TokenPath)) {
+    Die "no -EnrollCode and no existing token at $TokenPath. A new sensor needs a one-time enrollment code to register. Mint one in the dashboard 'Connect a sensor' step and pass -EnrollCode <CODE>."
 }
 
 $tmp = New-Item -ItemType Directory -Force -Path (Join-Path $env:TEMP ("vedetta-" + [guid]::NewGuid()))

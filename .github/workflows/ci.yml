@@ -106,12 +106,16 @@ jobs:
       - run: go test ./...
       - name: Build the release executable
         run: go build -trimpath -ldflags="-s -w" -o vedetta-sensor.exe ./cmd/vedetta-sensor
-      - name: Assert the binary links no pcap (driver-free guarantee)
+      - name: Assert the Windows build pulls in no pcap (driver-free guarantee)
         shell: bash
         run: |
-          n="$(go tool nm vedetta-sensor.exe | grep -ic pcap || true)"
-          echo "pcap symbols: $n"
-          if [ "$n" != "0" ]; then echo "::error::Windows sensor unexpectedly links pcap ($n symbols)"; exit 1; fi
+          # go list -deps is authoritative: it inspects the dependency graph, unlike
+          # `go tool nm` which returns "no symbols" on a stripped (-s -w) binary and would
+          # pass for the wrong reason. The build is GOOS=windows (native runner) + CGO_ENABLED=0.
+          if go list -deps ./cmd/vedetta-sensor | grep -q 'gopacket/pcap'; then
+            echo "::error::Windows sensor unexpectedly depends on gopacket/pcap"; exit 1
+          fi
+          echo "OK: no gopacket/pcap in the Windows dependency graph"
       - name: govulncheck (binary mode on the .exe)
         shell: bash
         run: |
