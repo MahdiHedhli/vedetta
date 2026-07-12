@@ -45,7 +45,7 @@
 - [x] Run all Go build/vet/race/migration tests and frontend test/build/audit gates.
 - [x] Run sanitization/secret/diff checks and capture synthetic screenshots.
 - [x] Document migration, backup, forward-only rollback, limitations, and deferred issues.
-- [ ] Open PR from `feat/asset-centered-findings`; never merge it.
+- [x] Open draft PR #58 from `feat/asset-centered-findings`; never merge it.
 - [x] Request independent adversarial review and address release-relevant findings.
 
 ## Constitution check
