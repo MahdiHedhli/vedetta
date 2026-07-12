@@ -1,6 +1,6 @@
 # Tasks: Windows Sensor
 
-> Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Status: Draft · Created: 2026-07-11
+> Spec: [spec.md](spec.md) · Plan: [plan.md](plan.md) · Status: **v1 complete — shipped to `main`** · Created: 2026-07-11
 
 Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Windows VM.
 
@@ -97,11 +97,20 @@ Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Wind
   the binPath to drop it (no consumed-code replay); token dir ACL = `Administrators`+`SYSTEM`
   (OI)(CI)(F) only; service uninstalls clean.
 
-## W7 — Docs + release
-- [ ] **W7.1** README/architecture: Windows now a supported sensor (endpoint scope; ETW
-  DNS + native discovery; DoH/network-wide limits documented).
-- [ ] **W7.2** Full four-module build+vet+test + env-data gate + iCloud sweep (pre-handoff).
-- [ ] **W7.3** Tag the Windows sensor in the next release notes.
+## W7 — Docs + release ✅
+- [x] **W7.1** README + `sensor-architecture.md` + site: Windows now a supported sensor —
+  host-scoped ETW DNS + native ICMP/ARP discovery, driver-free (no Npcap/nmap), LocalSystem
+  service, `%ProgramData%\Vedetta` token ACL; DoH/network-wide limits documented.
+- [x] **W7.1b** `[S]` **Full end-to-end proven on Win 11** (Core + sensor on one host over
+  localhost): install → enroll (single-use code) → ETW DNS capture → push → **stored in Core
+  and queryable by domain** (events 0 → 24; both marker domains present). This test caught the
+  empty-ClientIP drop bug (fixed, commit 9ca54be).
+- [x] **W7.2** Pre-handoff gate: all 5 Go modules (backend, sensor, telemetry, threat-network,
+  scripts/simulate) `build`/`vet`/`test` green on darwin; sensor `windows/amd64` cross-compiles
+  cgo-free; env-data gate clean (no lab subnet/hostnames/MACs/creds in the diff — only generic
+  RFC1918 examples); iCloud `* 2.*` dup sweep clean.
+- [x] **W7.3** Windows sensor added to `docs/releases/v0.1.0-beta.1.md` (driver-free; Win 11 /
+  10 22H2 / Server 2022; host-scoped v1).
 
 ## Later (not this feature) — Phase 3 optional tier
 - [ ] Runtime-detected Npcap → pcap L2 passive capture; runtime-detected nmap → deep scan.

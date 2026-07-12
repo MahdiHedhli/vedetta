@@ -1,7 +1,7 @@
 # Vedetta Sensor Architecture
 
-> Last updated: 2026-04-21
-> Status: Alpha
+> Last updated: 2026-07-11
+> Status: Beta (native sensor: macOS, Linux, Windows)
 
 ## Why Vedetta Has A Native Sensor
 
@@ -27,11 +27,32 @@ The current sensor is strongest at:
 
 ### Current install reality
 
-- **Public install path:** macOS and Linux
-- **Current installer:** builds from source, installs dependencies, and can register a persistent service
-- **Privileges:** current best visibility still assumes elevated local access
-- **Capture preflight:** installer prints a recommended DNS/passive capture interface and the sensor supports explicit `--dns-iface` / `--passive-iface` overrides
-- **Windows:** not yet a supported public install path
+- **Public install path:** macOS, Linux, and Windows
+- **Current installer:** `install.sh` (macOS/Linux) or `install.ps1` (Windows) downloads a
+  checksum-verified prebuilt binary (or builds from source on Unix) and registers a persistent
+  service (launchd / systemd / Windows service)
+- **Privileges:** best visibility assumes elevated local access — a LocalSystem service on
+  Windows, `sudo`/root on Unix
+- **Capture preflight:** on Unix the installer prints a recommended DNS/passive capture
+  interface and the sensor supports explicit `--dns-iface` / `--passive-iface` overrides; on
+  Windows, DNS capture is host-scoped ETW and needs no interface selection
+
+### Windows sensor (host-scoped, driver-free)
+
+The Windows sensor needs **no Npcap, no nmap, and no cgo** — it is a single pure-Go binary.
+
+- **DNS:** captured from the `Microsoft-Windows-DNS-Client` ETW provider — the OS resolver's
+  own queries (event 3006) and responses (3008). This is **host-scoped**: it sees this
+  machine's DNS, not other devices' traffic. A real-time ETW session needs an elevated token,
+  which the LocalSystem service has. Every query is attributed to this host's primary IP.
+- **Discovery:** native `IcmpSendEcho` sweep + `arp -a`, unioned with the ARP neighbor table so
+  firewalled hosts that drop ICMP but still answer ARP are found.
+- **Service:** runs under the Windows Service Control Manager (installed by `install.ps1`); the
+  token lives at `%ProgramData%\Vedetta\sensor-token`, ACL-locked to SYSTEM + Administrators
+  (NTFS ACLs, since `chmod` is a no-op there).
+- **Limits (v1):** DoH/DoT from apps that bypass the OS resolver is not visible, and capture is
+  this-host-only. Network-wide L2 capture (optional Npcap) and deep `nmap` scans are an opt-in
+  Phase-3 tier — never required.
 
 ## What Is Required Vs Optional
 
@@ -76,7 +97,7 @@ vedetta-core
 
 The current sensor is not yet the final shape of the product. Public copy should not imply that it already includes:
 
-- mature Windows support
+- network-wide capture on Windows (v1 is host-scoped ETW; segment-wide L2 capture is an opt-in Npcap tier)
 - full passive discovery coverage beyond the current DNS capture and active scanning path
 - turnkey zero-touch onboarding for non-technical users
 - fully hardened internet-facing operation

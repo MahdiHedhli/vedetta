@@ -55,7 +55,7 @@ the [project constitution](.specify/memory/constitution.md).
 ### Available now
 
 - Docker-based Core with dashboard, API, and SQLite-backed storage
-- native sensor for macOS and Linux install paths
+- native sensor for macOS, Linux, and Windows install paths
 - passive DNS capture plus active and passive device discovery
 - log ingestion pipeline (`POST /api/v1/ingest` + events query API + retention enforcer)
 - DNS-first threat scoring and local enrichment
@@ -224,8 +224,9 @@ This split is deliberate. The local network is the strongest source of truth Ved
 ## Hardware And Platform Notes
 
 - **Core:** Raspberry Pi 4 (4 GB RAM) or a small x86 box is a reasonable target for public beta deployments.
-- **Sensor:** macOS or Linux host with `nmap` on the network segment you want to inspect.
-- **Windows:** Core runs on Windows via Docker (Desktop/WSL2); the native sensor that provides LAN visibility is macOS/Linux today, with Windows sensor support on the roadmap.
+- **Sensor (macOS/Linux):** a host with `nmap` on the network segment you want to inspect; installs with `sensor/deploy/install.sh`.
+- **Sensor (Windows):** Windows 11, Windows 10 22H2, or Server 2022. Driver-free — DNS via the `Microsoft-Windows-DNS-Client` ETW provider and discovery via native ICMP/ARP, so **no Npcap and no nmap**. Installs with `sensor/deploy/install.ps1` (run as Administrator) and runs as a LocalSystem service. v1 capture is **host-scoped** (this machine's DNS); segment-wide L2 capture via optional Npcap is a later, never-required tier.
+- **Core on Windows:** runs via Docker (Desktop/WSL2).
 
 ## Router And Firewall Integrations
 
