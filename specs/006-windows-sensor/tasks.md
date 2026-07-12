@@ -26,11 +26,17 @@ Ordered so each step keeps Linux/macOS green. `[S]` = validate on a Proxmox Wind
 - [x] **W1.3** Verified: Linux/macOS `go build/vet/test` green (6 pkgs); windows/amd64
   cross-compiles clean; shutdown drain unchanged.
 
-## W2 — Windows service front-end (`//go:build windows`)
-- [ ] **W2.1** `service_windows.go`: `svc.Handler` mapping `Stop/Shutdown`→`cancel(ctx)`,
-  state reporting with `WaitHint 12s`; `svc.IsWindowsService()` picks service vs console.
-- [ ] **W2.2** `--install-service` / `--uninstall-service` via `svc/mgr`.
-- [ ] **W2.3** `[S]` `net stop`/`net start` drain cleanly on a VM.
+## W2 — Windows service front-end (`//go:build windows`) ✅
+- [x] **W2.1** `runFrontend` split into `front_unix.go` (signal.NotifyContext SIGINT/SIGTERM)
+  and `front_windows.go` (`svc.IsWindowsService()` → SCM via `sensorService` svc.Handler, else
+  console Ctrl+C). The handler reports `StartPending → Running`, and on `Stop/Shutdown` cancels
+  the run ctx and waits for the capture drain (`WaitHint 15s`) before `Stopped`. main.go now
+  just calls `runFrontend(run)`.
+- [x] **W2.2** ~~`--install-service`/`--uninstall-service`~~ — **deferred:** the installer (W6)
+  registers/removes the service via `New-Service`/`sc.exe`, so a self-install flag isn't needed
+  for v1.
+- [x] **W2.3** `[S]` **validated on Win 11:** `New-Service` → `Start-Service` → **Running**;
+  `Stop-Service` → **Stopped** cleanly (drain completed, no hang); service ran as LocalSystem.
 
 ## W3 — Token path + ACL (security fix) ✅
 - [x] **W3.1** `client/core.go`: `%ProgramData%\Vedetta\sensor-token` on Windows

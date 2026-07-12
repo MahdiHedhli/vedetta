@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/vedetta-network/vedetta/sensor/internal/client"
@@ -270,13 +268,11 @@ func main() {
 		droppedHosts:    &droppedHosts,
 	}
 
-	// Interactive / Unix front-end: cancel the run on SIGINT/SIGTERM. os.Interrupt
-	// is SIGINT; SIGTERM is delivered on Unix and is a harmless, never-delivered
-	// no-op on Windows (the Windows service handles stop via the SCM instead).
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	run.loop(ctx)
+	// Hand off to the platform front-end (front_unix.go / front_windows.go): on Unix
+	// (and a Windows console) the run is cancelled by SIGINT/SIGTERM; under the
+	// Windows Service Control Manager it is cancelled by the service Stop/Shutdown
+	// control. Both drive the same run.loop.
+	runFrontend(run)
 }
 
 // sensorRun holds the state the periodic scan loop needs so the loop can be driven
