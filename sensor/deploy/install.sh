@@ -205,6 +205,12 @@ if [ -n "${VEDETTA_SENSOR_BINARY:-}" ]; then
   # instead of downloading or building one.
   BINARY="$VEDETTA_SENSOR_BINARY"
   echo "==> using caller-supplied binary: $BINARY"
+elif [ -n "${VEDETTA_RELEASE_TAG:-}" ] && [ "$FORCE_SOURCE" != "1" ]; then
+  # Explicit release pin: install ONLY that pinned, checksum-verified asset. Fail
+  # closed — never silently fall back to building mutable main when a pinned download
+  # or checksum verification fails.
+  try_prebuilt || die "pinned release ${VEDETTA_RELEASE_TAG}: asset download or checksum verification failed; refusing to fall back to a source build of main"
+  echo "==> using checksum-verified prebuilt binary (${VEDETTA_RELEASE_TAG})"
 elif [ "$OS" = "Darwin" ] && [ "$FORCE_SOURCE" != "1" ]; then
   # No prebuilt Darwin release asset is published, so don't probe the releases
   # API for one — build macOS from source directly (issue #45). macOS ships

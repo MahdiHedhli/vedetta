@@ -26,7 +26,7 @@ LAN / WLAN
    |
    |  passive DNS capture, device discovery
    v
-vedetta-sensor (native, macOS/Linux today)
+vedetta-sensor (native, macOS/Linux/Windows)
    |
    |  HTTP API
    v

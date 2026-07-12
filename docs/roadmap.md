@@ -15,7 +15,7 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 ## Current product shape
 
 - **Vedetta Core** runs in Docker Compose and provides the API, dashboard, local storage, and ingestion pipeline.
-- **Vedetta Sensor** runs natively on the network you want to watch. Today it supports macOS and Linux install paths and combines nmap-based discovery with passive DNS, ARP, DHCP, mDNS, and SSDP/UPnP visibility.
+- **Vedetta Sensor** runs natively on the network you want to watch, with install paths for macOS, Linux, and Windows. On macOS/Linux it combines nmap-based discovery with passive DNS, ARP, DHCP, mDNS, and SSDP/UPnP visibility; the Windows sensor is driver-free and host-scoped in v1 (DNS via ETW, native ICMP/ARP discovery, no Npcap/nmap).
 - **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
 - **Threat enrichment** uses local abuse.ch-backed intelligence so the local product keeps value without cloud dependence.
 - **EOL Router & Camera Risk Detection** — Detects specific end-of-life and vulnerable router and camera models listed in the [FBI IC3 FLASH 2026-03-12 advisory](https://www.ic3.gov/CSA/2026/260312.pdf) (AVrecon / SocksEscort) and applies elevated risk scoring when they exhibit suspicious behavior.
