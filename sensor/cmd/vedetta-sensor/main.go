@@ -105,6 +105,21 @@ func main() {
 		}
 	}
 
+	// --print-capture-plan is a Unix-only interactive diagnostic (recommends DNS/passive
+	// capture interfaces). Run it BEFORE NewScanner so it still prints on a host without
+	// nmap — NewScanner is fatal there, and this diagnostic needs neither the scanner nor
+	// the Core client.
+	if *printCapturePlan {
+		planCIDR := strings.TrimSpace(*cidr)
+		if planCIDR == "" || planCIDR == "auto" {
+			planCIDR = netscan.BestSubnet("")
+		}
+		if err := printCaptureRecommendations(*coreURL, planCIDR, *dnsIface, *passiveIface); err != nil {
+			log.Fatalf("Could not print capture plan: %v", err)
+		}
+		return
+	}
+
 	// Set up the device scanner (local: nmap presence on Unix, native ICMP/ARP on
 	// Windows). No network.
 	scanner, err := netscan.NewScanner()
@@ -124,18 +139,6 @@ func main() {
 	core.EnrollCode = strings.TrimSpace(*enrollCode)
 	if core.EnrollCode == "" {
 		core.EnrollCode = strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE"))
-	}
-
-	// --print-capture-plan: Unix-only interactive diagnostic.
-	if *printCapturePlan {
-		planCIDR := strings.TrimSpace(*cidr)
-		if planCIDR == "" || planCIDR == "auto" {
-			planCIDR = netscan.BestSubnet("")
-		}
-		if err := printCaptureRecommendations(*coreURL, planCIDR, *dnsIface, *passiveIface); err != nil {
-			log.Fatalf("Could not print capture plan: %v", err)
-		}
-		return
 	}
 
 	// Assemble the run with the RAW config. Everything network-dependent — CIDR

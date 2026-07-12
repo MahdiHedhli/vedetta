@@ -71,9 +71,9 @@ vedetta-core (Docker Compose)
 
 ### Supported sensor reality today
 
-- **Public install path:** macOS and Linux
+- **Public install path:** macOS, Linux, and Windows (`install.sh` / `install.ps1`)
 - **Current workflow:** native install, local network access, and elevated privileges for the strongest visibility
-- **Windows:** Core runs under Docker (Desktop/WSL2); the native sensor is macOS/Linux today — Windows sensor support (an Npcap-based capture path) is on the roadmap
+- **Windows:** a native, driver-free sensor — DNS via the `Microsoft-Windows-DNS-Client` ETW provider and discovery via native ICMP/ARP (no Npcap, no nmap), running as a LocalSystem service. v1 is host-scoped (this machine's DNS); segment-wide L2 capture via optional Npcap is a later, never-required tier. Core also runs under Docker (Desktop/WSL2).
 
 ## Data Sources
 

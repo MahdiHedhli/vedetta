@@ -925,7 +925,7 @@ docker compose up -d</code></pre>
         <div class="feature-card">
           <div class="feature-kicker">2. Sensor</div>
           <h3>Install the native sensor</h3>
-          <p>The public installer supports macOS and Linux (<code>install.sh</code>) and Windows (<code>install.ps1</code>, run as Administrator &mdash; driver-free, no Npcap or nmap). Review the script before running it, and pass the enrollment code from the wizard as <code>--enroll-code</code>.</p>
+          <p>The public installer supports macOS and Linux (<code>install.sh</code>) and Windows (<code>install.ps1</code>, run as Administrator &mdash; driver-free, no Npcap or nmap). Review the script before running it, and pass the enrollment code from the wizard: <code>--enroll-code</code> on macOS/Linux, <code>-EnrollCode</code> on Windows.</p>
           <div class="feature-code-wrap">
             <button class="copy-trigger" type="button" data-copy-target="sensor-install">Copy</button>
             <pre class="feature-code" id="sensor-install"><code>curl -fsSL -o /tmp/vedetta-sensor-install.sh \

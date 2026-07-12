@@ -128,14 +128,26 @@ ensure_nmap() {
 BINARY=""
 try_prebuilt() {
   command -v curl >/dev/null 2>&1 || return 1
-  local tag base asset tmp sums
-  tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-         | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | cut -d'"' -f4)"
-  [ -n "$tag" ] || return 1
-  base="https://github.com/${REPO}/releases/download/${tag}"
+  local base asset tmp sums url
   asset="vedetta-sensor_${GOOS}_${GOARCH}.tar.gz"
+  if [ -n "${VEDETTA_RELEASE_TAG:-}" ]; then
+    # Explicit pin (mirrors install.ps1 -Tag).
+    base="https://github.com/${REPO}/releases/download/${VEDETTA_RELEASE_TAG}"
+  else
+    # Resolve the newest release that ships this asset. NOT /releases/latest — GitHub
+    # defines "latest" as the newest NON-prerelease, so a beta published (correctly) as a
+    # prerelease 404s there and the install would silently fall back to compiling mutable
+    # main. /releases lists every published release newest-first (drafts are not returned
+    # unauthenticated; prereleases are), so the first asset download URL matching our
+    # platform is the newest published (pre)release's binary. Override with VEDETTA_RELEASE_TAG.
+    url="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" 2>/dev/null \
+           | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
+           | cut -d'"' -f4 | grep "/${asset}\$" | head -1)"
+    [ -n "$url" ] || return 1
+    base="${url%/*}" # strip the filename → the release's download base (carries the tag)
+  fi
   tmp="$(mktemp -d)"
-  echo "==> downloading prebuilt ${asset} (${tag})"
+  echo "==> downloading prebuilt ${asset} (${base##*/download/})"
   curl -fsSL -o "${tmp}/${asset}" "${base}/${asset}" || { rm -rf "$tmp"; return 1; }
   curl -fsSL -o "${tmp}/checksums.txt" "${base}/checksums.txt" || { rm -rf "$tmp"; return 1; }
   echo "==> verifying checksum"

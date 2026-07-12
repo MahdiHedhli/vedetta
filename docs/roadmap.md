@@ -95,7 +95,7 @@ Vedetta is not yet positioned as a mass-market consumer appliance. The current i
 ## Known Product Limits
 
 - The recommended Core path still uses Docker Compose.
-- The sensor install path is currently oriented around macOS and Linux. Windows is not yet a supported public install path.
+- The sensor has native install paths for macOS, Linux, and Windows (`install.sh` / `install.ps1`). The Windows sensor is host-scoped in v1 (DNS via ETW, native ICMP/ARP discovery, no Npcap/nmap); segment-wide L2 capture via optional Npcap remains a later, never-required tier.
 - Router and firewall coverage is still maturing. UniFi log ingestion is implemented (specs/001) but has not completed the live ≥72h SNR validation on real hardware, so it is not yet labelled fully "supported"; broader connectors remain specced-only (specs/005).
 - Telemetry and the community threat network are implemented (specs/002, specs/003) and on by default (opt-out via `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle); the shared feed is advisory-only. The Core-side consumer that pulls community intel back into local scoring is specced but not yet wired.
 - Sensor bearer auth is now in place for registration follow-up, device reports, DNS ingest, and work fetches. Broader dashboard/admin auth hardening is still incomplete, and public internet exposure remains unsupported.
