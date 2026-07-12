@@ -156,14 +156,19 @@ func (c *Capturer) eventToQuery(e *etw.Event) *Query {
 		return nil
 	}
 	q := &Query{
-		Timestamp: time.Now(),
-		Domain:    name,
-		QueryType: dnsTypeName(eventStr(e, "QueryType")),
-		ClientIP:  c.clientIP(), // host-scoped: this host is the client for every query
-		Source:    "etw_dns_client",
+		ObservationID: NewObservationID(),
+		Timestamp:     time.Now(),
+		Domain:        name,
+		QueryType:     dnsTypeName(eventStr(e, "QueryType")),
+		ClientIP:      c.clientIP(), // host-scoped: this host is the client for every query
+		Source:        "etw_dns_client",
 	}
 	if id == 3008 {
+		q.Direction = "response"
+		q.RCode = strings.TrimSpace(eventStr(e, "QueryStatus"))
 		q.Answers = parseQueryResults(eventStr(e, "QueryResults"))
+	} else {
+		q.Direction = "query"
 	}
 	return q
 }

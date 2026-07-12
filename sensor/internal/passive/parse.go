@@ -3,9 +3,11 @@ package passive
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/google/gopacket"
@@ -93,6 +95,20 @@ func hostFromDHCPv4(dhcp *layers.DHCPv4, srcIP string) *netscan.DiscoveredHost {
 			host.Hostname = strings.TrimSpace(string(option.Data))
 		case layers.DHCPOptClassID:
 			host.Vendor = strings.TrimSpace(string(option.Data))
+		case layers.DHCPOptParamsRequest:
+			if fingerprint := dhcpParameterRequestFingerprint(option.Data); fingerprint != "" {
+				addIdentityEvidence(&host, netscan.IdentityEvidence{
+					Type: "dhcp_option_55", Value: fingerprint, Source: "passive_dhcp",
+					Confidence: 0.55, Sensitive: true,
+				})
+			}
+		case layers.DHCPOptClientID:
+			if len(option.Data) > 0 {
+				addIdentityEvidence(&host, netscan.IdentityEvidence{
+					Type: "dhcp_client_id", Value: hex.EncodeToString(option.Data), Source: "passive_dhcp",
+					Confidence: 0.95, Sensitive: true,
+				})
+			}
 		}
 	}
 
@@ -129,12 +145,13 @@ const (
 // mdnsInstance is a service-instance node in the per-packet record graph
 // (e.g. "Living Room TV._googlecast._tcp.local").
 type mdnsInstance struct {
-	target   string   // SRV target host owner (e.g. "chromecast-1.local"), trimmed of trailing dot
-	model    string   // from TXT md=/mn=/model=
-	vendor   string   // from TXT mf=/manufacturer=
-	txtName  string   // from TXT fn=/n= (highest-priority friendly name)
-	label    string   // service-instance label (fallback friendly name)
-	services []string // service types this instance advertises (e.g. "_googlecast._tcp")
+	target   string                     // SRV target host owner (e.g. "chromecast-1.local"), trimmed of trailing dot
+	model    string                     // from TXT md=/mn=/model=
+	vendor   string                     // from TXT mf=/manufacturer=
+	txtName  string                     // from TXT fn=/n= (highest-priority friendly name)
+	label    string                     // service-instance label (fallback friendly name)
+	services []string                   // service types this instance advertises (e.g. "_googlecast._tcp")
+	evidence []netscan.IdentityEvidence // selected stable TXT/instance evidence
 }
 
 // friendlyName resolves the instance's display name: an explicit TXT fn=/n=
@@ -290,8 +307,17 @@ func hostsFromMDNS(dns *layers.DNS, srcIP string) []netscan.DiscoveredHost {
 		if fn := inst.friendlyName(); host.FriendlyName == "" && fn != "" {
 			host.FriendlyName = fn
 		}
+		if fn := inst.friendlyName(); fn != "" {
+			addIdentityEvidence(host, netscan.IdentityEvidence{Type: "mdns_name", Value: fn,
+				Source: "passive_mdns", Confidence: 0.75, Sensitive: true})
+		}
 		for _, svc := range inst.services {
 			addHostService(host, svc)
+			addIdentityEvidence(host, netscan.IdentityEvidence{Type: "mdns_service", Value: svc,
+				Source: "passive_mdns", Confidence: 0.45})
+		}
+		for _, evidence := range inst.evidence {
+			addIdentityEvidence(host, evidence)
 		}
 	}
 
@@ -335,13 +361,29 @@ func hostsFromMDNS(dns *layers.DNS, srcIP string) []netscan.DiscoveredHost {
 			}
 		}
 		if ip := srcIP; ip != "" {
-			hosts = append(hosts, netscan.DiscoveredHost{
+			fallback := netscan.DiscoveredHost{
 				IPAddress:       ip,
 				Hostname:        name,
 				FriendlyName:    friendly,
 				Status:          "up",
 				DiscoverySource: "passive_mdns",
-			})
+			}
+			if len(instanceOrder) > 0 {
+				inst := instances[instanceOrder[0]]
+				if friendly != "" {
+					addIdentityEvidence(&fallback, netscan.IdentityEvidence{Type: "mdns_name", Value: friendly,
+						Source: "passive_mdns", Confidence: 0.75, Sensitive: true})
+				}
+				for _, svc := range inst.services {
+					addHostService(&fallback, svc)
+					addIdentityEvidence(&fallback, netscan.IdentityEvidence{Type: "mdns_service", Value: svc,
+						Source: "passive_mdns", Confidence: 0.45})
+				}
+				for _, evidence := range inst.evidence {
+					addIdentityEvidence(&fallback, evidence)
+				}
+			}
+			hosts = append(hosts, fallback)
 		}
 	}
 
@@ -386,14 +428,18 @@ func applyTXT(inst *mdnsInstance, txts [][]byte) {
 				if inst.model == "" {
 					inst.model = value
 				}
+				addMDNSIdentityEvidence(inst, "mdns_txt_model", value, 0.65, false)
 			case "manufacturer", "mf", "vendor":
 				if inst.vendor == "" {
 					inst.vendor = value
 				}
+				addMDNSIdentityEvidence(inst, "mdns_txt_vendor", value, 0.55, false)
 			case "fn", "n":
 				if inst.txtName == "" {
 					inst.txtName = value
 				}
+			case "id", "deviceid", "device_id", "device-id", "uuid":
+				addMDNSIdentityEvidence(inst, "mdns_txt_id", value, 0.85, true)
 			}
 		}
 	}
@@ -421,6 +467,35 @@ func addHostService(host *netscan.DiscoveredHost, svc string) {
 		}
 	}
 	host.Services = append(host.Services, svc)
+}
+
+const maxIdentityEvidenceHost = 32
+
+func addIdentityEvidence(host *netscan.DiscoveredHost, evidence netscan.IdentityEvidence) {
+	evidence.Type = strings.ToLower(strings.TrimSpace(evidence.Type))
+	evidence.Value = strings.TrimSpace(evidence.Value)
+	if evidence.Type == "" || evidence.Value == "" || len(evidence.Value) > 512 || len(host.IdentityEvidence) >= maxIdentityEvidenceHost {
+		return
+	}
+	for _, existing := range host.IdentityEvidence {
+		if existing.Type == evidence.Type && existing.Value == evidence.Value {
+			return
+		}
+	}
+	host.IdentityEvidence = append(host.IdentityEvidence, evidence)
+}
+
+func addMDNSIdentityEvidence(inst *mdnsInstance, kind, value string, confidence float64, sensitive bool) {
+	if inst == nil || len(inst.evidence) >= maxIdentityEvidenceHost {
+		return
+	}
+	evidence := netscan.IdentityEvidence{Type: kind, Value: value, Source: "passive_mdns", Confidence: confidence, Sensitive: sensitive}
+	for _, existing := range inst.evidence {
+		if existing.Type == evidence.Type && existing.Value == evidence.Value {
+			return
+		}
+	}
+	inst.evidence = append(inst.evidence, evidence)
 }
 
 // looksLikeServiceName reports whether an mDNS owner name is a service-type name
@@ -568,6 +643,14 @@ func hostFromSSDPPayload(payload []byte, srcIP string) *netscan.DiscoveredHost {
 	if fn := ssdpFriendlyName(req.Header); fn != "" {
 		host.FriendlyName = fn
 	}
+	if uuidValue := ssdpUUID(req.Header.Get("USN")); uuidValue != "" {
+		addIdentityEvidence(&host, netscan.IdentityEvidence{Type: "ssdp_uuid", Value: uuidValue,
+			Source: "passive_ssdp", Confidence: 0.95, Sensitive: true})
+	}
+	if deviceType := ssdpDeviceType(req.Header); deviceType != "" {
+		addIdentityEvidence(&host, netscan.IdentityEvidence{Type: "ssdp_device_type", Value: deviceType,
+			Source: "passive_ssdp", Confidence: 0.55})
+	}
 
 	if host.IPAddress == "" {
 		return nil
@@ -595,6 +678,52 @@ func ssdpFriendlyName(h http.Header) string {
 		}
 	}
 	return ""
+}
+
+func ssdpUUID(usn string) string {
+	value := strings.TrimSpace(usn)
+	lower := strings.ToLower(value)
+	idx := strings.Index(lower, "uuid:")
+	if idx < 0 {
+		return ""
+	}
+	value = value[idx+len("uuid:"):]
+	if end := strings.Index(value, "::"); end >= 0 {
+		value = value[:end]
+	}
+	return strings.TrimSpace(value)
+}
+
+func ssdpDeviceType(h http.Header) string {
+	for _, key := range []string{"NT", "ST"} {
+		if value := strings.TrimSpace(h.Get(key)); strings.Contains(strings.ToLower(value), ":device:") {
+			return value
+		}
+	}
+	if usn := strings.TrimSpace(h.Get("USN")); usn != "" {
+		if idx := strings.Index(usn, "::"); idx >= 0 {
+			if value := strings.TrimSpace(usn[idx+2:]); strings.Contains(strings.ToLower(value), ":device:") {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func dhcpParameterRequestFingerprint(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	// Preserve option order: it is the useful fingerprinting signal. Bound the
+	// untrusted option even though legal DHCP options are already byte-sized.
+	if len(data) > 128 {
+		data = data[:128]
+	}
+	parts := make([]string, 0, len(data))
+	for _, option := range data {
+		parts = append(parts, strconv.Itoa(int(option)))
+	}
+	return strings.Join(parts, ",")
 }
 
 func sourceIP(packet gopacket.Packet) string {
@@ -683,6 +812,9 @@ func dedupeHosts(hosts []netscan.DiscoveredHost) []netscan.DiscoveredHost {
 		}
 		for _, svc := range host.Services {
 			addHostService(&existing, svc)
+		}
+		for _, evidence := range host.IdentityEvidence {
+			addIdentityEvidence(&existing, evidence)
 		}
 		if existing.IPAddress == "" {
 			existing.IPAddress = host.IPAddress

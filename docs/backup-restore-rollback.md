@@ -2,8 +2,9 @@
 
 Vedetta Core keeps all of its state in a **single SQLite database** on the
 `vedetta-data` Docker volume (`/data/vedetta.db` inside the container). That
-database holds your devices, events, scan targets, whitelist/suppression rules,
-and your **API tokens** — so backing it up is the one thing that matters most.
+database holds your devices, events, durable findings and evidence links, identity and
+finding-suppression audit histories, scan targets, whitelist/suppression rules, and your
+**API tokens** — so backing it up is the one thing that matters most.
 
 > **Before any update, take a backup.** Migrations run automatically on start and
 > can change the schema; a backup is your rollback path if an upgrade misbehaves.
@@ -77,8 +78,11 @@ docker compose up -d
 Verify:
 
 ```sh
+VED_TOKEN='<read-or-admin-token>'
 curl -fsS http://localhost:8080/healthz
-curl -fsS http://localhost:8080/api/v1/status
+curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
+  http://localhost:8080/api/v1/status
+unset VED_TOKEN
 ```
 
 ---
@@ -97,8 +101,11 @@ git checkout <release-tag>          # e.g. v0.1.0-beta.1
 # 3. Rebuild and restart:
 docker compose up -d --build
 # 4. Verify health + that your data is intact:
+VED_TOKEN='<read-or-admin-token>'
 curl -fsS http://localhost:8080/healthz
-curl -fsS http://localhost:8080/api/v1/status
+curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
+  http://localhost:8080/api/v1/status
+unset VED_TOKEN
 ```
 
 Watch `docker compose logs -f backend` on first start after an update — schema
@@ -108,20 +115,32 @@ migrations run there.
 
 ## 4. Roll back
 
-If an update misbehaves:
+If an update misbehaves, stop the upgraded Core before restoring. For any release
+that ran a database migration, including migration 025 (asset identity and
+findings), restore the pre-update database together with the previous image.
+Do not run the older image against the expanded database: older device-merge,
+suppression, and retention code does not understand the new finding/evidence/audit
+relationships.
 
 ```sh
-# 1. Return to the previous version:
+# 1. Stop Core and return to the previous version:
+docker compose stop backend
 git checkout <previous-release-tag>
-docker compose up -d --build
 
-# 2. If the failed update ran a migration that changed the schema, an older
-#    binary may not read the newer DB. Restore the pre-update backup (section 2)
-#    so the older version sees a schema it understands.
+# 2. Restore the pre-update database using section 2.
+
+# 3. Rebuild/start the matching previous version and verify it:
+docker compose up -d --build
+VED_TOKEN='<read-or-admin-token>'
+curl -fsS http://localhost:8080/healthz
+curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
+  http://localhost:8080/api/v1/status
+unset VED_TOKEN
 ```
 
 Because the pre-update backup predates the new migration, restoring it returns
 both the code **and** the database to a known-good, mutually-compatible state.
 
-> Rollback across a schema migration is only safe if you took a backup **before**
-> updating — which is why section 3 starts with a backup.
+> Migration 025 is forward-only. Rollback across it requires the backup taken
+> **before** updating; deleting its tables or reusing the migrated database with
+> an older binary is not a supported rollback path.

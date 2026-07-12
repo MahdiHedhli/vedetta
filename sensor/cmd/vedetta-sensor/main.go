@@ -408,12 +408,14 @@ func (r *sensorRun) register(ctx context.Context) {
 // bounded shutdown window. This is the single run body shared by every platform
 // front-end; cancellation source (signal vs SCM) is the front-end's concern.
 func (r *sensorRun) loop(ctx context.Context) {
-	ticker := time.NewTicker(r.interval)
-	defer ticker.Stop()
+	scanTicker := time.NewTicker(r.interval)
+	heartbeatTicker := time.NewTicker(sensorHeartbeatInterval)
+	defer scanTicker.Stop()
+	defer heartbeatTicker.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-scanTicker.C:
 			// If registration never succeeded (transient Core outage at boot, or a
 			// registration whose response was lost after the backend consumed the
 			// enrollment code), keep retrying with the SAME retained enrollment code
@@ -423,6 +425,13 @@ func (r *sensorRun) loop(ctx context.Context) {
 			runScan(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts)
 			if d, h := r.droppedDNS.Load(), r.droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Cumulative dropped events (capture buffers overflowed): %d DNS queries, %d passive hosts", d, h)
+			}
+		case <-heartbeatTicker.C:
+			// Scan work is intentionally not used as a heartbeat: fetching it drains
+			// queued scans, and the default five-minute scan interval is longer than
+			// Core's two-minute process-staleness window.
+			if err := r.core.Heartbeat(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("Sensor heartbeat failed: %v", err)
 			}
 		case <-ctx.Done():
 			log.Printf("Shutdown requested, draining captures")
@@ -434,6 +443,11 @@ func (r *sensorRun) loop(ctx context.Context) {
 		}
 	}
 }
+
+// Short enough that Core can miss several heartbeats before its two-minute
+// process-reachability window marks a sensor stale. Indirected for deterministic
+// service-loop tests.
+var sensorHeartbeatInterval = 30 * time.Second
 
 // registerRetryBaseDelay is the initial backoff between registration attempts.
 // It is a variable (not a const) so tests can shrink it.
@@ -636,71 +650,342 @@ func runScan(ctx context.Context, scanner *netscan.Scanner, core *client.CoreCli
 	}
 }
 
-// pushDNSQueries batches captured DNS queries and pushes them to Core.
+// dnsPushConfig bounds every in-memory stage of DNS delivery. A failed request keeps
+// its immutable batch and retries it; once the bounded queue is full, newly completed
+// batches are shed explicitly instead of growing memory without limit while Core is
+// offline. The capture callback has its own bounded channel and drop counter as the
+// first line of overload protection.
+type dnsPushConfig struct {
+	BatchSize          int
+	QueuedBatches      int
+	MaxUnpaired        int
+	PairWindow         time.Duration
+	FlushInterval      time.Duration
+	RetryBaseDelay     time.Duration
+	RetryMaxDelay      time.Duration
+	AttemptTimeout     time.Duration
+	ShutdownFlushLimit time.Duration
+}
+
+var productionDNSPushConfig = dnsPushConfig{
+	BatchSize:          100,
+	QueuedBatches:      10,
+	MaxUnpaired:        512,
+	PairWindow:         2 * time.Second,
+	FlushInterval:      250 * time.Millisecond,
+	RetryBaseDelay:     500 * time.Millisecond,
+	RetryMaxDelay:      30 * time.Second,
+	AttemptTimeout:     5 * time.Second,
+	ShutdownFlushLimit: 8 * time.Second, // below shutdownCaptures' 10s hard cap
+}
+
+type pendingDNSQuery struct {
+	query     dnscap.Query
+	arrivedAt time.Time
+}
+
+// dnsQueryCoalescer holds query/response halves until their partner arrives (or the
+// short pairing window expires). This happens before HTTP chunking, so a batch
+// boundary cannot split the common two-packet representation of one DNS exchange.
+// Pairing is FIFO and one-to-one: two retransmitted queries plus one response yield
+// one exchange and one still-distinct query.
+type dnsQueryCoalescer struct {
+	window      time.Duration
+	maxUnpaired int
+	unpaired    []pendingDNSQuery
+}
+
+func newDNSQueryCoalescer(window time.Duration, maxUnpaired int) *dnsQueryCoalescer {
+	if window <= 0 {
+		window = 2 * time.Second
+	}
+	if maxUnpaired <= 0 {
+		maxUnpaired = 512
+	}
+	return &dnsQueryCoalescer{window: window, maxUnpaired: maxUnpaired}
+}
+
+func normalizedDNSDirection(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "query":
+		return "query"
+	case "response":
+		return "response"
+	default:
+		return ""
+	}
+}
+
+func dnsQueryHasAnswerData(q dnscap.Query) bool {
+	return len(q.Answers) > 0
+}
+
+func sameDNSExchange(a, b dnscap.Query, window time.Duration) bool {
+	if !strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(a.Domain), "."), strings.TrimSuffix(strings.TrimSpace(b.Domain), ".")) ||
+		!strings.EqualFold(strings.TrimSpace(a.QueryType), strings.TrimSpace(b.QueryType)) ||
+		strings.TrimSpace(a.ClientIP) != strings.TrimSpace(b.ClientIP) ||
+		strings.TrimSpace(a.ServerIP) != strings.TrimSpace(b.ServerIP) {
+		return false
+	}
+	delta := a.Timestamp.Sub(b.Timestamp)
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > window {
+		return false
+	}
+	aDirection, bDirection := normalizedDNSDirection(a.Direction), normalizedDNSDirection(b.Direction)
+	if aDirection != "" || bDirection != "" {
+		// Never guess across a partially marked pair. Current capture backends mark
+		// both halves; this protects new records from an ambiguous legacy record.
+		return aDirection != "" && bDirection != "" && aDirection != bDirection
+	}
+	// Compatibility for captures from older sensors that had no direction field.
+	// Only an answer-bearing/answerless pair is distinguishable in that format.
+	return dnsQueryHasAnswerData(a) != dnsQueryHasAnswerData(b)
+}
+
+func mergeDNSExchange(a, b dnscap.Query) dnscap.Query {
+	response, query := a, b
+	if normalizedDNSDirection(b.Direction) == "response" ||
+		(normalizedDNSDirection(a.Direction) == "" && dnsQueryHasAnswerData(b)) {
+		response, query = b, a
+	}
+	response.Direction = "response"
+	if response.ObservationID == "" {
+		response.ObservationID = query.ObservationID
+	}
+	if response.Domain == "" {
+		response.Domain = query.Domain
+	}
+	if response.QueryType == "" {
+		response.QueryType = query.QueryType
+	}
+	if response.ClientIP == "" {
+		response.ClientIP = query.ClientIP
+	}
+	if response.ServerIP == "" {
+		response.ServerIP = query.ServerIP
+	}
+	if response.Source == "" {
+		response.Source = query.Source
+	}
+	if response.Process == "" {
+		response.Process = query.Process
+	}
+	response.Blocked = response.Blocked || query.Blocked
+	seenAnswers := make(map[string]bool, len(response.Answers)+len(query.Answers))
+	answers := make([]string, 0, len(response.Answers)+len(query.Answers))
+	for _, answer := range append(append([]string(nil), response.Answers...), query.Answers...) {
+		key := strings.ToLower(strings.TrimSpace(answer))
+		if key == "" || seenAnswers[key] {
+			continue
+		}
+		seenAnswers[key] = true
+		answers = append(answers, answer)
+	}
+	response.Answers = answers
+	return response
+}
+
+// add returns records that are now safe to chunk. A matched exchange returns one
+// merged response immediately. An unmatched record remains pending. If the pairing
+// buffer reaches its cap, the oldest record is released rather than growing memory.
+func (c *dnsQueryCoalescer) add(query dnscap.Query, now time.Time) []dnscap.Query {
+	if query.ObservationID == "" {
+		query.ObservationID = dnscap.NewObservationID()
+	}
+	for i, pending := range c.unpaired {
+		if sameDNSExchange(pending.query, query, c.window) {
+			c.unpaired = append(c.unpaired[:i], c.unpaired[i+1:]...)
+			return []dnscap.Query{mergeDNSExchange(pending.query, query)}
+		}
+	}
+	c.unpaired = append(c.unpaired, pendingDNSQuery{query: query, arrivedAt: now})
+	if len(c.unpaired) <= c.maxUnpaired {
+		return nil
+	}
+	oldest := c.unpaired[0].query
+	c.unpaired = c.unpaired[1:]
+	return []dnscap.Query{oldest}
+}
+
+func (c *dnsQueryCoalescer) expire(now time.Time) []dnscap.Query {
+	cutoff := now.Add(-c.window)
+	ready := make([]dnscap.Query, 0)
+	kept := c.unpaired[:0]
+	for _, pending := range c.unpaired {
+		if !pending.arrivedAt.After(cutoff) {
+			ready = append(ready, pending.query)
+		} else {
+			kept = append(kept, pending)
+		}
+	}
+	c.unpaired = kept
+	return ready
+}
+
+func (c *dnsQueryCoalescer) flush() []dnscap.Query {
+	ready := make([]dnscap.Query, 0, len(c.unpaired))
+	for _, pending := range c.unpaired {
+		ready = append(ready, pending.query)
+	}
+	c.unpaired = nil
+	return ready
+}
+
+func capturedDNSQuery(q dnscap.Query) dnscap.DNSQuery {
+	observationID := q.ObservationID
+	if observationID == "" {
+		// Defensive compatibility for any future capture source that bypasses the
+		// coalescer. Production capture paths assign this before buffering.
+		observationID = dnscap.NewObservationID()
+	}
+	return dnscap.DNSQuery{
+		ObservationID: observationID,
+		Timestamp:     q.Timestamp.UnixMilli(), Domain: q.Domain, QueryType: q.QueryType,
+		ClientIP: q.ClientIP, ServerIP: q.ServerIP, Direction: normalizedDNSDirection(q.Direction),
+		RCode: strings.TrimSpace(q.RCode), Blocked: q.Blocked, Source: q.Source,
+		Answers: append([]string(nil), q.Answers...), Process: q.Process,
+	}
+}
+
+// pushDNSQueries coalesces captured query/response packets, chunks the resulting
+// exchanges, and hands immutable batches to a retrying delivery worker.
 func pushDNSQueries(core *client.CoreClient, queries chan dnscap.Query) {
-	ticker := time.NewTicker(10 * time.Second)
+	pushDNSQueriesWithConfig(core, queries, productionDNSPushConfig)
+}
+
+func pushDNSQueriesWithConfig(core *client.CoreClient, queries <-chan dnscap.Query, cfg dnsPushConfig) {
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 100
+	}
+	if cfg.QueuedBatches <= 0 {
+		cfg.QueuedBatches = 1
+	}
+	if cfg.FlushInterval <= 0 {
+		cfg.FlushInterval = 250 * time.Millisecond
+	}
+	if cfg.ShutdownFlushLimit <= 0 {
+		cfg.ShutdownFlushLimit = 8 * time.Second
+	}
+
+	deliveryCtx, cancelDelivery := context.WithCancel(context.Background())
+	defer cancelDelivery()
+	batches := make(chan []dnscap.DNSQuery, cfg.QueuedBatches)
+	deliveryDone := make(chan struct{})
+	go func() {
+		defer close(deliveryDone)
+		deliverDNSBatches(deliveryCtx, core, batches, cfg)
+	}()
+
+	coalescer := newDNSQueryCoalescer(cfg.PairWindow, cfg.MaxUnpaired)
+	ready := make([]dnscap.DNSQuery, 0, cfg.BatchSize)
+	dropped := 0
+	enqueueChunk := func(chunk []dnscap.DNSQuery) {
+		if len(chunk) == 0 {
+			return
+		}
+		immutable := append([]dnscap.DNSQuery(nil), chunk...)
+		select {
+		case batches <- immutable:
+		default:
+			dropped += len(immutable)
+			log.Printf("WARNING: DNS delivery queue full while Core is unavailable; dropped %d newly captured records (total %d)", len(immutable), dropped)
+		}
+	}
+	emit := func(captured []dnscap.Query) {
+		for _, query := range captured {
+			ready = append(ready, capturedDNSQuery(query))
+			if len(ready) == cfg.BatchSize {
+				enqueueChunk(ready)
+				ready = make([]dnscap.DNSQuery, 0, cfg.BatchSize)
+			}
+		}
+	}
+	flushReady := func() {
+		if len(ready) > 0 {
+			enqueueChunk(ready)
+			ready = make([]dnscap.DNSQuery, 0, cfg.BatchSize)
+		}
+	}
+
+	ticker := time.NewTicker(cfg.FlushInterval)
 	defer ticker.Stop()
-
-	batch := make([]dnscap.DNSQuery, 0, 100)
-
 	for {
 		select {
-		case q, ok := <-queries:
+		case query, ok := <-queries:
 			if !ok {
-				// Channel closed
-				if len(batch) > 0 {
-					pushBatch(core, batch)
+				emit(coalescer.flush())
+				flushReady()
+				close(batches)
+				timer := time.NewTimer(cfg.ShutdownFlushLimit)
+				select {
+				case <-deliveryDone:
+					if !timer.Stop() {
+						<-timer.C
+					}
+				case <-timer.C:
+					log.Printf("WARNING: DNS delivery did not drain within %s; abandoning retained batches for bounded shutdown", cfg.ShutdownFlushLimit)
+					cancelDelivery()
+					select {
+					case <-deliveryDone:
+					case <-time.After(250 * time.Millisecond):
+						// net/http honors cancellation, but this final cap keeps the
+						// service stop bounded even with a non-conforming transport.
+						log.Printf("WARNING: DNS HTTP transport ignored cancellation; leaving delivery goroutine during process shutdown")
+					}
 				}
 				return
 			}
-
-			batch = append(batch, dnscap.DNSQuery{
-				Timestamp: q.Timestamp.UnixMilli(),
-				Domain:    q.Domain,
-				QueryType: q.QueryType,
-				ClientIP:  q.ClientIP,
-				ServerIP:  q.ServerIP,
-				Blocked:   q.Blocked,
-				Source:    q.Source,
-				Answers:   q.Answers,
-				Process:   q.Process,
-			})
-
-			// Send if batch is full
-			if len(batch) >= 100 {
-				pushBatch(core, batch)
-				batch = make([]dnscap.DNSQuery, 0, 100)
-			}
-
-		case <-ticker.C:
-			// Send batch on timer even if not full
-			if len(batch) > 0 {
-				pushBatch(core, batch)
-				batch = make([]dnscap.DNSQuery, 0, 100)
-			}
+			emit(coalescer.add(query, time.Now()))
+		case now := <-ticker.C:
+			emit(coalescer.expire(now))
+			flushReady()
 		}
 	}
 }
 
-func pushBatch(core *client.CoreClient, queries []dnscap.DNSQuery) {
-	if len(queries) == 0 {
-		return
-	}
-
-	req := struct {
-		SensorID string            `json:"sensor_id"`
-		Queries  []dnscap.DNSQuery `json:"queries"`
-	}{
-		SensorID: core.SensorID,
-		Queries:  queries,
-	}
-
-	// context.Background (not the run ctx): this also runs during the shutdown drain,
-	// where the final batch must still flush. shutdownCaptures bounds it with a 10s cap.
-	if err := core.PushDNS(context.Background(), req); err != nil {
-		log.Printf("Failed to push %d DNS queries to Core: %v", len(queries), err)
-	} else {
-		log.Printf("Pushed %d DNS queries to Core", len(queries))
+func deliverDNSBatches(ctx context.Context, core *client.CoreClient, batches <-chan []dnscap.DNSQuery, cfg dnsPushConfig) {
+	for queries := range batches {
+		request := dnscap.DNSPushRequest{SensorID: core.SensorID, Queries: queries}
+		backoff := cfg.RetryBaseDelay
+		if backoff <= 0 {
+			backoff = 500 * time.Millisecond
+		}
+		maxBackoff := cfg.RetryMaxDelay
+		if maxBackoff < backoff {
+			maxBackoff = backoff
+		}
+		for {
+			attemptTimeout := cfg.AttemptTimeout
+			if attemptTimeout <= 0 {
+				attemptTimeout = 5 * time.Second
+			}
+			attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+			err := core.PushDNS(attemptCtx, request)
+			cancel()
+			if err == nil {
+				log.Printf("Pushed %d DNS records to Core", len(queries))
+				break
+			}
+			log.Printf("Failed to push %d DNS records to Core (retained for retry in %s): %v", len(queries), backoff, err)
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			case <-timer.C:
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+		}
 	}
 }
 
@@ -793,6 +1078,18 @@ func mergePassiveHost(existing, observed netscan.DiscoveredHost) netscan.Discove
 	for _, svc := range observed.Services {
 		if !containsString(existing.Services, svc) {
 			existing.Services = append(existing.Services, svc)
+		}
+	}
+	for _, evidence := range observed.IdentityEvidence {
+		duplicate := false
+		for _, current := range existing.IdentityEvidence {
+			if current.Type == evidence.Type && current.Value == evidence.Value {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate && len(existing.IdentityEvidence) < 32 {
+			existing.IdentityEvidence = append(existing.IdentityEvidence, evidence)
 		}
 	}
 	if existing.Status == "" {

@@ -131,6 +131,37 @@ for _, name in ipairs(cases) do
     end
 end
 
+-- ---- durable per-observation identity ----
+-- Two legitimate identical firewall observations can share the same parsed
+-- second.  The filter must distinguish them, while a retry of an already
+-- transformed/buffered record retains the same ID.
+print("== observation identity ==")
+do
+    H.T.rollup_flush()
+    local record = {
+        host = "gw",
+        ident = "kernel",
+        message = "[LAN_IN-3001-D]IN=br5 OUT=eth8 SRC=192.0.2.45 DST=203.0.113.10 PROTO=TCP SPT=50000 DPT=443",
+    }
+    local code1, _, first = unifi_to_event("firewall.syslog", 1751537722, record)
+    local code2, _, second = unifi_to_event("firewall.syslog", 1751537722, record)
+    if code1 == 1 and code2 == 1 and first.event_id and second.event_id and
+       first.event_id ~= second.event_id then
+        ok("identical same-second observations receive distinct durable IDs")
+    else
+        bad("same-second observation IDs",
+            "first=" .. tostring(first and first.event_id) ..
+            " second=" .. tostring(second and second.event_id))
+    end
+    local retained_id = first and first.event_id
+    local buffered_retry = first
+    if retained_id and buffered_retry.event_id == retained_id then
+        ok("buffered retry retains the transformed observation ID")
+    else
+        bad("buffered retry observation ID")
+    end
+end
+
 -- ---- explicit rollup assertion (T2.2) ----
 print("== rollup assertions ==")
 do
@@ -246,6 +277,42 @@ do
         local kind = T.normalize(c[2], 1751537722, "gw")
         if kind == c[3] then ok(c[1] .. " -> " .. kind)
         else bad(c[1], "expected " .. c[3] .. " got " .. tostring(kind)) end
+    end
+end
+
+-- ---- Pi-hole identity contract ----
+-- The collector must pass the raw LAN client address in source_ip so Core can
+-- derive the per-install HMAC. Putting it in source_hash would let the caller
+-- choose grouping identity and would persist a raw address in a pseudonym field.
+print("== Pi-hole transform identity ==")
+do
+    dofile(HERE .. "../config/pihole_transform.lua")
+    local record = {
+        domain = "lookup.example",
+        query_type = "A",
+        client = "192.0.2.55",
+        action = "query",
+    }
+    local _, _, event = pihole_to_event("dns.pihole", 1751537722, record)
+    local _, _, same_second = pihole_to_event("dns.pihole", 1751537722, record)
+    if event.source_ip == "192.0.2.55" and event.source_hash == "" and
+       event.dns_source == "pihole" and event.event_id and same_second.event_id and
+       event.event_id ~= same_second.event_id then
+        ok("raw client uses source_ip; Core owns source_hash")
+        ok("identical same-second Pi-hole observations receive distinct durable IDs")
+        local buffered_retry = event
+        if buffered_retry.event_id == event.event_id then
+            ok("Pi-hole buffered retry retains the transformed observation ID")
+        else
+            bad("Pi-hole buffered retry observation ID")
+        end
+    else
+        bad("Pi-hole source identity",
+            "source_ip=" .. tostring(event.source_ip) ..
+            " source_hash=" .. tostring(event.source_hash) ..
+            " dns_source=" .. tostring(event.dns_source) ..
+            " event_id=" .. tostring(event.event_id) ..
+            " second_event_id=" .. tostring(same_second.event_id))
     end
 end
 

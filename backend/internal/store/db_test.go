@@ -1,10 +1,10 @@
 package store
 
 import (
-	"time"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // testDB creates a temporary in-memory SQLite database for testing.
@@ -22,7 +22,10 @@ func TestOpen_InMemory(t *testing.T) {
 	db := testDB(t)
 
 	// Verify core tables exist
-	tables := []string{"events", "devices", "retention_config", "scan_targets", "sensors", "schema_migrations"}
+	tables := []string{"events", "devices", "retention_config", "scan_targets", "sensors", "schema_migrations",
+		"device_address_history", "device_identity_evidence", "device_identity_actions",
+		"event_detection_evidence", "findings", "finding_events", "finding_evidence", "finding_status_history",
+		"finding_suppression_rules", "finding_suppression_history", "collection_source_health"}
 	for _, table := range tables {
 		var name string
 		err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
@@ -44,6 +47,17 @@ func TestOpen_InMemory(t *testing.T) {
 	checkCol("devices", "risk_category")
 	checkCol("devices", "risk_model")
 	checkCol("devices", "risk_reasons")
+	checkCol("events", "device_id")
+	checkCol("events", "identity_confidence")
+	checkCol("events", "identity_reason")
+	checkCol("events", "identity_evidence")
+	checkCol("events", "origin")
+	checkCol("events", "sensor_id")
+	checkCol("events", "disposition")
+	checkCol("events", "suppression_rule_id")
+	checkCol("devices", "merged_into_device_id")
+	checkCol("devices", "merge_action_id")
+	checkCol("devices", "merged_at")
 }
 
 func TestMigrate_SequentialRunner(t *testing.T) {
@@ -138,6 +152,10 @@ func TestMigrate_InlineFallback(t *testing.T) {
 	checkCol("devices", "risk_category")
 	checkCol("devices", "risk_model")
 	checkCol("devices", "risk_reasons")
+	checkCol("events", "device_id")
+	checkCol("events", "identity_confidence")
+	checkCol("events", "identity_evidence")
+	checkCol("devices", "merged_into_device_id")
 }
 
 func TestEnforceRetention(t *testing.T) {

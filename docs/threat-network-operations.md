@@ -134,13 +134,13 @@ A single CGO binary + a SQLite file, already containerized (`threat-network/Dock
 exposes `9090`, persists to a `/data` volume). Run it on anything that hosts a container
 or a binary:
 
-- a small VPS ($5/mo tier is plenty for alpha),
+- a small VPS ($5/mo tier is a reasonable public-beta starting point),
 - a free-tier VM / container host (Fly.io, Railway, Render, etc.),
 - any box you already run — but **not** the Pi that runs Core.
 
 Put it behind a reverse proxy with TLS for anything beyond local testing (the feed is
 public HTTP; ingest is authenticated but should still be TLS in production). SQLite is
-single-writer, which is fine for the alpha's low-thousands-node target; it is the scaling
+single-writer, which is fine for the public beta's low-thousands-node target; it is the scaling
 ceiling to watch.
 
 ### Option B — the Cloudflare shape from the original brief
@@ -154,7 +154,7 @@ Choose it if you want managed, edge-hosted, free-tier-first infrastructure and a
 to port the Go handlers to a Worker.
 
 > **This is a decision for you.** The code is deliberately infra-agnostic so you're not
-> locked in. My recommendation for alpha: run Option A on a cheap VPS behind Caddy/Cloudflare
+> locked in. The public-beta recommendation is Option A on a cheap VPS behind Caddy/Cloudflare
 > Tunnel for TLS, validate it, and only consider porting to Workers+D1 if/when volume or
 > ops preferences justify it.
 
@@ -171,10 +171,13 @@ Nothing to host. Once a threat-network server is running somewhere, Core polls i
 feed like any abuse.ch list and uses it to *add context / adjust scores* on locally
 observed activity.
 
-> **Status note:** the Core-side feed *consumer* (`backend/internal/threatintel` polling
-> `GET /api/v1/feed/community`) is specced but **not yet wired** — the contract exists,
-> the scheduled poll is future work. So today "consume the feed" is a near-term
-> integration, not a toggle. Track it as a follow-up.
+Core refreshes `GET /api/v1/feed/community` every 15 minutes using
+`VEDETTA_THREAT_NETWORK_URL` (default `https://feed.vedettas.com`). The request carries no
+Core credential. The response must be a complete, bounded schema-v1 snapshot; a malformed
+or partial response is rejected atomically. Community matches remain advisory/corroborating
+evidence and cannot independently create or raise the priority of a finding. Set
+`VEDETTA_COMMUNITY_FEED_ENABLED=false` for an installation that should not make this
+credential-free outbound request.
 
 ### Role 2 — Contribute (telemetry, on by default)
 
@@ -187,7 +190,8 @@ it at a different server, or dry-run it. In `docker-compose.yml` (or the telemet
 | `VEDETTA_TELEMETRY_OPTIN` | `false` to disable (default `true`) | **The switch.** Only the exact value `false` turns the daemon off; you can also toggle it from the dashboard. |
 | `VEDETTA_CORE_URL` | e.g. `http://backend:8080` | Where to read your events from |
 | `VEDETTA_CORE_TOKEN` | a **read-only** Core API token | Auth for the events read (mint one in Core) |
-| `VEDETTA_THREAT_NETWORK_URL` | defaults to `https://feed.vedettas.com` | Where to upload signed batches (override to point at your own server) |
+| `VEDETTA_THREAT_NETWORK_URL` | defaults to `https://feed.vedettas.com` | Shared base URL for signed uploads and Core's credential-free feed download |
+| `VEDETTA_COMMUNITY_FEED_ENABLED` | `false` to disable (default `true`) | Controls Core feed consumption independently from telemetry contribution |
 | `VEDETTA_TELEMETRY_DRYRUN` | `true` (optional) | Run the full pipeline to spool with **zero egress** so you can inspect what would be sent before real upload |
 | `VEDETTA_TELEMETRY_STATE_DIR` | a persisted path | Holds the cursor, reporter secret (0600), and HMAC salt |
 
@@ -216,8 +220,9 @@ spec 003) — operations are the container + its DB + logs.
 
 - **Implemented and tested** (unit + cross-service contract tests, adversarial review):
   telemetry pipeline, server ingest/consensus/feed, privacy gates, abuse controls.
-- **Not yet done:** the Core-side feed consumer (Role 1 wiring); an operational validation
-  pass on real infrastructure (VED-014); the Cloudflare Option B implementation.
+- **Implemented:** the Core-side feed consumer (Role 1 wiring) and Cloudflare Tunnel
+  deployment path. A sustained operational/SNR validation on an owner's real
+  environment remains tracked as VED-014; fixtures and CI use only synthetic data.
 - **On by default (opt-out), advisory-only, no PII at rest** — the shared feed is advisory
   only and is never a production dependency. Deployments that disable telemetry lose nothing
   locally.

@@ -1,11 +1,15 @@
 package store
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
 // TestSplitSQLStatements guards the migration-splitter that lets the runner apply
@@ -60,6 +64,9 @@ func TestFreshMigrationsProduceCompleteSchema(t *testing.T) {
 	wantTables := []string{
 		"events", "devices", "sensors", "api_tokens", "scan_targets",
 		"threat_indicators", "whitelist_rules", "suppression_rules",
+		"device_address_history", "device_identity_evidence", "device_identity_actions",
+		"event_detection_evidence", "findings", "finding_events", "finding_evidence",
+		"finding_status_history", "finding_suppression_rules", "finding_suppression_history", "collection_source_health",
 		"schema_migrations",
 	}
 	for _, tbl := range wantTables {
@@ -76,5 +83,55 @@ func TestFreshMigrationsProduceCompleteSchema(t *testing.T) {
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM suppression_rules`).Scan(&count); err != nil {
 		t.Errorf("SELECT from suppression_rules failed (the B3 regression): %v", err)
+	}
+
+	for _, col := range []string{"device_id", "identity_confidence", "identity_reason", "identity_evidence",
+		"origin", "sensor_id", "outcome", "disposition", "suppression_rule_id"} {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name=?`, col).Scan(&count); err != nil || count != 1 {
+			t.Errorf("expected events.%s after migration 025 (count=%d err=%v)", col, count, err)
+		}
+	}
+	for _, col := range []string{"merged_into_device_id", "merge_action_id", "merged_at"} {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name=?`, col).Scan(&count); err != nil || count != 1 {
+			t.Errorf("expected devices.%s after migration 025 (count=%d err=%v)", col, count, err)
+		}
+	}
+
+	// Compatibility invariant: old-style inserts do not guess a historical
+	// device from the current inventory projection.
+	if _, err := db.Exec(`INSERT INTO events(event_id,timestamp,event_type,source_hash)
+		VALUES ('pre-identity-event','2026-01-01T00:00:00Z','dns_query','local-hash')`); err != nil {
+		t.Fatalf("insert legacy-shaped event: %v", err)
+	}
+	var deviceID any
+	if err := db.QueryRow(`SELECT device_id FROM events WHERE event_id='pre-identity-event'`).Scan(&deviceID); err != nil {
+		t.Fatalf("read legacy-shaped event identity: %v", err)
+	}
+	if deviceID != nil {
+		t.Errorf("legacy-shaped event was backfilled/guessed: %#v", deviceID)
+	}
+	var outcome string
+	if err := db.QueryRow(`SELECT outcome FROM events WHERE event_id='pre-identity-event'`).Scan(&outcome); err != nil {
+		t.Fatalf("read legacy-shaped event outcome: %v", err)
+	}
+	if outcome != "observed" {
+		t.Errorf("legacy-shaped event outcome = %q, want observed", outcome)
+	}
+
+	// Real migrations must accept standard DNS types outside the short legacy
+	// enum, and a non-PK constraint failure must never masquerade as a duplicate.
+	record := ProcessedEventRecord{Event: models.Event{
+		EventID: "query-type-https", Timestamp: time.Now().UTC(), EventType: "dns_query",
+		SourceHash: "local-hash", Domain: "service.example", QueryType: "HTTPS", Metadata: `{}`,
+	}, IdentityEvidence: []byte(`{}`), Origin: "test", Disposition: models.DispositionActive}
+	persisted, err := db.PersistProcessedEvent(context.Background(), record)
+	if err != nil || !persisted.Inserted || persisted.Duplicate {
+		t.Fatalf("persist standard HTTPS query = %+v err=%v", persisted, err)
+	}
+	record.Event.EventID = "invalid-event-type"
+	record.Event.EventType = "not_a_real_event"
+	persisted, err = db.PersistProcessedEvent(context.Background(), record)
+	if err == nil || persisted.Duplicate {
+		t.Fatalf("non-PK constraint was treated as duplicate: result=%+v err=%v", persisted, err)
 	}
 }

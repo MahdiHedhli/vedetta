@@ -8,8 +8,8 @@ import (
 // LogEntry represents a structured activity log entry.
 type LogEntry struct {
 	Timestamp time.Time `json:"timestamp"`
-	Level     string    `json:"level"`     // info, warn, error
-	Category  string    `json:"category"`  // sensor, scan, device, system, ingest
+	Level     string    `json:"level"`    // info, warn, error
+	Category  string    `json:"category"` // sensor, scan, device, system, ingest
 	Message   string    `json:"message"`
 }
 

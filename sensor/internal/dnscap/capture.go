@@ -21,12 +21,27 @@ type Capturer struct {
 	filter       string
 	batchSize    int
 	batchTimeout time.Duration
-	handler      *pcap.Handle
+	handler      packetCaptureHandle
+	openLive     openCaptureFunc
 	mu           sync.Mutex
 	stopCh       chan struct{}
 	doneCh       chan struct{}
 	running      bool
+	stopping     bool
 	onQuery      func(Query)
+}
+
+type packetCaptureHandle interface {
+	gopacket.PacketDataSource
+	LinkType() layers.LinkType
+	SetBPFFilter(string) error
+	Close()
+}
+
+type openCaptureFunc func(string, int32, bool, time.Duration) (packetCaptureHandle, error)
+
+func openPCAPLive(device string, snaplen int32, promiscuous bool, timeout time.Duration) (packetCaptureHandle, error) {
+	return pcap.OpenLive(device, snaplen, promiscuous, timeout)
 }
 
 // Query and Config are defined in types.go (shared across capture backends).
@@ -68,20 +83,25 @@ func NewCapturer(cfg Config) (*Capturer, error) {
 		filter:       filter,
 		batchSize:    batchSize,
 		batchTimeout: batchTimeout,
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
+		openLive:     openPCAPLive,
 		onQuery:      cfg.OnQuery,
 	}, nil
 }
 
 // Start begins packet capture in a background goroutine.
 func (c *Capturer) Start() error {
-	if c.running {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running || c.stopping {
 		return fmt.Errorf("capturer already running")
 	}
 
 	// Open live capture handle
-	handle, err := pcap.OpenLive(c.iface, 65535, false, 30*time.Second)
+	opener := c.openLive
+	if opener == nil {
+		opener = openPCAPLive
+	}
+	handle, err := opener(c.iface, 65535, false, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("open pcap on %s: %w", c.iface, err)
 	}
@@ -93,9 +113,11 @@ func (c *Capturer) Start() error {
 	}
 
 	c.handler = handle
+	c.stopCh = make(chan struct{})
+	c.doneCh = make(chan struct{})
 	c.running = true
 
-	go c.run()
+	go c.run(handle, handle.LinkType(), c.stopCh, c.doneCh)
 	log.Printf("dnscap: Capturer started on interface %s", c.iface)
 	return nil
 }
@@ -107,74 +129,77 @@ func (c *Capturer) Interface() string {
 
 // Stop gracefully stops packet capture.
 func (c *Capturer) Stop() {
-	if !c.running {
+	c.mu.Lock()
+	if !c.running && !c.stopping {
+		c.mu.Unlock()
 		return
 	}
-	close(c.stopCh)
-	<-c.doneCh
-	if c.handler != nil {
-		c.handler.Close()
+	done := c.doneCh
+	var handle packetCaptureHandle
+	if !c.stopping {
+		c.stopping = true
+		close(c.stopCh)
+		handle = c.handler
+		c.handler = nil
 	}
+	c.mu.Unlock()
+
+	// Closing the handle unblocks PacketSource's reader immediately. Join the
+	// capture loop before returning so callbacks cannot write to a delivery
+	// channel after shutdown closes it.
+	if handle != nil {
+		handle.Close()
+	}
+	<-done
+
+	c.mu.Lock()
+	if c.doneCh == done {
+		c.running = false
+		c.stopping = false
+	}
+	c.mu.Unlock()
 	log.Printf("dnscap: Capturer stopped")
 }
 
 // run is the main capture loop.
-func (c *Capturer) run() {
-	defer close(c.doneCh)
+func (c *Capturer) run(handle packetCaptureHandle, linkType layers.LinkType, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
 
-	packetSource := gopacket.NewPacketSource(c.handler, c.handler.LinkType())
+	packetSource := gopacket.NewPacketSource(handle, linkType)
 	packets := packetSource.Packets()
 
 	ticker := time.NewTicker(c.batchTimeout)
 	defer ticker.Stop()
 
 	batch := make([]Query, 0, c.batchSize)
-	batchMu := sync.Mutex{}
-
-	// Packet processing goroutine
-	go func() {
-		for {
-			select {
-			case packet := <-packets:
-				if packet == nil {
-					return
-				}
-				if query := c.parsePacket(packet); query != nil {
-					batchMu.Lock()
-					batch = append(batch, *query)
-					batchMu.Unlock()
-
-					// Send immediately if batch is full
-					if len(batch) >= c.batchSize {
-						batchMu.Lock()
-						c.sendBatch(batch)
-						batch = make([]Query, 0, c.batchSize)
-						batchMu.Unlock()
-					}
-				}
-			case <-c.stopCh:
-				return
-			}
+	flush := func() {
+		if len(batch) == 0 {
+			return
 		}
-	}()
+		c.sendBatch(batch)
+		batch = make([]Query, 0, c.batchSize)
+	}
 
-	// Batch timeout loop
+	// Packet handling and batch flushing share one joined goroutine. This makes
+	// batch ownership explicit and removes the unsynchronized length check and
+	// orphan packet worker that previously could outlive doneCh.
 	for {
 		select {
+		case packet, ok := <-packets:
+			if !ok || packet == nil {
+				flush()
+				return
+			}
+			if query := c.parsePacket(packet); query != nil {
+				batch = append(batch, *query)
+				if len(batch) >= c.batchSize {
+					flush()
+				}
+			}
 		case <-ticker.C:
-			batchMu.Lock()
-			if len(batch) > 0 {
-				c.sendBatch(batch)
-				batch = make([]Query, 0, c.batchSize)
-			}
-			batchMu.Unlock()
-		case <-c.stopCh:
-			// Final flush
-			batchMu.Lock()
-			if len(batch) > 0 {
-				c.sendBatch(batch)
-			}
-			batchMu.Unlock()
+			flush()
+		case <-stop:
+			flush()
 			return
 		}
 	}
@@ -225,36 +250,36 @@ func (c *Capturer) parsePacket(packet gopacket.Packet) *Query {
 	queryType := layers.DNSType(q.Type).String()
 
 	query := &Query{
-		Timestamp: packet.Metadata().Timestamp,
-		Domain:    domain,
-		QueryType: queryType,
-		Source:    "passive_capture",
+		ObservationID: NewObservationID(),
+		Timestamp:     packet.Metadata().Timestamp,
+		Domain:        domain,
+		QueryType:     queryType,
+		Source:        "passive_capture",
 		// Process left empty for pure network pcap capture. Host-local deployments of the sensor
 		// (or additional OS integration) can populate this for full "source process" actionability.
 	}
 
 	if dns.QR {
+		query.Direction = "response"
+		query.RCode = dns.ResponseCode.String()
 		// This is a response packet. The original querier is the destination of this packet.
 		query.ClientIP = dstIP
 		query.ServerIP = srcIP // the resolver that answered
-		// Collect answers for actionability (destination IPs/names)
+		// Collect answer targets for actionability. The record owner (Name) is
+		// usually the queried domain; CNAME's actual target lives in RDATA/CNAME.
 		for _, ans := range dns.Answers {
-			if ans.IP != nil && !ans.IP.IsUnspecified() {
-				query.Answers = append(query.Answers, ans.IP.String())
-			} else if len(ans.Name) > 0 {
-				name := strings.TrimSuffix(string(ans.Name), ".")
-				if name != "" {
-					query.Answers = append(query.Answers, name)
-				}
+			if target := dnsAnswerTarget(ans); target != "" {
+				query.Answers = append(query.Answers, target)
 			}
 		}
 		// Also additionals sometimes carry useful info
 		for _, ans := range dns.Additionals {
-			if ans.IP != nil && !ans.IP.IsUnspecified() {
-				query.Answers = append(query.Answers, ans.IP.String())
+			if target := dnsAnswerTarget(ans); target != "" {
+				query.Answers = append(query.Answers, target)
 			}
 		}
 	} else {
+		query.Direction = "query"
 		// Query packet: client is source
 		query.ClientIP = srcIP
 		query.ServerIP = dstIP
@@ -262,6 +287,29 @@ func (c *Capturer) parsePacket(packet gopacket.Packet) *Query {
 	}
 
 	return query
+}
+
+func dnsAnswerTarget(answer layers.DNSResourceRecord) string {
+	trimName := func(raw []byte) string {
+		return strings.TrimSuffix(strings.TrimSpace(string(raw)), ".")
+	}
+	switch answer.Type {
+	case layers.DNSTypeA, layers.DNSTypeAAAA:
+		if answer.IP != nil && !answer.IP.IsUnspecified() {
+			return answer.IP.String()
+		}
+	case layers.DNSTypeCNAME:
+		return trimName(answer.CNAME)
+	case layers.DNSTypeNS:
+		return trimName(answer.NS)
+	case layers.DNSTypePTR:
+		return trimName(answer.PTR)
+	case layers.DNSTypeMX:
+		return trimName(answer.MX.Name)
+	case layers.DNSTypeSRV:
+		return trimName(answer.SRV.Name)
+	}
+	return ""
 }
 
 // sendBatch calls the callback for each query in the batch.

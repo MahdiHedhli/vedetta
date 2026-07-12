@@ -182,8 +182,13 @@ Configure it via backend environment variables (none set = connector not registe
 | Variable | Meaning |
 | --- | --- |
 | `VEDETTA_UNIFI_HOST` | Controller host, e.g. `198.51.100.20` |
+| `VEDETTA_UNIFI_PORT` | Controller HTTPS port (default `443`) |
 | `VEDETTA_UNIFI_API_KEY` | Read-only API key (`X-API-KEY` auth, preferred) |
-| `VEDETTA_UNIFI_TLS_SKIP_VERIFY` | `1` to accept the controller's self-signed cert (trust-on-first-use; cert pinning is a documented, accepted limitation) |
+| `VEDETTA_UNIFI_USER` / `VEDETTA_UNIFI_PASS` | Read-only local account fallback when an API key is unavailable |
+| `VEDETTA_UNIFI_TLS_SKIP_VERIFY` | `true` or `1` to accept the controller's self-signed cert (trust-on-first-use; cert pinning is a documented, accepted limitation) |
+
+The shipped `docker-compose.yml` passes these variables from `.env` into Core. Recreate
+the backend after changing them. Do not put the credential directly in the compose file.
 
 Create a **read-only** local account or API key on the controller — Vedetta only reads
 (`stat/sta`, `stat/event`, `stat/alarm`, `stat/health`). It never writes to the gateway;

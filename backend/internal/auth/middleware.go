@@ -237,6 +237,27 @@ func RequireScope(requiredScope TokenScope) func(next http.Handler) http.Handler
 	}
 }
 
+// RequireScopeOrBootstrap applies a scope gate after RequireAuth while retaining
+// RequireAuth's zero-token bootstrap bypass. A missing scope means RequireAuth
+// deliberately admitted a fresh installation; once a token was authenticated,
+// the normal hierarchy applies (admin may satisfy machine scopes).
+func RequireScopeOrBootstrap(requiredScope TokenScope) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			scope, ok := r.Context().Value(ContextKeyScope).(TokenScope)
+			if !ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !ScopeSatisfies(scope, requiredScope) {
+				http.Error(w, "insufficient permissions", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // DenyReadScope rejects read-scoped tokens on state-mutating machine endpoints
 // (e.g. POST /ingest) that are otherwise guarded by RequireAuth. A ScopeRead
 // token is a least-privilege *viewer* credential and must never be able to write

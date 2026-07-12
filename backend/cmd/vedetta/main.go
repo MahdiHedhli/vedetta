@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/dnspoller"
 	"github.com/vedetta-network/vedetta/backend/internal/firewall"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
+	"github.com/vedetta-network/vedetta/backend/internal/processing"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
 )
@@ -177,8 +179,13 @@ func main() {
 	defer stopEviction()
 
 	// Start threat intelligence feed downloads
+	var feedScheduler *threatintel.FeedScheduler
 	if threatDB != nil {
-		feedScheduler := threatintel.NewFeedScheduler(threatDB)
+		feedScheduler = threatintel.NewFeedSchedulerConfigured(
+			threatDB,
+			strings.TrimSpace(os.Getenv("VEDETTA_THREAT_NETWORK_URL")),
+			!strings.EqualFold(strings.TrimSpace(os.Getenv("VEDETTA_COMMUNITY_FEED_ENABLED")), "false"),
+		)
 		feedScheduler.Start()
 		defer feedScheduler.Stop()
 		log.Println("Threat intelligence feed scheduler active")
@@ -187,11 +194,14 @@ func main() {
 	// Set up activity log (ring buffer for UI)
 	activityLog := api.NewActivityLog(500)
 	activityLog.Info("system", "Vedetta Core starting")
+	processor := processing.NewProcessor(db, enricher)
 
 	// Set up the API server (Core)
 	srv := &api.Server{
 		DB:          db,
 		Enricher:    enricher,
+		Processor:   processor,
+		FeedHealth:  feedScheduler,
 		ScanQueue:   &api.ScanQueue{},
 		ActivityLog: activityLog,
 	}
@@ -267,16 +277,10 @@ func main() {
 
 	dnsManager := dnsingest.NewManager(dnsEventSink)
 
-	// Get or generate install salt for source_hash computation (used by both Pi-hole and AdGuard)
-	installSalt := os.Getenv("VEDETTA_INSTALL_SALT")
-	if installSalt == "" {
-		installSalt = "vedetta-install-salt" // fallback; in production, should be persisted
-	}
-
 	// Optional: Pi-hole DNS query poller
 	piholeURL := os.Getenv("VEDETTA_PIHOLE_URL")
 	piholeToken := os.Getenv("VEDETTA_PIHOLE_TOKEN")
-	if piholeURL != "" && piholeToken != "" {
+	if piholeURL != "" {
 		// Parse polling interval (default 60s)
 		piholeInterval := 60 * time.Second
 		if intervalStr := os.Getenv("VEDETTA_PIHOLE_INTERVAL"); intervalStr != "" {
@@ -285,11 +289,14 @@ func main() {
 			}
 		}
 
+		// VEDETTA_PIHOLE_TOKEN is the v6 application password (recommended) or
+		// regular password; for a legacy v5 endpoint it remains the API token.
+		// Pi-hole installations with no configured password may leave it empty.
 		piholeClient := dnspoller.NewPiHoleClient(piholeURL, piholeToken)
-		poller := dnspoller.NewPoller(piholeClient, db, enricher, activityLog, installSalt, piholeInterval)
+		poller := dnspoller.NewPoller(piholeClient, db, processor, activityLog, piholeInterval)
 		piholeSrc := dnsingest.NewPiHoleSource(poller)
 		dnsManager.Register(piholeSrc)
-		log.Printf("Pi-hole poller registered: url=%s interval=%s", piholeURL, piholeInterval)
+		log.Printf("Pi-hole poller registered: interval=%s", piholeInterval)
 	}
 
 	// Optional: AdGuard Home DNS query poller
@@ -306,16 +313,27 @@ func main() {
 		}
 
 		adguardClient := dnspoller.NewAdGuardHTTPClient(adguardURL, adguardUser, adguardPass)
-		adguardPoller := dnspoller.NewAdGuardPoller(adguardClient, db, enricher, activityLog, installSalt, adguardInterval)
+		adguardPoller := dnspoller.NewAdGuardPoller(adguardClient, db, processor, activityLog, adguardInterval)
 		adguardSrc := dnsingest.NewAdGuardSource(adguardPoller)
 		dnsManager.Register(adguardSrc)
-		log.Printf("AdGuard Home poller registered: url=%s interval=%s", adguardURL, adguardInterval)
+		log.Printf("AdGuard Home poller registered: interval=%s", adguardInterval)
 	}
 
 	// Set up firewall connector manager
 	fwSink := func(events []models.Event) error {
-		_, err := db.InsertEvents(events)
-		return err
+		now := time.Now().UTC()
+		envelopes := make([]processing.IngressEnvelope, 0, len(events))
+		for _, event := range events {
+			envelopes = append(envelopes, processing.IngressEnvelope{
+				Event: event, Origin: "unifi_rest", ReceivedAt: now,
+			})
+		}
+		for _, result := range processor.ProcessBatch(context.Background(), envelopes) {
+			if result.Err != nil {
+				return result.Err
+			}
+		}
+		return nil
 	}
 	fwManager := firewall.NewManager(fwSink)
 
@@ -342,7 +360,7 @@ func main() {
 			Username:      unifiUser,
 			Password:      unifiPass,
 			APIKey:        unifiAPIKey,
-			TLSSkipVerify: os.Getenv("VEDETTA_UNIFI_TLS_SKIP_VERIFY") == "true",
+			TLSSkipVerify: envEnabled(os.Getenv("VEDETTA_UNIFI_TLS_SKIP_VERIFY")),
 			PollInterval:  60 * time.Second,
 			Enabled:       true,
 		}
@@ -361,7 +379,10 @@ func main() {
 					Vendor:          c.Vendor,
 					DiscoverySource: "unifi_connector",
 				}
-				if _, err := db.UpsertDevice(host, now, segmentFromUniFiNetwork(c.Network)); err != nil {
+				if _, err := db.ObserveDevice(store.DeviceObservation{
+					Host: host, Segment: segmentFromUniFiNetwork(c.Network),
+					SensorID: "connector:unifi", ObservedAt: now,
+				}); err != nil {
 					log.Printf("UniFi inventory: upsert device %s failed: %v", c.IP, err)
 				}
 			}
@@ -416,6 +437,15 @@ func main() {
 	log.Printf("Vedetta Core starting on %s", addr)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)
+	}
+}
+
+func envEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

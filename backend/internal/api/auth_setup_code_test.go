@@ -151,7 +151,7 @@ func TestEnvProvisionedTokensBypassHandler(t *testing.T) {
 	}
 
 	// The env ingest token authenticates against /ingest (its intended use).
-	body := []byte(`{"event_type":"dns_query","source_hash":"h","domain":"env.test"}`)
+	body := []byte(`{"timestamp":"2025-07-12T10:11:12Z","event_type":"dns_query","source_hash":"h","domain":"env.test"}`)
 	req := httptest.NewRequest("POST", "/api/v1/ingest", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer env-ingest-secret-0001")

@@ -7,9 +7,9 @@ import (
 
 // ScanRequest represents a queued scan from the UI or sensor work dispatcher.
 type ScanRequest struct {
-	CIDR      string    `json:"cidr"`
-	Segment   string    `json:"segment"`
-	ScanPorts bool      `json:"scan_ports"`
+	CIDR        string    `json:"cidr"`
+	Segment     string    `json:"segment"`
+	ScanPorts   bool      `json:"scan_ports"`
 	RequestedAt time.Time `json:"requested_at"`
 }
 

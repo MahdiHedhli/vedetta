@@ -1,11 +1,8 @@
 package api
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +23,9 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 	"github.com/vedetta-network/vedetta/backend/internal/firewall"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
+	"github.com/vedetta-network/vedetta/backend/internal/processing"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
+	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
 )
 
 // Server holds dependencies for all API handlers.
@@ -38,6 +37,8 @@ type Server struct {
 	ActivityLog *ActivityLog
 	Firewall    *firewall.Manager
 	Enroll      *EnrollmentStore
+	Processor   *processing.Processor
+	FeedHealth  FeedHealthProvider
 
 	// SetupCode is the single-use first-admin bootstrap code (GHSA-6cmx). It is set
 	// at boot ONLY while no active admin token exists, and is cleared once the first
@@ -45,6 +46,12 @@ type Server struct {
 	// bootstrap) requires the X-Vedetta-Setup-Code header. Guarded by setupMu.
 	SetupCode string
 	setupMu   sync.Mutex
+}
+
+// FeedHealthProvider keeps detection-health routing testable without starting
+// network download goroutines. threatintel.FeedScheduler satisfies it.
+type FeedHealthProvider interface {
+	Status() []threatintel.FeedHealth
 }
 
 // checkSetupCode reports whether provided matches the server-held bootstrap setup
@@ -99,6 +106,9 @@ func NewRouter(srv *Server) http.Handler {
 	if srv.Enroll == nil {
 		srv.Enroll = NewEnrollmentStore()
 	}
+	if srv.Processor == nil && srv.DB != nil {
+		srv.Processor = processing.NewProcessor(srv.DB, srv.Enricher)
+	}
 	sensorRegistrationLimiter := newIPRateLimiter(5, time.Minute)
 
 	// Outermost middleware: stamp anti-clickjacking / anti-sniffing headers on
@@ -138,6 +148,12 @@ func NewRouter(srv *Server) http.Handler {
 			r.Get("/events", srv.handleEvents)
 			r.Get("/events/stats", srv.handleEventStats)
 			r.Get("/events/timeline", srv.handleEventTimeline)
+			r.Get("/findings", srv.handleFindings)
+			r.Get("/findings/stats", srv.handleFindingStats)
+			r.Get("/findings/{findingID}", srv.handleFindingDetail)
+			r.Get("/finding-suppressions", srv.handleListFindingSuppressions)
+			r.Get("/health/detection", srv.handleDetectionHealth)
+			r.Get("/auth/session", srv.handleAuthSession)
 			// Telemetry opt-in is a read-scope read: the telemetry daemon polls it
 			// each tick with its read token to decide whether to export (issue #37).
 			r.Get("/settings/telemetry", srv.handleGetTelemetrySetting)
@@ -150,15 +166,14 @@ func NewRouter(srv *Server) http.Handler {
 		})
 
 		// Ingest endpoint for the Fluent Bit log collector (Pi-hole DNS + firewall syslog).
-		// Auth: RequireAuth (bootstrap-open until any token exists, then a valid Bearer of any
-		// scope) reused from sensor ingest, PLUS DenyReadScope so a least-privilege read token
-		// can never write events here (beta-gate B6). admin/ingest/sensor tokens and the
-		// X-Sensor-ID compatibility path (requireAuthenticatedSensorID) are unaffected.
+		// Auth: bootstrap-open until any token exists; afterward only ingest scope
+		// (or admin, which implies it) may write collector records. Native sensors
+		// use /sensor/* and cannot cross this trust boundary to pre-seed collector IDs.
 		// /ingest is for external log sources (collector); /sensor/* is for the native
 		// vedetta-sensor binary -- they share InsertEvents.
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAuth(srv.DB))
-			r.Use(auth.DenyReadScope())
+			r.Use(auth.RequireScopeOrBootstrap(auth.ScopeIngest))
 			r.Post("/ingest", srv.handleIngest)
 		})
 
@@ -168,10 +183,22 @@ func NewRouter(srv *Server) http.Handler {
 			r.Use(auth.RequireRead(srv.DB))
 			r.Get("/devices", srv.handleListDevices)
 			r.Get("/devices/new", srv.handleNewDevices)
+			r.Get("/device-merges", srv.handleListDeviceMerges)
 		})
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireStrictAdmin(srv.DB))
 			r.Put("/devices/{deviceID}", srv.handleUpdateDevice)
+			r.Post("/devices/{deviceID}/confirm", srv.handleConfirmDeviceIdentity)
+			r.Post("/devices/merge", srv.handleMergeDevices)
+			r.Post("/device-merges/{actionID}/split", srv.handleUndoDeviceMerge)
+		})
+
+		// Finding lifecycle changes are incident state, not raw-event mutation.
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireStrictAdmin(srv.DB))
+			r.Patch("/findings/{findingID}/status", srv.handleFindingStatus)
+			r.Post("/findings/{findingID}/suppress", srv.handleSuppressFinding)
+			r.Delete("/finding-suppressions/{ruleID}", srv.handleDeleteFindingSuppression)
 		})
 
 		// Event acknowledgment and suppression — protected (user intent / configuration)
@@ -248,6 +275,7 @@ func NewRouter(srv *Server) http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireStrictAuth(srv.DB))
 				r.Use(auth.RequireExactScope(auth.ScopeSensor))
+				r.Post("/heartbeat", srv.handleSensorHeartbeat)
 				r.Post("/devices", srv.handleSensorDevices)
 				r.Post("/dns", srv.handleSensorDNS)
 				r.Get("/work", srv.handleSensorWork)
@@ -321,21 +349,17 @@ func (s *Server) handleSimulateDNS(w http.ResponseWriter, r *http.Request) {
 		events = append(events, event)
 	}
 
-	if s.Enricher != nil {
-		for i := range events {
-			s.Enricher.Enrich(&events[i])
-		}
-	}
-
-	inserted, err := s.DB.InsertEvents(events)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "insert failed", "details": err.Error()})
+	summary := s.processEvents(r.Context(), events, "simulation", "")
+	if summary.Failed > 0 {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "processing failed", "details": summary.FirstError.Error()})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"accepted": inserted,
-		"events":   events,
+		"accepted":   summary.Inserted + summary.Duplicates,
+		"inserted":   summary.Inserted,
+		"duplicates": summary.Duplicates,
+		"events":     events,
 	})
 }
 
@@ -482,15 +506,15 @@ var allowedEventTypes = map[string]bool{
 	"anomaly":                true,
 }
 
-// maxEventsPerIngest caps how many events a single ingest request may carry, on
-// top of the 10MB body cap. Overflow returns 413 so the collector retries with a
-// smaller flush (spec 001, plan.md Decision 3).
-const maxEventsPerIngest = 5000
-
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if s.DB == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
 		return
+	}
+	markCollectorError := func(message string) {
+		if err := s.DB.MarkCollectionError(r.Context(), "collector", "push", "Collector/syslog", message, time.Now().UTC()); err != nil {
+			log.Printf("Mark collector health error: %v", err)
+		}
 	}
 
 	// Ingest auth (spec 001, FR-8) is enforced at the MIDDLEWARE layer: the route is
@@ -501,13 +525,13 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	// toggle here: an earlier in-handler check keyed on that env var was dead code (it
 	// could never make ingest MORE permissive than the middleware already allowed) and
 	// its "optional by default" comment was misleading, so both were removed (BUG-5).
-	// The middleware admits admin/ingest/sensor tokens (and the bootstrap window) on
-	// /ingest; a least-privilege read token is rejected by DenyReadScope so it can
-	// never write events here (beta-gate B6).
+	// The middleware admits admin/ingest tokens (and the zero-token bootstrap
+	// window) on /ingest. Read and sensor credentials cannot cross this boundary.
 
 	// Read body (limit to 10MB to prevent abuse)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 	if err != nil {
+		markCollectorError("failed to read collector request body")
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "failed to read body"})
 		return
 	}
@@ -515,10 +539,14 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	// Parse: accept both a single event object and an array of events.
 	// Also handle Fluent Bit's HTTP output format: array of [timestamp, record] pairs.
 	var events []models.Event
+	received := 0
+	decodeRejected := 0
+	ignored := 0 // No Core-side ignorable record classes are currently documented.
 
 	// Try array first
 	trimmed := strings.TrimSpace(string(body))
 	if len(trimmed) == 0 {
+		markCollectorError("empty collector request body")
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "empty body"})
 		return
 	}
@@ -527,9 +555,11 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		// Could be an array of events or Fluent Bit [timestamp, record] pairs
 		var rawArray []json.RawMessage
 		if err := json.Unmarshal(body, &rawArray); err != nil {
+			markCollectorError("invalid collector JSON array")
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON array"})
 			return
 		}
+		received = len(rawArray)
 
 		for _, raw := range rawArray {
 			// To preserve ALL top-level fields from the collector record (e.g. raw_log, and any action/protocol/src_ip etc
@@ -576,6 +606,11 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 				_ = json.Unmarshal(pair[1], &recMap)
 				var evt models.Event
 				if err := json.Unmarshal(pair[1], &evt); err == nil && evt.EventType != "" {
+					// Fluent Bit's pair protocol carries record time outside the record.
+					// Preserve it before deriving a replay-stable ID.
+					if evt.Timestamp.IsZero() {
+						evt.Timestamp = parseCollectorTimestamp(pair[0])
+					}
 					if evt.Metadata == "" {
 						evt.Metadata = "{}"
 					}
@@ -597,15 +632,24 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 					b, _ := json.Marshal(meta)
 					evt.Metadata = string(b)
 					events = append(events, evt)
+					continue
 				}
 			}
+
+			// Documented collector noise is dropped by the collector transform before
+			// HTTP. Core therefore has no intentionally ignorable payload shape: an
+			// unrecognized top-level item is malformed and must be accounted for as
+			// rejected rather than silently proving collection health.
+			decodeRejected++
 		}
 	} else if trimmed[0] == '{' {
+		received = 1
 		// Single event object
 		recMap := map[string]any{}
 		_ = json.Unmarshal(body, &recMap)
 		var evt models.Event
 		if err := json.Unmarshal(body, &evt); err != nil {
+			markCollectorError("invalid collector JSON object")
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON object"})
 			return
 		}
@@ -632,24 +676,19 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		evt.Metadata = string(b)
 		events = append(events, evt)
 	} else {
+		markCollectorError("collector payload is not a JSON object or array")
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "expected JSON object or array"})
 		return
 	}
 
-	// Per-request event cap (on top of the 10MB body cap). Overflow → 413 so the
-	// collector retries with a smaller flush (spec 001, plan.md Decision 3).
-	if len(events) > maxEventsPerIngest {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
-			"error": "too many events in one request",
-			"count": len(events),
-			"max":   maxEventsPerIngest,
-		})
-		return
-	}
+	// The 10MB body limit is the request bound. Do not reject a decoded chunk by
+	// record count: Fluent Bit retries the same chunk rather than splitting it,
+	// so a count-based 413 eventually discards otherwise valid security events.
 
 	// Validate and assign defaults
 	accepted := make([]models.Event, 0, len(events))
-	rejected := 0
+	rejected := decodeRejected
+	missingIdentity := 0
 	for _, e := range events {
 		// Validate event_type
 		if !allowedEventTypes[e.EventType] {
@@ -657,12 +696,23 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Assign event_id if missing
-		if e.EventID == "" {
-			e.EventID = uuid.New().String()
+		upstreamEventID := strings.TrimSpace(e.EventID)
+		// A record with neither upstream ID nor time has no replay boundary: two
+		// real identical occurrences and one retry are indistinguishable. Reject it
+		// instead of collapsing every future occurrence onto a zero-time UUID.
+		if e.Timestamp.IsZero() && upstreamEventID == "" {
+			rejected++
+			missingIdentity++
+			continue
 		}
+		// Core owns the database key. Namespace every collector ID by normalized
+		// record material even when the caller supplied an upstream identifier, so
+		// an ingest principal cannot collide with sensor/poller/UniFi trust domains.
+		e.EventID = deterministicCollectorEventID(e, upstreamEventID)
 
-		// Assign timestamp if missing or zero
+		// An upstream ID is a stable replay boundary when its source omitted time;
+		// timestamp the accepted observation at receipt without putting wall clock
+		// into its deterministic ID.
 		if e.Timestamp.IsZero() {
 			e.Timestamp = time.Now().UTC()
 		}
@@ -672,10 +722,10 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		// later normal events behind it. Clamp anything beyond a small skew to now.
 		e.Timestamp = clampFutureTimestamp(e.Timestamp, time.Now().UTC())
 
-		// Default source_hash
-		if e.SourceHash == "" {
-			e.SourceHash = "unknown"
-		}
+		// Core owns source_hash. Collector callers provide raw local identity via
+		// source_ip; accepting a caller-selected pseudonym would permit forged
+		// device grouping and can accidentally persist a raw IP in the hash field.
+		e.SourceHash = ""
 
 		// Clamp anomaly_score
 		if e.AnomalyScore < 0 {
@@ -719,29 +769,47 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		accepted = append(accepted, e)
 	}
 
-	// Enrich events with threat intelligence and DNS detection
-	if s.Enricher != nil {
-		for i := range accepted {
-			s.Enricher.Enrich(&accepted[i])
-		}
+	// Normalize, resolve, detect, suppress, and persist through the same path as
+	// every sensor and connector. A bad record does not roll back its siblings.
+	summary := s.processEvents(r.Context(), accepted, "collector", "")
+	if summary.Failed > 0 {
+		log.Printf("Ingest processing failures: %d (first: %v)", summary.Failed, summary.FirstError)
+	}
+	processed := summary.Inserted + summary.Duplicates
+	totalRejected := rejected + summary.Failed
+	if summary.Failed > 0 {
+		markCollectorError("event processing failed")
+	} else if processed == 0 {
+		markCollectorError(fmt.Sprintf("collector batch contained no accepted events (received=%d rejected=%d ignored=%d)", received, totalRejected, ignored))
+	} else if err := s.DB.MarkCollectionSuccess(r.Context(), "collector", "push", "Collector/syslog", int64(processed), time.Now().UTC()); err != nil {
+		log.Printf("Mark collector health success: %v", err)
 	}
 
-	// Insert
-	inserted, err := s.DB.InsertEvents(accepted)
-	if err != nil {
-		log.Printf("Ingest error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":    "insert failed",
-			"accepted": 0,
-			"rejected": len(events),
-		})
-		return
+	status := http.StatusAccepted
+	if summary.Failed > 0 {
+		// Fluent Bit retries only non-2xx responses. Successfully committed
+		// siblings remain safe because missing upstream IDs are deterministic.
+		status = http.StatusInternalServerError
+	} else if processed == 0 {
+		// A decoded request with no usable records is semantically malformed. A
+		// non-2xx response makes Fluent Bit retain/retry the batch, while collector
+		// health remains visibly failed instead of claiming a healthy empty source.
+		status = http.StatusUnprocessableEntity
 	}
-
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"accepted": inserted,
-		"rejected": rejected + (len(accepted) - inserted),
-	})
+	response := map[string]any{
+		"received":               received,
+		"accepted":               processed,
+		"inserted":               summary.Inserted,
+		"duplicates":             summary.Duplicates,
+		"rejected":               totalRejected,
+		"ignored":                ignored,
+		"failed":                 summary.Failed,
+		"missing_event_identity": missingIdentity,
+	}
+	if processed == 0 && summary.Failed == 0 {
+		response["error"] = "collector batch contained no accepted events"
+	}
+	writeJSON(w, status, response)
 }
 
 // --- Event Query ---
@@ -754,11 +822,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	params := store.EventQueryParams{
-		Type:   q.Get("type"),
-		Source: q.Get("source"),
-		Domain: q.Get("domain"),
-		Sort:   q.Get("sort"),
-		Order:  q.Get("order"),
+		Type:     q.Get("type"),
+		Source:   q.Get("source"),
+		Domain:   q.Get("domain"),
+		DeviceID: q.Get("device_id"),
+		Origin:   q.Get("origin"),
+		Sort:     q.Get("sort"),
+		Order:    q.Get("order"),
 	}
 
 	// Time range
@@ -1409,9 +1479,10 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		SensorID string `json:"sensor_id"`
-		CIDR     string `json:"cidr"`
-		Segment  string `json:"segment"`
+		SensorID string    `json:"sensor_id"`
+		CIDR     string    `json:"cidr"`
+		Segment  string    `json:"segment"`
+		ScanTime time.Time `json:"scan_time"`
 		Hosts    []struct {
 			IPAddress  string `json:"ip_address"`
 			MACAddress string `json:"mac_address"`
@@ -1421,10 +1492,17 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 			Status     string `json:"status"`
 			// Extended for actionability (model/services/discovery_source from passive sensor).
 			// These will be populated in JSON decode; copy to DiscoveredHost only after L4 updates the type.
-			Model           string   `json:"model,omitempty"`
-			Services        []string `json:"services,omitempty"`
-			FriendlyName    string   `json:"friendly_name,omitempty"` // spec 004: optional human-friendly name (mDNS/SSDP). Additive; old sensors omit it.
-			DiscoverySource string   `json:"discovery_source,omitempty"`
+			Model            string   `json:"model,omitempty"`
+			Services         []string `json:"services,omitempty"`
+			FriendlyName     string   `json:"friendly_name,omitempty"` // spec 004: optional human-friendly name (mDNS/SSDP). Additive; old sensors omit it.
+			DiscoverySource  string   `json:"discovery_source,omitempty"`
+			IdentityEvidence []struct {
+				Type       string  `json:"type"`
+				Value      string  `json:"value"`
+				Source     string  `json:"source,omitempty"`
+				Confidence float64 `json:"confidence,omitempty"`
+				Sensitive  bool    `json:"sensitive,omitempty"`
+			} `json:"identity_evidence,omitempty"`
 		} `json:"hosts"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -1452,24 +1530,47 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 	// BUG-3: previously this always reported accepted == len(hosts) and swallowed
 	// every store error, so the API returned 200 "accepted:N" even when every
 	// upsert failed. Now we count what actually persisted and reflect it.
-	now := time.Now()
+	now := time.Now().UTC()
+	observedAt := body.ScanTime.UTC()
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	observedAt = clampFutureTimestamp(observedAt, now)
 	newCount := 0
 	accepted := 0
 	failed := 0
 	for _, h := range body.Hosts {
-		host := discovery.DiscoveredHost{
-			IPAddress:       h.IPAddress,
-			MACAddress:      h.MACAddress,
-			Hostname:        h.Hostname,
-			Vendor:          h.Vendor,
-			OpenPorts:       h.OpenPorts,
-			Status:          h.Status,
-			Model:           h.Model,
-			Services:        h.Services,
-			FriendlyName:    h.FriendlyName,
-			DiscoverySource: h.DiscoverySource,
+		identityEvidence := make([]discovery.IdentityEvidence, 0, len(h.IdentityEvidence))
+		for i, evidence := range h.IdentityEvidence {
+			if i >= 32 {
+				break
+			}
+			kind := strings.ToLower(strings.TrimSpace(evidence.Type))
+			if !sensorIdentityEvidenceType(kind) || strings.TrimSpace(evidence.Value) == "" || len(evidence.Value) > 512 {
+				continue
+			}
+			identityEvidence = append(identityEvidence, discovery.IdentityEvidence{
+				Type: kind, Value: evidence.Value, Source: evidence.Source,
+				Confidence: evidence.Confidence, Sensitive: evidence.Sensitive,
+			})
 		}
-		isNew, err := s.DB.UpsertDevice(host, now, body.Segment)
+		host := discovery.DiscoveredHost{
+			IPAddress:        h.IPAddress,
+			MACAddress:       h.MACAddress,
+			Hostname:         h.Hostname,
+			Vendor:           h.Vendor,
+			OpenPorts:        h.OpenPorts,
+			Status:           h.Status,
+			Model:            h.Model,
+			Services:         h.Services,
+			FriendlyName:     h.FriendlyName,
+			DiscoverySource:  h.DiscoverySource,
+			IdentityEvidence: identityEvidence,
+		}
+		isNew, err := s.DB.ObserveDevice(store.DeviceObservation{
+			Host: host, Segment: body.Segment, SensorID: body.SensorID,
+			ObservedAt: observedAt,
+		})
 		if err != nil {
 			failed++
 			log.Printf("Failed to upsert device %s from sensor %s: %v", h.IPAddress, body.SensorID, err)
@@ -1564,6 +1665,26 @@ func (s *Server) handleSensorWork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// handleSensorHeartbeat keeps process reachability independent from the much
+// slower network-scan cadence. It deliberately records only sensor last_seen:
+// detection health still requires a successfully committed event batch before
+// it can claim capture is healthy.
+func (s *Server) handleSensorHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+	sensorID, ok := s.requireAuthenticatedSensorID(w, r, r.Header.Get("X-Sensor-ID"))
+	if !ok {
+		return
+	}
+	if err := s.DB.TouchSensor(sensorID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not record sensor heartbeat"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleSetPrimarySensor(w http.ResponseWriter, r *http.Request) {
 	if s.DB == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
@@ -1585,156 +1706,124 @@ func (s *Server) handleSetPrimarySensor(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"primary": sensorID})
 }
 
-// deduplicateGatewayEchoes removes duplicate DNS events caused by gateway/DNS forwarder
-// echoing the same query. Groups events by (domain, queryType) within a 2-second window
-// and keeps only the event that is NOT from a gateway IP (ends in .1 or .254).
-// Tags deduplicated events with "deduplicated" so users know dedup occurred.
+// deduplicateGatewayEchoes pairs the query and response packets emitted for one
+// lookup. The capture path preserves the original client and resolver on both,
+// so distinct clients (or resolvers) must never be collapsed. Current sensors
+// provide an explicit direction marker, which also lets an answerless NXDOMAIN or
+// NODATA response pair with its query. The answer-bearing heuristic is retained
+// only when both events are from a legacy sensor with no markers.
 func deduplicateGatewayEchoes(events []models.Event) []models.Event {
 	if len(events) <= 1 {
 		return events
 	}
 
-	type groupKey struct {
-		domain    string
-		queryType string
+	hasAnswerData := func(event models.Event) bool {
+		if event.ResolvedIP != "" {
+			return true
+		}
+		metadata := map[string]any{}
+		if json.Unmarshal([]byte(event.Metadata), &metadata) != nil {
+			return false
+		}
+		answers, ok := metadata["dns_answers"].([]any)
+		return ok && len(answers) > 0
 	}
-
-	// Group events by (domain, queryType)
-	groups := make(map[groupKey][]*models.Event)
-	for i := range events {
-		key := groupKey{domain: events[i].Domain, queryType: events[i].QueryType}
-		groups[key] = append(groups[key], &events[i])
+	direction := func(event models.Event) string {
+		metadata := map[string]any{}
+		if json.Unmarshal([]byte(event.Metadata), &metadata) != nil {
+			return ""
+		}
+		value, _ := metadata["dns_direction"].(string)
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "query":
+			return "query"
+		case "response":
+			return "response"
+		default:
+			return ""
+		}
 	}
-
-	isGatewayIP := func(ip string) bool {
-		// Check if IP ends in .1 or .254 (common gateway addresses)
-		parts := strings.Split(ip, ".")
-		if len(parts) == 4 {
-			if parts[3] == "1" || parts[3] == "254" {
-				return true
+	sameLookup := func(a, b models.Event) bool {
+		if normalizeDNSName(a.Domain) != normalizeDNSName(b.Domain) ||
+			strings.ToUpper(strings.TrimSpace(a.QueryType)) != strings.ToUpper(strings.TrimSpace(b.QueryType)) ||
+			normalizeAddress(a.SourceIP) != normalizeAddress(b.SourceIP) ||
+			normalizeAddress(a.ServerIP) != normalizeAddress(b.ServerIP) {
+			return false
+		}
+		delta := a.Timestamp.Sub(b.Timestamp)
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > 2*time.Second {
+			return false
+		}
+		aDirection, bDirection := direction(a), direction(b)
+		if aDirection != "" || bDirection != "" {
+			return aDirection != "" && bDirection != "" && aDirection != bDirection
+		}
+		return hasAnswerData(a) != hasAnswerData(b)
+	}
+	mergeInto := func(kept *models.Event, other models.Event) {
+		if kept.ResolvedIP == "" {
+			kept.ResolvedIP = other.ResolvedIP
+		}
+		if kept.ServerIP == "" {
+			kept.ServerIP = other.ServerIP
+		}
+		merged := map[string]any{}
+		if other.Metadata != "" {
+			_ = json.Unmarshal([]byte(other.Metadata), &merged)
+		}
+		if kept.Metadata != "" {
+			keptMeta := map[string]any{}
+			if err := json.Unmarshal([]byte(kept.Metadata), &keptMeta); err == nil {
+				for key, value := range keptMeta {
+					merged[key] = value
+				}
 			}
 		}
-		return false
+		if len(merged) > 0 {
+			if raw, err := json.Marshal(merged); err == nil {
+				kept.Metadata = string(raw)
+			}
+		}
+		for _, tag := range kept.Tags {
+			if tag == "deduplicated" {
+				return
+			}
+		}
+		kept.Tags = append(kept.Tags, "deduplicated")
 	}
 
-	// Process each group and deduplicate
-	var result []models.Event
+	used := make([]bool, len(events))
+	result := make([]models.Event, 0, len(events))
 	dedupCount := 0
-
-	for _, groupEvents := range groups {
-		if len(groupEvents) <= 1 {
-			// No duplicates in this group
-			result = append(result, *groupEvents[0])
+	for index := range events {
+		if used[index] {
 			continue
 		}
-
-		// Check if events are within 2-second window
-		minTime := groupEvents[0].Timestamp
-		maxTime := groupEvents[0].Timestamp
-		for _, evt := range groupEvents {
-			if evt.Timestamp.Before(minTime) {
-				minTime = evt.Timestamp
-			}
-			if evt.Timestamp.After(maxTime) {
-				maxTime = evt.Timestamp
+		kept := events[index]
+		partner := -1
+		for candidate := index + 1; candidate < len(events); candidate++ {
+			if !used[candidate] && sameLookup(kept, events[candidate]) {
+				partner = candidate
+				break
 			}
 		}
-
-		timeDiff := maxTime.Sub(minTime).Seconds()
-		if timeDiff > 2 {
-			// Events are outside 2-second window, keep all
-			for _, evt := range groupEvents {
-				result = append(result, *evt)
+		if partner >= 0 {
+			used[partner] = true
+			other := events[partner]
+			if direction(other) == "response" || (direction(kept) == "" && hasAnswerData(other)) {
+				kept, other = other, kept
 			}
-			continue
+			mergeInto(&kept, other)
+			dedupCount++
 		}
-
-		// A dedup group typically contains both the query packet and the response
-		// packet of the same lookup (the sensor emits an event for each). Only the
-		// response carries answers (ResolvedIP / dns_answers metadata). When picking
-		// the survivor we must prefer the answer-bearing event, otherwise the entire
-		// answers feature is silently defeated by dedup.
-		hasAnswerData := func(evt *models.Event) bool {
-			return evt.ResolvedIP != "" || strings.Contains(evt.Metadata, "dns_answers")
-		}
-
-		// Find event that is NOT from a gateway IP, preferring one with answer data.
-		var nonGatewayEvent *models.Event
-		for _, evt := range groupEvents {
-			if isGatewayIP(evt.SourceIP) {
-				continue
-			}
-			if nonGatewayEvent == nil || (!hasAnswerData(nonGatewayEvent) && hasAnswerData(evt)) {
-				nonGatewayEvent = evt
-			}
-		}
-
-		// Keep the non-gateway event; if all are gateway IPs, prefer an
-		// answer-bearing one, falling back to the first.
-		var kept *models.Event
-		if nonGatewayEvent != nil {
-			kept = nonGatewayEvent
-		} else {
-			kept = groupEvents[0]
-			for _, evt := range groupEvents {
-				if hasAnswerData(evt) {
-					kept = evt
-					break
-				}
-			}
-		}
-		dedupCount += len(groupEvents) - 1
-
-		// Merge answer-bearing fields from discarded duplicates into the kept event
-		// so no resolution info is lost regardless of which event survived.
-		for _, evt := range groupEvents {
-			if evt == kept {
-				continue
-			}
-			if kept.ResolvedIP == "" && evt.ResolvedIP != "" {
-				kept.ResolvedIP = evt.ResolvedIP
-			}
-			if kept.ServerIP == "" && evt.ServerIP != "" {
-				kept.ServerIP = evt.ServerIP
-			}
-			if evt.Metadata != "" && evt.Metadata != kept.Metadata {
-				merged := map[string]any{}
-				_ = json.Unmarshal([]byte(evt.Metadata), &merged)
-				if kept.Metadata != "" {
-					keptMeta := map[string]any{}
-					if err := json.Unmarshal([]byte(kept.Metadata), &keptMeta); err == nil {
-						for k, v := range keptMeta {
-							merged[k] = v // kept event wins on conflicting keys
-						}
-					}
-				}
-				if len(merged) > 0 {
-					if b, err := json.Marshal(merged); err == nil {
-						kept.Metadata = string(b)
-					}
-				}
-			}
-		}
-
-		// Tag the kept event as deduplicated
-		if len(groupEvents) > 1 {
-			// appendUnique inline: add "deduplicated" if not already present
-			found := false
-			for _, tag := range kept.Tags {
-				if tag == "deduplicated" {
-					found = true
-					break
-				}
-			}
-			if !found {
-				kept.Tags = append(kept.Tags, "deduplicated")
-			}
-		}
-		result = append(result, *kept)
+		result = append(result, kept)
 	}
 
 	if dedupCount > 0 {
-		log.Printf("Deduplication: removed %d gateway echo events from batch", dedupCount)
+		log.Printf("Deduplication: paired %d DNS query/response echoes", dedupCount)
 	}
 
 	return result
@@ -1749,16 +1838,19 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SensorID string `json:"sensor_id"`
 		Queries  []struct {
-			Timestamp  int64    `json:"timestamp"` // unix millis or seconds (auto-detected for compat)
-			Domain     string   `json:"domain"`
-			QueryType  string   `json:"query_type"`
-			ClientIP   string   `json:"client_ip"`
-			ResponseIP string   `json:"response_ip,omitempty"`
-			ServerIP   string   `json:"server_ip,omitempty"`
-			Blocked    bool     `json:"blocked"`
-			Source     string   `json:"source"`
-			Answers    []string `json:"answers,omitempty"` // resolved destinations from sensor (for actionability)
-			Process    string   `json:"process,omitempty"` // originating process hint (if sensor has local visibility)
+			ObservationID string   `json:"observation_id,omitempty"`
+			Timestamp     int64    `json:"timestamp"` // unix millis or seconds (auto-detected for compat)
+			Domain        string   `json:"domain"`
+			QueryType     string   `json:"query_type"`
+			ClientIP      string   `json:"client_ip"`
+			ResponseIP    string   `json:"response_ip,omitempty"`
+			ServerIP      string   `json:"server_ip,omitempty"`
+			Direction     string   `json:"direction,omitempty"`
+			RCode         string   `json:"response_code,omitempty"`
+			Blocked       bool     `json:"blocked"`
+			Source        string   `json:"source"`
+			Answers       []string `json:"answers,omitempty"` // resolved destinations from sensor (for actionability)
+			Process       string   `json:"process,omitempty"` // originating process hint (if sensor has local visibility)
 		} `json:"queries"`
 	}
 
@@ -1782,12 +1874,6 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get install salt for source_hash
-	installSalt := os.Getenv("VEDETTA_INSTALL_SALT")
-	if installSalt == "" {
-		installSalt = "vedetta-install-salt" // fallback
-	}
-
 	// Convert DNS queries to Events
 	events := make([]models.Event, 0, len(body.Queries))
 	for _, q := range body.Queries {
@@ -1795,30 +1881,23 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 			continue // skip invalid queries
 		}
 
-		// Generate event ID
-		eventID := uuid.New().String()
-
-		// Compute source_hash as HMAC-SHA256(clientIP, installSalt)
-		h := hmac.New(sha256.New, []byte(installSalt))
-		h.Write([]byte(q.ClientIP))
-		sourceHash := hex.EncodeToString(h.Sum(nil))
-
 		// Timestamp: support millis (preferred for precision) or legacy seconds
-		var ts time.Time
+		var upstreamTimestamp time.Time
 		if q.Timestamp > 1_000_000_000_000 { // millis
-			ts = time.UnixMilli(q.Timestamp).UTC()
+			upstreamTimestamp = time.UnixMilli(q.Timestamp).UTC()
 		} else {
-			ts = time.Unix(q.Timestamp, 0).UTC()
+			upstreamTimestamp = time.Unix(q.Timestamp, 0).UTC()
 		}
 		// GHSA-9m7g: same clamp as the generic /ingest path — a sensor must not be
 		// able to plant a far-future cursor via a forged/skewed DNS query timestamp.
-		ts = clampFutureTimestamp(ts, time.Now().UTC())
+		ts := clampFutureTimestamp(upstreamTimestamp, time.Now().UTC())
 
 		event := models.Event{
-			EventID:        eventID,
-			Timestamp:      ts,
-			EventType:      "dns_query",
-			SourceHash:     sourceHash,
+			Timestamp: ts,
+			EventType: "dns_query",
+			// Core's processor derives the stable per-install HMAC. Adapters never
+			// choose or trust a caller-provided grouping pseudonym.
+			SourceHash:     "",
 			SourceIP:       q.ClientIP,
 			ServerIP:       q.ServerIP,
 			Domain:         q.Domain,
@@ -1832,18 +1911,32 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 			NetworkSegment: "default",
 			DNSSource:      q.Source,
 		}
+		// The authenticated sensor identity and original (pre-clamp) observation
+		// time make retransmission idempotent even after a partial batch failure.
+		direction := strings.ToLower(strings.TrimSpace(q.Direction))
+		if direction != "query" && direction != "response" {
+			direction = ""
+		}
+		responseCode := strings.TrimSpace(q.RCode)
+		observationID := strings.TrimSpace(q.ObservationID)
+		event.EventID = deterministicSensorDNSObservationEventID(sensorID, upstreamTimestamp, event, q.Answers, q.Process, direction, responseCode, observationID)
 
-		// Store answers (resolved destinations) in metadata for actionability.
+		// Store wire semantics and answers in metadata for actionability and robust
+		// query/response pairing. An explicit response marker is meaningful even
+		// when the response has no answers (NXDOMAIN/NODATA).
 		// This helps users see what the query actually resolved to without extra lookups.
+		metadata := map[string]any{}
+		if observationID != "" {
+			metadata["observation_id"] = observationID
+		}
+		if direction != "" {
+			metadata["dns_direction"] = direction
+		}
+		if responseCode != "" {
+			metadata["dns_response_code"] = responseCode
+		}
 		if len(q.Answers) > 0 {
-			m := map[string]any{}
-			if event.Metadata != "" {
-				_ = json.Unmarshal([]byte(event.Metadata), &m)
-			}
-			m["dns_answers"] = q.Answers
-			if b, err := json.Marshal(m); err == nil {
-				event.Metadata = string(b)
-			}
+			metadata["dns_answers"] = q.Answers
 			// Also surface first answer in ResolvedIP for backward/ simple views
 			if event.ResolvedIP == "" {
 				event.ResolvedIP = q.Answers[0]
@@ -1851,111 +1944,17 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if q.Process != "" {
-			m := map[string]any{}
-			if event.Metadata != "" {
-				_ = json.Unmarshal([]byte(event.Metadata), &m)
-			}
-			m["process"] = q.Process
-			if b, err := json.Marshal(m); err == nil {
-				event.Metadata = string(b)
+			metadata["process"] = q.Process
+		}
+		if len(metadata) > 0 {
+			if encoded, err := json.Marshal(metadata); err == nil {
+				event.Metadata = string(encoded)
 			}
 		}
 
-		// SNR-05: Enrich with passive device discovery context.
-		// This adds high-value signal (vendor, device type, segment) to DNS events,
-		// dramatically helping reduce false positive noise ("beaconing from new IoT device"
-		// is very different from "from my laptop").
-		if dev, err := s.DB.GetDeviceByIP(q.ClientIP); err == nil && dev != nil {
-			if dev.Vendor != "" {
-				event.DeviceVendor = dev.Vendor
-			}
-			if dev.Segment != "" {
-				event.NetworkSegment = dev.Segment
-			}
-
-			// SNR-11: Detect new devices (first seen in last 48 hours).
-			// Suspicious DNS from brand new devices is higher risk. A "new_device"
-			// tag can also fire benignly when a client rotates its MAC address
-			// (iOS/Android private Wi-Fi addresses) and the sensor has not yet
-			// re-linked it by hostname/mDNS continuity (spec 004 SNR plan item 3).
-			//
-			// Spec 004 note: the correlation merge logic now takes MIN(first_seen)
-			// when folding duplicate records, so the root cause this GetMinFirstSeenForIP
-			// helper papers over is largely gone. It is kept for ONE release as a
-			// belt-and-braces guard for any residual duplicate rows.
-			// TODO(spec-004 next release): remove GetMinFirstSeenForIP once live-soak
-			// validation confirms merges eliminated duplicate-record first_seen skew.
-			effectiveFirstSeen := dev.FirstSeen
-			if s.DB != nil {
-				if minSeen, err := s.DB.GetMinFirstSeenForIP(q.ClientIP); err == nil && !minSeen.IsZero() && minSeen.Before(effectiveFirstSeen) {
-					effectiveFirstSeen = minSeen
-				}
-			}
-			if !effectiveFirstSeen.IsZero() {
-				age := time.Since(effectiveFirstSeen)
-				if age < 48*time.Hour {
-					found := false
-					for _, t := range event.Tags {
-						if t == "new_device" {
-							found = true
-							break
-						}
-					}
-					if !found {
-						event.Tags = append(event.Tags, "new_device")
-					}
-				}
-				if age < 1*time.Hour {
-					// Extra tag for extremely new devices (< 1 hour)
-					found := false
-					for _, t := range event.Tags {
-						if t == "very_new_device" {
-							found = true
-							break
-						}
-					}
-					if !found {
-						event.Tags = append(event.Tags, "very_new_device")
-					}
-				}
-			}
-
-			// Risk tagging for known exploitable / EOL / high-risk IoT devices.
-			// Generalized from the original IC3 AVrecon work (migration 016).
-			// We map categories to tags for downstream scoring and UI:
-			//   eol_eos       -> "eol_router" (kept for compat + specific IC3 boost)
-			//   high_risk_iot -> "high_risk_iot"
-			//   known_exploited -> "known_exploited"
-			if dev.EOLRisk || dev.RiskCategory != "" {
-				category := dev.RiskCategory
-				if category == "" && dev.EOLRisk {
-					category = "eol_eos"
-				}
-
-				tag := ""
-				switch category {
-				case "eol_eos":
-					tag = "eol_router"
-				case "high_risk_iot":
-					tag = "high_risk_iot"
-				case "known_exploited":
-					tag = "known_exploited"
-				}
-
-				if tag != "" {
-					found := false
-					for _, t := range event.Tags {
-						if t == tag {
-							found = true
-							break
-						}
-					}
-					if !found {
-						event.Tags = append(event.Tags, tag)
-					}
-				}
-			}
-		}
+		// Device context is deliberately resolved inside the unified processor at
+		// q.Timestamp. Looking up the device that owns ClientIP *now* would corrupt
+		// delayed events after DHCP/VLAN reuse and defeat temporal identity.
 
 		events = append(events, event)
 	}
@@ -1968,23 +1967,21 @@ func (s *Server) handleSensorDNS(w http.ResponseWriter, r *http.Request) {
 	// Deduplicate gateway echoes before enrichment
 	events = deduplicateGatewayEchoes(events)
 
-	// Enrich events
-	if s.Enricher != nil {
-		for i := range events {
-			s.Enricher.Enrich(&events[i])
-		}
-	}
-
-	// Insert into database
-	inserted, err := s.DB.InsertEvents(events)
-	if err != nil {
-		log.Printf("Sensor DNS ingest error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "insert failed"})
+	// The authenticated sensor ID is part of the temporal identity context.
+	summary := s.processEvents(r.Context(), events, "sensor_dns", sensorID)
+	if summary.Failed > 0 {
+		log.Printf("Sensor DNS processing failures: %d (first: %v)", summary.Failed, summary.FirstError)
+		_ = s.DB.MarkCollectionError(r.Context(), "sensor:"+sensorID, "sensor", "Sensor "+sensorID, "event processing failed", time.Now().UTC())
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "processing failed"})
 		return
 	}
+	acceptedCount := summary.Inserted + summary.Duplicates
+	_ = s.DB.MarkCollectionSuccess(r.Context(), "sensor:"+sensorID, "sensor", "Sensor "+sensorID, int64(acceptedCount), time.Now().UTC())
 
-	s.logInfo("ingest", fmt.Sprintf("Sensor %s ingested %d DNS queries", sensorID, inserted))
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": inserted})
+	s.logInfo("ingest", fmt.Sprintf("Sensor %s ingested %d DNS queries", sensorID, acceptedCount))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted": acceptedCount, "inserted": summary.Inserted, "duplicates": summary.Duplicates,
+	})
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -2062,7 +2059,7 @@ func writeEventsCSV(w io.Writer, events []models.Event) {
 	cw := csv.NewWriter(w)
 	header := []string{
 		"event_id", "timestamp", "event_type", "source_hash", "source_ip", "server_ip",
-		"domain", "query_type", "resolved_ip", "blocked", "anomaly_score", "tags", "geo",
+		"domain", "query_type", "resolved_ip", "blocked", "outcome", "anomaly_score", "tags", "geo",
 		"device_vendor", "network_segment", "dns_source", "threat_desc", "dns_answers", "process",
 	}
 	_ = cw.Write(header)
@@ -2090,7 +2087,7 @@ func writeEventsCSV(w io.Writer, events []models.Event) {
 		}
 		row := []string{
 			e.EventID, e.Timestamp.Format(time.RFC3339), e.EventType, e.SourceHash,
-			e.SourceIP, e.ServerIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked),
+			e.SourceIP, e.ServerIP, e.Domain, e.QueryType, e.ResolvedIP, strconv.FormatBool(e.Blocked), e.Outcome,
 			strconv.FormatFloat(e.AnomalyScore, 'f', 4, 64), tagsStr, e.Geo,
 			e.DeviceVendor, e.NetworkSegment, e.DNSSource, e.ThreatDesc, answersStr, processStr,
 		}

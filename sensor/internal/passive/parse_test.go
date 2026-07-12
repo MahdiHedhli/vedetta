@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
 
 func TestParseARP(t *testing.T) {
@@ -46,6 +47,8 @@ func TestParseDHCPv4(t *testing.T) {
 		YourClientIP: net.ParseIP("192.168.1.23").To4(),
 		Options: layers.DHCPOptions{
 			{Type: layers.DHCPOptHostname, Data: []byte("camera.local")},
+			{Type: layers.DHCPOptParamsRequest, Data: []byte{1, 3, 6, 15, 119}},
+			{Type: layers.DHCPOptClientID, Data: []byte{1, 0, 0, 94, 0, 83, 1}},
 		},
 	}, "192.168.1.1")
 	if host == nil {
@@ -56,6 +59,12 @@ func TestParseDHCPv4(t *testing.T) {
 	}
 	if host.Hostname != "camera.local" {
 		t.Fatalf("expected DHCP hostname, got %q", host.Hostname)
+	}
+	if got := identityEvidenceValue(host.IdentityEvidence, "dhcp_option_55"); got != "1,3,6,15,119" {
+		t.Fatalf("DHCP option 55 evidence = %q", got)
+	}
+	if got := identityEvidenceValue(host.IdentityEvidence, "dhcp_client_id"); got != "0100005e005301" {
+		t.Fatalf("DHCP option 61 evidence = %q", got)
 	}
 }
 
@@ -83,11 +92,11 @@ func TestParseMDNS(t *testing.T) {
 }
 
 func TestParseSSDP(t *testing.T) {
-	host := hostFromSSDPPayload([]byte("NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nSERVER: TestVendor/1.0 UPnP/1.1\r\nLOCATION: http://device.local/description.xml\r\n\r\n"), "192.168.1.70")
+	host := hostFromSSDPPayload([]byte("NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nSERVER: TestVendor/1.0 UPnP/1.1\r\nLOCATION: http://device.local/description.xml\r\nUSN: uuid:00000000-0000-0000-0000-000000000053::urn:schemas-upnp-org:device:MediaRenderer:1\r\nNT: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n"), "192.0.2.70")
 	if host == nil {
 		t.Fatal("expected SSDP host")
 	}
-	if host.IPAddress != "192.168.1.70" {
+	if host.IPAddress != "192.0.2.70" {
 		t.Fatalf("expected SSDP source IP, got %q", host.IPAddress)
 	}
 	if host.Hostname != "device.local" {
@@ -96,6 +105,21 @@ func TestParseSSDP(t *testing.T) {
 	if host.Vendor == "" {
 		t.Fatal("expected SSDP vendor string")
 	}
+	if got := identityEvidenceValue(host.IdentityEvidence, "ssdp_uuid"); got != "00000000-0000-0000-0000-000000000053" {
+		t.Fatalf("SSDP UUID evidence = %q", got)
+	}
+	if got := identityEvidenceValue(host.IdentityEvidence, "ssdp_device_type"); got != "urn:schemas-upnp-org:device:MediaRenderer:1" {
+		t.Fatalf("SSDP device-type evidence = %q", got)
+	}
+}
+
+func identityEvidenceValue(items []netscan.IdentityEvidence, kind string) string {
+	for _, item := range items {
+		if item.Type == kind {
+			return item.Value
+		}
+	}
+	return ""
 }
 
 func newTestPacket(t *testing.T, serializableLayers ...gopacket.SerializableLayer) gopacket.Packet {

@@ -243,10 +243,9 @@ func TestIngestAuth_EnforcedRequiresToken(t *testing.T) {
 	}
 }
 
-func TestIngestAuth_AnyValidTokenAccepted(t *testing.T) {
-	// BUG-5 coherent behavior: ingest auth lives entirely in RequireAuth, which
-	// admits ANY valid token scope once bootstrap is complete (there is no longer a
-	// scope-narrowing in-handler gate). A sensor-scoped token is therefore accepted.
+func TestIngestAuth_SensorTokenCannotCrossCollectorBoundary(t *testing.T) {
+	// Collector and native-sensor inputs use independent deterministic ID trust
+	// domains. Only ingest/admin credentials may reach /ingest.
 	srv, db := setupTestServer(t)
 	router := NewRouter(srv)
 	_ = createIngestToken(t, db) // establishes auth state (>=1 token exists)
@@ -263,8 +262,8 @@ func TestIngestAuth_AnyValidTokenAccepted(t *testing.T) {
 	w := postIngest(t, router, []models.Event{
 		{EventType: "firewall_log", Timestamp: time.Now().UTC(), SourceHash: "h"},
 	}, rawSensor)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("valid sensor token on /ingest: expected 202, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("sensor token on /ingest: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// A missing/invalid token when tokens exist is still rejected by RequireAuth.
@@ -276,17 +275,32 @@ func TestIngestAuth_AnyValidTokenAccepted(t *testing.T) {
 	}
 }
 
-func TestIngest_EventCap413(t *testing.T) {
+func TestIngest_LargeBoundedChunkIsNotDiscarded(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	router := NewRouter(srv)
 
-	events := make([]models.Event, maxEventsPerIngest+1)
+	const eventCount = 5001
+	observedAt := time.Now().UTC()
+	events := make([]models.Event, eventCount)
 	for i := range events {
-		events[i] = models.Event{EventType: "firewall_log", Timestamp: time.Now().UTC(), SourceHash: "h"}
+		events[i] = models.Event{EventType: "firewall_log", Timestamp: observedAt, SourceHash: "h"}
 	}
 	w := postIngest(t, router, events, "")
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("over-cap ingest: expected 413, got %d", w.Code)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("large bounded ingest: expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Received   int `json:"received"`
+		Accepted   int `json:"accepted"`
+		Inserted   int `json:"inserted"`
+		Duplicates int `json:"duplicates"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Received != eventCount || response.Accepted != eventCount ||
+		response.Inserted+response.Duplicates != eventCount {
+		t.Fatalf("large bounded ingest accounting = %+v", response)
 	}
 }
 

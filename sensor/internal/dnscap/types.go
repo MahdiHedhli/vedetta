@@ -6,15 +6,18 @@ import "time"
 // common currency between every capture backend — libpcap on Unix, ETW on Windows —
 // and the push pipeline, so it lives in an untagged file.
 type Query struct {
-	Timestamp time.Time
-	Domain    string
-	QueryType string
-	ClientIP  string
-	ServerIP  string
-	Blocked   bool
-	Source    string   // e.g., "passive_capture", "etw_dns_client"
-	Answers   []string // resolved destinations from answer records (populated for responses)
-	Process   string   // originating process (populated by host-local sensor modes)
+	ObservationID string // generated once before pairing/buffering; stable across delivery retries
+	Timestamp     time.Time
+	Domain        string
+	QueryType     string
+	ClientIP      string
+	ServerIP      string
+	Direction     string // "query" or "response" when the capture backend can tell
+	RCode         string // DNS response code (for example NXDOMAIN), response-only
+	Blocked       bool
+	Source        string   // e.g., "passive_capture", "etw_dns_client"
+	Answers       []string // resolved destinations from answer records (populated for responses)
+	Process       string   // originating process (populated by host-local sensor modes)
 }
 
 // Config contains settings for DNS capture. Not every field applies to every

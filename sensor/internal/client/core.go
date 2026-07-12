@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vedetta-network/vedetta/sensor/internal/netinfo"
@@ -28,6 +29,7 @@ type CoreClient struct {
 	BaseURL    string
 	SensorID   string
 	TokenPath  string
+	tokenMu    sync.RWMutex
 	authToken  string
 	httpClient *http.Client
 	// EnrollCode is an optional one-time enrollment code (from `--enroll-code` /
@@ -121,7 +123,7 @@ func New(baseURL string) (*CoreClient, error) {
 
 // TokenConfigured reports whether the client has a persisted sensor token available.
 func (c *CoreClient) TokenConfigured() bool {
-	return strings.TrimSpace(c.authToken) != ""
+	return c.authTokenSnapshot() != ""
 }
 
 // Register announces this sensor to the Core API and persists the one-time bootstrap token.
@@ -180,6 +182,13 @@ func (c *CoreClient) FetchWork(ctx context.Context) (*WorkResponse, error) {
 		return nil, err
 	}
 	return &work, nil
+}
+
+// Heartbeat reports that the sensor process can reach Core without draining the
+// scan-work queue. Capture health remains based on successfully persisted event
+// batches; this endpoint is only a process-reachability signal.
+func (c *CoreClient) Heartbeat(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodPost, "/api/v1/sensor/heartbeat", nil, nil, false)
 }
 
 // PushDNS sends captured DNS queries to Core for ingestion. Callers that must flush
@@ -251,15 +260,24 @@ func (c *CoreClient) newJSONRequest(ctx context.Context, method, path string, pa
 func (c *CoreClient) authorizeRequest(req *http.Request, allowBootstrap bool) error {
 	req.Header.Set("X-Sensor-ID", c.SensorID)
 
-	if !c.TokenConfigured() {
+	// Capture one synchronized value for the whole request. Registration may
+	// rotate/persist the token while capture delivery is already running.
+	token := c.authTokenSnapshot()
+	if token == "" {
 		if allowBootstrap {
 			return nil
 		}
 		return fmt.Errorf("sensor auth token not configured")
 	}
 
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.authToken))
+	req.Header.Set("Authorization", "Bearer "+token)
 	return nil
+}
+
+func (c *CoreClient) authTokenSnapshot() string {
+	c.tokenMu.RLock()
+	defer c.tokenMu.RUnlock()
+	return strings.TrimSpace(c.authToken)
 }
 
 func (c *CoreClient) persistToken(rawToken string) error {
@@ -282,7 +300,9 @@ func (c *CoreClient) persistToken(rawToken string) error {
 		return fmt.Errorf("secure sensor token permissions: %w", err)
 	}
 
+	c.tokenMu.Lock()
 	c.authToken = token
+	c.tokenMu.Unlock()
 	return nil
 }
 

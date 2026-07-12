@@ -1,7 +1,7 @@
 # Vedetta Architecture
 
-> Last updated: 2026-04-20
-> Version: 0.1.0-dev
+> Last updated: 2026-07-12
+> Version: public beta
 
 ## Overview
 
@@ -35,7 +35,8 @@ vedetta-core (Docker Compose)
    |- frontend
    |- collector
    |- telemetry (on by default; opt-out)
-   `- local SQLite data
+   |- public community-feed consumer (on by default; independently disableable)
+   `- local SQLite events, assets, evidence, and findings
 ```
 
 ### Why the split exists
@@ -47,8 +48,10 @@ vedetta-core (Docker Compose)
 ## What Core Does Today
 
 - receives device and DNS data from sensors
-- runs local DNS scoring and enrichment
-- stores events and device inventory
+- normalizes every production event source through one processing pipeline
+- resolves event-time stable device identity from temporal network evidence
+- evaluates local and advisory threat intelligence plus deterministic detectors
+- stores immutable raw events/evidence and durable actionable findings
 - exposes the UI and API
 - manages scan targets, suppression rules, and whitelist rules
 
@@ -57,7 +60,7 @@ vedetta-core (Docker Compose)
 | Service | Purpose | Status |
 | --- | --- | --- |
 | `backend` | API, event enrichment, device/event storage | shipped |
-| `frontend` | dashboard UI | shipped |
+| `frontend` | findings-first operator dashboard and raw-event drill-down | shipped |
 | `collector` | syslog and normalized log ingestion path | shipped, limited public workflows today |
 | `telemetry` | privacy-reduced community sharing | implemented, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle) |
 | `threat-network` | community intelligence backend | implemented, advisory-only, runs off-node ([ops doc](threat-network-operations.md)) |
@@ -82,12 +85,8 @@ vedetta-core (Docker Compose)
 - passive DNS capture from the native sensor
 - Pi-hole polling
 - AdGuard Home polling
-- local threat-intel feeds for enrichment
-
-### Early or partial
-
-- router and firewall ingestion through the collector path
-- UniFi connector code in the backend
+- UniFi syslog/CEF ingestion and an optional direct REST connector (live SNR validation pending)
+- curated local threat-intel feeds and the advisory Vedetta community snapshot
 
 ### Planned next
 
@@ -97,9 +96,24 @@ vedetta-core (Docker Compose)
 - more passive discovery sources such as ARP, DHCP, mDNS, and SSDP
 - additional local DNS collection modes for advanced users
 
-## Detection Pipeline
+## Detection Pipeline And Findings
 
-Vedetta currently focuses on DNS-first security signals. The backend includes detectors for:
+Sensor DNS, Pi-hole, AdGuard, generic collector/syslog, and direct UniFi REST
+events all converge on one server-side processor. It:
+
+1. normalizes the event and extracts typed observables;
+2. resolves a stable device using identity evidence valid at the event timestamp;
+3. evaluates threat intelligence and deterministic detectors;
+4. applies device/benign context and suppression without erasing evidence;
+5. calculates priority once; and
+6. atomically stores the raw event, exact typed evidence, and finding updates.
+
+Missing source IDs are derived deterministically, so adapter retries do not inflate
+raw-event or finding counts. Events preserve the source-reported enforcement
+semantics as `blocked`, `allowed`, or `observed`; absent enforcement is not called
+allowed.
+
+The backend includes detectors for:
 
 - DGA-like domain patterns
 - beaconing behavior
@@ -107,11 +121,21 @@ Vedetta currently focuses on DNS-first security signals. The backend includes de
 - DNS rebinding
 - DNS bypass and public-resolver use
 
-Threat-intelligence enrichment is local-first. The community threat network is implemented, and the telemetry client contributes to it on by default (opt-out via `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle); the shared feed is advisory-only and never a production dependency — local detection works without it. See [threat-network-operations.md](threat-network-operations.md).
+High-confidence IOC/IPS evidence is evaluated before allowlist or device context.
+The community snapshot is consumed every 15 minutes by default, but community
+matches are advisory/corroborating only and cannot independently create or raise
+a finding. Findings aggregate recurrence by stable device, explicit detector, and
+normalized observable; Raw Events remains the immutable evidence surface.
+
+Telemetry contribution and community-feed consumption are independent controls:
+`VEDETTA_TELEMETRY_OPTIN=false` stops contributions, while
+`VEDETTA_COMMUNITY_FEED_ENABLED=false` stops public snapshot downloads. Local
+detection works without either. See
+[threat-network-operations.md](threat-network-operations.md).
 
 ## Deployment Reality
 
-Vedetta is still alpha software. Public docs should reflect the real install shape:
+Vedetta is public beta software. Public docs should reflect the real install shape:
 
 - Core uses Docker Compose
 - the sensor is a native install
@@ -127,33 +151,39 @@ That makes Vedetta a good fit today for homelabs, technical home users, consulta
 - telemetry is on by default and opt-out (`VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle, with a first-run disclosure banner), and the shared feed is advisory-only
 - community sharing is **privacy-reduced and pseudonymous, not anonymous**: it strips source IPs, MACs, and hostnames at the source and shares only the matched known-bad threat indicator and aggregate counts (for beta, the query-derived high-confidence-candidate and behavior signals are temporarily disabled pending a trust-model redesign); a per-instance salted HMAC stays local for distinct-asset counting and never leaves the node. The residual: a stable per-instance `reporter_id` is stored server-side against the indicators/hour it reported (linkable to a pseudonym over time), Cloudflare's outbound tunnel sees connection source/timing, and reporter identities/aggregates lack complete expiry today (see [PRIVACY.md](../PRIVACY.md) and [specs/003-threat-network/anonymization-proof.md](../specs/003-threat-network/anonymization-proof.md)); opting out is trivial
 
-## Auth Model (Alpha)
+## Auth Model (Public Beta)
 
-Vedetta uses a simple bearer-token system with two scopes:
+Vedetta uses scoped bearer tokens:
 
-- `admin` — for human operators using the dashboard (created via `POST /auth/tokens`)
-- `sensor` — least-privilege machine tokens for vedetta-sensor (auto-minted during registration)
+- `admin` — management and all reads
+- `read` — dashboard/query reads only
+- `sensor` — exact-scope native sensor work and ingest routes
+- `ingest` — collector event submission
 
-**Bootstrap mode**: While zero tokens exist in the database, almost all routes are open (enables first-run setup without friction). Once the first admin token is created, `RequireAdmin` middleware enforces admin scope on all management routes.
+The first admin is created with a single-use setup code. Sensor registration is
+admin-first and requires a short-lived enrollment code; existing identities require
+a reset code bound to that sensor. There is no unauthenticated sensor-enrollment
+bootstrap.
 
-Sensor ingest paths (`/sensor/devices`, `/dns`, `/work`) always require a valid sensor-scoped token (`RequireStrictAuth` + `RequireExactScope`).
+Read routes remain bootstrap-open only until an active admin exists. Sensor ingest
+always requires an exact sensor token; management writes require admin; a read token
+cannot write or submit collector events.
 
 See `backend/internal/auth/middleware.go` (`RequireAdmin`, `RequireAuth`) and the implementation plan in `docs/auth-hardening-plan.md`.
 
 ## Security Status
 
-The most important current security note is around sensor-to-Core trust:
-
-- Core can generate sensor tokens during registration
-- the end-to-end sensor flow is not fully hardened yet
-- the current deployment should be treated as LAN-first alpha software
-- public internet exposure is not the intended operating model today
+Core binds to host loopback by default. Remote access should use the documented TLS
+reverse proxy; changing the Compose binding to LAN-wide plaintext HTTP is an explicit
+operator choice. The community feed is advisory because anonymous reporter consensus
+cannot fully solve Sybil trust. Neither the feed nor telemetry is a dependency for
+local detection.
 
 ## Public Positioning Notes
 
 When describing Vedetta externally, keep these boundaries clear:
 
 - Vedetta is **not** a Pi-hole companion product, though it can integrate with Pi-hole.
-- Vedetta is **not** yet a mature community threat network product.
+- Vedetta's community feed is **advisory**, not authoritative threat verdicting.
 - Vedetta is **not** yet a consumer plug-and-play box.
 - Vedetta **is** a practical self-hosted watchtower for DNS-first monitoring and network visibility.

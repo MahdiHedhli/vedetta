@@ -17,7 +17,6 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -180,9 +179,10 @@ func (db *DB) upsertSignalsTx(tx *sql.Tx, deviceID string, sigs []signalUpsert, 
 			INSERT INTO device_signals (device_id, field, value, source, confidence, first_observed, last_observed)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(device_id, field, source) DO UPDATE SET
-			    value = excluded.value,
-			    confidence = excluded.confidence,
-			    last_observed = excluded.last_observed`,
+			    value = CASE WHEN excluded.last_observed >= device_signals.last_observed THEN excluded.value ELSE device_signals.value END,
+			    confidence = CASE WHEN excluded.last_observed >= device_signals.last_observed THEN excluded.confidence ELSE device_signals.confidence END,
+			    first_observed = MIN(device_signals.first_observed, excluded.first_observed),
+			    last_observed = MAX(device_signals.last_observed, excluded.last_observed)`,
 			deviceID, s.field, s.value, s.source, s.confidence, now, now)
 		if err != nil {
 			return fmt.Errorf("upsert signal %s/%s: %w", s.field, s.source, err)
@@ -202,9 +202,10 @@ func (db *DB) upsertIdentityTx(tx *sql.Tx, deviceID, idType, idValue, segment st
 	}
 	_, err := tx.Exec(`
 		INSERT INTO device_identities (device_id, id_type, id_value, segment, first_seen, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id_type, id_value, segment) DO UPDATE SET
-		    last_seen = excluded.last_seen`,
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id_type, id_value, segment) DO UPDATE SET
+			    first_seen = MIN(device_identities.first_seen, excluded.first_seen),
+			    last_seen = MAX(device_identities.last_seen, excluded.last_seen)`,
 		deviceID, idType, idValue, segment, now, now)
 	if err != nil {
 		return fmt.Errorf("upsert identity %s=%s: %w", idType, idValue, err)
@@ -220,11 +221,12 @@ func (db *DB) upsertNetworkTx(tx *sql.Tx, deviceID, segment, ip, sensorID string
 	}
 	_, err := tx.Exec(`
 		INSERT INTO device_networks (device_id, segment, ip_address, sensor_id, first_seen, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(device_id, segment) DO UPDATE SET
-		    ip_address = excluded.ip_address,
-		    sensor_id = excluded.sensor_id,
-		    last_seen = excluded.last_seen`,
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(device_id, segment) DO UPDATE SET
+			    ip_address = CASE WHEN excluded.last_seen >= device_networks.last_seen THEN excluded.ip_address ELSE device_networks.ip_address END,
+			    sensor_id = CASE WHEN excluded.last_seen >= device_networks.last_seen THEN excluded.sensor_id ELSE device_networks.sensor_id END,
+			    first_seen = MIN(device_networks.first_seen, excluded.first_seen),
+			    last_seen = MAX(device_networks.last_seen, excluded.last_seen)`,
 		deviceID, segment, ip, sensorID, now, now)
 	if err != nil {
 		return fmt.Errorf("upsert network %s/%s: %w", deviceID, segment, err)
@@ -235,8 +237,13 @@ func (db *DB) upsertNetworkTx(tx *sql.Tx, deviceID, segment, ip, sensorID string
 // GetDeviceSignals returns the per-field provenance for a device (API read).
 func (db *DB) GetDeviceSignals(deviceID string) ([]DeviceSignalRow, error) {
 	rows, err := db.Query(`
+		WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
 		SELECT field, value, source, confidence, last_observed
-		FROM device_signals WHERE device_id = ?
+		FROM device_signals WHERE device_id IN (SELECT device_id FROM family)
 		ORDER BY field, confidence DESC`, deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("query device signals: %w", err)
@@ -266,8 +273,14 @@ type DeviceSignalRow struct {
 // attachment first.
 func (db *DB) GetDeviceSegments(deviceID string) ([]string, error) {
 	rows, err := db.Query(`
-		SELECT segment FROM device_networks WHERE device_id = ?
-		ORDER BY last_seen DESC`, deviceID)
+		WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT segment FROM device_networks
+		WHERE device_id IN (SELECT device_id FROM family)
+		GROUP BY segment ORDER BY MAX(last_seen) DESC`, deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("query device segments: %w", err)
 	}
@@ -302,7 +315,13 @@ type canonicalField struct {
 // source, then value, so a given signal set always yields the same canonical row.
 func (db *DB) resolveCanonicalFields(tx *sql.Tx, deviceID string) (map[string]canonicalField, error) {
 	rows, err := tx.Query(`
-		SELECT field, value, source, confidence FROM device_signals WHERE device_id = ?
+		WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT field, value, source, confidence FROM device_signals
+		WHERE device_id IN (SELECT device_id FROM family)
 		ORDER BY field, confidence DESC, last_observed DESC, source ASC, value ASC`, deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("query signals for canonical resolve: %w", err)
@@ -350,11 +369,21 @@ func (db *DB) resolveIdentity(tx *sql.Tx, host correlationInput, seg string, now
 	// Rule 1: MAC exact.
 	if host.mac != "" {
 		var id string
-		err := tx.QueryRow(`SELECT device_id FROM devices WHERE mac_address = ? LIMIT 1`, host.mac).Scan(&id)
+		var err error
+		if isLocallyAdministeredMAC(host.mac) {
+			err = tx.QueryRow(`SELECT device_id FROM device_identities
+				WHERE id_type='mac' AND id_value=? AND segment=? ORDER BY last_seen DESC LIMIT 1`, host.mac, seg).Scan(&id)
+		} else {
+			err = tx.QueryRow(`SELECT device_id FROM devices WHERE mac_address = ? LIMIT 1`, host.mac).Scan(&id)
+		}
 		if err != nil && err != sql.ErrNoRows {
 			return res, fmt.Errorf("resolve by mac: %w", err)
 		}
 		if err == nil {
+			id, err = db.canonicalDeviceIDTx(tx, id)
+			if err != nil {
+				return res, err
+			}
 			res.deviceID = id
 			res.matchRule = "mac"
 			res.macMatchID = id
@@ -364,6 +393,12 @@ func (db *DB) resolveIdentity(tx *sql.Tx, host correlationInput, seg string, now
 			alias, err := db.matchByAlias(tx, host, seg, now)
 			if err != nil {
 				return res, err
+			}
+			if alias.deviceID != "" && alias.deviceID != id {
+				alias.deviceID, err = db.canonicalDeviceIDTx(tx, alias.deviceID)
+				if err != nil {
+					return res, err
+				}
 			}
 			if alias.deviceID != "" && alias.deviceID != id {
 				// Only merge when the duplicate has no conflicting MAC. matchByAlias's
@@ -384,6 +419,12 @@ func (db *DB) resolveIdentity(tx *sql.Tx, host correlationInput, seg string, now
 	alias, err := db.matchByAlias(tx, host, seg, now)
 	if err != nil {
 		return res, err
+	}
+	if alias.deviceID != "" {
+		alias.deviceID, err = db.canonicalDeviceIDTx(tx, alias.deviceID)
+		if err != nil {
+			return res, err
+		}
 	}
 	return alias, nil
 }
@@ -586,91 +627,16 @@ type correlationInput struct {
 
 // --- T3.3: duplicate merge --------------------------------------------------
 
-// mergeDevices folds absorbed device B into survivor A: keeps MIN(first_seen),
-// moves aliases / attachments / signals, and deletes B. Higher-confidence
-// canonical fields are recomputed afterwards by the caller from the combined
-// signal set. Emits a structured audit log line (spec FR-5 / NFR-4).
+// mergeDevices is the legacy automatic duplicate-link entry point. Spec 007
+// changes it from destructive folding to an audited, reversible soft redirect.
+// The source row and all historical evidence remain intact.
 func (db *DB) mergeDevices(tx *sql.Tx, survivorID, absorbedID, rule string) error {
 	if survivorID == "" || absorbedID == "" || survivorID == absorbedID {
 		return nil
 	}
-
-	// MIN(first_seen): pull the earlier of the two onto the survivor.
-	var survFirst, absFirst time.Time
-	if err := tx.QueryRow(`SELECT first_seen FROM devices WHERE device_id = ?`, survivorID).Scan(&survFirst); err != nil {
-		return fmt.Errorf("merge read survivor first_seen: %w", err)
-	}
-	if err := tx.QueryRow(`SELECT first_seen FROM devices WHERE device_id = ?`, absorbedID).Scan(&absFirst); err != nil {
-		return fmt.Errorf("merge read absorbed first_seen: %w", err)
-	}
-	minFirst := survFirst
-	if absFirst.Before(minFirst) {
-		minFirst = absFirst
-	}
-	if _, err := tx.Exec(`UPDATE devices SET first_seen = ? WHERE device_id = ?`, minFirst, survivorID); err != nil {
-		return fmt.Errorf("merge set min first_seen: %w", err)
-	}
-
-	// Move signals: re-point to survivor, resolving PK collisions by keeping the
-	// higher-confidence / more-recent row. Insert-or-update then delete leftovers.
-	if _, err := tx.Exec(`
-		INSERT INTO device_signals (device_id, field, value, source, confidence, first_observed, last_observed)
-		SELECT ?, field, value, source, confidence, first_observed, last_observed
-		FROM device_signals WHERE device_id = ?
-		ON CONFLICT(device_id, field, source) DO UPDATE SET
-		    value = CASE WHEN excluded.last_observed >= device_signals.last_observed THEN excluded.value ELSE device_signals.value END,
-		    confidence = MAX(device_signals.confidence, excluded.confidence),
-		    last_observed = MAX(device_signals.last_observed, excluded.last_observed)`,
-		survivorID, absorbedID); err != nil {
-		return fmt.Errorf("merge move signals: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM device_signals WHERE device_id = ?`, absorbedID); err != nil {
-		return fmt.Errorf("merge delete absorbed signals: %w", err)
-	}
-
-	// Move identity aliases: re-point to survivor, keeping earliest first_seen /
-	// latest last_seen on PK collision.
-	if _, err := tx.Exec(`
-		INSERT INTO device_identities (device_id, id_type, id_value, segment, first_seen, last_seen)
-		SELECT ?, id_type, id_value, segment, first_seen, last_seen
-		FROM device_identities WHERE device_id = ?
-		ON CONFLICT(id_type, id_value, segment) DO UPDATE SET
-		    device_id = excluded.device_id,
-		    first_seen = MIN(device_identities.first_seen, excluded.first_seen),
-		    last_seen = MAX(device_identities.last_seen, excluded.last_seen)`,
-		survivorID, absorbedID); err != nil {
-		return fmt.Errorf("merge move identities: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM device_identities WHERE device_id = ?`, absorbedID); err != nil {
-		return fmt.Errorf("merge delete absorbed identities: %w", err)
-	}
-
-	// Move network attachments: keep earliest first_seen / latest last_seen on
-	// PK collision (same device on same segment).
-	if _, err := tx.Exec(`
-		INSERT INTO device_networks (device_id, segment, ip_address, sensor_id, first_seen, last_seen)
-		SELECT ?, segment, ip_address, sensor_id, first_seen, last_seen
-		FROM device_networks WHERE device_id = ?
-		ON CONFLICT(device_id, segment) DO UPDATE SET
-		    ip_address = CASE WHEN excluded.last_seen >= device_networks.last_seen THEN excluded.ip_address ELSE device_networks.ip_address END,
-		    sensor_id = CASE WHEN excluded.last_seen >= device_networks.last_seen THEN excluded.sensor_id ELSE device_networks.sensor_id END,
-		    first_seen = MIN(device_networks.first_seen, excluded.first_seen),
-		    last_seen = MAX(device_networks.last_seen, excluded.last_seen)`,
-		survivorID, absorbedID); err != nil {
-		return fmt.Errorf("merge move networks: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM device_networks WHERE device_id = ?`, absorbedID); err != nil {
-		return fmt.Errorf("merge delete absorbed networks: %w", err)
-	}
-
-	// Delete the absorbed device row.
-	if _, err := tx.Exec(`DELETE FROM devices WHERE device_id = ?`, absorbedID); err != nil {
-		return fmt.Errorf("merge delete absorbed device: %w", err)
-	}
-
-	log.Printf("device merge: survivor=%s absorbed=%s rule=%s min_first_seen=%s",
-		survivorID, absorbedID, rule, minFirst.UTC().Format(time.RFC3339))
-	return nil
+	_, err := db.softMergeDevicesTx(tx, absorbedID, survivorID,
+		"automatic duplicate link via "+firstNonEmpty(rule, "identity"), "system:auto")
+	return err
 }
 
 // --- T4.2: label deriver ----------------------------------------------------

@@ -91,6 +91,12 @@ telemetry-enabled state, dry-run, reporter-registered, cursor position, last tic
 `{time, signal_count, result}`, spool depth, malformed-events skipped, last
 error. No exported payload (no domains) ever appears here.
 
+The persisted cursor uses an inclusive timestamp plus the exact bounded set of
+event IDs already consumed at that timestamp. This prevents equal-timestamp
+events from alternating on every tick, while still accepting a late event at
+the same timestamp regardless of how its ID sorts. Legacy cursor files containing
+only `last_event_id` are upgraded in place on their next successful save.
+
 ## How to disable
 
 Set `VEDETTA_TELEMETRY_OPTIN=false` (exact string — any other value leaves it on)
@@ -105,6 +111,9 @@ incomplete today, so the server-side `reporter_id`↔indicator/hour linkage is
 
 - Core unreachable / `401`: tick skipped, cursor unchanged, error on `/status`;
   retried next tick. No local data loss.
+- An extraordinary cohort above 50,000 events at one exact Core timestamp:
+  tick fails visibly and holds the prior cursor; the bounded cursor is never
+  truncated into silent loss or partial replay.
 - Threat network `5xx`/network: exponential backoff (1s→5min) then spool
   (bounded: 50 batches / 24h, oldest dropped).
 - Threat network `4xx`: poison-pill — not retried; moved to `spool/rejected/`

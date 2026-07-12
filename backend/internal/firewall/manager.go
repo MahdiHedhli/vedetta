@@ -32,6 +32,7 @@ type Manager struct {
 	inventoryEvery time.Duration
 	mu             sync.RWMutex
 	stopChs        map[string]chan struct{}
+	sinkErrors     map[string]string
 	running        bool
 }
 
@@ -43,6 +44,7 @@ func NewManager(sink EventSink) *Manager {
 		sink:           sink,
 		inventoryEvery: 300 * time.Second,
 		stopChs:        make(map[string]chan struct{}),
+		sinkErrors:     make(map[string]string),
 	}
 }
 
@@ -63,6 +65,7 @@ func (m *Manager) Register(cfg ConnectorConfig, conn Connector) {
 	defer m.mu.Unlock()
 	m.connectors[cfg.Name] = conn
 	m.configs[cfg.Name] = cfg
+	delete(m.sinkErrors, cfg.Name)
 }
 
 // Start begins polling all enabled firewall connectors.
@@ -207,8 +210,17 @@ func (m *Manager) doPoll(name string, conn Connector) {
 
 	// Submit to sink
 	if err := m.sink(vedettaEvents); err != nil {
+		m.mu.Lock()
+		m.sinkErrors[name] = fmt.Sprintf("Core event persistence failed: %v", err)
+		m.mu.Unlock()
 		log.Printf("Firewall connector %q sink error: %v", name, err)
 		return
+	}
+	m.mu.Lock()
+	delete(m.sinkErrors, name)
+	m.mu.Unlock()
+	if acknowledger, ok := conn.(EventAcknowledger); ok {
+		acknowledger.AcknowledgeEvents(events)
 	}
 
 	log.Printf("Firewall connector %q ingested %d events", name, len(vedettaEvents))
@@ -216,11 +228,10 @@ func (m *Manager) doPoll(name string, conn Connector) {
 
 // List returns the health status of all registered connectors.
 func (m *Manager) List() []ConnectorHealth {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var out []ConnectorHealth
-	for _, conn := range m.connectors {
-		out = append(out, conn.Health())
+	snapshots := m.connectorHealthSnapshots()
+	out := make([]ConnectorHealth, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, connectorHealth(snapshot.conn, snapshot.sinkError))
 	}
 	return out
 }
@@ -235,14 +246,13 @@ type NamedHealth struct {
 
 // ListNamed returns the health of all registered connectors with their names.
 func (m *Manager) ListNamed() []NamedHealth {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := make([]NamedHealth, 0, len(m.connectors))
-	for name, conn := range m.connectors {
+	snapshots := m.connectorHealthSnapshots()
+	out := make([]NamedHealth, 0, len(snapshots))
+	for _, snapshot := range snapshots {
 		out = append(out, NamedHealth{
-			Name:   name,
-			Type:   m.configs[name].Type,
-			Health: conn.Health(),
+			Name:   snapshot.name,
+			Type:   snapshot.connectorType,
+			Health: connectorHealth(snapshot.conn, snapshot.sinkError),
 		})
 	}
 	return out
@@ -251,10 +261,48 @@ func (m *Manager) ListNamed() []NamedHealth {
 // Health returns the health status of a specific connector by name.
 func (m *Manager) Health(name string) (ConnectorHealth, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	conn, ok := m.connectors[name]
+	sinkError := m.sinkErrors[name]
+	m.mu.RUnlock()
 	if !ok {
 		return ConnectorHealth{}, fmt.Errorf("connector %q not found", name)
 	}
-	return conn.Health(), nil
+	return connectorHealth(conn, sinkError), nil
+}
+
+type connectorHealthSnapshot struct {
+	name          string
+	connectorType string
+	conn          Connector
+	sinkError     string
+}
+
+// connectorHealthSnapshots copies every manager-owned value needed to report
+// health while holding m.mu. Connector methods are deliberately called after
+// releasing m.mu so external implementations cannot create a lock inversion.
+func (m *Manager) connectorHealthSnapshots() []connectorHealthSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	snapshots := make([]connectorHealthSnapshot, 0, len(m.connectors))
+	for name, conn := range m.connectors {
+		snapshots = append(snapshots, connectorHealthSnapshot{
+			name:          name,
+			connectorType: m.configs[name].Type,
+			conn:          conn,
+			sinkError:     m.sinkErrors[name],
+		})
+	}
+	return snapshots
+}
+
+// connectorHealth overlays Core-side persistence failures on transport health
+// reported by the connector. A successful controller HTTP poll is not a
+// successful collection cycle until the unified processor commits its events.
+func connectorHealth(conn Connector, sinkError string) ConnectorHealth {
+	health := conn.Health()
+	if sinkError != "" {
+		health.LastError = sinkError
+	}
+	return health
 }

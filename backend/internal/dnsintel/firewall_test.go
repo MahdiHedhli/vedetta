@@ -115,6 +115,40 @@ func TestEnrichFirewall_WhitelistSuppresses(t *testing.T) {
 	}
 }
 
+func TestEnrichFirewall_WhitelistDoesNotBypassDestinationIOC(t *testing.T) {
+	e, _ := provenanceEnricher(t)
+	e.FirewallWhitelisted = func([]string, string) (string, bool) {
+		return "Example allow rule", true
+	}
+	ev := fwEvent("192.0.2.45", "allow", "out", "198.51.100.66", "AllowRule")
+	e.Enrich(ev)
+
+	if !hasTag(ev.Tags, "whitelisted") || !hasTag(ev.Tags, "known_bad") {
+		t.Fatalf("allowlist context must not erase destination IOC; tags=%v", ev.Tags)
+	}
+	if ev.MatchType != "resolved_ip" || ev.MatchedIndicator != "198.51.100.66" {
+		t.Fatalf("destination IOC provenance missing: type=%q indicator=%q", ev.MatchType, ev.MatchedIndicator)
+	}
+	if ev.AnomalyScore < 0.7 {
+		t.Fatalf("destination IOC score was suppressed: %.2f", ev.AnomalyScore)
+	}
+}
+
+func TestEnrichFirewall_WhitelistDoesNotBypassIPS(t *testing.T) {
+	e := newFirewallEnricher()
+	e.FirewallWhitelisted = func([]string, string) (string, bool) {
+		return "Example allow rule", true
+	}
+	ev := &models.Event{
+		EventType: "firewall_log", Timestamp: time.Now().UTC(), SourceIP: "203.0.113.77",
+		Tags: []string{"ips"}, Metadata: `{"action":"block","ips_severity":3,"dst_ip":"192.0.2.20"}`,
+	}
+	e.Enrich(ev)
+	if ev.AnomalyScore != 1.0 || !hasTag(ev.Tags, "whitelisted") {
+		t.Fatalf("whitelisted IPS must retain severity evidence: score=%.2f tags=%v", ev.AnomalyScore, ev.Tags)
+	}
+}
+
 func TestEnrichFirewall_RiskyDeviceBoost(t *testing.T) {
 	e := newFirewallEnricher()
 	e.DeviceByIP = func(ip string) *models.Device {
@@ -218,6 +252,27 @@ func TestEnrichFirewall_DoesNotAffectDNS(t *testing.T) {
 	e.Enrich(dns)
 	if hasTag(dns.Tags, "source:unifi") || hasTag(dns.Tags, "new_fw_block") {
 		t.Errorf("DNS event must not receive firewall tags; tags=%v", dns.Tags)
+	}
+}
+
+func TestFirewallContextDoesNotReplaceStableIdentityWithCurrentIPOwner(t *testing.T) {
+	enricher := NewEnricher(nil)
+	lookupCalled := false
+	enricher.DeviceByIP = func(string) *models.Device {
+		lookupCalled = true
+		return &models.Device{DeviceID: "wrong-current-owner", Vendor: "Wrong Vendor", RiskCategory: "known_exploited"}
+	}
+	event := models.Event{
+		EventID: "stable-context", EventType: "firewall_log", Timestamp: time.Now().UTC(),
+		DeviceID: "stable-event-owner", DeviceVendor: "Stable Vendor", SourceIP: "192.0.2.20", Blocked: true,
+		Metadata: `{"action":"block","direction":"out","protocol":"tcp","dst_ip":"203.0.113.20","rule":"fixture"}`,
+	}
+	enricher.Enrich(&event)
+	if lookupCalled {
+		t.Fatal("stable event identity was replaced through current-IP lookup")
+	}
+	if event.DeviceVendor != "Stable Vendor" || hasTag(event.Tags, "risky_device_fw_block") {
+		t.Fatalf("current IP owner contaminated stable context: %+v", event)
 	}
 }
 

@@ -34,7 +34,7 @@ type UniFiConnector struct {
 
 // eventKey derives a stable identity for a FirewallEvent for dedup across polls.
 func eventKey(fe FirewallEvent) string {
-	return fmt.Sprintf("%d|%s|%s|%d|%s", fe.Timestamp.Unix(), fe.SrcIP, fe.DstIP, fe.DstPort, fe.Rule)
+	return firewallEventIdentity(fe)
 }
 
 // NewUniFiConnector creates a new UniFi firewall connector.
@@ -51,9 +51,10 @@ func NewUniFiConnector(cfg ConnectorConfig) *UniFiConnector {
 	jar, _ := cookiejar.New(nil)
 
 	client := &http.Client{
-		Transport: transport,
-		Jar:       jar,
-		Timeout:   30 * time.Second,
+		Transport:     transport,
+		Jar:           jar,
+		Timeout:       30 * time.Second,
+		CheckRedirect: refuseUniFiRedirect,
 	}
 
 	return &UniFiConnector{
@@ -61,6 +62,15 @@ func NewUniFiConnector(cfg ConnectorConfig) *UniFiConnector {
 		client:     client,
 		seenEvents: make(map[string]struct{}),
 	}
+}
+
+// UniFi requests can carry either a custom X-API-KEY header or a reusable
+// username/password login body. Go only strips a limited set of standard auth
+// headers on cross-origin redirects, and 307/308 preserve request bodies, so no
+// redirect is safe to follow automatically. A redirect is returned to the
+// caller as its original 3xx response and handled as a controller error.
+func refuseUniFiRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // Name returns the connector type identifier.
@@ -194,34 +204,54 @@ func (uc *UniFiConnector) Poll(ctx context.Context) ([]FirewallEvent, error) {
 	}
 	events = append(events, alarmEvents...)
 
-	// Dedup against previously-seen events (high-water set). The controller
-	// re-reports events within its lookback window on every poll; only genuinely
-	// new events are returned to the sink.
+	// Dedup against successfully acknowledged events. Do not advance seenEvents
+	// here: Manager acknowledges only after the unified processor commits, so a
+	// sink failure is retried on the next controller lookback poll.
 	uc.mu.Lock()
 	fresh := events[:0:0]
+	batchSeen := make(map[string]struct{}, len(events))
 	for _, e := range events {
 		k := eventKey(e)
 		if _, ok := uc.seenEvents[k]; ok {
 			continue
 		}
-		uc.seenEvents[k] = struct{}{}
+		if _, duplicate := batchSeen[k]; duplicate {
+			continue
+		}
+		batchSeen[k] = struct{}{}
 		fresh = append(fresh, e)
 	}
-	// Bound the dedup set so a long-running process doesn't grow unbounded.
-	if len(uc.seenEvents) > 20000 {
-		uc.seenEvents = make(map[string]struct{})
-		for _, e := range fresh {
-			uc.seenEvents[eventKey(e)] = struct{}{}
-		}
-	}
 	uc.lastPoll = time.Now()
-	uc.eventCount += int64(len(fresh))
-	if len(fresh) > 0 {
-		uc.lastError = ""
-	}
+	// Both controller reads completed successfully. Clear transport errors even
+	// on a quiet/deduplicated poll; otherwise health remains red until a new event
+	// happens to arrive. Core sink failures are tracked separately by Manager.
+	uc.lastError = ""
 	uc.mu.Unlock()
 
 	return fresh, nil
+}
+
+// AcknowledgeEvents advances the UniFi lookback dedup only after Core has
+// committed the corresponding normalized events.
+func (uc *UniFiConnector) AcknowledgeEvents(events []FirewallEvent) {
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	for _, event := range events {
+		uc.seenEvents[eventKey(event)] = struct{}{}
+	}
+	uc.eventCount += int64(len(events))
+	if len(events) > 0 {
+		uc.lastError = ""
+	}
+	// Bound the long-lived set while retaining the just-acknowledged controller
+	// window. The deterministic database event ID is an additional idempotency
+	// backstop if an older item eventually reappears.
+	if len(uc.seenEvents) > 20000 {
+		uc.seenEvents = make(map[string]struct{}, len(events))
+		for _, event := range events {
+			uc.seenEvents[eventKey(event)] = struct{}{}
+		}
+	}
 }
 
 // Health returns the current health status of the connector.

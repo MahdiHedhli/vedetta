@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { authFetch, authFetchJSON, getAdminToken, setAdminToken, clearAdminToken, hasAdminToken, CORE_BASE } from './lib/api';
+import { FindingsDashboardSummary, FindingsWorkspace } from './findings/FindingsView';
+import { useFindings } from './findings/useFindings';
+import { eventAssetKey, eventBelongsToDevice, eventOutcome, stableDeviceID } from './identity/deviceEvents';
+import { fetchDeviceThreatEvents } from './identity/api';
+import { IdentityPanel } from './identity/IdentityPanel';
 
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
@@ -89,6 +94,9 @@ export default function App() {
 
   // Admin auth state (localStorage-backed via lib/api)
   const [adminToken, setAdminTokenState] = useState(() => getAdminToken());
+  const findingsState = useFindings({ pollMs: 10_000, refreshKey: adminToken });
+  const canAdmin = findingsState.canAdmin;
+  const [focusedDeviceID, setFocusedDeviceID] = useState(null);
   const [showTokenPrompt, setShowTokenPrompt] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
   const [authError, setAuthError] = useState('');
@@ -184,40 +192,57 @@ export default function App() {
 
   const fetchDevices = useCallback(() => {
     authFetch('/api/v1/devices')
-      .then((r) => r.json())
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data) => setDevices(data.devices || []))
       .catch(() => {});
   }, []);
 
   const fetchTargets = useCallback(() => {
+    if (!canAdmin) {
+      setTargets([]);
+      return Promise.resolve();
+    }
     authFetch('/api/v1/scan/targets')
-      .then((r) => r.json())
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data) => setTargets(data.targets || []))
       .catch(() => {});
-  }, []);
+  }, [canAdmin]);
 
   const fetchSensors = useCallback(() => {
+    if (!canAdmin) {
+      setSensors([]);
+      return Promise.resolve();
+    }
     authFetch('/api/v1/sensor/list')
-      .then((r) => r.json())
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data) => setSensors(data.sensors || []))
       .catch(() => {});
-  }, []);
+  }, [canAdmin]);
 
   const fetchThreatData = useCallback(() => {
-    Promise.all([
-      authFetch('/api/v1/events?min_score=0.3&limit=100&order=desc').then((r) => r.json()).catch(() => ({ events: [] })),
-      authFetch('/api/v1/events/stats').then((r) => r.json()).catch(() => ({})),
-      authFetch('/api/v1/events/timeline').then((r) => r.json()).catch(() => ({ timeline: [] })),
-      authFetch('/api/v1/suppression').then((r) => r.json()).catch(() => ({ rules: [] })),
-      authFetch('/api/v1/whitelist').then((r) => r.json()).catch(() => ({ rules: [] })),
-    ]).then(([eventsData, statsData, timelineData, suppressionData, whitelistData]) => {
-      setThreatEvents(eventsData.events || []);
-      setThreatStats(statsData);
-      setThreatTimeline(timelineData.timeline || []);
-      setSuppressionRules(suppressionData.rules || []);
-      setWhitelistRules(whitelistData.rules || []);
-    }).catch(() => {});
-  }, []);
+    const getJSON = (url) => authFetch(url).then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    });
+    const requests = [
+      getJSON('/api/v1/events?min_score=0.3&limit=100&order=desc'),
+      getJSON('/api/v1/events/stats'),
+      getJSON('/api/v1/events/timeline'),
+    ];
+    if (canAdmin) {
+      requests.push(getJSON('/api/v1/suppression'), getJSON('/api/v1/whitelist'));
+    } else {
+      setSuppressionRules([]);
+      setWhitelistRules([]);
+    }
+    return Promise.allSettled(requests).then((results) => {
+      if (results[0]?.status === 'fulfilled') setThreatEvents(results[0].value.events || []);
+      if (results[1]?.status === 'fulfilled') setThreatStats(results[1].value);
+      if (results[2]?.status === 'fulfilled') setThreatTimeline(results[2].value.timeline || []);
+      if (canAdmin && results[3]?.status === 'fulfilled') setSuppressionRules(results[3].value.rules || []);
+      if (canAdmin && results[4]?.status === 'fulfilled') setWhitelistRules(results[4].value.rules || []);
+    });
+  }, [canAdmin]);
 
   useEffect(() => {
     const ifaces = [];
@@ -286,10 +311,18 @@ export default function App() {
     return () => clearInterval(interval);
   }, [fetchStatus, fetchDevices, fetchTargets, fetchSensors, fetchThreatData]);
 
+  useEffect(() => {
+    if (!canAdmin && ['sensors', 'scan targets', 'logs', 'whitelist', 'settings'].includes(view)) {
+      setView('dashboard');
+      setShowMenu(false);
+    }
+  }, [canAdmin, view]);
+
   const triggerScan = () => {
+    if (!canAdmin) return;
     setScanning(true);
     authFetch('/api/v1/scan', { method: 'POST' })
-      .then((r) => r.json())
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(() => {
         const poll = setInterval(() => {
           fetchStatus();
@@ -308,9 +341,11 @@ export default function App() {
   };
 
   const triggerTargetScan = (targetId) => {
+    if (!canAdmin) return;
     setScanning(true);
     authFetch(`/api/v1/scan/targets/${targetId}/scan`, { method: 'POST' })
-      .then(() => {
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const poll = setInterval(() => {
           fetchStatus();
           fetchDevices();
@@ -329,6 +364,10 @@ export default function App() {
   };
 
   const newDeviceCount = devices.filter((d) => isNewDevice(d.first_seen)).length;
+  const navigateToDevice = useCallback((deviceID) => {
+    setFocusedDeviceID(deviceID);
+    setView('devices');
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
@@ -415,15 +454,16 @@ export default function App() {
             <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded font-mono">v0.1.0-beta.1</span>
           </div>
           <div className="flex items-center gap-4">
-            {/* Admin auth status badge */}
+            {/* Authoritative scope comes from /auth/session; token presence alone
+                must never be presented as proof of admin access. */}
             <div className="flex items-center gap-2 text-xs">
               {adminToken ? (
                 <span
                   onClick={() => setShowTokenPrompt(true)}
-                  className="px-2 py-0.5 bg-emerald-900/50 text-emerald-400 rounded cursor-pointer hover:bg-emerald-900"
-                  title="Click to manage or recover admin token"
+                  className={`px-2 py-0.5 rounded cursor-pointer ${findingsState.canAdmin ? 'bg-emerald-900/50 text-emerald-400 hover:bg-emerald-900' : 'bg-sky-900/50 text-sky-300 hover:bg-sky-900'}`}
+                  title="Click to manage or replace the current token"
                 >
-                  Admin ✓
+                  {findingsState.canAdmin ? 'Admin ✓' : findingsState.session?.authenticated ? `${findingsState.session.scope || 'Read'} access` : 'Checking access…'}
                 </span>
               ) : (
                 <button
@@ -436,7 +476,7 @@ export default function App() {
             </div>
 
             <nav className="flex gap-1">
-              {['dashboard', 'devices', 'threats', 'sensors', 'scan targets'].map((v) => (
+              {['dashboard', 'devices', 'threats', ...(canAdmin ? ['sensors', 'scan targets'] : [])].map((v) => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
@@ -473,7 +513,7 @@ export default function App() {
             )}
 
             {/* Hamburger menu */}
-            <div className="relative">
+            {canAdmin && <div className="relative">
               <button
                 onClick={() => setShowMenu(!showMenu)}
                 className="p-1.5 rounded hover:bg-gray-800 transition-colors text-gray-400 hover:text-white"
@@ -518,7 +558,7 @@ export default function App() {
                   </div>
                 </>
               )}
-            </div>
+            </div>}
           </div>
         </div>
       </header>
@@ -549,13 +589,30 @@ export default function App() {
             devices={devices} scanStatus={scanStatus} newDeviceCount={newDeviceCount}
             scanning={scanning} onScan={triggerScan} onViewDevices={() => setView('devices')}
             defaultCIDR={defaultCIDR} targets={targets} sensors={sensors}
-            threatStats={threatStats} onNavigate={setView}
+            findingsState={findingsState} onNavigate={setView}
           />
         ) : view === 'devices' ? (
-          <DevicesView devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus} threatEvents={threatEvents} onRefreshThreats={fetchThreatData} />
+          <DevicesView
+            devices={devices} scanning={scanning} onScan={triggerScan} scanStatus={scanStatus}
+            threatEvents={threatEvents} onRefreshThreats={fetchThreatData}
+            findings={findingsState.findings} focusDeviceID={focusedDeviceID}
+            canAdmin={findingsState.canAdmin}
+            onFocusDeviceConsumed={() => setFocusedDeviceID(null)}
+            onNavigateDevice={navigateToDevice}
+            onIdentityChanged={async () => { fetchDevices(); await findingsState.refresh({ quiet: true }); }}
+          />
         ) : view === 'threats' ? (
-          <ThreatsView events={threatEvents} stats={threatStats} timeline={threatTimeline} onRefresh={fetchThreatData}
-            devices={devices} suppressionRules={suppressionRules} whitelistRules={whitelistRules} onNavigate={setView} />
+          <FindingsWorkspace
+            state={findingsState}
+            devices={devices}
+            onNavigateDevice={navigateToDevice}
+            canAdmin={findingsState.canAdmin}
+            rawEventsView={(
+              <ThreatsView events={threatEvents} stats={threatStats} timeline={threatTimeline} onRefresh={fetchThreatData}
+                devices={devices} suppressionRules={suppressionRules} whitelistRules={whitelistRules}
+                onNavigateDevice={navigateToDevice} canAdmin={canAdmin} />
+            )}
+          />
         ) : view === 'sensors' ? (
           <SensorsView sensors={sensors} onSetup={() => setShowSetup(true)} onRefreshSensors={fetchSensors} />
         ) : view === 'logs' ? (
@@ -674,7 +731,7 @@ function AddWhitelistRule({ onAdd, onError }) {
 
 // --- Threats View ---
 
-function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionRules, whitelistRules, onNavigate }) {
+function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionRules, whitelistRules, onNavigateDevice, canAdmin }) {
   const [severityFilter, setSeverityFilter] = useState('all');
   const [contextFilter, setContextFilter] = useState('all'); // 'all' | 'new_device' | 'iot'
   const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'firewall_log'
@@ -692,9 +749,10 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const [ackAllReason, setAckAllReason] = useState('');
   const [ackAllProcessing, setAckAllProcessing] = useState(false);
 
-  // Build device lookup by IP
-  const deviceByIP = {};
-  (devices || []).forEach(d => { if (d.ip_address) deviceByIP[d.ip_address] = d; });
+  // Core projects event.device_id through reversible merge redirects. Never
+  // relabel historical evidence from a device's current DHCP address.
+  const deviceByID = {};
+  (devices || []).forEach(d => { if (stableDeviceID(d)) deviceByID[stableDeviceID(d)] = d; });
 
   // Find which suppression rule matches an event (returns rule or null)
   const findMatchingRule = (event) => {
@@ -726,7 +784,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     }) || null;
   };
 
-  const isSuppressed = (event) => findMatchingRule(event) !== null;
+  const isSuppressed = (event) => event.disposition === 'suppressed' || findMatchingRule(event) !== null;
 
   // Check if an event matches any enabled whitelist rule (glob matching)
   const globMatch = (pattern, value) => {
@@ -768,14 +826,14 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       const group = { lead: e, count: 1, members: [e] };
       const eTime = new Date(e.timestamp).getTime();
       const ePrimaryTag = (e.tags && e.tags[0]) || '';
-      const eSourceKey = e.source_ip + '|' + (e.network_segment || 'default');
+      const eSourceKey = eventAssetKey(e);
 
       for (let j = i + 1; j < eventList.length; j++) {
         if (used.has(j)) continue;
         const o = eventList[j];
         const oTime = new Date(o.timestamp).getTime();
         const oPrimaryTag = (o.tags && o.tags[0]) || '';
-        const oSourceKey = o.source_ip + '|' + (o.network_segment || 'default');
+        const oSourceKey = eventAssetKey(o);
 
         // Group if same device/segment + same primary detection tag + within time window
         // This creates behavioral clusters ("this device is showing repeated DGA behavior")
@@ -986,6 +1044,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   };
 
   const handleAck = (eventId, reason) => {
+    if (!canAdmin) return;
     setActionError(null);
     authFetch(`/api/v1/events/${eventId}/ack`, {
       method: 'PUT',
@@ -999,6 +1058,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   };
 
   const handleUnack = (eventId) => {
+    if (!canAdmin) return;
     setActionError(null);
     authFetch(`/api/v1/events/${eventId}/ack`, { method: 'DELETE' })
       .then(r => {
@@ -1008,6 +1068,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   };
 
   const handleCreateSuppression = (event, reason) => {
+    if (!canAdmin) return;
     setActionError(null);
     authFetch('/api/v1/suppression', {
       method: 'POST',
@@ -1021,6 +1082,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   };
 
   const handleDeleteSuppression = (ruleId) => {
+    if (!canAdmin) return;
     setActionError(null);
     authFetch(`/api/v1/suppression/${ruleId}`, { method: 'DELETE' })
       .then(r => {
@@ -1033,6 +1095,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
   const getEventState = (event) => {
     const rule = findMatchingRule(event);
     if (event.acknowledged) return { type: 'acked', reason: event.ack_reason || '', rule: null };
+    if (event.disposition === 'suppressed') {
+      return { type: 'suppressed', reason: rule?.reason || 'Suppressed by a server-side policy', rule };
+    }
     if (rule) return { type: 'suppressed', reason: rule.reason || '', rule };
     return { type: 'active', reason: '', rule: null };
   };
@@ -1041,14 +1106,14 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
     <>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-2xl font-display">Threat Events</h2>
+          <h2 className="text-2xl font-display">Raw Events</h2>
           <p className="text-gray-400 text-sm mt-1">
             {visibleEvents.length} active{suppressedEvents.length > 0 ? `, ${suppressedEvents.length} suppressed` : ''}
             {hideWhitelisted && whitelistedCount > 0 ? ` · ${whitelistedCount} hidden by whitelist` : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          {canAdmin && <button
             onClick={() => setShowWhitelistPanel(!showWhitelistPanel)}
             className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
               showWhitelistPanel ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30' : 'bg-gray-700 hover:bg-gray-600 text-gray-200'
@@ -1056,8 +1121,8 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
             Whitelist{whitelistRules.filter(r => r.enabled).length > 0 ? ` (${whitelistRules.filter(r => r.enabled).length})` : ''}
-          </button>
-          {visibleEvents.length > 0 && (
+          </button>}
+          {canAdmin && visibleEvents.length > 0 && (
             <button
               onClick={() => setShowAckAllModal(true)}
               className="bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
@@ -1109,7 +1174,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       </div>
 
       {/* Acknowledge All Modal */}
-      {showAckAllModal && (
+      {canAdmin && showAckAllModal && (
         <>
           <div className="fixed inset-0 bg-black/60 z-40" onClick={() => !ackAllProcessing && setShowAckAllModal(false)} />
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1228,7 +1293,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       )}
 
       {/* Whitelist Management Panel */}
-      {showWhitelistPanel && (
+      {canAdmin && showWhitelistPanel && (
         <div className="bg-gray-900 border border-teal-500/20 rounded-lg p-5 mb-6">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -1485,9 +1550,10 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                   const event = group.lead;
                   const isExpanded = expandedRows.has(event.event_id);
                   const meta = parseMetadata(event.metadata);
-                  const device = event.source_ip ? deviceByIP[event.source_ip] : null;
+                  const device = deviceByID[stableDeviceID(event)] || null;
                   const deviceName = device ? (device.display_name || device.custom_name || device.hostname || null) : null;
                   const eventState = getEventState(event);
+                  const enforcementOutcome = eventOutcome(event);
                   const isEditing = actionMode && actionMode.eventId === event.event_id;
                   return (
                     <React.Fragment key={event.event_id}>
@@ -1516,7 +1582,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                             {device ? (
                               <button
                                 className="text-left hover:text-amber-400 transition-colors"
-                                onClick={(e) => { e.stopPropagation(); onNavigate && onNavigate('devices'); }}
+                                onClick={(e) => { e.stopPropagation(); onNavigateDevice?.(stableDeviceID(event)); }}
                                 title={`View device: ${device.ip_address}`}
                               >
                                 <span className="font-medium text-amber-300">{deviceName || device.ip_address}</span>
@@ -1578,9 +1644,11 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                         <td className="px-4 py-3 text-sm">
                           <div className="flex flex-col gap-1">
                             <span className={`px-2 py-0.5 rounded text-xs font-medium inline-block w-fit ${
-                              event.blocked ? 'bg-red-500/20 text-red-300' : 'bg-green-500/20 text-green-300'
+                              enforcementOutcome === 'blocked' ? 'bg-emerald-500/15 text-emerald-300'
+                                : enforcementOutcome === 'allowed' ? 'bg-red-500/15 text-red-300'
+                                  : 'bg-sky-500/15 text-sky-300'
                             }`}>
-                              {event.blocked ? 'blocked' : 'allowed'}
+                              {enforcementOutcome}
                             </span>
                             {eventState.type === 'acked' && (
                               <span className="text-xs text-blue-400 px-2 py-0.5 bg-blue-500/10 rounded w-fit">ack'd</span>
@@ -1633,7 +1701,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                               )}
 
                               {/* Quick Suppression - high impact for SNR */}
-                              <div className="bg-gray-900/60 border border-gray-700 rounded-lg p-3">
+                              {canAdmin && <div className="bg-gray-900/60 border border-gray-700 rounded-lg p-3">
                                 <div className="text-xs uppercase tracking-wider text-teal-400 font-medium mb-2">Quick Noise Reduction</div>
                                 <div className="flex flex-wrap gap-2">
                                   <button
@@ -1734,7 +1802,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                     </button>
                                   )}
                                 </div>
-                              </div>
+                              </div>}
 
                               {/* Device info card (if matched) */}
                               {device && (
@@ -1749,7 +1817,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                       </span>
                                     </div>
                                     <div>
-                                      <span className="text-xs text-gray-500 block">IP</span>
+                                      <span className="text-xs text-gray-500 block">Current IP</span>
                                       <span className="font-mono text-gray-200">{device.ip_address}</span>
                                     </div>
                                     <div>
@@ -1763,7 +1831,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                   </div>
                                   <button
                                     className="text-xs text-amber-400 hover:text-amber-300 mt-2"
-                                    onClick={(e) => { e.stopPropagation(); onNavigate && onNavigate('devices'); }}
+                                    onClick={(e) => { e.stopPropagation(); onNavigateDevice?.(stableDeviceID(event)); }}
                                   >
                                     View device details →
                                   </button>
@@ -1856,7 +1924,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                                         <div>
                                           <span className="text-xs text-gray-500 block">Action</span>
-                                          <span className="font-mono text-gray-200">{(meta && meta.action) || (event.blocked ? 'block' : 'allow')}</span>
+                                          <span className="font-mono text-gray-200">{(meta && meta.action) || (eventOutcome(event) === 'blocked' ? 'block' : eventOutcome(event) === 'allowed' ? 'allow' : 'observe')}</span>
                                         </div>
                                         <div>
                                           <span className="text-xs text-gray-500 block">Protocol</span>
@@ -1981,7 +2049,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                               )}
 
                               {/* Action panel — stateful ack/suppress */}
-                              <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-4">
+                              {canAdmin && <div className="bg-gray-900/50 border border-gray-800 rounded-lg p-4">
                                 <h4 className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-3">Actions</h4>
 
                                 {/* Current state display */}
@@ -2099,7 +2167,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                     </button>
                                   </div>
                                 )}
-                              </div>
+                              </div>}
                             </div>
                           </td>
                         </tr>
@@ -2126,7 +2194,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
       ) : (
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
           <p className="text-gray-500">
-            {showSuppressed ? 'No suppressed events.' : 'No threat events detected. Your network is secure.'}
+            {showSuppressed ? 'No suppressed events.' : 'No active raw threat events are available. Check Findings and detection health before drawing a conclusion.'}
           </p>
         </div>
       )}
@@ -2164,8 +2232,8 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                         </span>
                       </td>
                       <td className="py-2 pr-4">
-                        <span className={`text-xs px-2 py-0.5 rounded ${evt.blocked ? 'bg-red-500/20 text-red-300' : 'bg-green-500/20 text-green-300'}`}>
-                          {evt.blocked ? 'blocked' : 'allowed'}
+                        <span className={`text-xs px-2 py-0.5 rounded ${eventOutcome(evt) === 'blocked' ? 'bg-emerald-500/15 text-emerald-300' : eventOutcome(evt) === 'allowed' ? 'bg-red-500/15 text-red-300' : 'bg-sky-500/15 text-sky-300'}`}>
+                          {eventOutcome(evt)}
                         </span>
                       </td>
                       <td className="py-2 font-mono text-xs text-gray-600">{evt.event_id.slice(0, 8)}...</td>
@@ -2705,7 +2773,7 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
 
 // --- Dashboard ---
 
-function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, onViewDevices, defaultCIDR, targets, sensors, threatStats, onNavigate }) {
+function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, onViewDevices, defaultCIDR, targets, sensors, findingsState, onNavigate }) {
   const segmentCounts = {};
   devices.forEach((d) => {
     segmentCounts[d.segment] = (segmentCounts[d.segment] || 0) + 1;
@@ -2713,11 +2781,10 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
 
   return (
     <>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${findingsState.canAdmin ? 'xl:grid-cols-6' : 'xl:grid-cols-5'} gap-4 mb-8`}>
         <StatCard label="Devices" value={devices.length || '—'} sub={devices.length > 0 ? `${newDeviceCount} new (24h)` : 'Awaiting sensor data'} highlight={newDeviceCount > 0} onClick={() => onNavigate('devices')} />
-        <StatCard label="Sensors" value={sensors.length || '0'} sub={sensors.length > 0 ? `${sensors.filter(s => s.status === 'online').length} online` : 'None connected'} highlight={sensors.length === 0} onClick={() => onNavigate('sensors')} />
-        <ThreatIntelStatusCard stats={threatStats} onClick={() => onNavigate('threats')} />
-        <StatCard label="DNS Queries" value={threatStats?.total_count || '—'} sub={threatStats?.last_24h_count ? `${threatStats.last_24h_count} in 24h` : 'Monitoring'} onClick={() => onNavigate('threats')} />
+        {findingsState.canAdmin && <StatCard label="Sensors" value={sensors.length || '0'} sub={sensors.length > 0 ? `${sensors.filter(s => s.status === 'online').length} online` : 'None connected'} highlight={sensors.length === 0} onClick={() => onNavigate('sensors')} />}
+        <FindingsDashboardSummary state={findingsState} onNavigate={() => onNavigate('threats')} />
       </div>
 
       {newDeviceCount > 0 && (
@@ -2749,10 +2816,12 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
           <h2 className="text-lg font-display text-gray-100">Welcome to Vedetta</h2>
           <p className="text-gray-400 mt-2 max-w-md mx-auto">Your network watchtower is ready. Run a scan to discover devices on your network.</p>
           <div className="mt-6">
+            {findingsState.canAdmin ? (
             <button onClick={onScan} disabled={scanning} className="bg-amber-500 hover:bg-amber-400 disabled:bg-amber-800 disabled:text-amber-600 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 mx-auto">
               {scanning && <Spinner />}
               {scanning ? 'Scanning...' : 'Run Network Scan'}
             </button>
+            ) : <p className="text-sm text-gray-500">Read access can review inventory; an admin can start active scans.</p>}
           </div>
         </div>
       ) : (
@@ -2770,7 +2839,7 @@ function DashboardView({ devices, scanStatus, newDeviceCount, scanning, onScan, 
 
 // --- Devices ---
 
-function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRefreshThreats }) {
+function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRefreshThreats, findings, canAdmin, focusDeviceID, onFocusDeviceConsumed, onNavigateDevice, onIdentityChanged }) {
   const [segmentFilter, setSegmentFilter] = useState('all');
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [editName, setEditName] = useState('');
@@ -2785,6 +2854,84 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
   const [bulkReason, setBulkReason] = useState('');
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [bulkError, setBulkError] = useState(null);
+  const [deviceSaveError, setDeviceSaveError] = useState('');
+  const handledFocusDeviceID = React.useRef(null);
+  const deviceHistoryRequest = React.useRef(0);
+  const [deviceHistory, setDeviceHistory] = useState({
+    deviceID: '', events: [], total: 0, page: 0, loading: false, error: '',
+  });
+
+  const loadDeviceHistory = useCallback(async (deviceID, page = 1, append = false) => {
+    if (!deviceID) return;
+    const requestID = ++deviceHistoryRequest.current;
+    setDeviceHistory((current) => ({
+      ...(append && current.deviceID === deviceID ? current : { deviceID, events: [], total: 0, page: 0 }),
+      deviceID,
+      loading: true,
+      error: '',
+    }));
+    try {
+      const response = await fetchDeviceThreatEvents(deviceID, { page, limit: 100, minScore: 0.3 });
+      if (requestID !== deviceHistoryRequest.current) return;
+      const pageEvents = Array.isArray(response?.events) ? response.events : [];
+      setDeviceHistory((current) => {
+        const existing = append && current.deviceID === deviceID ? current.events : [];
+        const seen = new Set(existing.map((event) => event.event_id));
+        const uniquePage = pageEvents.filter((event) => !seen.has(event.event_id) && seen.add(event.event_id));
+        return {
+          deviceID,
+          events: [...existing, ...uniquePage],
+          total: Number(response?.total ?? pageEvents.length),
+          page: Number(response?.page ?? page),
+          loading: false,
+          error: '',
+        };
+      });
+    } catch (cause) {
+      if (requestID !== deviceHistoryRequest.current) return;
+      setDeviceHistory((current) => ({
+        ...current, deviceID, loading: false,
+        error: cause?.message || 'Unable to load this device’s threat history.',
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    const deviceID = stableDeviceID(selectedDevice || {});
+    if (!deviceID) {
+      deviceHistoryRequest.current += 1;
+      setDeviceHistory({ deviceID: '', events: [], total: 0, page: 0, loading: false, error: '' });
+      return;
+    }
+    loadDeviceHistory(deviceID);
+  }, [selectedDevice?.device_id, selectedDevice?.canonical_device_id, loadDeviceHistory]);
+
+  // Findings navigate by stable device_id. Never try to locate the affected asset
+  // by its current IP; DHCP may have changed since the supporting event occurred.
+  useEffect(() => {
+    if (!focusDeviceID) {
+      handledFocusDeviceID.current = null;
+      return;
+    }
+    if (handledFocusDeviceID.current === focusDeviceID) return;
+    const device = devices.find((candidate) => candidate.device_id === focusDeviceID);
+    if (device) {
+      handledFocusDeviceID.current = focusDeviceID;
+      setSelectedDevice(device);
+      setEditName(device.custom_name || '');
+      setEditNotes(device.notes || '');
+      setEditSegment(device.segment || 'default');
+      setEditDeviceType(device.device_type || '');
+      setEditOSFamily(device.os_family || '');
+      setEditModel(device.model || '');
+      setCheckedEvents(new Set());
+      setBulkAction(null);
+      setBulkReason('');
+      setBulkError(null);
+      setDeviceSaveError('');
+      onFocusDeviceConsumed?.();
+    }
+  }, [devices, focusDeviceID, onFocusDeviceConsumed]);
 
   const segments = ['all', ...new Set(devices.map((d) => d.segment).filter(Boolean))];
   const filtered = segmentFilter === 'all' ? devices : devices.filter((d) => d.segment === segmentFilter);
@@ -2846,12 +2993,14 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
               Export CSV
             </button>
           )}
-          <button onClick={onScan} disabled={scanning} className="bg-amber-500 hover:bg-amber-400 disabled:bg-amber-800 disabled:text-amber-600 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+          {canAdmin && <button onClick={onScan} disabled={scanning} className="bg-amber-500 hover:bg-amber-400 disabled:bg-amber-800 disabled:text-amber-600 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
             {scanning && <Spinner />}
             {scanning ? 'Scanning...' : 'Scan All Networks'}
-          </button>
+          </button>}
         </div>
       </div>
+
+      <IdentityPanel devices={devices} findings={findings} events={threatEvents} canAdmin={canAdmin} onChanged={onIdentityChanged} onNavigateDevice={onNavigateDevice} />
 
       {/* Segment filter */}
       {segments.length > 2 && (
@@ -2885,6 +3034,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
             setBulkAction(null);
             setBulkReason('');
             setBulkError(null);
+            setDeviceSaveError('');
           }} />
         </div>
       ) : (
@@ -3014,8 +3164,9 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
               )}
             </div>
 
-            {/* Editable fields */}
-            <div className="space-y-3 mb-6 border-t border-gray-800 pt-4">
+            {/* Editable fields are admin-only. Read scope keeps the device and
+                evidence detail visible without presenting mutations. */}
+            {canAdmin && <div className="space-y-3 mb-6 border-t border-gray-800 pt-4">
               <h4 className="text-sm font-medium text-gray-300">Edit Device</h4>
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Custom Name</label>
@@ -3080,26 +3231,48 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                 disabled={saving}
                 onClick={() => {
                   setSaving(true);
+                  setDeviceSaveError('');
                   authFetch(`/api/v1/devices/${selectedDevice.device_id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ custom_name: editName, notes: editNotes, segment: editSegment, device_type: editDeviceType, os_family: editOSFamily, model: editModel }),
-                  }).then(() => {
+                  }).then(async (response) => {
+                    if (!response.ok) {
+                      const body = await response.json().catch(() => ({}));
+                      throw new Error(body.error || `Save failed (HTTP ${response.status})`);
+                    }
                     setSaving(false);
                     setSelectedDevice(null);
-                    // Trigger re-fetch from parent
-                  }).catch(() => setSaving(false));
+                    onIdentityChanged?.();
+                  }).catch((cause) => {
+                    setSaving(false);
+                    setDeviceSaveError(cause?.message || 'Unable to save device changes.');
+                  });
                 }}
                 className="bg-amber-500 hover:bg-amber-400 disabled:bg-gray-700 text-gray-950 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
               >
                 {saving ? 'Saving...' : 'Save Changes'}
               </button>
-            </div>
+              {deviceSaveError && <p role="alert" className="text-xs text-red-400">{deviceSaveError}</p>}
+            </div>}
 
-            {/* Threat history for this device */}
-            {threatEvents && threatEvents.length > 0 && (() => {
-              const deviceThreats = threatEvents.filter(e => e.source_ip === selectedDevice.ip_address);
-              if (deviceThreats.length === 0) return null;
+            {/* Threat history for this device. This is a canonical-ID query,
+                independent of the global top-events sample used by Raw Events. */}
+            {selectedDevice && (() => {
+              const selectedID = stableDeviceID(selectedDevice);
+              const deviceThreats = deviceHistory.deviceID === selectedID
+                ? deviceHistory.events.filter((event) => eventBelongsToDevice(event, selectedDevice))
+                : [];
+
+              if (deviceHistory.loading && deviceThreats.length === 0) {
+                return <div className="border-t border-gray-800 pt-4 text-sm text-gray-500" role="status">Loading threat history…</div>;
+              }
+              if (deviceHistory.error && deviceThreats.length === 0) {
+                return <div className="border-t border-gray-800 pt-4 text-sm text-red-400" role="alert">Threat history unavailable: {deviceHistory.error}</div>;
+              }
+              if (deviceThreats.length === 0) {
+                return <div className="border-t border-gray-800 pt-4 text-sm text-gray-500">No scored threat events are associated with this stable device.</div>;
+              }
 
               const allChecked = deviceThreats.length > 0 && deviceThreats.every(e => checkedEvents.has(e.event_id));
               const someChecked = checkedEvents.size > 0;
@@ -3119,6 +3292,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
               };
 
               const doBulkAction = async (action, reason) => {
+                if (!canAdmin) return;
                 setBulkProcessing(true);
                 setBulkError(null);
                 const ids = [...checkedEvents];
@@ -3152,6 +3326,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                   setCheckedEvents(new Set());
                   setBulkAction(null);
                   setBulkReason('');
+                  await loadDeviceHistory(selectedID);
                   if (onRefreshThreats) onRefreshThreats();
                 } catch (err) {
                   setBulkError(err.message);
@@ -3163,8 +3338,8 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
               return (
                 <div className="border-t border-gray-800 pt-4">
                   <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-sm font-medium text-gray-300">Threat History ({deviceThreats.length} events)</h4>
-                    {someChecked && !bulkAction && (
+                    <h4 className="text-sm font-medium text-gray-300">Threat History ({deviceThreats.length} of {deviceHistory.total} events)</h4>
+                    {canAdmin && someChecked && !bulkAction && (
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-gray-500">{checkedEvents.size} selected</span>
                         <button
@@ -3184,7 +3359,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                   </div>
 
                   {/* Bulk action reason input */}
-                  {bulkAction && (
+                  {canAdmin && bulkAction && (
                     <div className="bg-gray-800/60 border border-gray-700 rounded-lg p-3 mb-3">
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-gray-400 shrink-0">
@@ -3218,7 +3393,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                   )}
 
                   {/* Select all checkbox */}
-                  <div className="flex items-center gap-2 mb-2 px-1 cursor-pointer" onClick={toggleAll}>
+                  {canAdmin && <div className="flex items-center gap-2 mb-2 px-1 cursor-pointer" onClick={toggleAll}>
                     <input
                       type="checkbox"
                       checked={allChecked}
@@ -3228,21 +3403,21 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                       onClick={(e) => e.stopPropagation()}
                     />
                     <span className="text-xs text-gray-500">Select all</span>
-                  </div>
+                  </div>}
 
                   <div className="space-y-1.5 max-h-72 overflow-y-auto">
                     {deviceThreats.map((evt) => (
-                      <div key={evt.event_id} className={`rounded p-3 text-sm flex items-start gap-3 cursor-pointer ${
+                      <div key={evt.event_id} className={`rounded p-3 text-sm flex items-start gap-3 ${canAdmin ? 'cursor-pointer' : ''} ${
                         checkedEvents.has(evt.event_id) ? 'bg-amber-500/5 border border-amber-500/20' : 'bg-gray-800/50'
-                      } ${evt.acknowledged ? 'opacity-50' : ''}`} onClick={() => toggleOne(evt.event_id)}>
-                        <input
+                      } ${evt.acknowledged ? 'opacity-50' : ''}`} onClick={() => { if (canAdmin) toggleOne(evt.event_id); }}>
+                        {canAdmin && <input
                           type="checkbox"
                           checked={checkedEvents.has(evt.event_id)}
                           onChange={() => toggleOne(evt.event_id)}
                           style={{ accentColor: '#f59e0b' }}
                           className="rounded border-gray-600 mt-0.5 w-3.5 h-3.5 shrink-0"
                           onClick={(e) => e.stopPropagation()}
-                        />
+                        />}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between">
                             <span className="font-mono text-gray-300 truncate flex-1">{evt.domain || '—'}</span>
@@ -3252,8 +3427,8 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                             {evt.tags && evt.tags.map((tag, idx) => (
                               <span key={idx} className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded">{tag}</span>
                             ))}
-                            <span className={`text-xs ${evt.blocked ? 'text-red-400' : 'text-green-400'}`}>
-                              {evt.blocked ? 'blocked' : 'allowed'}
+                            <span className={`text-xs ${eventOutcome(evt) === 'blocked' ? 'text-emerald-400' : eventOutcome(evt) === 'allowed' ? 'text-red-400' : 'text-sky-400'}`}>
+                              {eventOutcome(evt)}
                             </span>
                             {evt.acknowledged && (
                               <span className="text-xs text-blue-400">ack'd{evt.ack_reason ? `: ${evt.ack_reason}` : ''}</span>
@@ -3264,6 +3439,17 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                       </div>
                     ))}
                   </div>
+                  {deviceHistory.error && <p role="alert" className="text-xs text-red-400 mt-2">Could not load older events: {deviceHistory.error}</p>}
+                  {deviceHistory.total > deviceThreats.length && (
+                    <button
+                      type="button"
+                      disabled={deviceHistory.loading}
+                      onClick={() => loadDeviceHistory(selectedID, deviceHistory.page + 1, true)}
+                      className="mt-3 text-xs text-sky-400 hover:text-sky-300 disabled:text-gray-600"
+                    >
+                      {deviceHistory.loading ? 'Loading…' : `Load older events (${deviceHistory.total - deviceThreats.length} remaining)`}
+                    </button>
+                  )}
                 </div>
               );
             })()}

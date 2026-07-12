@@ -184,6 +184,27 @@ func TestMDNSFriendlyNameFromTXT(t *testing.T) {
 	}
 }
 
+func TestMDNSSelectedStableIdentityEvidence(t *testing.T) {
+	dns := &layers.DNS{QR: true, Answers: []layers.DNSResourceRecord{
+		srvRecord("Synthetic Camera._vedetta._tcp.local", "camera-53.local", 443),
+		txtRecord("Synthetic Camera._vedetta._tcp.local",
+			"model=ExampleCam 53", "manufacturer=Example Vendor", "deviceid=synthetic-device-53", "password=must-not-flow"),
+		aRecord("camera-53.local", "192.0.2.53"),
+	}}
+	host := findHostByIP(hostsFromMDNS(dns, "192.0.2.53"), "192.0.2.53")
+	if host == nil {
+		t.Fatal("expected host")
+	}
+	for _, kind := range []string{"mdns_name", "mdns_service", "mdns_txt_model", "mdns_txt_vendor", "mdns_txt_id"} {
+		if identityEvidenceValue(host.IdentityEvidence, kind) == "" {
+			t.Errorf("missing selected mDNS evidence %s: %+v", kind, host.IdentityEvidence)
+		}
+	}
+	if identityEvidenceValue(host.IdentityEvidence, "password") != "" {
+		t.Fatal("unallowlisted TXT attribute escaped into identity evidence")
+	}
+}
+
 // TestMDNSFriendlyNameEscaped: DNS-SD escapes spaces/dots in instance labels.
 func TestMDNSFriendlyNameEscaped(t *testing.T) {
 	dns := &layers.DNS{

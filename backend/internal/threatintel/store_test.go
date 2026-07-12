@@ -221,3 +221,42 @@ func TestBloomFilter_Integration(t *testing.T) {
 		t.Error("bloom filter should have allowed evil.com lookup")
 	}
 }
+
+func TestReplaceSourceIsCompleteAndAtomic(t *testing.T) {
+	tid := testThreatDB(t)
+	_, err := tid.BulkImport([]Indicator{
+		{Value: "old.example", Type: "domain", Source: "community", Confidence: 0.6, TTLHours: 24},
+		{Value: "curated.example", Type: "domain", Source: "urlhaus", Confidence: 0.9, TTLHours: 24},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := tid.ReplaceSource("community", []Indicator{
+		{Value: "new.example", Type: "domain", Confidence: 0.7, TTLHours: 24},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if tid.Lookup("old.example").Found {
+		t.Fatal("indicator absent from complete snapshot was retained")
+	}
+	if !tid.Lookup("new.example").Found || !tid.Lookup("curated.example").Found {
+		t.Fatal("new snapshot or independent source was lost")
+	}
+
+	if _, err := tid.ReplaceSource("community", []Indicator{
+		{Value: "invalid.example", Type: "not-a-supported-type", Confidence: 0.7, TTLHours: 24},
+	}); err == nil {
+		t.Fatal("invalid replacement unexpectedly succeeded")
+	}
+	if !tid.Lookup("new.example").Found {
+		t.Fatal("failed replacement did not roll back the prior snapshot")
+	}
+
+	if count, err := tid.ReplaceSource("community", nil); err != nil || count != 0 {
+		t.Fatalf("empty replacement = (%d, %v)", count, err)
+	}
+	if tid.Lookup("new.example").Found || !tid.Lookup("curated.example").Found {
+		t.Fatal("empty snapshot did not remove only its own source")
+	}
+}

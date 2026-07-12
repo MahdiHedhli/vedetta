@@ -13,7 +13,7 @@
 --                       only to flush a matured rollup event standalone)
 --
 -- Normalized Event shape (contracts/unifi-syslog-cef.md section 4):
---   { event_type="firewall_log", timestamp, source_ip, source_hash="",
+--   { event_id, event_type="firewall_log", timestamp, source_ip, source_hash="",
 --     blocked, anomaly_score=0.0, network_segment, threat_desc,
 --     tags = {...}, metadata = <json string> }
 --
@@ -67,6 +67,33 @@ local malformed_seen = 0
 
 local function trim(s)
     return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- Every emitted record needs an occurrence boundary that survives Fluent Bit's
+-- output retries.  Generate it here, in the filter, before the transformed
+-- record enters Fluent Bit's buffering layer.  Linux (the supported collector
+-- runtime) supplies a kernel UUID; the fallback is only for standalone Lua
+-- tests and non-Linux development hosts.
+local function collector_boot_nonce()
+    local f = io.open("/proc/sys/kernel/random/uuid", "r")
+    if f then
+        local value = trim(f:read("*l") or "")
+        f:close()
+        if value ~= "" then return value end
+    end
+    local address = tostring({}):gsub("[^%w]", "")
+    return string.format("%x-%s", os.time(), address)
+end
+
+local observation_boot_id = collector_boot_nonce()
+local observation_sequence = 0
+
+local function assign_observation_id(event)
+    if event and (event.event_id == nil or event.event_id == "") then
+        observation_sequence = observation_sequence + 1
+        event.event_id = "unifi-" .. observation_boot_id .. "-" .. tostring(observation_sequence)
+    end
+    return event
 end
 
 local function is_multicast(dst)
@@ -635,9 +662,9 @@ function unifi_to_event(tag, timestamp, record)
     if kind == "event" then
         if due then
             -- Emit the matured rollup AND this individual event (multi-record).
-            return 2, timestamp, { due, a }
+            return 2, timestamp, { assign_observation_id(due), assign_observation_id(a) }
         end
-        return 1, timestamp, a
+        return 1, timestamp, assign_observation_id(a)
     elseif kind == "rollup" then
         -- `a` here is a rollup flushed by rollup_add crossing the boundary on
         -- this WAN drop. `due` is a rollup the wall-clock check already flushed.
@@ -645,14 +672,14 @@ function unifi_to_event(tag, timestamp, record)
         -- before normalize re-opens it), but coalesce defensively.
         local flushed = due or a
         if flushed then
-            return 1, timestamp, flushed
+            return 1, timestamp, assign_observation_id(flushed)
         end
         -- Drop absorbed into the current window; no row emitted.
         return -1, timestamp, record
     else -- "drop"
         if due then
             -- This line drops, but a matured rollup is due — emit the rollup.
-            return 1, timestamp, due
+            return 1, timestamp, assign_observation_id(due)
         end
         malformed_seen = malformed_seen + 1
         if (malformed_seen % MALFORMED_LOG_EVERY) == 1 then

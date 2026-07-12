@@ -12,6 +12,7 @@ package dnsintel
 // Synthetic / documentation-reserved values only.
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -83,6 +84,48 @@ func TestProvenance_DomainWinsOverIP(t *testing.T) {
 	}
 	if event.MatchedIndicator != "bad.example.com" {
 		t.Fatalf("expected matched_indicator=bad.example.com, got %q", event.MatchedIndicator)
+	}
+}
+
+func TestProvenance_WhitelistDoesNotBypassKnownBad(t *testing.T) {
+	e, _ := provenanceEnricher(t)
+	e.IsWhitelisted = func(string) bool { return true }
+	event := newDNSEvent("prov-whitelist", "bad.example.com", "")
+	e.Enrich(&event)
+
+	if !hasTag(event.Tags, "whitelisted") || !hasTag(event.Tags, "known_bad") {
+		t.Fatalf("allowlist context must coexist with IOC evidence; tags=%v", event.Tags)
+	}
+	if event.MatchType != "domain" || event.MatchedIndicator != "bad.example.com" {
+		t.Fatalf("IOC provenance was skipped: type=%q indicator=%q", event.MatchType, event.MatchedIndicator)
+	}
+	if event.AnomalyScore < 0.8 {
+		t.Fatalf("strong IOC score was suppressed: %.2f", event.AnomalyScore)
+	}
+}
+
+func TestProvenance_EnrichmentPreservesSourceMetadata(t *testing.T) {
+	e, _ := provenanceEnricher(t)
+	event := newDNSEvent("prov-meta", "bad.example.com", "")
+	event.Metadata = `{"dns_answers":["198.51.100.66"],"process":"example.exe","source_only":"keep-me","threat_db":{"source":"forged"}}`
+	e.Enrich(&event)
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(event.Metadata), &got); err != nil {
+		t.Fatalf("metadata is not JSON: %v", err)
+	}
+	if got["source_only"] != "keep-me" || got["process"] != "example.exe" {
+		t.Fatalf("source metadata was discarded: %#v", got)
+	}
+	if _, ok := got["dns_answers"]; !ok {
+		t.Fatalf("dns_answers missing after enrichment: %#v", got)
+	}
+	if _, ok := got["detections"].(map[string]any); !ok {
+		t.Fatalf("namespaced detection metadata missing: %#v", got)
+	}
+	threat, ok := got["threat_db"].(map[string]any)
+	if !ok || threat["source"] != "urlhaus" {
+		t.Fatalf("Core-owned threat metadata did not replace forged input: %#v", got["threat_db"])
 	}
 }
 
