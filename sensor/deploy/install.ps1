@@ -10,14 +10,18 @@
       No Npcap and no nmap are installed or required.
     - Core is loopback-only by default; a REMOTE sensor must point -Core at the TLS
       reverse proxy (https://...), not http://<core-ip>:8080.
+    - Pin a release with -Tag v0.1.0-beta.2 (the release page lists the exact tag).
+    - Override LAN auto-detection with -CIDR 192.168.1.0/24 if discovery looks wrong.
 #>
 [CmdletBinding()]
 param(
     [string]$Core = "http://localhost:8080",
     [string]$EnrollCode = "",
+    [string]$CIDR = "auto",
+    [string]$Tag = "",     # pin a specific release tag (e.g. v0.1.0-beta.2)
     [switch]$Reset,
     [switch]$NoService,
-    [string]$Binary = "" # escape hatch: install a caller-supplied .exe instead of downloading
+    [string]$Binary = ""   # escape hatch: install a caller-supplied .exe instead of downloading
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,8 +40,9 @@ $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
     if (-not $PSCommandPath) { Die "run this from an elevated PowerShell (Run as Administrator)" }
     Info "elevation required - re-launching as Administrator..."
-    $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "-Core", $Core)
+    $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "-Core", $Core, "-CIDR", $CIDR)
     if ($EnrollCode) { $a += @("-EnrollCode", $EnrollCode) }
+    if ($Tag)        { $a += @("-Tag", $Tag) }
     if ($Reset)      { $a += "-Reset" }
     if ($NoService)  { $a += "-NoService" }
     if ($Binary)     { $a += @("-Binary", $Binary) }
@@ -47,16 +52,25 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
 
 $tmp = New-Item -ItemType Directory -Force -Path (Join-Path $env:TEMP ("vedetta-" + [guid]::NewGuid()))
 try {
-    # --- Obtain the binary (caller-supplied, or checksum-verified from the release) ---
+    # --- Obtain the binary (caller-supplied, or checksum-verified from a release) ---
     if ($Binary) {
         Info "using caller-supplied binary: $Binary"
         Copy-Item $Binary (Join-Path $tmp "vedetta-sensor.exe") -Force
     } else {
-        Info "resolving the latest release..."
-        $tag = (Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$Repo/releases/latest").tag_name
-        if (-not $tag) { Die "could not resolve the latest release tag" }
-        $base = "https://github.com/$Repo/releases/download/$tag"
-        Info "downloading $Asset ($tag)"
+        # Resolve the release tag. GitHub's /releases/latest EXCLUDES prereleases, so a
+        # beta would 404 there; resolve the newest non-draft release that ships the
+        # Windows asset instead (or honour an explicit -Tag).
+        if ($Tag) {
+            $rtag = $Tag
+        } else {
+            Info "resolving the newest release with the Windows asset..."
+            $rels = Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$Repo/releases"
+            $rel  = $rels | Where-Object { -not $_.draft -and ($_.assets.name -contains $Asset) } | Select-Object -First 1
+            if (-not $rel) { Die "no published release contains $Asset (pass -Tag <version>, or -Binary <path>)" }
+            $rtag = $rel.tag_name
+        }
+        $base = "https://github.com/$Repo/releases/download/$rtag"
+        Info "downloading $Asset ($rtag)"
         Invoke-WebRequest -UseBasicParsing "$base/$Asset" -OutFile (Join-Path $tmp $Asset)
         Invoke-WebRequest -UseBasicParsing "$base/checksums.txt" -OutFile (Join-Path $tmp "checksums.txt")
         Info "verifying checksum"
@@ -77,23 +91,39 @@ try {
     Copy-Item $srcExe $ExePath -Force
     & $ExePath --version
 
-    # --- Token directory ACL: SYSTEM + Administrators only (os.Chmod is a no-op on NTFS) ---
+    # --- Token directory ACL: SYSTEM + Administrators only. This MUST happen before
+    #     enrollment so the persisted token (and the service log) land in a locked dir.
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     icacls $DataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
 
     if ($Reset) { Info "resetting sensor authentication"; & $ExePath --reset }
 
+    # --- Enrollment (B1a hardening): spend the one-time code HERE, elevated, with the
+    #     code supplied via the ENVIRONMENT (never a command line), then persist the
+    #     token. The long-running service is then created WITHOUT the code, so it never
+    #     lives in the service ImagePath where a standard user could read it via `sc qc`.
+    if ($EnrollCode) {
+        Info "enrolling with Core (one-time code, kept out of the service configuration)"
+        $env:VEDETTA_ENROLL_CODE = $EnrollCode
+        try {
+            & $ExePath --enroll-only --core $Core --cidr $CIDR
+            $rc = $LASTEXITCODE
+        } finally {
+            Remove-Item Env:\VEDETTA_ENROLL_CODE -ErrorAction SilentlyContinue
+        }
+        if ($rc -ne 0) { Die "enrollment failed (exit $rc) - check the code, -Core, and connectivity" }
+    }
+
     if ($NoService) {
         Info "OK: binary installed (service skipped: -NoService)"
-        $hint = if ($EnrollCode) { " --enroll-code $EnrollCode" } else { "" }
-        Write-Host "    run it (elevated): `"$ExePath`" --core $Core$hint"
+        Write-Host "    run it (elevated): `"$ExePath`" --core $Core --cidr $CIDR --dns"
         return
     }
 
-    # --- Register + start the Windows service (LocalSystem, auto-start, restart on failure) ---
+    # --- Register + start the service (LocalSystem, auto-start, restart on failure).
+    #     No enrollment secret is placed in the service command line.
     Info "configuring the $ServiceName service"
-    $bin = "`"$ExePath`" --core $Core --cidr auto --dns"
-    if ($EnrollCode) { $bin += " --enroll-code $EnrollCode" }
+    $bin = "`"$ExePath`" --core $Core --cidr $CIDR --dns --passive-discovery=false"
     if (Get-Service $ServiceName -ErrorAction SilentlyContinue) { sc.exe delete $ServiceName | Out-Null; Start-Sleep 1 }
     $desc = "Vedetta network security sensor (DNS via ETW, native discovery)"
     New-Service -Name $ServiceName -BinaryPathName $bin -DisplayName "Vedetta Sensor" -StartupType Automatic -Description $desc | Out-Null
@@ -101,16 +131,9 @@ try {
     Start-Service $ServiceName
     Info "OK: service installed and started ($((Get-Service $ServiceName).Status))"
 
-    if ($EnrollCode) {
-        Write-Host ""
-        Write-Host "    NOTE: the enrollment code is single-use. After the first successful"        -ForegroundColor Yellow
-        Write-Host "    registration the sensor persists a token and no longer needs it. Re-run"    -ForegroundColor Yellow
-        Write-Host "    this installer WITHOUT -EnrollCode so a service restart cannot replay a"     -ForegroundColor Yellow
-        Write-Host "    now-consumed code:  .\install.ps1 -Core $Core"                               -ForegroundColor Yellow
-    }
     Write-Host ""
     Info "Installation complete. Manage with:  Get-Service $ServiceName  /  Stop-Service $ServiceName"
-    Write-Host "    Token: $DataDir\sensor-token (readable only by SYSTEM + Administrators)."
+    Write-Host "    Token: $DataDir\sensor-token   Log: $DataDir\sensor.log   (SYSTEM + Administrators only)."
 } finally {
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
