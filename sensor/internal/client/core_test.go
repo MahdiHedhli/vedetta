@@ -64,13 +64,10 @@ func TestCoreClientRegisterPersistsAndReloadsToken(t *testing.T) {
 		t.Fatal("expected token to be configured after registration")
 	}
 
-	info, err := os.Stat(core.TokenPath)
-	if err != nil {
-		t.Fatalf("stat token file: %v", err)
-	}
-	if perms := info.Mode().Perm(); perms != 0o600 {
-		t.Fatalf("expected token perms 0600, got %#o", perms)
-	}
+	// Verify the persisted token is locked down. The check is platform-specific:
+	// POSIX asserts 0600, Windows inspects the NTFS DACL (os.FileMode perms are
+	// synthetic there — the old 0600 assert made the Windows CI job red at 0666).
+	assertTokenSecured(t, core.TokenPath)
 
 	data, err := os.ReadFile(core.TokenPath)
 	if err != nil {

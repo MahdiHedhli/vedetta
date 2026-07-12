@@ -105,34 +105,15 @@ func main() {
 		}
 	}
 
-	// Resolve scan target
-	scanCIDR := *cidr
-	if scanCIDR == "" || scanCIDR == "auto" {
-		detected := netscan.BestSubnet("")
-		if detected == "" && !*printCapturePlan {
-			log.Fatal("Could not auto-detect LAN subnet. Use --cidr to specify one.")
-		}
-		scanCIDR = detected
-		if scanCIDR != "" {
-			log.Printf("Auto-detected LAN subnet: %s", scanCIDR)
-		}
-	}
-
-	if *printCapturePlan {
-		if err := printCaptureRecommendations(*coreURL, scanCIDR, *dnsIface, *passiveIface); err != nil {
-			log.Fatalf("Could not print capture plan: %v", err)
-		}
-		return
-	}
-
-	// Set up the device scanner (nmap on Unix; native ICMP/ARP on Windows).
+	// Set up the device scanner (local: nmap presence on Unix, native ICMP/ARP on
+	// Windows). No network.
 	scanner, err := netscan.NewScanner()
 	if err != nil {
 		log.Fatalf("device scanner unavailable: %v", err)
 	}
 	log.Printf("Device scanner ready: %s", scanner.BinaryPath)
 
-	// Set up Core API client
+	// Set up the Core API client (loads any persisted token; no network).
 	core, err := client.New(*coreURL)
 	if err != nil {
 		log.Fatalf("Could not initialize Core client: %v", err)
@@ -145,195 +126,268 @@ func main() {
 		core.EnrollCode = strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE"))
 	}
 
-	// Enumerate local network interfaces
-	interfaces, err := netinfo.ListInterfaces()
-	if err != nil {
-		log.Printf("WARNING: Could not enumerate network interfaces: %v", err)
-		interfaces = []netinfo.NetworkInterface{}
-	} else if len(interfaces) > 0 {
-		log.Printf("Discovered %d network interfaces", len(interfaces))
-		for _, iface := range interfaces {
-			log.Printf("  - %s (%s) IPs: %v", iface.Name, iface.MAC, iface.IPs)
+	// --print-capture-plan: Unix-only interactive diagnostic.
+	if *printCapturePlan {
+		planCIDR := strings.TrimSpace(*cidr)
+		if planCIDR == "" || planCIDR == "auto" {
+			planCIDR = netscan.BestSubnet("")
 		}
+		if err := printCaptureRecommendations(*coreURL, planCIDR, *dnsIface, *passiveIface); err != nil {
+			log.Fatalf("Could not print capture plan: %v", err)
+		}
+		return
 	}
 
-	// Enrollment-only mode (installer step): register with Core, persist the token,
-	// and exit — so the enrollment secret is spent here (with the code supplied via
-	// the environment, not a command line) and NEVER lives in the long-running
-	// service's configuration where a standard user could read it via `sc qc`.
+	// Assemble the run with the RAW config. Everything network-dependent — CIDR
+	// auto-detection, interface enumeration, capture start, registration, scanning —
+	// happens in serve()/prepare(), which run AFTER the Windows service has connected to
+	// the SCM. Doing any of it here would let a boot before DHCP (no LAN address yet)
+	// exit this process before dispatch → Error 1053.
+	run := &sensorRun{
+		scanner:        scanner,
+		core:           core,
+		coreURL:        *coreURL,
+		cidrFlag:       *cidr,
+		primary:        *primary,
+		scanPorts:      *scanPorts,
+		interval:       *interval,
+		dnsEnabled:     *dnsEnabled,
+		dnsIface:       *dnsIface,
+		passiveEnabled: *passiveEnabled,
+		passiveIface:   *passiveIface,
+		passiveARP:     *passiveARP,
+		passiveDHCP:    *passiveDHCP,
+		passiveMDNS:    *passiveMDNS,
+		passiveSSDP:    *passiveSSDP,
+	}
+
+	// Enrollment-only mode (installer step): interactive, the network is up. Resolve the
+	// CIDR eagerly, register, persist the token, and exit — the secret is spent here and
+	// NEVER lives in the long-running service's configuration.
 	if *enrollOnly {
-		if registerWithRetry(context.Background(), core, scanCIDR, *primary, interfaces) {
+		if err := run.prepare(context.Background(), false); err != nil {
+			log.Fatalf("enrollment: %v", err)
+		}
+		if registerWithRetry(context.Background(), core, run.scanCIDR, run.primary, run.interfaces) {
 			log.Printf("Enrollment complete — sensor token persisted to %s", core.TokenPath)
 			return
 		}
 		log.Fatalf("enrollment failed: could not register with Core at %s (check --core, the enrollment code, and connectivity)", *coreURL)
 	}
 
-	log.Printf("Starting scan loop: cidr=%s interval=%s ports=%v", scanCIDR, *interval, *scanPorts)
-
-	// NOTE: registration and the first scan are deliberately NOT done here. They are
-	// Core I/O that can block for minutes against an unreachable Core, and on Windows
-	// this function must reach the service dispatcher (svc.Run, via runFrontend)
-	// within the SCM connect deadline (~30s). They run in sensorRun.serve, after the
-	// front-end has connected to its control channel.
-
-	// Set up passive DNS capture (if enabled)
-	var wg sync.WaitGroup
-	var capturer *dnscap.Capturer
-	var passiveCapturer *passive.Capturer
-	var passiveHosts chan netscan.DiscoveredHost
-	var dnsQueries chan dnscap.Query
-	// Dropped-event counters. The capture channels are bounded; an overflowing
-	// capture burst previously vanished with a bare `default:` and no trace. Count
-	// drops so an operator can see when the sensor is shedding load.
-	var droppedDNS, droppedHosts atomic.Int64
-
-	if *dnsEnabled {
-		dnsQueries = make(chan dnscap.Query, 100)
-
-		capturer, err = dnscap.NewCapturer(dnscap.Config{
-			Interface:    *dnsIface,
-			CoreURL:      *coreURL,
-			CIDR:         scanCIDR,
-			BatchSize:    100,
-			BatchTimeout: 10 * time.Second,
-			OnQuery: func(q dnscap.Query) {
-				select {
-				case dnsQueries <- q:
-				default:
-					droppedDNS.Add(1) // queue full — shedding load, reported below
-				}
-			},
-		})
-
-		if err != nil {
-			log.Printf("WARNING: Failed to initialize DNS capture: %v", err)
-		} else {
-			if err := capturer.Start(); err != nil {
-				if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "operation not permitted") {
-					log.Printf("WARNING: Failed to start DNS capture on %s (permission denied). %s", *dnsIface, elevationHint(fmt.Sprintf("%s --core %s --dns-iface %s", os.Args[0], *coreURL, *dnsIface)))
-				} else {
-					log.Printf("WARNING: Failed to start DNS capture: %v", err)
-				}
-			} else {
-				log.Printf("Passive DNS capture active on interface %s", capturer.Interface())
-
-				// Start DNS batch push goroutine
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					pushDNSQueries(core, dnsQueries)
-				}()
-			}
-		}
-	}
-
-	if *passiveEnabled {
-		passiveHosts = make(chan netscan.DiscoveredHost, 200)
-		passiveCapturer, err = passive.NewCapturer(passive.Config{
-			Interface:  *passiveIface,
-			CoreURL:    *coreURL,
-			CIDR:       scanCIDR,
-			EnableARP:  *passiveARP,
-			EnableDHCP: *passiveDHCP,
-			EnableMDNS: *passiveMDNS,
-			EnableSSDP: *passiveSSDP,
-			OnHost: func(host netscan.DiscoveredHost) {
-				select {
-				case passiveHosts <- host:
-				default:
-					droppedHosts.Add(1) // queue full — shedding load, reported below
-				}
-			},
-		})
-		if err != nil {
-			log.Printf("WARNING: Failed to initialize passive discovery: %v", err)
-		} else if err := passiveCapturer.Start(); err != nil {
-			if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "operation not permitted") {
-				log.Printf("WARNING: Failed to start passive discovery on %s (permission denied). %s", *passiveIface, elevationHint(fmt.Sprintf("%s --core %s --passive-iface %s", os.Args[0], *coreURL, *passiveIface)))
-			} else {
-				log.Printf("WARNING: Failed to start passive discovery: %v", err)
-			}
-		} else {
-			log.Printf("Passive discovery active on interface %s (arp=%v dhcp=%v mdns=%v ssdp=%v)", passiveCapturer.Interface(), *passiveARP, *passiveDHCP, *passiveMDNS, *passiveSSDP)
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				pushPassiveHosts(core, scanCIDR, passiveHosts)
-			}()
-		}
-	}
-
-	// Assemble the run state so the operational lifecycle can be driven identically by
-	// the interactive/Unix front-end (front_unix.go) and the Windows service front-end
-	// (front_windows.go), each supplying its own cancellation context.
-	run := &sensorRun{
-		scanner:         scanner,
-		core:            core,
-		coreURL:         *coreURL,
-		scanCIDR:        scanCIDR,
-		primary:         *primary,
-		scanPorts:       *scanPorts,
-		interval:        *interval,
-		interfaces:      interfaces,
-		capturer:        capturer,
-		passiveCapturer: passiveCapturer,
-		dnsQueries:      dnsQueries,
-		passiveHosts:    passiveHosts,
-		wg:              &wg,
-		droppedDNS:      &droppedDNS,
-		droppedHosts:    &droppedHosts,
-	}
-
 	if *oneshot {
-		// One scan and exit: register, scan once, drain. Not a service, so no SCM.
+		// One scan and exit (interactive). Resolve eagerly, scan once, drain.
 		ctx := context.Background()
+		if err := run.prepare(ctx, false); err != nil {
+			log.Fatalf("scan: %v", err)
+		}
+		run.startCaptures()
 		run.register(ctx)
-		runScan(ctx, scanner, core, scanCIDR, *scanPorts)
-		shutdownCaptures(capturer, passiveCapturer, dnsQueries, passiveHosts, &wg)
+		runScan(ctx, run.scanner, run.core, run.scanCIDR, run.scanPorts)
+		run.shutdown()
 		return
 	}
 
 	// Hand off to the platform front-end. On Unix (and a Windows console) the run is
-	// cancelled by SIGINT/SIGTERM; under the Windows Service Control Manager it is
-	// cancelled by the Stop/Shutdown control. Both call run.serve, which does the
-	// registration + first scan + periodic loop AFTER the front-end has connected to
-	// its control channel.
+	// cancelled by SIGINT/SIGTERM; under the Windows SCM it is cancelled by
+	// Stop/Shutdown. Both call run.serve, which defers ALL network-dependent init until
+	// after the front-end has connected to its control channel.
 	runFrontend(run)
 }
 
-// sensorRun holds the state the periodic scan loop needs so the loop can be driven
-// identically from the interactive/Unix front-end (main) and, later, the Windows
-// service front-end (service_windows.go) — each supplying its own cancellation
-// context (signal-cancelled on Unix; SCM-cancelled under the Windows SCM).
+// sensorRun holds the sensor's config plus the runtime state its lifecycle needs, so
+// the lifecycle can be driven identically by the interactive/Unix front-end
+// (front_unix.go) and the Windows service front-end (front_windows.go), each supplying
+// its own cancellation context. The struct is always used via pointer and never copied,
+// so wg/atomic fields are held by value.
 type sensorRun struct {
-	scanner         *netscan.Scanner
-	core            *client.CoreClient
-	coreURL         string
+	// static config (from flags)
+	scanner        *netscan.Scanner
+	core           *client.CoreClient
+	coreURL        string
+	cidrFlag       string // raw --cidr ("auto" or a CIDR); resolved in prepare()
+	primary        bool
+	scanPorts      bool
+	interval       time.Duration
+	dnsEnabled     bool
+	dnsIface       string
+	passiveEnabled bool
+	passiveIface   string
+	passiveARP     bool
+	passiveDHCP    bool
+	passiveMDNS    bool
+	passiveSSDP    bool
+
+	// runtime state populated by prepare() + startCaptures()
 	scanCIDR        string
-	primary         bool
-	scanPorts       bool
-	interval        time.Duration
 	interfaces      []netinfo.NetworkInterface
 	capturer        *dnscap.Capturer
 	passiveCapturer *passive.Capturer
 	dnsQueries      chan dnscap.Query
 	passiveHosts    chan netscan.DiscoveredHost
-	wg              *sync.WaitGroup
-	droppedDNS      *atomic.Int64
-	droppedHosts    *atomic.Int64
+	wg              sync.WaitGroup
+	droppedDNS      atomic.Int64
+	droppedHosts    atomic.Int64
 }
 
-// serve runs the operational lifecycle: initial registration, the first scan, and
-// the periodic loop. It is called by the platform front-end AFTER that front-end has
-// connected to its control channel — on Windows, after svc.Run has reached the SCM.
-// Keeping all Core I/O here (not in main) is what lets the Windows service dispatch
-// within the SCM connect deadline even when Core is unreachable at boot (a blackholed
-// Core previously blocked registration for minutes before dispatch → Error 1053).
+// serve runs the full operational lifecycle: resolve the scan target + interfaces
+// (retrying if the LAN has no address yet), start the captures, register, run the
+// first scan, then loop. It is called by the platform front-end AFTER that front-end
+// has connected to its control channel — on Windows, after svc.Run has reached the SCM.
+// EVERYTHING network-dependent lives here, not in main, so the Windows service reaches
+// the dispatcher within the SCM connect deadline even when the machine boots before
+// DHCP assigns an address or Core is unreachable.
 func (r *sensorRun) serve(ctx context.Context) {
+	if err := r.prepare(ctx, true); err != nil {
+		log.Printf("sensor stopping before startup completed: %v", err) // ctx cancelled during CIDR wait
+		return
+	}
+	r.startCaptures()
+	log.Printf("Starting scan loop: cidr=%s interval=%s ports=%v", r.scanCIDR, r.interval, r.scanPorts)
 	r.register(ctx)
 	runScan(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts)
 	r.loop(ctx)
+}
+
+// prepare resolves the scan CIDR and enumerates network interfaces. When wait is true
+// (the long-running service/console path) it keeps retrying auto-detection until a LAN
+// address exists or ctx is cancelled, so a service that auto-starts before DHCP reaches
+// Running and begins work once networking comes up — no restart needed. When wait is
+// false (interactive --enroll-only/--once) it resolves once and errors if none is found.
+func (r *sensorRun) prepare(ctx context.Context, wait bool) error {
+	cidr, err := r.resolveScanCIDR(ctx, wait)
+	if err != nil {
+		return err
+	}
+	r.scanCIDR = cidr
+
+	ifaces, err := netinfo.ListInterfaces()
+	if err != nil {
+		log.Printf("WARNING: Could not enumerate network interfaces: %v", err)
+		ifaces = []netinfo.NetworkInterface{}
+	} else if len(ifaces) > 0 {
+		log.Printf("Discovered %d network interfaces", len(ifaces))
+		for _, iface := range ifaces {
+			log.Printf("  - %s (%s) IPs: %v", iface.Name, iface.MAC, iface.IPs)
+		}
+	}
+	r.interfaces = ifaces
+	return nil
+}
+
+// bestSubnet / subnetRetryDelay are indirected as vars so tests can inject a fake
+// detector and shrink the retry interval.
+var (
+	bestSubnet       = netscan.BestSubnet
+	subnetRetryDelay = 10 * time.Second
+)
+
+// resolveScanCIDR returns the explicit --cidr, or auto-detects the LAN subnet. In wait
+// mode it retries auto-detection until an address appears or ctx is cancelled (so a
+// service that boots before DHCP does not fail); otherwise it errors immediately.
+func (r *sensorRun) resolveScanCIDR(ctx context.Context, wait bool) (string, error) {
+	if c := strings.TrimSpace(r.cidrFlag); c != "" && c != "auto" {
+		return c, nil
+	}
+	for {
+		if d := bestSubnet(""); d != "" {
+			log.Printf("Auto-detected LAN subnet: %s", d)
+			return d, nil
+		}
+		if !wait {
+			return "", fmt.Errorf("could not auto-detect a LAN subnet (no address assigned?); pass --cidr")
+		}
+		log.Printf("No LAN address yet; retrying subnet auto-detection in %s", subnetRetryDelay)
+		select {
+		case <-time.After(subnetRetryDelay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+}
+
+// startCaptures creates and starts the DNS (ETW/pcap) and passive capturers plus their
+// push goroutines. Called after prepare() so the capturer knows the scan CIDR (used to
+// attribute this host's DNS to its LAN address). All failures are logged and non-fatal —
+// the sensor keeps running (e.g. capture may fail while scan/registration still work).
+func (r *sensorRun) startCaptures() {
+	if r.dnsEnabled {
+		r.dnsQueries = make(chan dnscap.Query, 100)
+		capturer, err := dnscap.NewCapturer(dnscap.Config{
+			Interface:    r.dnsIface,
+			CoreURL:      r.coreURL,
+			CIDR:         r.scanCIDR,
+			BatchSize:    100,
+			BatchTimeout: 10 * time.Second,
+			OnQuery: func(q dnscap.Query) {
+				select {
+				case r.dnsQueries <- q:
+				default:
+					r.droppedDNS.Add(1) // queue full — shedding load, reported in loop
+				}
+			},
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to initialize DNS capture: %v", err)
+		} else if err := capturer.Start(); err != nil {
+			if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "operation not permitted") {
+				log.Printf("WARNING: Failed to start DNS capture on %s (permission denied). %s", r.dnsIface, elevationHint(fmt.Sprintf("%s --core %s --dns-iface %s", os.Args[0], r.coreURL, r.dnsIface)))
+			} else {
+				log.Printf("WARNING: Failed to start DNS capture: %v", err)
+			}
+		} else {
+			r.capturer = capturer
+			log.Printf("Passive DNS capture active on interface %s", capturer.Interface())
+			r.wg.Add(1)
+			go func() {
+				defer r.wg.Done()
+				pushDNSQueries(r.core, r.dnsQueries)
+			}()
+		}
+	}
+
+	if r.passiveEnabled {
+		r.passiveHosts = make(chan netscan.DiscoveredHost, 200)
+		pc, err := passive.NewCapturer(passive.Config{
+			Interface:  r.passiveIface,
+			CoreURL:    r.coreURL,
+			CIDR:       r.scanCIDR,
+			EnableARP:  r.passiveARP,
+			EnableDHCP: r.passiveDHCP,
+			EnableMDNS: r.passiveMDNS,
+			EnableSSDP: r.passiveSSDP,
+			OnHost: func(host netscan.DiscoveredHost) {
+				select {
+				case r.passiveHosts <- host:
+				default:
+					r.droppedHosts.Add(1) // queue full — shedding load, reported in loop
+				}
+			},
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to initialize passive discovery: %v", err)
+		} else if err := pc.Start(); err != nil {
+			if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "operation not permitted") {
+				log.Printf("WARNING: Failed to start passive discovery on %s (permission denied). %s", r.passiveIface, elevationHint(fmt.Sprintf("%s --core %s --passive-iface %s", os.Args[0], r.coreURL, r.passiveIface)))
+			} else {
+				log.Printf("WARNING: Failed to start passive discovery: %v", err)
+			}
+		} else {
+			r.passiveCapturer = pc
+			log.Printf("Passive discovery active on interface %s (arp=%v dhcp=%v mdns=%v ssdp=%v)", pc.Interface(), r.passiveARP, r.passiveDHCP, r.passiveMDNS, r.passiveSSDP)
+			r.wg.Add(1)
+			go func() {
+				defer r.wg.Done()
+				pushPassiveHosts(r.core, r.scanCIDR, r.passiveHosts)
+			}()
+		}
+	}
+}
+
+// shutdown stops the capturers and drains their push goroutines within the bounded
+// window.
+func (r *sensorRun) shutdown() {
+	shutdownCaptures(r.capturer, r.passiveCapturer, r.dnsQueries, r.passiveHosts, &r.wg)
 }
 
 // register performs the initial registration with bounded, context-aware retries. A
@@ -372,7 +426,7 @@ func (r *sensorRun) loop(ctx context.Context) {
 			if d, h := r.droppedDNS.Load(), r.droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Dropped during run: %d DNS queries, %d passive hosts", d, h)
 			}
-			shutdownCaptures(r.capturer, r.passiveCapturer, r.dnsQueries, r.passiveHosts, r.wg)
+			r.shutdown()
 			return
 		}
 	}
