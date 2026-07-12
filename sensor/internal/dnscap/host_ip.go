@@ -4,11 +4,13 @@ import "net"
 
 // lanHostIP returns this host's IP for attributing host-scoped DNS to a device. It
 // PREFERS a local interface address inside cidr — the sensor's LAN/scan range, which
-// is the identity Core matches devices on — and only falls back to the default-route
-// source address when the host has no address in that range. This avoids stamping a
-// VPN/WAN address on LAN DNS. It is empty only when the host has no usable IPv4 at all
-// (a transient no-route state); Core drops DNS with an empty client IP, so the
-// capturer re-resolves this rather than caching one value forever.
+// is the identity Core matches devices on — so on a normal LAN host it stamps the LAN
+// address rather than a VPN/WAN one. When the host has NO address in that range (e.g. a
+// full-tunnel VPN, or a sensor run off its scan LAN) it falls back to the default-route
+// source, which may be a VPN/WAN address — a deliberate tradeoff, since a non-preferred
+// address still attributes the DNS, whereas an empty client IP is dropped by Core. It is
+// empty only when the host has no usable IPv4 at all (a transient no-route state); the
+// capturer re-resolves rather than caching one value forever.
 func lanHostIP(cidr string) string {
 	if ip := ipInCIDR(cidr); ip != "" {
 		return ip

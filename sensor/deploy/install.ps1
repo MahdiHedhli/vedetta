@@ -21,10 +21,19 @@ param(
     [string]$Tag = "",     # pin a specific release tag (e.g. v0.1.0-beta.2)
     [switch]$Reset,
     [switch]$NoService,
-    [string]$Binary = ""   # escape hatch: install a caller-supplied .exe instead of downloading
+    [string]$Binary = "",  # escape hatch: install a caller-supplied .exe instead of downloading
+    [string]$EnrollCodeFile = "" # internal: path the self-elevation hands the code through (never CLI)
 )
 
 $ErrorActionPreference = "Stop"
+
+# If the self-elevation handed the enrollment code through a file (so it never appears on
+# the elevated process command line, where audit tooling would capture it), read and
+# delete it now — the caller wrote it to a per-user TEMP path.
+if ($EnrollCodeFile -and (Test-Path $EnrollCodeFile)) {
+    $EnrollCode = (Get-Content -Raw $EnrollCodeFile).Trim()
+    Remove-Item $EnrollCodeFile -Force -ErrorAction SilentlyContinue
+}
 $Repo        = "MahdiHedhli/vedetta"
 $Asset       = "vedetta-sensor_windows_amd64.zip"
 $InstallDir  = Join-Path $env:ProgramFiles "Vedetta"
@@ -41,11 +50,19 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
     if (-not $PSCommandPath) { Die "run this from an elevated PowerShell (Run as Administrator)" }
     Info "elevation required - re-launching as Administrator..."
     $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "-Core", $Core, "-CIDR", $CIDR)
-    if ($EnrollCode) { $a += @("-EnrollCode", $EnrollCode) }
-    if ($Tag)        { $a += @("-Tag", $Tag) }
-    if ($Reset)      { $a += "-Reset" }
-    if ($NoService)  { $a += "-NoService" }
-    if ($Binary)     { $a += @("-Binary", $Binary) }
+    if ($EnrollCode) {
+        # Hand the code to the elevated instance via a per-user TEMP file, NOT on the
+        # command line: an elevated process's command line is readable by other admins
+        # and captured by process-creation auditing (Sysmon/4688/EDR). TEMP is per-user
+        # (not readable by other standard users); the elevated instance deletes it on read.
+        $cf = Join-Path $env:TEMP ("vedetta-ec-" + [guid]::NewGuid() + ".txt")
+        Set-Content -Path $cf -Value $EnrollCode -NoNewline -Encoding ascii
+        $a += @("-EnrollCodeFile", $cf)
+    }
+    if ($Tag)       { $a += @("-Tag", $Tag) }
+    if ($Reset)     { $a += "-Reset" }
+    if ($NoService) { $a += "-NoService" }
+    if ($Binary)    { $a += @("-Binary", $Binary) }
     Start-Process powershell -Verb RunAs -ArgumentList $a
     exit
 }
@@ -64,7 +81,11 @@ try {
             $rtag = $Tag
         } else {
             Info "resolving the newest release with the Windows asset..."
-            $rels = Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$Repo/releases"
+            try {
+                $rels = Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$Repo/releases"
+            } catch {
+                Die "could not query GitHub releases ($_). Pass -Tag <version> to install a specific release without the API (e.g. -Tag v0.1.0-beta.2)."
+            }
             $rel  = $rels | Where-Object { -not $_.draft -and ($_.assets.name -contains $Asset) } | Select-Object -First 1
             if (-not $rel) { Die "no published release contains $Asset (pass -Tag <version>, or -Binary <path>)" }
             $rtag = $rel.tag_name
