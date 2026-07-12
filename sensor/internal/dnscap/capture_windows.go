@@ -22,6 +22,7 @@ const etwSessionName = "VedettaDnsCapture"
 // sensor has when it runs as a LocalSystem service.
 type Capturer struct {
 	onQuery func(Query)
+	hostIP  string // this host's primary IP — the client for every host-scoped query
 
 	mu       sync.Mutex
 	running  bool
@@ -34,8 +35,15 @@ type Capturer struct {
 // NewCapturer creates a Windows ETW DNS capturer. Config.Interface/Filter/CIDR are
 // ignored — ETW is host-scoped, not bound to a NIC.
 func NewCapturer(cfg Config) (*Capturer, error) {
+	hostIP := primaryHostIP()
+	if hostIP == "" {
+		// Without a client IP Core drops every query (it attributes DNS to a device
+		// by client IP), so make the degenerate no-route case loud rather than silent.
+		log.Printf("dnscap: could not resolve this host's primary IP; DNS queries will lack a client IP")
+	}
 	return &Capturer{
 		onQuery: cfg.OnQuery,
+		hostIP:  hostIP,
 		doneCh:  make(chan struct{}),
 	}, nil
 }
@@ -128,6 +136,7 @@ func (c *Capturer) eventToQuery(e *etw.Event) *Query {
 		Timestamp: time.Now(),
 		Domain:    name,
 		QueryType: dnsTypeName(eventStr(e, "QueryType")),
+		ClientIP:  c.hostIP, // host-scoped: this host is the client for every query
 		Source:    "etw_dns_client",
 	}
 	if id == 3008 {
