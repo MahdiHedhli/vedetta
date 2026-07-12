@@ -686,7 +686,7 @@
             <h3>Local monitoring that already stands on its own</h3>
             <ul>
               <li>Docker-based Core with API, UI, and local storage</li>
-              <li>Native sensor for macOS and Linux workflows</li>
+              <li>Native sensor for macOS, Linux, and Windows workflows</li>
               <li>Passive DNS capture plus active and passive device discovery</li>
               <li>Log ingestion pipeline plus local DNS scoring and enrichment</li>
               <li>Device risk categories (known-exploited, end-of-life, high-risk IoT) and EOL Router &amp; Camera Detection (FBI IC3 advisory models)</li>
@@ -787,7 +787,7 @@ docker compose up -d</code></pre>
           <article class="code-card">
             <div class="eyebrow">2. Sensor</div>
             <h3>Install the native sensor</h3>
-            <p>The current public installer supports macOS and Linux. Review the script before running it, and pass the enrollment code from the wizard as <code>--enroll-code</code>.</p>
+            <p>The public installer supports macOS and Linux (<code>install.sh</code>) and Windows (<code>install.ps1</code>, run as Administrator &mdash; driver-free, no Npcap or nmap). Review the script before running it, and pass the enrollment code from the wizard: <code>--enroll-code</code> on macOS/Linux, <code>-EnrollCode</code> on Windows.</p>
             <pre><code>curl -fsSL -o /tmp/vedetta-sensor-install.sh \
   https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
 

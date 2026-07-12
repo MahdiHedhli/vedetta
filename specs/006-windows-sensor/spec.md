@@ -1,11 +1,14 @@
 # Spec: Windows Sensor
 
 > Feature directory: `specs/006-windows-sensor/`
-> Status: Draft
+> Status: **Shipped (v0.1.0-beta.2)** — v1 complete on `main`
 > Backlog: VED-018
 > Created: 2026-07-11
 
 ## Overview
+
+> Problem statement below reflects the pre-006 state; the Windows sensor described here
+> shipped in v0.1.0-beta.2 (driver-free: ETW DNS + native ICMP/ARP; see the tasks list).
 
 Vedetta's sensor is a Go binary that today builds and runs natively only on Linux
 and macOS. This feature adds a first-class **Windows** sensor so a Windows 11 /

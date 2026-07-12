@@ -2336,14 +2336,20 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
   const installerCmd = enrollCode
     ? `curl -fsSL https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh | sudo bash -s -- --core ${coreUrl} --enroll-code ${enrollCode}`
     : '';
-  const copyInstaller = () => {
-    if (!installerCmd) return;
+  // Windows: driver-free sensor (DNS via ETW, native ICMP/ARP — no Npcap/nmap). Run in
+  // an elevated PowerShell. Uses -EnrollCode (PowerShell flag), not --enroll-code.
+  const winInstallerCmd = enrollCode
+    ? `irm https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.ps1 -OutFile install.ps1; .\\install.ps1 -Core ${coreUrl} -EnrollCode ${enrollCode}`
+    : '';
+  const copyText = (text) => {
+    if (!text) return;
     try {
-      navigator.clipboard.writeText(installerCmd);
+      navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {}
   };
+  const copyInstaller = () => copyText(installerCmd);
   let enrollExpiresLabel = '';
   if (enrollExpires) {
     const d = new Date(enrollExpires);
@@ -2441,7 +2447,18 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
                   {enrollExpiresLabel && <span className="text-[10px] text-gray-500 flex-shrink-0">expires {enrollExpiresLabel}</span>}
                 </div>
                 <div className="bg-gray-950 rounded-lg p-3 border border-gray-700">
+                  <p className="text-[10px] text-gray-400 mb-1 font-medium">macOS / Linux (install.sh):</p>
                   <code className="text-xs text-teal-400 font-mono block whitespace-pre-wrap break-words">{installerCmd}</code>
+                </div>
+                <div className="bg-gray-950 rounded-lg p-3 border border-gray-700">
+                  <p className="text-[10px] text-gray-400 mb-1 font-medium">Windows — elevated PowerShell (driver-free: no Npcap/nmap):</p>
+                  <code className="text-xs text-teal-400 font-mono block whitespace-pre-wrap break-words">{winInstallerCmd}</code>
+                  <button
+                    onClick={() => copyText(winInstallerCmd)}
+                    className="mt-2 text-xs px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+                  >
+                    {copied ? 'Copied ✓' : 'Copy Windows command'}
+                  </button>
                 </div>
                 {coreUrlIsPlaceholder && (
                   <p className="text-[10px] text-amber-400/80">
