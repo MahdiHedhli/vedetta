@@ -495,7 +495,7 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 				}
 			}
 			if r.name == "alias" {
-				query += ` AND last_seen >= ?`
+				query += ` AND (valid_until IS NOT NULL OR last_seen >= ?)`
 				args = append(args, at.Add(-mdnsNameRecencyWindow))
 			}
 			query += ` AND confidence >= ?`
@@ -582,7 +582,7 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 				query += ` AND (sensor_id = ? OR sensor_id = '')`
 				args = append(args, strings.TrimSpace(req.SensorID))
 			}
-			query += ` AND last_seen >= ? AND confidence >= ?`
+			query += ` AND (valid_until IS NOT NULL OR last_seen >= ?) AND confidence >= ?`
 			args = append(args, at.Add(-mdnsNameRecencyWindow), r.minimumEvidence)
 			rows, err := tx.QueryContext(ctx, query, args...)
 			if err != nil {
@@ -652,7 +652,7 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 			query := `SELECT device_id, confidence FROM device_address_history
 				WHERE address_type = 'ip' AND address_value = ?
 				  AND valid_from <= ? AND (valid_until IS NULL OR ? < valid_until)
-				  AND last_seen >= ?`
+				  AND (valid_until IS NOT NULL OR last_seen >= ?)`
 			args := []any{ip, at, at, at.Add(-temporalAddressResolutionWindow)}
 			if scope.segment {
 				query += ` AND segment = ?`

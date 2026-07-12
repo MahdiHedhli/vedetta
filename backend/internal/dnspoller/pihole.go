@@ -549,7 +549,16 @@ func assignPiHoleOccurrences(queries []PiHoleQuery) {
 }
 
 func formatPiHoleTime(value time.Time) string {
-	return fmt.Sprintf("%.6f", float64(value.UnixNano())/float64(time.Second))
+	seconds := value.Unix()
+	microseconds := int64(value.Nanosecond()) / int64(time.Microsecond)
+	if seconds >= 0 || microseconds == 0 {
+		return fmt.Sprintf("%d.%06d", seconds, microseconds)
+	}
+
+	// Unix returns the floor for pre-epoch instants while Nanosecond returns a
+	// positive offset within that second. Format the mathematical timestamp,
+	// rather than producing (for example) -1.500000 for Unix -0.5 seconds.
+	return fmt.Sprintf("-%d.%06d", -(seconds + 1), int64(time.Second/time.Microsecond)-microseconds)
 }
 
 func isExplicitPiHoleV5URL(rawURL string) bool {

@@ -180,6 +180,55 @@ func TestResolveDeviceAtDoesNotUseStaleOpenAddressBinding(t *testing.T) {
 	}
 }
 
+func TestResolveDeviceAtUsesStaleClosedAddressIntervalWithinItsWindow(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	ip := "192.0.2.24"
+	ownerA := observeAsset(t, db, base, "sensor-a", "lan", ip, "00:00:5E:00:53:24", "camera-a")
+	reusedAt := base.Add(72 * time.Hour)
+	ownerB := observeAsset(t, db, reusedAt, "sensor-a", "lan", ip, "00:00:5E:00:53:25", "camera-b")
+	if ownerA == ownerB {
+		t.Fatal("reused IP with a conflicting MAC collapsed two assets")
+	}
+
+	// By the time B is observed, A's interval is closed. An event from 48 hours
+	// into A's interval is deliberately more than the 24-hour open-binding
+	// staleness window after A's last observation, but the closed interval is
+	// still authoritative for that historical timestamp.
+	got, err := db.ResolveDeviceAt(context.Background(), DeviceIdentityResolutionRequest{
+		Timestamp: base.Add(48 * time.Hour), IPAddress: ip, Segment: "lan", SensorID: "sensor-a",
+	})
+	if err != nil || got.DeviceID != ownerA || got.Reason != "temporal_address_binding" {
+		t.Fatalf("stale closed interval resolution = %+v err=%v, want owner A %s", got, err, ownerA)
+	}
+}
+
+func TestResolveDeviceAtDelayedEventUsesClosedIntervalAcrossUnknownScope(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	ip := "198.51.100.24"
+	ownerA := observeAsset(t, db, base, "sensor-a", "iot", ip, "00:00:5E:00:53:26", "camera-a")
+	reusedAt := base.Add(72 * time.Hour)
+	ownerB := observeAsset(t, db, reusedAt, "sensor-a", "iot", ip, "00:00:5E:00:53:27", "camera-b")
+	if ownerA == ownerB {
+		t.Fatal("reused IP with a conflicting MAC collapsed two assets")
+	}
+
+	// Sources without segment/sensor context take the global uniqueness path.
+	// A delayed event from A's historical window must resolve to A even though B
+	// owns the address now; it must not resolve to B or become unresolved merely
+	// because A's last_seen is older than the open-binding freshness window.
+	got, err := db.ResolveDeviceAt(context.Background(), DeviceIdentityResolutionRequest{
+		Timestamp: base.Add(48 * time.Hour), IPAddress: ip, Segment: "default",
+	})
+	if err != nil || got.DeviceID != ownerA || got.Reason != "unique_unscoped_address_binding" {
+		t.Fatalf("delayed unscoped resolution = %+v err=%v, want owner A %s", got, err, ownerA)
+	}
+	if got.Confidence > 0.60 {
+		t.Fatalf("unscoped historical resolution confidence = %.2f, want <= 0.60", got.Confidence)
+	}
+}
+
 func TestResolveDeviceAtConflictingStrongEvidenceIsUnresolved(t *testing.T) {
 	db := newCorrelationDB(t)
 	base := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
@@ -306,6 +355,53 @@ func TestAliasAndFingerprintEvidenceIsSegmentScopedAndCorroborated(t *testing.T)
 	})
 	if err != nil || got.DeviceID != "" {
 		t.Fatalf("uncorroborated fingerprint resolved: %+v err=%v", got, err)
+	}
+}
+
+func TestResolveDeviceAtUsesStaleClosedAliasEvidenceWithinItsWindow(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	deviceID := observeAsset(t, db, base, "sensor-a", "lan", "192.0.2.41", "02:00:5E:00:53:41", "quiet-camera",
+		evidence("dhcp_option_55", "1,3,6,15,119", 0.55))
+	closedAt := base.Add(30 * 24 * time.Hour)
+	if _, err := db.Exec(`UPDATE device_identity_evidence SET valid_until = ?
+		WHERE device_id = ? AND evidence_type IN ('hostname', 'dhcp_option_55')`, closedAt, deviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Alias evidence normally ages out after seven days while it is open. Once
+	// bounded, its interval is historical fact and remains usable at timestamps
+	// inside that interval even when last_seen is older than the recency window.
+	got, err := db.ResolveDeviceAt(context.Background(), DeviceIdentityResolutionRequest{
+		Timestamp: base.Add(14 * 24 * time.Hour), Segment: "lan", SensorID: "sensor-a",
+		Evidence: []DeviceIdentityEvidenceInput{
+			{Type: "hostname", Value: "quiet-camera"},
+			{Type: "dhcp_option_55", Value: "1,3,6,15,119"},
+		},
+	})
+	if err != nil || got.DeviceID != deviceID || got.Reason != "corroborated_identity_evidence" {
+		t.Fatalf("stale closed alias resolution = %+v err=%v, want %s", got, err, deviceID)
+	}
+}
+
+func TestResolveDeviceAtDoesNotUseStaleOpenAliasEvidence(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	observeAsset(t, db, base, "sensor-a", "lan", "192.0.2.42", "02:00:5E:00:53:42", "quiet-open-camera",
+		evidence("dhcp_option_55", "1,3,6,15,119", 0.55))
+
+	// The closed-interval exception must not turn an indefinitely open, stale
+	// alias into historical fact. Without a later observation bounding it, the
+	// normal seven-day recency limit still applies.
+	got, err := db.ResolveDeviceAt(context.Background(), DeviceIdentityResolutionRequest{
+		Timestamp: base.Add(14 * 24 * time.Hour), Segment: "lan", SensorID: "sensor-a",
+		Evidence: []DeviceIdentityEvidenceInput{
+			{Type: "hostname", Value: "quiet-open-camera"},
+			{Type: "dhcp_option_55", Value: "1,3,6,15,119"},
+		},
+	})
+	if err != nil || got.DeviceID != "" {
+		t.Fatalf("stale open alias resolved: %+v err=%v", got, err)
 	}
 }
 

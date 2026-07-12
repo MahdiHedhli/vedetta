@@ -228,11 +228,10 @@ func (m *Manager) doPoll(name string, conn Connector) {
 
 // List returns the health status of all registered connectors.
 func (m *Manager) List() []ConnectorHealth {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var out []ConnectorHealth
-	for name, conn := range m.connectors {
-		out = append(out, m.connectorHealthLocked(name, conn))
+	snapshots := m.connectorHealthSnapshots()
+	out := make([]ConnectorHealth, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, connectorHealth(snapshot.conn, snapshot.sinkError))
 	}
 	return out
 }
@@ -247,14 +246,13 @@ type NamedHealth struct {
 
 // ListNamed returns the health of all registered connectors with their names.
 func (m *Manager) ListNamed() []NamedHealth {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := make([]NamedHealth, 0, len(m.connectors))
-	for name, conn := range m.connectors {
+	snapshots := m.connectorHealthSnapshots()
+	out := make([]NamedHealth, 0, len(snapshots))
+	for _, snapshot := range snapshots {
 		out = append(out, NamedHealth{
-			Name:   name,
-			Type:   m.configs[name].Type,
-			Health: m.connectorHealthLocked(name, conn),
+			Name:   snapshot.name,
+			Type:   snapshot.connectorType,
+			Health: connectorHealth(snapshot.conn, snapshot.sinkError),
 		})
 	}
 	return out
@@ -263,21 +261,47 @@ func (m *Manager) ListNamed() []NamedHealth {
 // Health returns the health status of a specific connector by name.
 func (m *Manager) Health(name string) (ConnectorHealth, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	conn, ok := m.connectors[name]
+	sinkError := m.sinkErrors[name]
+	m.mu.RUnlock()
 	if !ok {
 		return ConnectorHealth{}, fmt.Errorf("connector %q not found", name)
 	}
-	return m.connectorHealthLocked(name, conn), nil
+	return connectorHealth(conn, sinkError), nil
 }
 
-// connectorHealthLocked overlays Core-side persistence failures on transport
-// health reported by the connector. A successful controller HTTP poll is not a
+type connectorHealthSnapshot struct {
+	name          string
+	connectorType string
+	conn          Connector
+	sinkError     string
+}
+
+// connectorHealthSnapshots copies every manager-owned value needed to report
+// health while holding m.mu. Connector methods are deliberately called after
+// releasing m.mu so external implementations cannot create a lock inversion.
+func (m *Manager) connectorHealthSnapshots() []connectorHealthSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	snapshots := make([]connectorHealthSnapshot, 0, len(m.connectors))
+	for name, conn := range m.connectors {
+		snapshots = append(snapshots, connectorHealthSnapshot{
+			name:          name,
+			connectorType: m.configs[name].Type,
+			conn:          conn,
+			sinkError:     m.sinkErrors[name],
+		})
+	}
+	return snapshots
+}
+
+// connectorHealth overlays Core-side persistence failures on transport health
+// reported by the connector. A successful controller HTTP poll is not a
 // successful collection cycle until the unified processor commits its events.
-// Caller must hold m.mu for reading.
-func (m *Manager) connectorHealthLocked(name string, conn Connector) ConnectorHealth {
+func connectorHealth(conn Connector, sinkError string) ConnectorHealth {
 	health := conn.Health()
-	if sinkError := m.sinkErrors[name]; sinkError != "" {
+	if sinkError != "" {
 		health.LastError = sinkError
 	}
 	return health

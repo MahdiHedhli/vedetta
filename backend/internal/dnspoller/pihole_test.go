@@ -536,6 +536,60 @@ func TestPiHoleBlockedStatuses(t *testing.T) {
 	}
 }
 
+func TestFormatPiHoleTimePreservesIntegerMicrosecondPrecision(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		value time.Time
+		want  string
+	}{
+		{
+			name:  "epoch",
+			value: time.Unix(0, 0),
+			want:  "0.000000",
+		},
+		{
+			name:  "current timestamp truncates sub-microsecond remainder",
+			value: time.Unix(1752336000, 123456789),
+			want:  "1752336000.123456",
+		},
+		{
+			name:  "does not round across second boundary",
+			value: time.Unix(1752336000, 999999999),
+			want:  "1752336000.999999",
+		},
+		{
+			name:  "does not depend on UnixNano range",
+			value: time.Unix(253402300799, 999999999),
+			want:  "253402300799.999999",
+		},
+		{
+			name:  "negative half second",
+			value: time.Unix(-1, 500000000),
+			want:  "-0.500000",
+		},
+		{
+			name:  "negative sub-microsecond floors to one microsecond",
+			value: time.Unix(-1, 999999999),
+			want:  "-0.000001",
+		},
+		{
+			name:  "negative whole second",
+			value: time.Unix(-2, 0),
+			want:  "-2.000000",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := formatPiHoleTime(test.value); got != test.want {
+				t.Fatalf("formatPiHoleTime(%s) = %q, want %q", test.value, got, test.want)
+			}
+		})
+	}
+}
+
 func TestPiHoleCredentialDoesNotFollowRedirect(t *testing.T) {
 	t.Parallel()
 	var redirectedRequests atomic.Int32

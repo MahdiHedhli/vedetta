@@ -77,6 +77,9 @@ after DHCP changes the device's address.
   reopened with status history; after seven quiet days a linked generation is created.
 - Statuses are Open, Investigating, and Resolved. Investigating/resolution are admin
   actions; resolution requires a reason and never mutates supporting events.
+- Legacy event acknowledgement remains a per-event review marker only. It does not
+  change finding lifecycle or disposition, and finding actions do not acknowledge raw
+  evidence. The three operator concepts are intentionally independent.
 - Suppression is separate from resolution. Strong evidence remains stored and visible
   even when disposition is suppressed.
 - Finding suppression is an exact typed policy: detector + observable + canonical

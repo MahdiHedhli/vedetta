@@ -60,6 +60,21 @@ Rule activation and deactivation are recorded in `finding_suppression_history` w
 actor, reason, finding when applicable, and timestamp. Suppression controls noise;
 resolution continues to describe incident lifecycle independently.
 
+### Event acknowledgement is intentionally separate
+
+The legacy `PUT /events/{event_id}/ack` marker means only that an operator reviewed
+that one immutable raw event. It does not resolve, investigate, suppress, or otherwise
+change a linked finding, and it does not affect future matching events. Conversely,
+finding lifecycle and finding-suppression actions do not acknowledge or rewrite their
+supporting events. Operators should use:
+
+- event acknowledgement for per-event review bookkeeping;
+- finding status for the current incident lifecycle; and
+- finding suppression for an audited policy that quiets future matching findings.
+
+This separation is deliberate for backward compatibility and evidence auditability;
+clients must not infer one state from another.
+
 ## Identity actions
 
 - `POST /devices/{device_id}/confirm` records an operator-confirmed evidence binding

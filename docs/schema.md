@@ -29,6 +29,8 @@ Every field must earn its place. The schema is lean and meaningful — no bloat,
 | `dns_source` | `string` | No | DNS capture method that generated this event: `passive_capture`, `pihole`, `adguard`, `embedded_resolver`, `iptables_intercept` |
 | `server_ip` | `string` | No | DNS server / resolver IP (from sensor response packets for actionability; source/destination identification) |
 | `metadata` | `object` (JSON) | No | Namespaced source and Core enrichment data, including all DNS answers/CNAMEs when available. |
+| `acknowledged` | `boolean` | Yes | Per-event operator review marker. It does not change a linked finding or future matching activity. |
+| `ack_reason` | `string` | No | Optional operator note attached to that raw-event acknowledgement. |
 | `device_id` | `string` | No | Historical stable device identity resolved at the event timestamp; null/empty means unresolved. Soft merges never rewrite it. |
 | `canonical_device_id` | `string` | No | Read-time canonical asset after audited soft-merge redirects. Equal to `device_id` when unmerged and changes back on merge undo. |
 | `identity_confidence` | `float` | Yes | Deterministic resolution confidence from 0.0 to 1.0. |
@@ -38,6 +40,11 @@ Every field must earn its place. The schema is lean and meaningful — no bloat,
 | `sensor_id` | `string` | No | Authenticated sensor context where applicable. |
 | `disposition` | `enum` | Yes | `active` or `suppressed`; suppression never deletes the event or its detection evidence. |
 | `suppression_rule_id` | `string` | No | Matching event-wide suppression rule, when one applies. |
+
+Event acknowledgement, finding lifecycle, and finding suppression are separate state:
+acknowledgement records review of one raw event; finding status records the incident's
+Open/Investigating/Resolved lifecycle; finding suppression is an audited policy for
+future matching findings. None implicitly mutates either of the other two.
 
 ### Example
 

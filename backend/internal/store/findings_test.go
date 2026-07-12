@@ -584,6 +584,54 @@ func TestResolveRequiresReasonAndDoesNotMutateEvent(t *testing.T) {
 	}
 }
 
+func TestEventAcknowledgementAndFindingSuppressionRemainIndependent(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	result, err := db.PersistProcessedEvent(ctx, processedFixture(
+		"independent-event", "independent-state-key", time.Now().UTC(), 0.7, false,
+	))
+	if err != nil || len(result.FindingIDs) != 1 {
+		t.Fatalf("persist event and finding = %+v err=%v", result, err)
+	}
+	findingID := result.FindingIDs[0]
+
+	if err := db.AcknowledgeEvent("independent-event", "reviewed raw evidence"); err != nil {
+		t.Fatal(err)
+	}
+	finding, err := db.GetFinding(ctx, findingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding.Status != models.FindingStatusOpen || finding.Disposition != models.DispositionActive {
+		t.Fatalf("event acknowledgement changed finding state: %+v", finding)
+	}
+
+	rule, err := db.SuppressFinding(ctx, findingID, "expected maintenance traffic", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acknowledged bool
+	var ackReason string
+	if err := db.QueryRow(`SELECT acknowledged, COALESCE(ack_reason, '') FROM events WHERE event_id = ?`,
+		"independent-event").Scan(&acknowledged, &ackReason); err != nil {
+		t.Fatal(err)
+	}
+	if !acknowledged || ackReason != "reviewed raw evidence" {
+		t.Fatalf("finding suppression changed event acknowledgement: acknowledged=%v reason=%q", acknowledged, ackReason)
+	}
+
+	if err := db.UnacknowledgeEvent("independent-event"); err != nil {
+		t.Fatal(err)
+	}
+	finding, err = db.GetFinding(ctx, findingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding.Disposition != models.DispositionSuppressed || finding.SuppressionRuleID != rule.RuleID {
+		t.Fatalf("unacknowledging raw event changed finding suppression: %+v rule=%+v", finding, rule)
+	}
+}
+
 func TestFindingReadsFollowReversibleDeviceRedirect(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()

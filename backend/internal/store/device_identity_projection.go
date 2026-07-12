@@ -47,18 +47,18 @@ func (db *DB) attachIdentitySummary(device *models.Device) error {
 	if err != nil {
 		return fmt.Errorf("query current identity summary: %w", err)
 	}
+	defer rows.Close()
 	var evidence []currentIdentityEvidence
 	for rows.Next() {
 		var item currentIdentityEvidence
 		if err := rows.Scan(&item.Type, &item.ValueHMAC, &item.Segment, &item.SensorID,
 			&item.Source, &item.Confidence, &item.LastSeen, &item.OperatorConfirmed); err != nil {
-			rows.Close()
 			return fmt.Errorf("scan current identity summary: %w", err)
 		}
 		evidence = append(evidence, item)
 	}
-	if err := rows.Close(); err != nil {
-		return err
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate current identity summary: %w", err)
 	}
 	if len(evidence) == 0 {
 		device.IdentityStatus = "unresolved"
@@ -175,17 +175,17 @@ func (db *DB) identityEvidenceHasOtherCanonicalOwner(item currentIdentityEvidenc
 	if err != nil {
 		return false, fmt.Errorf("query identity evidence owners: %w", err)
 	}
+	defer rows.Close()
 	var deviceIDs []string
 	for rows.Next() {
 		var deviceID string
 		if err := rows.Scan(&deviceID); err != nil {
-			rows.Close()
-			return false, err
+			return false, fmt.Errorf("scan identity evidence owner: %w", err)
 		}
 		deviceIDs = append(deviceIDs, deviceID)
 	}
-	if err := rows.Close(); err != nil {
-		return false, err
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate identity evidence owners: %w", err)
 	}
 	for _, deviceID := range deviceIDs {
 		owner, err := db.CanonicalDeviceID(context.Background(), deviceID)
@@ -215,19 +215,19 @@ func (db *DB) ListActiveDeviceMerges(ctx context.Context) ([]models.ActiveDevice
 	if err != nil {
 		return nil, fmt.Errorf("list active device merges: %w", err)
 	}
+	defer rows.Close()
 	var actions []models.ActiveDeviceMerge
 	for rows.Next() {
 		var action models.ActiveDeviceMerge
 		if err := rows.Scan(&action.ActionID, &action.ActionType, &action.SourceDeviceID,
 			&action.TargetDeviceID, &action.SourceDisplayName, &action.Actor,
 			&action.Reason, &action.CreatedAt); err != nil {
-			rows.Close()
 			return nil, fmt.Errorf("scan active device merge: %w", err)
 		}
 		actions = append(actions, action)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active device merges: %w", err)
 	}
 
 	for i := range actions {
