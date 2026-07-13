@@ -361,11 +361,9 @@ func writeCorpusQueryError(w http.ResponseWriter) {
 }
 
 func decodeAdminJSON(r *http.Request, dst any) error {
-	if contentType := r.Header.Get("Content-Type"); contentType != "" {
-		mediaType, _, err := mime.ParseMediaType(contentType)
-		if err != nil || !strings.EqualFold(mediaType, "application/json") {
-			return fmt.Errorf("Content-Type must be application/json")
-		}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return fmt.Errorf("Content-Type must be application/json")
 	}
 	data, err := io.ReadAll(io.LimitReader(r.Body, maxAdminBodyBytes+1))
 	if err != nil {
@@ -462,6 +460,7 @@ func writeCorpusStrictError(w http.ResponseWriter, _ error) {
 }
 
 func writeCorpusAdminError(w http.ResponseWriter, err error) {
+	var privacyErr *corpus.CorpusPrivacyError
 	switch {
 	case errors.Is(err, store.ErrCorpusNotFound):
 		writeErr(w, http.StatusNotFound, "NOT_FOUND", "device corpus entity not found")
@@ -470,38 +469,16 @@ func writeCorpusAdminError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrCorpusConflict):
 		writeErr(w, http.StatusConflict, "EDIT_CONFLICT", "profile changed; reload and retry")
 	case errors.Is(err, store.ErrCorpusRevisionConflict):
-		writeErr(w, http.StatusConflict, "CORPUS_ADVANCED", "public corpus changed; generate a fresh preview")
+		writeErr(w, http.StatusConflict, "CORPUS_ADVANCED", "public corpus changed; reload and review before retrying")
 	case errors.Is(err, store.ErrCorpusNoChanges):
 		writeErr(w, http.StatusConflict, "NO_DRAFT_CHANGES", "no draft changes to publish")
 	case errors.Is(err, store.ErrCorpusHasDependents):
 		writeErr(w, http.StatusConflict, "ACTIVE_DESCENDANTS", "withdraw dependent variants first")
-	case isCorpusPrivacyError(err):
+	case errors.As(err, &privacyErr):
 		writeErr(w, http.StatusUnprocessableEntity, "FORBIDDEN_CONTENT", "content violates the device corpus privacy allowlist")
+	case errors.Is(err, store.ErrCorpusValidation):
+		writeErr(w, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "device corpus content failed validation")
 	default:
-		if isCorpusValidationError(err) {
-			writeErr(w, http.StatusUnprocessableEntity, "VALIDATION_FAILED", "device corpus content failed validation")
-			return
-		}
 		writeErr(w, http.StatusInternalServerError, "INTERNAL", "device corpus operation failed")
 	}
-}
-
-func isCorpusPrivacyError(err error) bool {
-	msg := strings.ToLower(err.Error())
-	for _, marker := range []string{"prohibited", "privacy", "ip address", "cidr", "public dns name", "url syntax"} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func isCorpusValidationError(err error) bool {
-	msg := strings.ToLower(err.Error())
-	for _, marker := range []string{"must ", "unsupported ", "requires ", "exceeds ", "contains ", "belongs to another"} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
 }

@@ -97,6 +97,10 @@ func getCorpusProfile(q corpusQuerier, profileID string) (*corpus.Profile, error
 		}
 		result.History = append(result.History, rev)
 	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
 	if err = rows.Close(); err != nil {
 		return nil, err
 	}
@@ -118,6 +122,10 @@ func getCorpusProfile(q corpusQuerier, profileID string) (*corpus.Profile, error
 			return nil, err
 		}
 		result.Variants = append(result.Variants, v)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
 	}
 	if err = rows.Close(); err != nil {
 		return nil, err
@@ -172,6 +180,10 @@ func loadCorpusVariantRevisions(q corpusQuerier, variant *corpus.Variant) error 
 		}
 		variant.History = append(variant.History, rev)
 	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
 	if err = rows.Close(); err != nil {
 		return err
 	}
@@ -208,6 +220,10 @@ func loadCorpusEvidence(q corpusQuerier, revisionID string, rev *corpus.VariantR
 		}
 		rev.Sources = append(rev.Sources, source)
 	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
 	if err = rows.Close(); err != nil {
 		return err
 	}
@@ -225,6 +241,10 @@ func loadCorpusEvidence(q corpusQuerier, revisionID string, rev *corpus.VariantR
 			return err
 		}
 		rev.VersionFacts = append(rev.VersionFacts, fact)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	return rows.Close()
 }
@@ -245,6 +265,10 @@ func corpusProfileETag(q corpusQuerier, profileID string) (string, error) {
 			return "", err
 		}
 		parts = append(parts, "p:"+id+":"+status)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return "", err
 	}
 	if err = rows.Close(); err != nil {
 		return "", err
@@ -267,6 +291,10 @@ func corpusProfileETag(q corpusQuerier, profileID string) (string, error) {
 			return "", err
 		}
 		parts = append(parts, "v:"+variantID+":"+key+":"+predecessor+":"+revisionID+":"+status)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return "", err
 	}
 	if err = rows.Close(); err != nil {
 		return "", err
@@ -352,6 +380,10 @@ func (db *DB) PageCorpusProfiles(search string, limit, offset int) (CorpusProfil
 		}
 		ids = append(ids, id)
 	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return page, err
+	}
 	if err = rows.Close(); err != nil {
 		return page, err
 	}
@@ -422,7 +454,6 @@ func (db *DB) PageCorpusAudit(limit, offset int) (CorpusAuditPage, error) {
 	if err != nil {
 		return page, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var entry corpus.AuditEntry
 		var revision sql.NullInt64
@@ -430,6 +461,7 @@ func (db *DB) PageCorpusAudit(limit, offset int) (CorpusAuditPage, error) {
 		if err = rows.Scan(&entry.AuditID, &entry.Actor, &entry.EntityType, &entry.EntityID,
 			&entry.Action, &entry.ReasonCode, &entry.BeforeHash, &entry.AfterHash,
 			&entry.RequestID, &revision, &created); err != nil {
+			rows.Close()
 			return page, err
 		}
 		if revision.Valid {
@@ -437,11 +469,19 @@ func (db *DB) PageCorpusAudit(limit, offset int) (CorpusAuditPage, error) {
 			entry.CorpusRevision = &r
 		}
 		if entry.CreatedAt, err = parseCorpusTime(created); err != nil {
+			rows.Close()
 			return page, err
 		}
 		page.Items = append(page.Items, entry)
 	}
-	return page, rows.Err()
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return page, err
+	}
+	if err = rows.Close(); err != nil {
+		return page, err
+	}
+	return page, nil
 }
 
 func (db *DB) ListCorpusAudit(limit int) ([]corpus.AuditEntry, error) {
@@ -471,21 +511,29 @@ func (db *DB) PageCorpusReleases(limit, offset int) (CorpusReleasePage, error) {
 	if err != nil {
 		return page, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var release CorpusReleaseSummary
 		var created string
 		if err = rows.Scan(&release.CorpusRevision, &release.SchemaVersion,
 			&release.SnapshotSHA256, &release.ProfileCount, &release.VariantCount,
 			&created); err != nil {
+			rows.Close()
 			return page, err
 		}
 		if release.CreatedAt, err = parseCorpusTime(created); err != nil {
+			rows.Close()
 			return page, err
 		}
 		page.Items = append(page.Items, release)
 	}
-	return page, rows.Err()
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return page, err
+	}
+	if err = rows.Close(); err != nil {
+		return page, err
+	}
+	return page, nil
 }
 
 func (db *DB) ListCorpusReleases(limit int) ([]CorpusReleaseSummary, error) {
@@ -501,9 +549,8 @@ func (db *DB) GetCorpusRelease(revision int) ([]byte, CorpusReleaseSummary, erro
 	var raw sql.NullString
 	var storedBytes int64
 	var created string
-	err := db.QueryRow(`SELECT corpus_revision, schema_version, snapshot_sha256,
-		length(snapshot_json),
-		CASE WHEN length(snapshot_json) <= ? THEN snapshot_json ELSE NULL END,
+	err := db.QueryRow(`SELECT corpus_revision, schema_version, snapshot_sha256, `+
+		boundedCorpusSnapshotColumns+`,
 		profile_count, variant_count, created_at
 		FROM device_corpus_releases WHERE corpus_revision = ?`, maxCorpusSnapshotBytes, revision).Scan(
 		&summary.CorpusRevision, &summary.SchemaVersion, &summary.SnapshotSHA256,

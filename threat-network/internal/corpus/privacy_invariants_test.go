@@ -10,17 +10,17 @@ func TestValidatePublicSnapshotRejectsCrossProfilePredecessor(t *testing.T) {
 
 	snapshot := validPublicSnapshot(t)
 	second := snapshot.Profiles[0]
-	second.ProfileID = "profile_002"
+	second.ProfileID = testProfileID2
 	second.Labels.Model = "Camera Three"
 	second.Variants = append([]PublicVariant(nil), second.Variants...)
-	second.Variants[0].VariantID = "variant_002"
+	second.Variants[0].VariantID = testVariantID2
 	second.Variants[0].VariantKey = "firmware-3"
-	second.Variants[0].PredecessorVariantID = "variant_001"
+	second.Variants[0].PredecessorVariantID = testVariantID
 	second.Variants[0].Sources = append([]Source(nil), second.Variants[0].Sources...)
-	second.Variants[0].Sources[0].SourceID = "source_002"
+	second.Variants[0].Sources[0].SourceID = testSourceID2
 	second.Variants[0].VersionFacts = append([]VersionFact(nil), second.Variants[0].VersionFacts...)
-	second.Variants[0].VersionFacts[0].FactID = "fact_002"
-	second.Variants[0].VersionFacts[0].SourceID = "source_002"
+	second.Variants[0].VersionFacts[0].FactID = testFactID2
+	second.Variants[0].VersionFacts[0].SourceID = testSourceID2
 	snapshot.Profiles = append(snapshot.Profiles, second)
 
 	err := ValidatePublicSnapshot(snapshot)

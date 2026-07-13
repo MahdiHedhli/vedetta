@@ -379,16 +379,19 @@ class Handler(BaseHTTPRequestHandler):
                 data = _read_limited(response, MAX_RESPONSE_BYTES)
                 self._send_upstream(response.status, response.headers, data)
         except urllib.error.HTTPError as error:
-            if 300 <= error.code < 400:
-                error.close()
-                self._json_error(502, "UPSTREAM_REDIRECT", "upstream redirects are forbidden")
-                return
-            try:
-                data = _read_limited(error, MAX_RESPONSE_BYTES)
-            except ValueError:
-                self._json_error(502, "UPSTREAM_TOO_LARGE", "upstream response exceeded limit")
-                return
-            self._send_upstream(error.code, error.headers, data)
+            # HTTPError doubles as the response body. It owns a socket/file
+            # object just like a successful response, so close it on every
+            # branch, including body-limit and downstream-write failures.
+            with error:
+                if 300 <= error.code < 400:
+                    self._json_error(502, "UPSTREAM_REDIRECT", "upstream redirects are forbidden")
+                    return
+                try:
+                    data = _read_limited(error, MAX_RESPONSE_BYTES)
+                except ValueError:
+                    self._json_error(502, "UPSTREAM_TOO_LARGE", "upstream response exceeded limit")
+                    return
+                self._send_upstream(error.code, error.headers, data)
         except (urllib.error.URLError, TimeoutError, ValueError):
             self._json_error(502, "UPSTREAM_UNAVAILABLE", "upstream service unavailable")
 
@@ -409,7 +412,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:
-        parsed = urllib.parse.urlsplit(self.path)
+        try:
+            parsed = urllib.parse.urlsplit(self.path)
+        except ValueError:
+            # BaseHTTPRequestHandler accepts some malformed absolute-form
+            # targets that urlsplit rejects (for example an unmatched IPv6
+            # bracket). Treat them as an opaque client error instead of
+            # letting the request thread terminate with a traceback.
+            self._json_error(400, "INVALID_TARGET", "invalid request target")
+            return
         if parsed.path.startswith("/api/"):
             self._proxy()
         elif not parsed.query and parsed.path in ("/", "/index.html", "/dashboard.html"):
@@ -433,11 +444,19 @@ class Handler(BaseHTTPRequestHandler):
         # BaseHTTPRequestHandler's default request line contains the raw query.
         # Log only the already-separated path; never headers, bodies, queries,
         # upstream credentials, or attacker-controlled error strings.
+        command = getattr(self, "command", None)
+        raw_path = getattr(self, "path", None)
+        if not isinstance(command, str) or not isinstance(raw_path, str):
+            # parse_request() can reject a malformed request line before it
+            # assigns command/path, then call log_message() while producing its
+            # standard 400 response. Keep that error path safe and opaque.
+            sys.stderr.write("%s - <malformed-request>\n" % self.client_address[0])
+            return
         try:
-            path = urllib.parse.urlsplit(self.path).path
+            path = urllib.parse.urlsplit(raw_path).path
         except ValueError:
             path = "<invalid-path>"
-        sys.stderr.write("%s - %s %s\n" % (self.client_address[0], self.command, path))
+        sys.stderr.write("%s - %s %s\n" % (self.client_address[0], command, path))
 
 
 def main() -> None:

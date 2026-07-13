@@ -9,15 +9,33 @@ import (
 	"github.com/vedetta-network/vedetta/threat-network/internal/corpus"
 )
 
+func validateExpectedCorpusRevision(expected *int) error {
+	if expected == nil || *expected < 0 {
+		return corpusValidationf("expected_corpus_revision is required and must not be negative")
+	}
+	return nil
+}
+
+func requireExpectedCorpusRevision(tx *sql.Tx, expected *int) error {
+	var current int
+	if err := tx.QueryRow(`SELECT current_revision FROM device_corpus_state WHERE singleton = 1`).Scan(&current); err != nil {
+		return err
+	}
+	if current != *expected {
+		return ErrCorpusRevisionConflict
+	}
+	return nil
+}
+
 // PublishCorpusProfile atomically promotes the profile draft and every variant
 // draft, then emits a complete immutable public release.
 func (db *DB) PublishCorpusProfile(profileID string, req corpus.PublishRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
-	if req.ExpectedCorpusRevision == nil || *req.ExpectedCorpusRevision < 0 {
-		return nil, fmt.Errorf("expected_corpus_revision is required and must not be negative")
+	if err = validateExpectedCorpusRevision(req.ExpectedCorpusRevision); err != nil {
+		return nil, err
 	}
 	meta = normalizeMutation(meta)
 	tx, err := db.Begin()
@@ -29,12 +47,8 @@ func (db *DB) PublishCorpusProfile(profileID string, req corpus.PublishRequest, 
 	if err != nil {
 		return nil, err
 	}
-	var currentCorpusRevision int
-	if err = tx.QueryRow(`SELECT current_revision FROM device_corpus_state WHERE singleton = 1`).Scan(&currentCorpusRevision); err != nil {
+	if err = requireExpectedCorpusRevision(tx, req.ExpectedCorpusRevision); err != nil {
 		return nil, err
-	}
-	if currentCorpusRevision != *req.ExpectedCorpusRevision {
-		return nil, ErrCorpusRevisionConflict
 	}
 
 	var draftProfileID, publishedProfileID sql.NullString
@@ -58,33 +72,7 @@ func (db *DB) PublishCorpusProfile(profileID string, req corpus.PublishRequest, 
 		return nil, ErrCorpusNoChanges
 	}
 
-	// A published profile without a fingerprint would create a misleading empty
-	// identity claim. Draft and already-published variants both count here.
-	var usableVariants int
-	if err = tx.QueryRow(`SELECT COUNT(DISTINCT v.variant_id)
-        FROM device_corpus_variants v
-        JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
-        WHERE v.profile_id = ? AND vr.status IN ('draft','published')`, profileID).Scan(&usableVariants); err != nil {
-		return nil, err
-	}
-	if usableVariants == 0 {
-		return nil, fmt.Errorf("publish requires at least one fingerprint variant")
-	}
-
-	// Every fingerprint needs explicit curated provenance. A lab observation may
-	// be URL-less, but it is still recorded as such rather than inferred.
-	var unsourced int
-	if err = tx.QueryRow(`SELECT COUNT(*) FROM device_corpus_variants v
-        JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
-        WHERE v.profile_id = ? AND vr.status IN ('draft','published')
-          AND NOT EXISTS (SELECT 1 FROM device_corpus_sources s
-                          WHERE s.variant_revision_id = vr.variant_revision_id)`, profileID).Scan(&unsourced); err != nil {
-		return nil, err
-	}
-	if unsourced > 0 {
-		return nil, fmt.Errorf("publish requires at least one source per variant")
-	}
-	if err = validateCorpusPublishQuality(tx, profileID); err != nil {
+	if err = validateCorpusPublishReadiness(tx, profileID); err != nil {
 		return nil, err
 	}
 
@@ -124,6 +112,10 @@ func (db *DB) PublishCorpusProfile(profileID string, req corpus.PublishRequest, 
 		}
 		promotions = append(promotions, p)
 	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
 	if err = rows.Close(); err != nil {
 		return nil, err
 	}
@@ -162,6 +154,40 @@ func (db *DB) PublishCorpusProfile(profileID string, req corpus.PublishRequest, 
 	return db.GetCorpusProfile(profileID)
 }
 
+// validateCorpusPublishReadiness is the single publishability gate shared by
+// preview and the mutating publish transaction. Keeping both paths on the same
+// checks prevents a curator from receiving a successful preview for content
+// that publication would subsequently reject (or vice versa).
+func validateCorpusPublishReadiness(tx *sql.Tx, profileID string) error {
+	// A published profile without a fingerprint would create a misleading empty
+	// identity claim. Draft and already-published variants both count here.
+	var usableVariants int
+	if err := tx.QueryRow(`SELECT COUNT(DISTINCT v.variant_id)
+		FROM device_corpus_variants v
+		JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
+		WHERE v.profile_id = ? AND vr.status IN ('draft','published')`, profileID).Scan(&usableVariants); err != nil {
+		return err
+	}
+	if usableVariants == 0 {
+		return corpusValidationf("publish requires at least one fingerprint variant")
+	}
+
+	// Every fingerprint needs explicit curated provenance. A lab observation may
+	// be URL-less, but it is still recorded as such rather than inferred.
+	var unsourced int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM device_corpus_variants v
+		JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
+		WHERE v.profile_id = ? AND vr.status IN ('draft','published')
+		  AND NOT EXISTS (SELECT 1 FROM device_corpus_sources s
+		                  WHERE s.variant_revision_id = vr.variant_revision_id)`, profileID).Scan(&unsourced); err != nil {
+		return err
+	}
+	if unsourced > 0 {
+		return corpusValidationf("publish requires at least one source per variant")
+	}
+	return validateCorpusPublishQuality(tx, profileID)
+}
+
 func validateCorpusPublishQuality(tx *sql.Tx, profileID string) error {
 	rows, err := tx.Query(`SELECT vr.variant_revision_id, s.signal_family_count, s.canonical_json
 		FROM device_corpus_variants v
@@ -185,6 +211,10 @@ func validateCorpusPublishQuality(tx *sql.Tx, profileID string) error {
 		}
 		candidates = append(candidates, candidate)
 	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
 	if err = rows.Close(); err != nil {
 		return err
 	}
@@ -206,7 +236,7 @@ func validateCorpusPublishQuality(tx *sql.Tx, profileID string) error {
 		hasProductSignal := len(canonicalShape.DHCPVendorClasses) > 0 || len(canonicalShape.HostnameTemplates) > 0 ||
 			len(canonicalShape.MDNSModels) > 0 || len(canonicalShape.SSDPServerTokens) > 0
 		if !hasProductSignal {
-			return fmt.Errorf("publish requires a product-specific fingerprint signature")
+			return corpusValidationf("publish requires a product-specific fingerprint signature")
 		}
 		if families >= 2 {
 			continue
@@ -218,7 +248,7 @@ func validateCorpusPublishQuality(tx *sql.Tx, profileID string) error {
 			return err
 		}
 		if citations == 0 {
-			return fmt.Errorf("single-family product signatures require a public authoritative citation")
+			return corpusValidationf("single-family product signatures require a public authoritative citation")
 		}
 	}
 	return nil
@@ -229,6 +259,9 @@ func validateCorpusPublishQuality(tx *sql.Tx, profileID string) error {
 func (db *DB) RetireCorpusProfile(profileID string, req corpus.LifecycleRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
+		return nil, corpusValidationError(err)
+	}
+	if err = validateExpectedCorpusRevision(req.ExpectedCorpusRevision); err != nil {
 		return nil, err
 	}
 	meta = normalizeMutation(meta)
@@ -253,6 +286,12 @@ func (db *DB) RetireCorpusProfile(profileID string, req corpus.LifecycleRequest,
 	}
 	if active == 0 {
 		return nil, ErrCorpusNotFound
+	}
+	// The ETag protects only this profile. Bind this release-producing action to
+	// the complete public snapshot the curator reviewed as well, and check it in
+	// the same transaction immediately before any state is changed.
+	if err = requireExpectedCorpusRevision(tx, req.ExpectedCorpusRevision); err != nil {
+		return nil, err
 	}
 	now := nowRFC3339()
 	if _, err = tx.Exec(`UPDATE device_corpus_profile_revisions
@@ -299,6 +338,9 @@ func (db *DB) RetireCorpusProfile(profileID string, req corpus.LifecycleRequest,
 func (db *DB) WithdrawCorpusVariant(variantID string, req corpus.LifecycleRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
+		return nil, corpusValidationError(err)
+	}
+	if err = validateExpectedCorpusRevision(req.ExpectedCorpusRevision); err != nil {
 		return nil, err
 	}
 	meta = normalizeMutation(meta)
@@ -319,15 +361,18 @@ func (db *DB) WithdrawCorpusVariant(variantID string, req corpus.LifecycleReques
 	}
 	var published, active int
 	if err = tx.QueryRow(`SELECT
-        SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END),
-        SUM(CASE WHEN status IN ('draft','published') THEN 1 ELSE 0 END)
-        FROM device_corpus_variant_revisions WHERE variant_id = ?`, variantID).Scan(&published, &active); err != nil {
+		COALESCE(SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status IN ('draft','published') THEN 1 ELSE 0 END), 0)
+		FROM device_corpus_variant_revisions WHERE variant_id = ?`, variantID).Scan(&published, &active); err != nil {
 		return nil, err
 	}
 	if active == 0 {
 		return nil, ErrCorpusNotFound
 	}
 	if err = ensureNoActiveCorpusVariantChildren(tx, variantID); err != nil {
+		return nil, err
+	}
+	if err = requireExpectedCorpusRevision(tx, req.ExpectedCorpusRevision); err != nil {
 		return nil, err
 	}
 	now := nowRFC3339()
@@ -369,7 +414,7 @@ func (db *DB) WithdrawCorpusVariant(variantID string, req corpus.LifecycleReques
 func (db *DB) DiscardCorpusVariantDraft(variantID string, req corpus.LifecycleRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
 	meta = normalizeMutation(meta)
 	tx, err := db.Begin()

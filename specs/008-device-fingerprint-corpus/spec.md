@@ -109,8 +109,10 @@ shapes may map to several profiles because shared chipsets legitimately create a
   no CORS, and never proxies reporter registration or ingest.
 - Every mutation is transactional, optimistic-concurrency protected, and paired with
   an append-only audit row.
-- Publishing requires both the reviewed profile ETag and the reviewed current corpus
-  revision, so an intervening release for a different profile also invalidates preview.
+- Publishing, profile retirement, and full variant withdrawal require both the reviewed
+  profile ETag and the reviewed current corpus revision, so an intervening release for a
+  different profile invalidates the action without mutating lifecycle or audit state.
+  Discarding only a draft remains a profile-local edit and does not advance the corpus.
 
 ### Public corpus
 

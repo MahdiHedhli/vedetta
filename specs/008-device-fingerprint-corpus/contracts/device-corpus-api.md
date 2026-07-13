@@ -20,8 +20,13 @@ never logged or returned.
 ## Strict request behavior
 
 - JSON body maximum: 64 KiB.
+- Every request body requires `Content-Type: application/json` (optional media-type
+  parameters are accepted); a missing or different media type returns
+  `422 STRICT_SCHEMA`.
 - Unknown or duplicate keys at any depth, including case-folded duplicates:
   `422 STRICT_SCHEMA`.
+- Schema-valid content with an unsupported enum, invalid range, or missing required field:
+  `422 VALIDATION_FAILED` with a fixed generic message.
 - Privacy-forbidden values: `422 FORBIDDEN_CONTENT` with a fixed generic message; the
   rejected value and internal rule name are never reflected.
 - Missing/stale `If-Match`: `428`/`409`.
@@ -59,10 +64,13 @@ new variant series with `predecessor_variant_id`; it does not revise an old seri
 New root variants use `new_variant`, successor series use `firmware_evolution`, and a
 discarded never-published series uses `restore_reviewed` when restarted. Revisions of
 an existing series accept only `signal_correction` or `source_update`.
-Withdrawal and retirement are soft state transitions that create a new release. Prior
+Withdrawal of published content and retirement of a published profile are soft state
+transitions that create a new release. Retiring a draft-only profile creates no public
+release because it was never present in the public corpus. Prior
 release bytes remain available to management for inspection and manual recovery.
 
-Publish requests require both concurrency preconditions:
+Publish, profile-retire, and full variant-withdraw requests require both
+concurrency preconditions:
 
 ```json
 {
@@ -71,11 +79,14 @@ Publish requests require both concurrency preconditions:
 }
 ```
 
-`If-Match` binds the target profile/variant drafts. `expected_corpus_revision` binds the
-rest of the complete snapshot returned by preview. If either changed, publication is
-rejected with `409`; revision 0 is valid for the first release and omission is invalid.
-The profile/variant content is identical to the preview when accepted. The release's
-`generated_at` is assigned at the actual commit time.
+`If-Match` binds the target profile/variant state. `expected_corpus_revision` binds the
+rest of the complete public snapshot the curator reviewed. If either changed, the
+release-producing action is rejected with `409`; revision 0 is valid for the first
+release and omission is invalid. The check occurs in the same transaction before any
+lifecycle state or audit record changes. Discarding only an unpublished variant draft
+does not create a release and therefore does not send `expected_corpus_revision`.
+For publish, the profile/variant content is identical to the preview when accepted. The
+release's `generated_at` is assigned at the actual commit time.
 
 An abandoned never-published variant can be restarted under the same `variant_key`.
 This retains its stable ID and audit history while allowing its predecessor to be
@@ -132,6 +143,11 @@ The preview response is server-validated and transactionally consistent:
 The accepted publication uses the same `If-Match` and sends
 `expected_corpus_revision: 12`. Its profile and variant content matches the preview;
 only the release `generated_at` is assigned at commit time.
+
+Retire and full-withdraw use the corpus revision shown in the dashboard's currently
+loaded public snapshot. An intervening release for any other profile yields
+`409 CORPUS_ADVANCED` without changing lifecycle state, audit history, or releases; the
+curator must reload and review the new snapshot before retrying.
 
 Every version fact must use a nonempty request-local `source_ref` that resolves to a
 source in the same request. Server output IDs (`source_id` and `fact_id`) are rejected

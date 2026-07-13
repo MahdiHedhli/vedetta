@@ -18,13 +18,13 @@ const (
 )
 
 var (
-	publicIDPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$`)
-	dottedQuadPattern = regexp.MustCompile(`(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:$|[^0-9])`)
-	ciscoMACPattern   = regexp.MustCompile(`(?i)(?:^|[^0-9a-f])(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}(?:$|[^0-9a-f])`)
-	bareMACPattern    = regexp.MustCompile(`(?i)(?:^|[^0-9a-f])[0-9a-f]{12}(?:$|[^0-9a-f])`)
+	// Corpus IDs are generated locally with crypto/rand as canonical lowercase
+	// RFC 4122 UUIDv4 values. Requiring that exact shape prevents a corrupt DB or
+	// import from turning a descriptive household slug into public metadata.
+	publicIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	// uuidAnyPattern intentionally covers every UUID version nibble. UUID-like
 	// observed values remain identifying even when they are not RFC 4122 v1-v5.
-	uuidAnyPattern           = regexp.MustCompile(`(?i)(?:^|[^0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:$|[^0-9a-f])`)
+	uuidAnyPattern           = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 	dynamicIdentifierPattern = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:serial(?:[_ -]?number)?|client[_ -]?id|device[_ -]?id|sensor[_ -]?id|reporter[_ -]?id|install(?:ation)?[_ -]?id|account[_ -]?id|token|certificate[_ -]?id|cert[_ -]?id|uuid|usn|udn)\s*[:=]\s*[a-z0-9]`)
 	unschemedURLPattern      = regexp.MustCompile(`(?i)(?:^|\s)[a-z0-9.-]+\.[a-z]{2,63}/[^\s]+`)
 )
@@ -319,7 +319,11 @@ func validatePublicVersionFact(path string, fact VersionFact, sourceIDs, factIDs
 	} {
 		name, value := field.name, field.value
 		if value != "" {
-			if err := scanPublicValue(path+"."+name, value); err != nil {
+			scan := scanPublicValue
+			if name == "value" || name == "value_end" {
+				scan = scanPublicVersionValue
+			}
+			if err := scan(path+"."+name, value); err != nil {
 				return err
 			}
 		}
@@ -368,10 +372,22 @@ func scanShape(path string, shape CanonicalShapeV1) error {
 }
 
 func scanPublicValue(path, value string) error {
-	if containsNetworkIdentifier(value) || containsDottedQuad(value) {
+	return scanPublicValueWithVersionContext(path, value, false)
+}
+
+func scanPublicVersionValue(path, value string) error {
+	return scanPublicValueWithVersionContext(path, value, true)
+}
+
+func scanPublicValueWithVersionContext(path, value string, allowSemanticVersion bool) error {
+	containsNetworkID := containsNetworkIdentifier(value)
+	if allowSemanticVersion {
+		containsNetworkID = containsNetworkIdentifierInVersionValue(value)
+	}
+	if containsNetworkID {
 		return privacyFailure(path, "network_identifier")
 	}
-	if macPattern.MatchString(value) || ciscoMACPattern.MatchString(value) || bareMACPattern.MatchString(value) {
+	if containsMAC(value) {
 		return privacyFailure(path, "mac_address")
 	}
 	if uuidAnyPattern.MatchString(value) {
@@ -389,31 +405,6 @@ func scanPublicValue(path, value string) error {
 	return nil
 }
 
-func containsDottedQuad(value string) bool {
-	for _, match := range dottedQuadPattern.FindAllStringSubmatch(value, -1) {
-		parts := strings.Split(match[1], ".")
-		valid := len(parts) == 4
-		for _, part := range parts {
-			if len(part) == 0 || len(part) > 3 {
-				valid = false
-				break
-			}
-			value := 0
-			for _, r := range part {
-				value = value*10 + int(r-'0')
-			}
-			if value > 255 {
-				valid = false
-				break
-			}
-		}
-		if valid {
-			return true
-		}
-	}
-	return false
-}
-
 func containsPrivateHostname(value string) bool {
 	parts := strings.FieldsFunc(value, func(r rune) bool {
 		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '-' || r == '_')
@@ -429,7 +420,7 @@ func containsPrivateHostname(value string) bool {
 
 func validatePublicID(path, value string) error {
 	if !publicIDPattern.MatchString(value) {
-		return fmt.Errorf("%s must be a bounded opaque server ID", path)
+		return fmt.Errorf("%s must be a canonical opaque server ID", path)
 	}
 	return nil
 }

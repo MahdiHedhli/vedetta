@@ -87,6 +87,9 @@ type ReviseVariantRequest struct {
 
 type LifecycleRequest struct {
 	ReasonCode string `json:"reason_code"`
+	// ExpectedCorpusRevision is required for profile retirement and full
+	// variant withdrawal. Draft-only discard deliberately ignores it.
+	ExpectedCorpusRevision *int `json:"expected_corpus_revision,omitempty"`
 }
 
 // PublishRequest binds an accepted profile draft to the public corpus revision

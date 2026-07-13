@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -182,23 +184,92 @@ func TestCorpusAdminEndToEndAndPublicETag(t *testing.T) {
 func TestCorpusAdminStrictJSONAndPrivacyErrorsDoNotEcho(t *testing.T) {
 	_, _, admin := newCorpusAPIServers(t)
 	tests := []struct {
-		name, body, secret string
+		name, body, secret, code string
 	}{
-		{"unknown nested key", `{"labels":{"manufacturer":"Example","model":"Cam","device_type":"camera","source_ip":"192.0.2.9"},"reason_code":"new_profile"}`, "192.0.2.9"},
-		{"duplicate nested key", `{"labels":{"manufacturer":"Example","manufacturer":"SECRET-DUPLICATE","model":"Cam","device_type":"camera"},"reason_code":"new_profile"}`, "SECRET-DUPLICATE"},
-		{"case-folded duplicate key", `{"labels":{"manufacturer":"Example","model":"Cam","device_type":"camera"},"Labels":{"manufacturer":"SECRET-CASEFOLD","model":"Other","device_type":"camera"},"reason_code":"new_profile"}`, "SECRET-CASEFOLD"},
-		{"forbidden label value", `{"labels":{"manufacturer":"Example","model":"Camera 192.0.2.9","device_type":"camera"},"reason_code":"new_profile"}`, "192.0.2.9"},
+		{"unknown nested key", `{"labels":{"manufacturer":"Example","model":"Cam","device_type":"camera","source_ip":"192.0.2.9"},"reason_code":"new_profile"}`, "192.0.2.9", "STRICT_SCHEMA"},
+		{"duplicate nested key", `{"labels":{"manufacturer":"Example","manufacturer":"SECRET-DUPLICATE","model":"Cam","device_type":"camera"},"reason_code":"new_profile"}`, "SECRET-DUPLICATE", "STRICT_SCHEMA"},
+		{"case-folded duplicate key", `{"labels":{"manufacturer":"Example","model":"Cam","device_type":"camera"},"Labels":{"manufacturer":"SECRET-CASEFOLD","model":"Other","device_type":"camera"},"reason_code":"new_profile"}`, "SECRET-CASEFOLD", "STRICT_SCHEMA"},
+		{"forbidden label value", `{"labels":{"manufacturer":"Example","model":"Camera 192.0.2.9","device_type":"camera"},"reason_code":"new_profile"}`, "192.0.2.9", "FORBIDDEN_CONTENT"},
+		{"compact date encoding an IPv4 value", `{"labels":{"manufacturer":"Example","model":"Camera 20260713","device_type":"camera"},"reason_code":"new_profile"}`, "20260713", "FORBIDDEN_CONTENT"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp := adminRequest(t, http.DefaultClient, http.MethodPost,
 				admin.URL+"/api/v1/admin/device-corpus/profiles", tt.body, "")
 			body := readResponse(t, resp)
-			if resp.StatusCode != http.StatusUnprocessableEntity {
+			if resp.StatusCode != http.StatusUnprocessableEntity ||
+				!bytes.Contains(body, []byte(`"code":"`+tt.code+`"`)) {
 				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 			}
 			if bytes.Contains(body, []byte(tt.secret)) {
 				t.Fatalf("error reflected submitted content: %s", body)
+			}
+		})
+	}
+}
+
+func TestCorpusAdminRejectsVersionSuffixIdentifierWithoutEcho(t *testing.T) {
+	_, _, admin := newCorpusAPIServers(t)
+	createBody := `{"labels":{"manufacturer":"Example","model":"Suffix Test Camera","device_type":"camera","os_family":"embedded"},"reason_code":"new_profile"}`
+	resp := adminRequest(t, http.DefaultClient, http.MethodPost,
+		admin.URL+"/api/v1/admin/device-corpus/profiles", createBody, "")
+	body := readResponse(t, resp)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, body)
+	}
+	var profile corpus.Profile
+	if err := json.Unmarshal(body, &profile); err != nil {
+		t.Fatal(err)
+	}
+
+	const marker = "192.168.1.1"
+	variantBody := `{
+      "variant_key":"suffix-test","confidence_bp":9000,"reason_code":"new_variant",
+      "shape":{"schema_version":1,"oui_prefixes":["00:00:5e"]},
+      "sources":[{"source_ref":"vendor","kind":"vendor_doc","public_url":"https://docs.example.com/camera"}],
+      "version_facts":[{"attribute":"firmware_version","relation":"exact","value":"v1.2-192.168.1.1","confidence_bp":9000,"source_ref":"vendor"}]
+    }`
+	resp = adminRequest(t, http.DefaultClient, http.MethodPost,
+		admin.URL+"/api/v1/admin/device-corpus/profiles/"+profile.ProfileID+"/variants",
+		variantBody, resp.Header.Get("ETag"))
+	body = readResponse(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity ||
+		!bytes.Contains(body, []byte(`"code":"FORBIDDEN_CONTENT"`)) ||
+		bytes.Contains(body, []byte(marker)) {
+		t.Fatalf("suffix privacy status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestCorpusAdminErrorClassificationUsesTypesNotMessageText(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code string
+	}{
+		{
+			name: "privacy type",
+			err:  &corpus.CorpusPrivacyError{Path: "profiles[0].labels", Rule: "network_identifier"},
+			code: "FORBIDDEN_CONTENT",
+		},
+		{
+			name: "validation sentinel through wrapping",
+			err:  fmt.Errorf("different wording: %w", store.ErrCorpusValidation),
+			code: "VALIDATION_FAILED",
+		},
+		{
+			name: "internal error containing former marker words",
+			err:  errors.New("database row contains prohibited value and must be repaired"),
+			code: "INTERNAL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			writeCorpusAdminError(recorder, tt.err)
+			if recorder.Code == http.StatusOK ||
+				!bytes.Contains(recorder.Body.Bytes(), []byte(`"code":"`+tt.code+`"`)) {
+				t.Fatalf("status=%d body=%s, want code %s", recorder.Code, recorder.Body.Bytes(), tt.code)
 			}
 		})
 	}

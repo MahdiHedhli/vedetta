@@ -122,34 +122,71 @@ func TestCorpusAdminPreviewRequiresCurrentETag(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict || !bytes.Contains(body, []byte(`"code":"CORPUS_ADVANCED"`)) {
 		t.Fatalf("stale corpus revision status=%d body=%s", resp.StatusCode, body)
 	}
+
+	// Retire and full withdrawal can create complete public releases too, so
+	// they require the same reviewed global revision as publish. Draft discard
+	// remains a local edit and intentionally retains its original request body.
+	variantID := profile.Variants[0].VariantID
+	for _, tt := range []struct {
+		name, target, body string
+		status             int
+		code               string
+	}{
+		{"retire missing revision", admin.URL + "/api/v1/admin/device-corpus/profiles/" + profile.ProfileID + "/retire", `{"reason_code":"obsolete_product"}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
+		{"retire negative revision", admin.URL + "/api/v1/admin/device-corpus/profiles/" + profile.ProfileID + "/retire", `{"reason_code":"obsolete_product","expected_corpus_revision":-1}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
+		{"retire stale revision", admin.URL + "/api/v1/admin/device-corpus/profiles/" + profile.ProfileID + "/retire", `{"reason_code":"obsolete_product","expected_corpus_revision":1}`, http.StatusConflict, `"code":"CORPUS_ADVANCED"`},
+		{"withdraw missing revision", admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/withdraw", `{"reason_code":"privacy_withdrawal"}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
+		{"withdraw negative revision", admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/withdraw", `{"reason_code":"privacy_withdrawal","expected_corpus_revision":-1}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
+		{"withdraw stale revision", admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/withdraw", `{"reason_code":"privacy_withdrawal","expected_corpus_revision":1}`, http.StatusConflict, `"code":"CORPUS_ADVANCED"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := adminRequest(t, http.DefaultClient, http.MethodPost, tt.target, tt.body, profile.ETag)
+			responseBody := readResponse(t, response)
+			if response.StatusCode != tt.status || !bytes.Contains(responseBody, []byte(tt.code)) {
+				t.Fatalf("status=%d body=%s, want status=%d code=%s", response.StatusCode, responseBody, tt.status, tt.code)
+			}
+		})
+	}
+
+	discardTarget := admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/discard-draft"
+	resp = adminRequest(t, http.DefaultClient, http.MethodPost, discardTarget,
+		`{"reason_code":"signal_correction"}`, profile.ETag)
+	body = readResponse(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("discard-draft old body status=%d body=%s", resp.StatusCode, body)
+	}
 }
 
 func TestCorpusAdminContentTypeAndErrorsAreNonReflective(t *testing.T) {
 	_, _, admin := newCorpusAPIServers(t)
 	target := admin.URL + "/api/v1/admin/device-corpus/profiles"
 	body := `{"labels":{"manufacturer":"Example","model":"Cam","device_type":"camera"},"reason_code":"new_profile"}`
-	req, err := http.NewRequest(http.MethodPost, target, bytes.NewBufferString(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+testAdminToken)
-	req.Header.Set("Content-Type", "application/jsonp")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	responseBody, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusUnprocessableEntity || !bytes.Contains(responseBody, []byte(`"code":"STRICT_SCHEMA"`)) {
-		t.Fatalf("JSONP content type status=%d body=%s", resp.StatusCode, responseBody)
+	for _, contentType := range []string{"", "application/jsonp"} {
+		req, err := http.NewRequest(http.MethodPost, target, bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+testAdminToken)
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		responseBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusUnprocessableEntity || !bytes.Contains(responseBody, []byte(`"code":"STRICT_SCHEMA"`)) {
+			t.Fatalf("content type %q status=%d body=%s", contentType, resp.StatusCode, responseBody)
+		}
 	}
 
 	reflective := `{"labels":{"manufacturer":"Example","model":"Cam","device_type":"SECRET-UNSUPPORTED-TYPE"},"reason_code":"new_profile"}`
-	resp = adminRequest(t, http.DefaultClient, http.MethodPost, target, reflective, "")
-	responseBody = readResponse(t, resp)
+	resp := adminRequest(t, http.DefaultClient, http.MethodPost, target, reflective, "")
+	responseBody := readResponse(t, resp)
 	if resp.StatusCode != http.StatusUnprocessableEntity || bytes.Contains(responseBody, []byte("SECRET-UNSUPPORTED-TYPE")) {
 		t.Fatalf("validation error reflected candidate status=%d body=%s", resp.StatusCode, responseBody)
 	}

@@ -2,9 +2,11 @@ package store
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func installSyntheticCorpusRelease(t *testing.T, db *DB, raw string, profileCount, variantCount int, createdAt string) {
@@ -73,4 +75,57 @@ func TestOversizedStoredCorpusReleaseRejectedBeforeDecode(t *testing.T) {
 	if _, _, err := db.GetCorpusRelease(1); err == nil || !strings.Contains(err.Error(), "16 MiB") {
 		t.Fatalf("oversized historical snapshot error=%v", err)
 	}
+}
+
+func TestStoredCorpusReleaseSizeLimitCountsUTF8Bytes(t *testing.T) {
+	const prefix = `{"schema_version":1,"corpus_revision":1,"generated_at":"2026-07-13T16:00:00Z","profiles":[],"padding":"`
+	const suffix = `"}`
+	// SQLite length(TEXT) counts Unicode code points, not encoded bytes. Build a
+	// value whose character count is below the publication ceiling but whose
+	// UTF-8 representation is just over it, exercising the database-side guard
+	// before Go allocates or decodes the stored body.
+	paddingRunes := (maxCorpusSnapshotBytes-len(prefix)-len(suffix))/2 + 1
+	raw := prefix + strings.Repeat("é", paddingRunes) + suffix
+	if !utf8.ValidString(raw) {
+		t.Fatal("test snapshot is not valid UTF-8")
+	}
+	if utf8.RuneCountInString(raw) > maxCorpusSnapshotBytes {
+		t.Fatalf("test requires character count below limit, got %d", utf8.RuneCountInString(raw))
+	}
+	if len(raw) <= maxCorpusSnapshotBytes {
+		t.Fatalf("test requires encoded bytes over limit, got %d", len(raw))
+	}
+
+	db := newTestDB(t)
+	installSyntheticCorpusRelease(t, db, raw, 0, 0, "2026-07-13T16:00:00Z")
+	var textLength, byteLength int
+	if err := db.QueryRow(`SELECT length(snapshot_json), length(CAST(snapshot_json AS BLOB))
+		FROM device_corpus_releases WHERE corpus_revision = 1`).Scan(&textLength, &byteLength); err != nil {
+		t.Fatal(err)
+	}
+	if textLength > maxCorpusSnapshotBytes || byteLength <= maxCorpusSnapshotBytes {
+		t.Fatalf("unexpected SQLite lengths: text=%d bytes=%d", textLength, byteLength)
+	}
+	var guardedBytes int
+	var guardedRaw sql.NullString
+	if err := db.QueryRow(`SELECT `+boundedCorpusSnapshotColumns+`
+		FROM device_corpus_releases WHERE corpus_revision = 1`, maxCorpusSnapshotBytes).
+		Scan(&guardedBytes, &guardedRaw); err != nil {
+		t.Fatal(err)
+	}
+	if guardedBytes != byteLength || guardedRaw.Valid {
+		t.Fatalf("byte guard returned bytes=%d raw.valid=%v, want bytes=%d raw.valid=false",
+			guardedBytes, guardedRaw.Valid, byteLength)
+	}
+
+	t.Run("current release", func(t *testing.T) {
+		if _, _, err := db.CurrentCorpusSnapshot(); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+			t.Fatalf("multibyte oversized current snapshot error=%v", err)
+		}
+	})
+	t.Run("historical release", func(t *testing.T) {
+		if _, _, err := db.GetCorpusRelease(1); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+			t.Fatalf("multibyte oversized historical snapshot error=%v", err)
+		}
+	})
 }

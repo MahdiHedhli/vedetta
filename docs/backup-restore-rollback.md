@@ -46,17 +46,29 @@ cp .env ./vedetta-env-$ts.bak    # contains deployment config; keep it private
 
 For the central Threat Network database (community feed **and** curated corpus),
 the runtime image also ships `sqlite3` so the same online-backup guarantee is
-available without stopping ingestion:
+available without stopping ingestion. The service reads the database location
+from `THREAT_NETWORK_DB` (default `/data/threat-network.db`). Discover the value
+from the running container so these commands back up the configured database,
+including when an operator uses a custom path:
 
 ```sh
 ts=$(date +%Y%m%d-%H%M%S)
+threat_db=$(
+  docker compose --profile community exec -T threat-network \
+    sh -eu -c 'printf "%s" "${THREAT_NETWORK_DB:-/data/threat-network.db}"'
+)
+threat_backup_in_container="/tmp/threat-network-backup-$ts.db"
 docker compose --profile community exec threat-network \
-  sqlite3 /data/threat-network.db ".backup '/data/threat-network-backup-$ts.db'"
+  sqlite3 "$threat_db" ".backup '$threat_backup_in_container'"
 docker compose --profile community cp \
-  threat-network:/data/threat-network-backup-$ts.db ./threat-network-backup-$ts.db
+  "threat-network:$threat_backup_in_container" "./threat-network-backup-$ts.db"
 docker compose --profile community exec threat-network \
-  rm /data/threat-network-backup-$ts.db
+  rm -f "$threat_backup_in_container"
 ```
+
+If you override `THREAT_NETWORK_DB`, its parent directory must be on the
+persistent `threat-network-data` mount (or another persistent mount). A path in
+the container's writable layer will not survive container recreation.
 
 ### Option B — cold volume tarball (Core stopped)
 
@@ -107,16 +119,27 @@ unset VED_TOKEN
 
 Restore the full Threat Network database, not an individual corpus table or
 release row. The first procedure is a same-version data recovery: stop the writer,
-retain a safety copy, replace the file, and resume the unchanged container:
+retain a safety copy, replace the file, and resume the unchanged container.
+Derive `THREAT_NETWORK_DB` from the Compose configuration with a no-dependency,
+shell-only one-off container. This also works when startup validation has already
+put the service into a restart loop:
 
 ```sh
+threat_db=$(
+  docker compose --profile community run --rm --no-deps -T --entrypoint sh \
+    threat-network \
+    -eu -c 'printf "%s" "${THREAT_NETWORK_DB:-/data/threat-network.db}"'
+)
 docker compose --profile community stop threat-network
 docker compose --profile community cp \
-  threat-network:/data/threat-network.db ./threat-network-before-restore.db
+  "threat-network:$threat_db" ./threat-network-before-restore.db
 docker compose --profile community cp \
-  ./threat-network-backup-<ts>.db threat-network:/data/threat-network.db
+  ./threat-network-backup-<ts>.db "threat-network:$threat_db"
 docker compose --profile community run --rm --no-deps --entrypoint sh \
-  threat-network -c 'rm -f /data/threat-network.db-wal /data/threat-network.db-shm'
+  threat-network -eu -c '
+    db=${THREAT_NETWORK_DB:-/data/threat-network.db}
+    rm -f "${db}-wal" "${db}-shm"
+  '
 docker compose --profile community start threat-network
 docker compose --profile community logs --tail=100 threat-network
 curl -fsS http://127.0.0.1:9090/api/v1/status
@@ -202,5 +225,6 @@ The Threat Network corpus migration is likewise forward-only operationally.
 Its state pointer is monotonic and must never be edited backward to "restore" a
 historical release. To undo ordinary corpus content, publish a reviewed forward
 correction/withdrawal. To recover the service or schema, restore the **entire**
-pre-change `threat-network.db` together with its matching binary, using the
-procedure above.
+pre-change Threat Network database (`THREAT_NETWORK_DB`, default
+`/data/threat-network.db`) together with its matching binary, using the procedure
+above.

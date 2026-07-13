@@ -59,6 +59,12 @@ captured for the preview. An intervening edit to this or any other public profil
 is rejected rather than silently publishing a different complete snapshot. The
 server creates the immutable release and advances the corpus revision.
 
+Profile retirement and full variant withdrawal are also bound to both the displayed
+profile ETag and the public corpus revision in the currently loaded snapshot. If another
+profile is published, retired, or withdrawn first, the server returns
+`CORPUS_ADVANCED`; the dashboard requires a reload and review before retrying. A
+draft-only discard creates no release and intentionally needs only the profile ETag.
+
 The dashboard pages through the complete audit and release histories using
 server-reported totals, and can inspect the exact JSON content of every
 historical corpus release (pretty-printed for review; the immutable original
@@ -102,7 +108,12 @@ If the backend runs in the repository Compose stack, use the tracked
 `docker-compose.corpus-ops.yml` overlay instead of the native command. The
 overlay binds `0.0.0.0:9091` only inside the container (required for Docker port
 forwarding), opts into that bind explicitly, mounts the private token read-only,
-and publishes the port solely on host `127.0.0.1`:
+and publishes the port solely on host `127.0.0.1`. The base service uses a
+dedicated `threat-network-isolated` bridge, so ordinary Vedetta application
+containers cannot reach the management listener directly. This isolated,
+host-loopback publication is the only supported plaintext non-loopback bind.
+For any management hop that leaves that boundary, terminate authenticated TLS
+before it and keep the upstream private; never expose port `9091` directly:
 
 ```sh
 export THREAT_NETWORK_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token

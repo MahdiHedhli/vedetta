@@ -18,25 +18,30 @@ import (
 const shapeDomain = "vedetta-device-shape\x00v1\x00"
 
 var (
-	macPattern      = regexp.MustCompile(`(?i)(?:^|[^0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?:$|[^0-9a-f])`)
-	macCiscoPattern = regexp.MustCompile(`(?i)(?:^|[^0-9a-f])(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}(?:$|[^0-9a-f])`)
-	macBarePattern  = regexp.MustCompile(`(?i)(?:^|[^0-9a-f])[0-9a-f]{12}(?:$|[^0-9a-f])`)
-	dottedQuadRe    = regexp.MustCompile(`(?:^|[^0-9])([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(?:$|[^0-9])`)
+	// Deliberately do not require hexadecimal boundaries around identifiers.
+	// Observed identifiers remain reversible if a curator accidentally appends
+	// or prepends another hexadecimal character. Free-form public values have no
+	// legitimate need for a 48-bit-or-longer hexadecimal run; OUI prefixes use
+	// their separate, fixed six-character field.
+	macOctetPattern = regexp.MustCompile(`(?i)(?:[0-9a-f]{2}(?:[.:\-]| +)){5}[0-9a-f]{2}`)
+	macWordPattern  = regexp.MustCompile(`(?i)(?:[0-9a-f]{4}(?:[.:\-]| +)){2}[0-9a-f]{4}`)
+	longHexPattern  = regexp.MustCompile(`(?i)[0-9a-f]{12,}`)
 	// Version-agnostic: device identifiers often use non-RFC or newer UUID
 	// versions, and none belong in a public product-class signature.
-	uuidPattern      = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	ouiPattern       = regexp.MustCompile(`^[0-9A-F]{6}$`)
-	mdnsServiceRe    = regexp.MustCompile(`^_[a-z0-9-]{1,63}\._(?:tcp|udp)$`)
-	ssdpDeviceRe     = regexp.MustCompile(`^urn:[a-z0-9][a-z0-9.-]{0,63}:device:[a-z0-9][a-z0-9._-]{0,63}:[0-9]{1,5}$`)
-	hostTemplateRe   = regexp.MustCompile(`^[a-z0-9_-]*(?:\{(?:hex|digits|random)\})[a-z0-9_-]*$`)
-	variantKeyRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	sourceRefRe      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
-	safeLicenseRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
-	percentEscapeRe  = regexp.MustCompile(`(?i)%[0-9a-f]{2}`)
-	dynamicIDLabelRe = regexp.MustCompile(`(?i)\b(?:serial(?:[ _-]?(?:number|no\.?))?|s\s*/\s*n|sn|account[ _-]?id|client[ _-]?id|device[ _-]?id|install[ _-]?id|reporter[ _-]?id|sensor[ _-]?id|token|uuid|usn|udn|hostname|cert(?:ificate)?[ _-]?(?:id|serial))\s*[:=]\s*\S+`)
-	dynamicIDSpaceRe = regexp.MustCompile(`(?i)\b(?:serial(?:[ _-]?(?:number|no\.?))?|s\s*/\s*n|sn|account[ _-]?id|client[ _-]?id|device[ _-]?id|install[ _-]?id|reporter[ _-]?id|sensor[ _-]?id|token|uuid|usn|udn|hostname|cert(?:ificate)?[ _-]?(?:id|serial))\s+([a-z0-9][a-z0-9._/-]{3,127})\b`)
-	dynamicURLPathRe = regexp.MustCompile(`(?i)(?:^|/)(?:serial(?:-(?:number|no))?|s-n|sn|account-id|client-id|device-id|install-id|installation-id|reporter-id|sensor-id|token|uuid|usn|udn|hostname|cert-id|certificate-id|cert-serial|certificate-serial)/[^/]+`)
-	urlishPattern    = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,62})\.)+[a-z]{2,63}/[^\s]+`)
+	uuidPattern       = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+	ouiPattern        = regexp.MustCompile(`^[0-9A-F]{6}$`)
+	mdnsServiceRe     = regexp.MustCompile(`^_[a-z0-9-]{1,63}\._(?:tcp|udp)$`)
+	ssdpDeviceRe      = regexp.MustCompile(`^urn:[a-z0-9][a-z0-9.-]{0,63}:device:[a-z0-9][a-z0-9._-]{0,63}:[0-9]{1,5}$`)
+	hostTemplateRe    = regexp.MustCompile(`^[a-z0-9_-]*(?:\{(?:hex|digits|random)\})[a-z0-9_-]*$`)
+	variantKeyRe      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	sourceRefRe       = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
+	safeLicenseRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+	percentEscapeRe   = regexp.MustCompile(`(?i)%[0-9a-f]{2}`)
+	dynamicIDLabelRe  = regexp.MustCompile(`(?i)\b(?:serial(?:[ _-]?(?:number|no\.?))?|s\s*/\s*n|sn|account[ _-]?id|client[ _-]?id|device[ _-]?id|install[ _-]?id|reporter[ _-]?id|sensor[ _-]?id|token|uuid|usn|udn|hostname|cert(?:ificate)?[ _-]?(?:id|serial))\s*[:=]\s*\S+`)
+	dynamicIDSpaceRe  = regexp.MustCompile(`(?i)\b(?:serial(?:[ _-]?(?:number|no\.?))?|s\s*/\s*n|sn|account[ _-]?id|client[ _-]?id|device[ _-]?id|install[ _-]?id|reporter[ _-]?id|sensor[ _-]?id|token|uuid|usn|udn|hostname|cert(?:ificate)?[ _-]?(?:id|serial))\s+([a-z0-9][a-z0-9._/-]{3,127})\b`)
+	dynamicURLPathRe  = regexp.MustCompile(`(?i)(?:^|/)(?:serial(?:-(?:number|no))?|s-n|sn|account-id|client-id|device-id|install-id|installation-id|reporter-id|sensor-id|token|uuid|usn|udn|hostname|cert-id|certificate-id|cert-serial|certificate-serial)/[^/]+`)
+	urlishPattern     = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,62})\.)+[a-z]{2,63}/[^\s]+`)
+	semanticVersionRe = regexp.MustCompile(`(?i)^v?[0-9]{1,5}(?:\.[0-9]{1,5}){1,2}(?:[-+][a-z0-9][a-z0-9._-]{0,31})?$`)
 )
 
 var dynamicURLSegmentLabels = []string{
@@ -211,6 +216,9 @@ func normalizeHostnameTemplates(values []string) ([]string, error) {
 		if len(v) > 64 || !hostTemplateRe.MatchString(v) {
 			return nil, fmt.Errorf("hostname_templates must use literals plus {hex}, {digits}, or {random}")
 		}
+		if err := validatePublicToken("hostname_templates", v, 64); err != nil {
+			return nil, err
+		}
 		out = append(out, v)
 	}
 	return sortedUniqueStrings(out), nil
@@ -235,6 +243,9 @@ func normalizeSSDPDeviceTypes(values []string) ([]string, error) {
 		v := strings.ToLower(strings.TrimSpace(raw))
 		if len(v) > 160 || !ssdpDeviceRe.MatchString(v) {
 			return nil, fmt.Errorf("ssdp_device_types must contain device URNs only")
+		}
+		if err := validatePublicToken("ssdp_device_types", v, 160); err != nil {
+			return nil, err
 		}
 		out = append(out, v)
 	}
@@ -315,6 +326,9 @@ func ValidateVariantKey(v string) (string, error) {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if !variantKeyRe.MatchString(v) {
 		return "", fmt.Errorf("variant_key must be a 1..64 character lowercase slug")
+	}
+	if err := validatePublicToken("variant_key", v, 64); err != nil {
+		return "", err
 	}
 	return v, nil
 }
@@ -406,6 +420,11 @@ func NormalizeSources(values []Source) ([]Source, error) {
 		}
 		if src.LicenseCode != "" && !safeLicenseRe.MatchString(src.LicenseCode) {
 			return nil, fmt.Errorf("source.license_code has invalid syntax")
+		}
+		if src.LicenseCode != "" {
+			if err := validatePublicToken("source.license_code", src.LicenseCode, 64); err != nil {
+				return nil, err
+			}
 		}
 		contentKey := sourceDuplicateKey(src)
 		if seenContent[contentKey] {
@@ -499,12 +518,27 @@ func validateVersionValue(field, value string) error {
 	if percentEscapeRe.MatchString(value) {
 		return fmt.Errorf("%s contains percent-encoded material", field)
 	}
-	if containsNetworkIdentifier(value) || containsMAC(value) || uuidPattern.MatchString(value) || containsPrivateName(value) || containsDynamicIdentifier(value) || urlishPattern.MatchString(value) {
-		return fmt.Errorf("%s contains a prohibited identifier", field)
+	if containsNetworkIdentifierInVersionValue(value) {
+		return privacyFailure(field, "network_identifier")
+	}
+	if containsMAC(value) {
+		return privacyFailure(field, "mac_address")
+	}
+	if uuidPattern.MatchString(value) {
+		return privacyFailure(field, "uuid")
+	}
+	if containsPrivateName(value) {
+		return privacyFailure(field, "private_hostname")
+	}
+	if containsDynamicIdentifier(value) {
+		return privacyFailure(field, "dynamic_identifier")
+	}
+	if urlishPattern.MatchString(value) {
+		return privacyFailure(field, "url")
 	}
 	for _, r := range value {
 		if unicode.IsControl(r) || strings.ContainsRune("<>@?#\\", r) {
-			return fmt.Errorf("%s contains prohibited syntax", field)
+			return privacyFailure(field, "prohibited_syntax")
 		}
 	}
 	return nil
@@ -525,17 +559,29 @@ func validatePublicToken(field, value string, maxLen int) error {
 		return fmt.Errorf("%s contains percent-encoded material", field)
 	}
 	if containsNetworkIdentifier(value) {
-		return fmt.Errorf("%s contains an IP address or CIDR", field)
+		return privacyFailure(field, "network_identifier")
 	}
-	if containsMAC(value) || uuidPattern.MatchString(value) || containsPrivateName(value) || containsDynamicIdentifier(value) || urlishPattern.MatchString(value) {
-		return fmt.Errorf("%s contains a prohibited identifier", field)
+	if containsMAC(value) {
+		return privacyFailure(field, "mac_address")
+	}
+	if uuidPattern.MatchString(value) {
+		return privacyFailure(field, "uuid")
+	}
+	if containsPrivateName(value) {
+		return privacyFailure(field, "private_hostname")
+	}
+	if containsDynamicIdentifier(value) {
+		return privacyFailure(field, "dynamic_identifier")
+	}
+	if urlishPattern.MatchString(value) {
+		return privacyFailure(field, "url")
 	}
 	if strings.Contains(value, "://") {
-		return fmt.Errorf("%s contains URL syntax", field)
+		return privacyFailure(field, "url")
 	}
 	for _, r := range value {
 		if unicode.IsControl(r) || strings.ContainsRune("<>@?#\\", r) {
-			return fmt.Errorf("%s contains prohibited syntax", field)
+			return privacyFailure(field, "prohibited_syntax")
 		}
 	}
 	return nil
@@ -562,8 +608,9 @@ func normalizeCitationURL(raw string) (string, error) {
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	if !isPublicDNSName(host) || net.ParseIP(host) != nil || isPrivateName(host) ||
-		containsNetworkIdentifier(host) || containsMAC(host) || uuidPattern.MatchString(host) {
-		return "", fmt.Errorf("source.public_url host must be a public DNS name")
+		containsNetworkIdentifier(host) || containsAlternativeIPv4Host(host) ||
+		containsMAC(host) || uuidPattern.MatchString(host) {
+		return "", privacyFailure("source.public_url.host", "non_public_or_identifier")
 	}
 	port := u.Port()
 	if strings.Contains(u.Host, ":") && port == "" {
@@ -585,8 +632,8 @@ func normalizeCitationURL(raw string) (string, error) {
 	if containsNetworkIdentifier(decodedPath) || containsMAC(decodedPath) ||
 		uuidPattern.MatchString(decodedPath) || containsPrivateName(decodedPath) ||
 		containsDynamicIdentifier(decodedPath) ||
-		containsDynamicURLPathIdentifier(decodedPath) {
-		return "", fmt.Errorf("source.public_url path contains a prohibited identifier")
+		containsDynamicURLPathIdentifier(decodedPath) || containsAlternativeIPv4Path(decodedPath) {
+		return "", privacyFailure("source.public_url.path", "prohibited_identifier")
 	}
 	u.Scheme = "https"
 	u.Host = host
@@ -673,47 +720,278 @@ func versionFactSortKey(fact VersionFact) string {
 // in an otherwise plausible product string (for example "camera 192.0.2.1").
 // Hashing such a value would not make it anonymous, so it never enters storage.
 func containsNetworkIdentifier(value string) bool {
-	if matches := dottedQuadRe.FindAllStringSubmatch(value, -1); len(matches) > 0 {
-		for _, match := range matches {
-			valid := true
-			for i := 1; i <= 4; i++ {
-				n, err := strconv.Atoi(match[i])
-				if err != nil || n > 255 {
-					valid = false
-					break
-				}
+	if containsLegacyIPv4(value, false, true) || containsEmbeddedIPv6(value) {
+		return true
+	}
+	return false
+}
+
+// containsNetworkIdentifierInVersionValue allows only the bounded numeric core
+// of a syntactically valid semantic version to resemble a shortened IPv4 form.
+// Prerelease/build text remains untrusted free text and is scanned separately;
+// otherwise a value such as v1.2-192.168.1.1 would hide an address behind the
+// semantic-version exception. Accepting the numeric core is a deliberate
+// recoding ambiguity under the trusted-curator + exact-preview threat model,
+// not a claim of irreversibility against a malicious curator.
+func containsNetworkIdentifierInVersionValue(value string) bool {
+	if !semanticVersionRe.MatchString(value) {
+		return containsNetworkIdentifier(value)
+	}
+	trimmed := strings.TrimPrefix(strings.TrimPrefix(value, "v"), "V")
+	separator := strings.IndexAny(trimmed, "-+")
+	if separator < 0 {
+		return false
+	}
+	return containsNetworkIdentifier(trimmed[separator+1:])
+}
+
+func containsMAC(value string) bool {
+	return macOctetPattern.MatchString(value) || macWordPattern.MatchString(value) || longHexPattern.MatchString(value)
+}
+
+// containsAlternativeIPv4Host rejects the historical inet_aton forms accepted
+// by browsers and networking libraries: a 32-bit integer, hexadecimal/octal
+// components, or shortened dotted forms. Host labels are unambiguously part of
+// the network location, so consecutive numeric labels are examined together.
+func containsAlternativeIPv4Host(host string) bool {
+	return containsLegacyIPv4(host, true, false)
+}
+
+// containsAlternativeIPv4Path applies the same check to decoded citation path
+// tokens. Decimal two/three-component inet_aton forms are indistinguishable
+// from bare product versions, so the public privacy boundary deliberately
+// fails closed. Curators can cite an unambiguous version segment such as
+// "v2.4.1" instead. That version-context exception relies on trusted human
+// review of the exact release and is not a malicious-curator privacy guarantee.
+func containsAlternativeIPv4Path(path string) bool {
+	return containsLegacyIPv4(path, true, true)
+}
+
+// containsLegacyIPv4 finds historical inet_aton representations even when
+// embedded in a larger path/token. In ordinary product text, ambiguous short
+// decimal forms are rejected when they resolve to a non-public address; URL
+// hosts and paths use strict mode. A leading "v" is the sole path exception so
+// an unambiguous firmware segment such as v2.4.1 remains citeable.
+func containsLegacyIPv4(value string, strict, allowVersionPrefix bool) bool {
+	for start := 0; start < len(value); start++ {
+		if value[start] < '0' || value[start] > '9' {
+			continue
+		}
+		integerBoundary := start == 0 || value[start-1] < '0' || value[start-1] > '9'
+		for end := start + 1; end <= len(value) && end-start <= 16; end++ {
+			if !isLegacyIPv4IntegerChar(value[end-1]) {
+				break
 			}
-			if valid {
+			raw := value[start:end]
+			_, explicit, valid := parseLegacyIPv4Number(raw)
+			if strict && integerBoundary && explicit && valid {
+				return true
+			}
+			if isFullWidthIPv4Integer(raw) {
 				return true
 			}
 		}
-	}
-	parts := strings.FieldsFunc(value, func(r rune) bool {
-		return !(unicode.IsDigit(r) || unicode.IsLetter(r) || r == '.' || r == ':' || r == '%')
-	})
-	for _, raw := range parts {
-		candidate := strings.Trim(raw, ".:")
-		if candidate == "" {
+
+		end := start
+		for end < len(value) && end-start < 64 && isLegacyIPv4DottedChar(value[end]) {
+			end++
+		}
+		candidate := strings.Trim(value[start:end], ".")
+		if !strings.Contains(candidate, ".") {
 			continue
 		}
-		if i := strings.LastIndexByte(candidate, '%'); i >= 0 {
-			candidate = candidate[:i]
+		// A nonnumeric suffix may be the disguise itself (10.1f). Try
+		// every digit-ending prefix before evaluating the maximal run.
+		if last := candidate[len(candidate)-1]; last < '0' || last > '9' {
+			for cut := len(candidate) - 1; cut > 0; cut-- {
+				if candidate[cut-1] < '0' || candidate[cut-1] > '9' {
+					continue
+				}
+				prefix := strings.Trim(candidate[:cut], ".")
+				prefixParts := strings.Split(prefix, ".")
+				if len(prefixParts) >= 2 {
+					parsed, explicit, ok := parseLegacyIPv4(prefixParts)
+					if ok &&
+						(explicit || len(prefixParts) == 4 || isNonPublicIPv4(parsed) ||
+							(strict && !(allowVersionPrefix && hasVersionContext(value, start, !strict)))) {
+						return true
+					}
+				}
+			}
 		}
-		if net.ParseIP(candidate) != nil {
-			return true
+		parts := strings.Split(candidate, ".")
+		if parsed, explicit, ok := parseLegacyIPv4(parts); ok {
+			if !explicit && len(parts) <= 3 && allowVersionPrefix && hasVersionContext(value, start, !strict) {
+				start = end - 1
+				continue
+			}
+			if explicit || len(parts) == 4 || isNonPublicIPv4(parsed) {
+				return true
+			}
+			if strict && !(allowVersionPrefix && hasVersionContext(value, start, !strict)) {
+				return true
+			}
+			// A complete, plausible public version-like value was accepted. Do
+			// not reinterpret its suffixes (for example 4.1 in v2.4.1).
+			start = end - 1
+			continue
 		}
-		if host, _, err := net.SplitHostPort(candidate); err == nil && net.ParseIP(strings.Trim(host, "[]")) != nil {
-			return true
+
+		// If the maximal run is malformed, examine overlapping component
+		// windows. This catches an address hidden beside an overlong octet,
+		// such as 192.999168.1.1, without relying on greedy regex matches.
+		for first := 0; first < len(parts); first++ {
+			for count := 2; count <= 4 && first+count <= len(parts); count++ {
+				if _, _, ok := parseLegacyIPv4(parts[first : first+count]); ok {
+					return true
+				}
+			}
 		}
-		if _, _, err := net.ParseCIDR(candidate); err == nil {
-			return true
+		start = end - 1
+	}
+	return false
+}
+
+func isLegacyIPv4IntegerChar(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'f' || b >= 'A' && b <= 'F' || b == 'x' || b == 'X'
+}
+
+func isLegacyIPv4DottedChar(b byte) bool {
+	return isLegacyIPv4IntegerChar(b) || b == '.'
+}
+
+func hasVersionContext(value string, start int, allowProductSlash bool) bool {
+	// Product/version separators (for example ExampleOS/2.4.1) are accepted only
+	// as curator-reviewed product metadata. The exact-release preview is the
+	// control for this unavoidable recoding ambiguity.
+	if allowProductSlash && start > 0 && value[start-1] == '/' {
+		return start > 1 && isASCIIAlphaNumeric(value[start-2])
+	}
+	if start == 0 || (value[start-1] != 'v' && value[start-1] != 'V') {
+		return false
+	}
+	return start == 1 || !isASCIIAlphaNumeric(value[start-2])
+}
+
+func isASCIIAlphaNumeric(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+func isNonPublicIPv4(value uint64) bool {
+	a, b, c := byte(value>>24), byte(value>>16), byte(value>>8)
+	return a == 0 || a == 10 || a == 127 || a >= 224 ||
+		(a == 100 && b >= 64 && b <= 127) ||
+		(a == 169 && b == 254) ||
+		(a == 172 && b >= 16 && b <= 31) ||
+		(a == 192 && (b == 168 || (b == 0 && (c == 0 || c == 2)))) ||
+		(a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100))) ||
+		(a == 203 && b == 0 && c == 113)
+}
+
+// containsEmbeddedIPv6 uses sliding boundaries rather than parsing only a
+// whole whitespace token. That catches a reversible address with an adjacent
+// hexadecimal character (for example f2001:db8::1) or a textual prefix.
+func containsEmbeddedIPv6(value string) bool {
+	for start := 0; start < len(value); start++ {
+		if !isIPv6CandidateChar(value[start]) {
+			continue
+		}
+		for end := start + 2; end <= len(value) && end-start <= 80; end++ {
+			if !isIPv6CandidateChar(value[end-1]) {
+				break
+			}
+			candidate := strings.Trim(value[start:end], "[].")
+			if strings.Count(candidate, ":") < 2 {
+				continue
+			}
+			if zone := strings.LastIndexByte(candidate, '%'); zone >= 0 {
+				candidate = candidate[:zone]
+			}
+			if net.ParseIP(candidate) != nil {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func containsMAC(value string) bool {
-	return macPattern.MatchString(value) || macCiscoPattern.MatchString(value) || macBarePattern.MatchString(value)
+func isIPv6CandidateChar(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'f' || b >= 'A' && b <= 'F' ||
+		b == ':' || b == '.' || b == '%' || b == '[' || b == ']'
+}
+
+func isFullWidthIPv4Integer(raw string) bool {
+	value, _, ok := parseLegacyIPv4Number(raw)
+	if ok && len(raw) == 10 && raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X') {
+		// Eight explicit hexadecimal digits are a full 32-bit address even when
+		// leading zeroes make its numeric value small.
+		return true
+	}
+	// Values below 2^24 overlap heavily with years, product numbers, and short
+	// documentation IDs. A full-width address with a nonzero first octet cannot
+	// be smaller than this threshold.
+	return ok && value >= 1<<24 && value <= 1<<32-1
+}
+
+func parseLegacyIPv4(parts []string) (uint64, bool, bool) {
+	if len(parts) < 1 || len(parts) > 4 {
+		return 0, false, false
+	}
+	values := make([]uint64, len(parts))
+	explicitBase := false
+	for i, part := range parts {
+		value, explicit, ok := parseLegacyIPv4Number(part)
+		if !ok {
+			return 0, false, false
+		}
+		values[i] = value
+		explicitBase = explicitBase || explicit
+	}
+	var value uint64
+	switch len(values) {
+	case 1:
+		if values[0] > 1<<32-1 {
+			return 0, false, false
+		}
+		value = values[0]
+	case 2:
+		if values[0] > 0xff || values[1] > 0xffffff {
+			return 0, false, false
+		}
+		value = values[0]<<24 | values[1]
+	case 3:
+		if values[0] > 0xff || values[1] > 0xff || values[2] > 0xffff {
+			return 0, false, false
+		}
+		value = values[0]<<24 | values[1]<<16 | values[2]
+	case 4:
+		for _, component := range values {
+			if component > 0xff {
+				return 0, false, false
+			}
+		}
+		value = values[0]<<24 | values[1]<<16 | values[2]<<8 | values[3]
+	}
+	return value, explicitBase, true
+}
+
+func parseLegacyIPv4Number(raw string) (uint64, bool, bool) {
+	if raw == "" {
+		return 0, false, false
+	}
+	base := 10
+	digits := raw
+	explicitBase := false
+	if len(raw) > 2 && raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X') {
+		base, digits, explicitBase = 16, raw[2:], true
+	} else if len(raw) > 1 && raw[0] == '0' {
+		base, digits, explicitBase = 8, raw[1:], true
+	}
+	if digits == "" {
+		return 0, false, false
+	}
+	value, err := strconv.ParseUint(digits, base, 32)
+	return value, explicitBase, err == nil
 }
 
 func containsDynamicIdentifier(value string) bool {

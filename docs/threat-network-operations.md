@@ -220,7 +220,11 @@ management listener out of the Cloudflare Tunnel and public reverse proxy.
 The service refuses wildcard and non-loopback management addresses unless
 `THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK=true` is also set. That escape hatch is
 for an explicitly isolated container network only; the host mapping must still
-bind to loopback and the port must remain outside every public tunnel.
+bind to loopback and the port must remain outside every public tunnel. If a
+management hop must cross a host or network boundary instead, put an
+authenticated TLS reverse proxy in front of it and restrict the plaintext
+upstream to that private path. Never expose port `9091` directly to a LAN,
+tailnet, or the public internet.
 
 ### Curated device corpus operations (standalone branch)
 
@@ -259,7 +263,10 @@ THREAT_NETWORK_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token \
 For the repository's Compose deployment, use the tracked opt-in overlay. It
 handles the otherwise easy-to-miss Docker distinction: the listener binds all
 interfaces **inside** the container, while Docker publishes it only on host
-loopback. The second non-loopback guard remains explicit.
+loopback. The second non-loopback guard remains explicit. The Threat Network
+container is attached to its own `threat-network-isolated` bridge rather than
+the ordinary Vedetta application bridge, so Core, telemetry, collector, and
+frontend siblings cannot connect directly to the management port.
 
 ```sh
 export THREAT_NETWORK_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token
@@ -282,6 +289,12 @@ audit events, and complete public releases are versioned independently. Drafts n
 appear publicly. Old release bytes remain immutable and can be inspected through the
 management API; recovery to an older release is an explicit SQLite backup/manual
 operation rather than a one-click browser mutation.
+
+Every publish, profile retirement, and full variant withdrawal is authorized against
+both the target profile ETag and the public corpus revision displayed to the curator.
+An intervening release anywhere in the corpus rejects the action atomically with
+`CORPUS_ADVANCED`; the dashboard reloads the current snapshot before a retry. Discarding
+only an unpublished draft does not create a release and retains its ETag-only contract.
 
 Evidence entered as an `import` must include a curator-reviewed redistributable
 `license_code`; imports without it are rejected. This prevents an unresolved

@@ -1,6 +1,8 @@
 # Explicit opt-in overlay for the off-node Threat Network corpus management API.
 # The browser dashboard still runs as a separate loopback process; this overlay
 # exposes only the authenticated Go listener to the host loopback interface.
+# The base service is attached solely to threat-network-isolated, preventing
+# ordinary Vedetta sibling containers from reaching port 9091 directly.
 services:
   threat-network:
     ports:

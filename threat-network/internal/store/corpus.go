@@ -20,7 +20,26 @@ var (
 	ErrCorpusNoChanges        = errors.New("device corpus has no draft changes")
 	ErrCorpusHasDependents    = errors.New("device corpus variant has active descendants")
 	ErrCorpusRevisionConflict = errors.New("device corpus public revision changed")
+	ErrCorpusValidation       = errors.New("device corpus validation failed")
 )
+
+// corpusValidationError gives the HTTP boundary a stable classification for
+// curator-input failures without relying on mutable error text. Privacy errors
+// retain their narrower type so callers can return FORBIDDEN_CONTENT instead.
+func corpusValidationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var privacyErr *corpus.CorpusPrivacyError
+	if errors.As(err, &privacyErr) || errors.Is(err, ErrCorpusValidation) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrCorpusValidation, err)
+}
+
+func corpusValidationf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrCorpusValidation, fmt.Sprintf(format, args...))
+}
 
 // CorpusMutation identifies a management action without storing an operator's
 // personal identity. Actor is deliberately a coarse deployment label.
@@ -47,7 +66,7 @@ type normalizedVariant struct {
 
 func normalizeVariant(shape corpus.CanonicalShapeV1, confidence int, sources []corpus.Source, facts []corpus.VersionFact) (normalizedVariant, error) {
 	if confidence < 0 || confidence > 10000 {
-		return normalizedVariant{}, fmt.Errorf("confidence_bp must be 0..10000")
+		return normalizedVariant{}, corpusValidationf("confidence_bp must be 0..10000")
 	}
 	// Source and fact IDs are response-only identifiers assigned when evidence
 	// is persisted. Keeping that rule at the write boundary prevents clients
@@ -55,27 +74,27 @@ func normalizeVariant(shape corpus.CanonicalShapeV1, confidence int, sources []c
 	// while the corpus package remains able to validate published snapshots.
 	for _, source := range sources {
 		if source.SourceID != "" {
-			return normalizedVariant{}, fmt.Errorf("source.source_id is server-assigned and cannot be supplied")
+			return normalizedVariant{}, corpusValidationf("source.source_id is server-assigned and cannot be supplied")
 		}
 	}
 	for _, fact := range facts {
 		if fact.FactID != "" {
-			return normalizedVariant{}, fmt.Errorf("version_fact.fact_id is server-assigned and cannot be supplied")
+			return normalizedVariant{}, corpusValidationf("version_fact.fact_id is server-assigned and cannot be supplied")
 		}
 		if fact.SourceID != "" {
-			return normalizedVariant{}, fmt.Errorf("version_fact.source_id is server-assigned and cannot be supplied")
+			return normalizedVariant{}, corpusValidationf("version_fact.source_id is server-assigned and cannot be supplied")
 		}
 		if strings.TrimSpace(fact.SourceRef) == "" {
-			return normalizedVariant{}, fmt.Errorf("version_fact.source_ref is required for write requests")
+			return normalizedVariant{}, corpusValidationf("version_fact.source_ref is required for write requests")
 		}
 	}
 	canonicalShape, canonicalJSON, shapeHash, families, err := corpus.CanonicalizeShape(shape)
 	if err != nil {
-		return normalizedVariant{}, err
+		return normalizedVariant{}, corpusValidationError(err)
 	}
 	normalizedSources, err := corpus.NormalizeSources(sources)
 	if err != nil {
-		return normalizedVariant{}, err
+		return normalizedVariant{}, corpusValidationError(err)
 	}
 	refs := make(map[string]bool, len(normalizedSources))
 	for _, source := range normalizedSources {
@@ -85,7 +104,7 @@ func normalizeVariant(shape corpus.CanonicalShapeV1, confidence int, sources []c
 	}
 	normalizedFacts, err := corpus.NormalizeVersionFacts(facts, refs)
 	if err != nil {
-		return normalizedVariant{}, err
+		return normalizedVariant{}, corpusValidationError(err)
 	}
 	return normalizedVariant{
 		shape: canonicalShape, canonical: canonicalJSON, shapeHash: shapeHash,
@@ -156,11 +175,11 @@ func requireCorpusETag(q corpusQuerier, profileID string, meta CorpusMutation) (
 func (db *DB) CreateCorpusProfile(req corpus.CreateProfileRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	labels, err := corpus.ValidateLabels(req.Labels)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
 	profileID, err := newCorpusID()
 	if err != nil {
@@ -212,11 +231,11 @@ func (db *DB) CreateCorpusProfile(req corpus.CreateProfileRequest, meta CorpusMu
 func (db *DB) ReviseCorpusProfile(profileID string, req corpus.ReviseProfileRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	labels, err := corpus.ValidateLabels(req.Labels)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
 	meta = normalizeMutation(meta)
 	tx, err := db.Begin()
@@ -287,11 +306,11 @@ func (db *DB) ReviseCorpusProfile(profileID string, req corpus.ReviseProfileRequ
 func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	variantKey, err := corpus.ValidateVariantKey(req.VariantKey)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
 	nv, err := normalizeVariant(req.Shape, req.ConfidenceBP, req.Sources, req.VersionFacts)
 	if err != nil {
@@ -316,14 +335,8 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 		return nil, ErrCorpusNotFound
 	}
 	if req.PredecessorVariantID != "" {
-		var predecessorProfile string
-		if err = tx.QueryRow(`SELECT profile_id FROM device_corpus_variants WHERE variant_id = ?`, req.PredecessorVariantID).Scan(&predecessorProfile); errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("predecessor_variant_id: %w", ErrCorpusNotFound)
-		} else if err != nil {
+		if err = requireActiveCorpusVariantPredecessor(tx, profileID, req.PredecessorVariantID); err != nil {
 			return nil, err
-		}
-		if predecessorProfile != profileID {
-			return nil, fmt.Errorf("predecessor_variant_id belongs to another profile")
 		}
 	}
 	variantID := ""
@@ -361,7 +374,7 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 			return nil, cycleErr
 		}
 		if cycle {
-			return nil, fmt.Errorf("predecessor_variant_id would create a lineage cycle")
+			return nil, corpusValidationf("predecessor_variant_id would create a lineage cycle")
 		}
 		if _, err = tx.Exec(`UPDATE device_corpus_variants SET predecessor_variant_id = NULLIF(?, '')
 			WHERE variant_id = ?`, req.PredecessorVariantID, variantID); err != nil {
@@ -375,7 +388,7 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 		expectedReason = "firmware_evolution"
 	}
 	if reason != expectedReason {
-		return nil, fmt.Errorf("reason_code must be %s for this variant creation", expectedReason)
+		return nil, corpusValidationf("reason_code must be %s for this variant creation", expectedReason)
 	}
 	revisionID, err := newCorpusID()
 	if err != nil {
@@ -420,6 +433,33 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 	return db.GetCorpusProfile(profileID)
 }
 
+// requireActiveCorpusVariantPredecessor prevents a new lineage from pointing at
+// an abandoned or withdrawn identity. Such links could never produce a valid
+// public snapshot, so reject them before creating a stable variant identity or
+// changing the profile ETag.
+func requireActiveCorpusVariantPredecessor(tx *sql.Tx, profileID, predecessorID string) error {
+	var predecessorProfile string
+	var active int
+	err := tx.QueryRow(`SELECT v.profile_id,
+		EXISTS (SELECT 1 FROM device_corpus_variant_revisions vr
+			WHERE vr.variant_id = v.variant_id AND vr.status IN ('draft','published'))
+		FROM device_corpus_variants v WHERE v.variant_id = ?`, predecessorID).
+		Scan(&predecessorProfile, &active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("predecessor_variant_id: %w", ErrCorpusNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	if predecessorProfile != profileID {
+		return corpusValidationf("predecessor_variant_id belongs to another profile")
+	}
+	if active == 0 {
+		return corpusValidationf("predecessor_variant_id must have an active draft or published revision")
+	}
+	return nil
+}
+
 func corpusVariantCycle(tx *sql.Tx, variantID, predecessorID string) (bool, error) {
 	current := predecessorID
 	for depth := 0; current != "" && depth < 1024; depth++ {
@@ -437,7 +477,7 @@ func corpusVariantCycle(tx *sql.Tx, variantID, predecessorID string) (bool, erro
 		current = next.String
 	}
 	if current != "" {
-		return true, fmt.Errorf("variant lineage exceeds maximum depth")
+		return true, corpusValidationf("variant lineage exceeds maximum depth")
 	}
 	return false, nil
 }
@@ -447,10 +487,10 @@ func corpusVariantCycle(tx *sql.Tx, variantID, predecessorID string) (bool, erro
 func (db *DB) ReviseCorpusVariant(variantID string, req corpus.ReviseVariantRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
-		return nil, err
+		return nil, corpusValidationError(err)
 	}
 	if reason != "signal_correction" && reason != "source_update" {
-		return nil, fmt.Errorf("reason_code must describe a curator correction, not product evolution")
+		return nil, corpusValidationf("reason_code must describe a curator correction, not product evolution")
 	}
 	nv, err := normalizeVariant(req.Shape, req.ConfidenceBP, req.Sources, req.VersionFacts)
 	if err != nil {

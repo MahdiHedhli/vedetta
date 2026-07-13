@@ -32,6 +32,13 @@ func main() {
 	}
 }
 
+type runMode struct {
+	consensusOnce bool
+	denylist      string
+	reinstate     string
+	reason        string
+}
+
 func run() error {
 	var (
 		consensusOnce = flag.Bool("consensus-once", false, "run a single consensus pass and exit")
@@ -50,12 +57,6 @@ func run() error {
 		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-	// Validate and warm the immutable corpus release once at startup. Public
-	// manifest/status reads remain metadata-only after this; a corrupt imported
-	// release therefore fails closed before either listener starts.
-	if _, _, err = db.CurrentCorpusSnapshot(); err != nil {
-		log.Fatalf("validate current device corpus release: %v", err)
-	}
 
 	if n, err := db.SeedDefaultAllowlist(); err != nil {
 		log.Printf("warning: allowlist seed failed: %v", err)
@@ -63,25 +64,19 @@ func run() error {
 		log.Printf("allowlist seeded: %d domains", n)
 	}
 
-	// Admin subcommands (config/CLI only — no web UI, per T6.1).
-	switch {
-	case *denylist != "":
-		if err := db.DenylistReporter(*denylist, *reason); err != nil {
-			log.Fatalf("denylist: %v", err)
-		}
-		log.Printf("denylisted reporter_id=%s", *denylist)
-		return nil
-	case *reinstate != "":
-		if err := db.ReinstateReporter(*reinstate); err != nil {
-			log.Fatalf("reinstate: %v", err)
-		}
-		log.Printf("reinstated reporter_id=%s", *reinstate)
-		return nil
-	case *consensusOnce:
-		if err := consensus.New(db).Run(); err != nil {
-			log.Fatalf("consensus run: %v", err)
-		}
-		log.Printf("consensus run complete")
+	// Recovery and admin subcommands must remain usable when the current corpus
+	// release is corrupt. The daemon path still validates and warms the immutable
+	// release before either listener is constructed or started.
+	handled, err := prepareRunMode(db, runMode{
+		consensusOnce: *consensusOnce,
+		denylist:      *denylist,
+		reinstate:     *reinstate,
+		reason:        *reason,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if handled {
 		return nil
 	}
 
@@ -113,6 +108,10 @@ func run() error {
 		allowNonLoopback := os.Getenv("THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK") == "true"
 		if err = validateAdminListenAddr(adminAddr, allowNonLoopback); err != nil {
 			log.Fatalf("management API address is unsafe: %v", err)
+		}
+		adminHost, _, _ := net.SplitHostPort(adminAddr)
+		if !net.ParseIP(adminHost).IsLoopback() {
+			log.Printf("WARNING: plaintext management API uses a non-loopback in-process bind; this is safe only inside an isolated container with loopback-only host publication, or behind authenticated TLS termination; never expose port 9091 directly")
 		}
 		adminHTTP = &http.Server{
 			Addr:         adminAddr,
@@ -175,6 +174,38 @@ func run() error {
 	return serveErr
 }
 
+// prepareRunMode dispatches every early-exit CLI mode before validating the
+// public corpus. A damaged imported release must not prevent an operator from
+// running recovery or reporter-administration commands, while daemon startup
+// must continue to fail closed before binding a listener.
+func prepareRunMode(db *store.DB, mode runMode) (bool, error) {
+	switch {
+	case mode.denylist != "":
+		if err := db.DenylistReporter(mode.denylist, mode.reason); err != nil {
+			return true, fmt.Errorf("denylist: %w", err)
+		}
+		log.Printf("denylisted reporter_id=%s", mode.denylist)
+		return true, nil
+	case mode.reinstate != "":
+		if err := db.ReinstateReporter(mode.reinstate); err != nil {
+			return true, fmt.Errorf("reinstate: %w", err)
+		}
+		log.Printf("reinstated reporter_id=%s", mode.reinstate)
+		return true, nil
+	case mode.consensusOnce:
+		if err := consensus.New(db).Run(); err != nil {
+			return true, fmt.Errorf("consensus run: %w", err)
+		}
+		log.Printf("consensus run complete")
+		return true, nil
+	}
+
+	if _, _, err := db.CurrentCorpusSnapshot(); err != nil {
+		return false, fmt.Errorf("validate current device corpus release: %w", err)
+	}
+	return false, nil
+}
+
 // validateAdminListenAddr makes a plaintext bearer listener an explicit
 // deployment decision. Hostnames are intentionally refused: DNS resolution can
 // change, while the management boundary needs to be obvious from configuration.
@@ -188,7 +219,7 @@ func validateAdminListenAddr(addr string, allowNonLoopback bool) error {
 		return fmt.Errorf("host must be a literal IP address")
 	}
 	if !ip.IsLoopback() && !allowNonLoopback {
-		return fmt.Errorf("non-loopback binding requires THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK=true")
+		return fmt.Errorf("non-loopback binding requires THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK=true and an isolated loopback-published container or authenticated TLS termination")
 	}
 	return nil
 }

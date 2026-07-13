@@ -17,6 +17,12 @@ import (
 const corpusSnapshotPath = "/api/v1/device-corpus/snapshot"
 const maxCorpusSnapshotBytes = 16 << 20
 
+// SQLite length(TEXT) counts Unicode code points. Casting to BLOB makes both
+// the reported size and the projection guard use the encoded UTF-8 byte count
+// enforced by the publication and decode paths.
+const boundedCorpusSnapshotColumns = `length(CAST(snapshot_json AS BLOB)),
+	CASE WHEN length(CAST(snapshot_json AS BLOB)) <= ? THEN snapshot_json ELSE NULL END`
+
 // corpusSnapshotCache holds a release only after its hash, canonical encoding,
 // privacy constraints, and database metadata have all been verified. Releases
 // are immutable, so the revision/hash pair is a safe cache key.
@@ -47,7 +53,7 @@ func createCorpusReleaseTx(tx *sql.Tx, now string) (int, string, error) {
 		return 0, "", err
 	}
 	if len(bytes) > maxCorpusSnapshotBytes {
-		return 0, "", fmt.Errorf("device corpus snapshot exceeds 16 MiB publication limit")
+		return 0, "", corpusValidationf("device corpus snapshot exceeds 16 MiB publication limit")
 	}
 	digest := sha256.Sum256(bytes)
 	hash := hex.EncodeToString(digest[:])
@@ -94,6 +100,10 @@ func buildPublicCorpusSnapshot(q corpusQuerier, revision int, generatedAt time.T
 		profile.Variants = []corpus.PublicVariant{}
 		snapshot.Profiles = append(snapshot.Profiles, profile)
 	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return snapshot, err
+	}
 	if err = rows.Close(); err != nil {
 		return snapshot, err
 	}
@@ -131,6 +141,10 @@ func buildPublicCorpusSnapshot(q corpusQuerier, revision int, generatedAt time.T
 				return snapshot, fmt.Errorf("decode stored public shape: %w", err)
 			}
 			variants = append(variants, item)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return snapshot, err
 		}
 		if err = rows.Close(); err != nil {
 			return snapshot, err
@@ -249,9 +263,8 @@ func (db *DB) CurrentCorpusSnapshot() ([]byte, corpus.Manifest, error) {
 	} else {
 		var raw sql.NullString
 		var storedBytes int64
-		err = db.QueryRow(`SELECT length(snapshot_json),
-            CASE WHEN length(snapshot_json) <= ? THEN snapshot_json ELSE NULL END
-            FROM device_corpus_releases
+		err = db.QueryRow(`SELECT `+boundedCorpusSnapshotColumns+`
+	            FROM device_corpus_releases
             WHERE corpus_revision = ? AND snapshot_sha256 = ?`, maxCorpusSnapshotBytes,
 			manifest.CorpusRevision, manifest.SnapshotSHA256).Scan(&storedBytes, &raw)
 		if errors.Is(err, sql.ErrNoRows) {

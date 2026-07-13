@@ -1,6 +1,8 @@
 # Vedetta — Home Network Security Platform
 # Usage: docker compose up
-# All services communicate over the internal 'vedetta' network.
+# Product services communicate over the internal 'vedetta' network. The optional
+# off-node Threat Network service uses its own bridge so corpus administration is
+# not reachable from ordinary Core/frontend/collector/telemetry siblings.
 
 services:
   # --- Go API Backend ---
@@ -175,7 +177,7 @@ services:
     volumes:
       - threat-network-data:/data  # persist the service-local SQLite DB
     networks:
-      - vedetta
+      - threat-network-isolated
     restart: unless-stopped
 
 volumes:
@@ -190,4 +192,9 @@ volumes:
 
 networks:
   vedetta:
+    driver: bridge
+  # Defense in depth for the central/off-node service. Its public and management
+  # listeners are reached only through their host-loopback publications; no
+  # ordinary Vedetta application container shares this bridge.
+  threat-network-isolated:
     driver: bridge

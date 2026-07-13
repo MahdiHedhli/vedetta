@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import socket
 import stat
 import tempfile
 import threading
@@ -15,6 +16,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("serve.py")
@@ -66,6 +68,14 @@ def start_server(server):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return thread
+
+
+class RaisingOpener:
+    def __init__(self, error):
+        self.error = error
+
+    def open(self, *_args, **_kwargs):
+        raise self.error
 
 
 class ProxyTests(unittest.TestCase):
@@ -176,6 +186,46 @@ class ProxyTests(unittest.TestCase):
         self.assertNotIn(canary, captured.getvalue())
         self.assertIn("GET /api/v1/admin/device-corpus/profiles", captured.getvalue())
 
+    def test_malformed_request_line_gets_normal_400_without_log_crash(self):
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            with socket.create_connection(self.proxy.server_address, timeout=3) as client:
+                client.sendall(b"GET / unexpected-token HTTP/1.1\r\n\r\n")
+                client.shutdown(socket.SHUT_WR)
+                response = bytearray()
+                while True:
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+
+        self.assertIn(b"HTTP/1.0 400 Bad request syntax", response)
+        self.assertIn("<malformed-request>", captured.getvalue())
+        self.assertNotIn("Traceback", captured.getvalue())
+        self.assertNotIn("AttributeError", captured.getvalue())
+        self.assertEqual(self.upstream.calls, [])
+
+    def test_invalid_absolute_target_gets_opaque_400_without_thread_crash(self):
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            with socket.create_connection(self.proxy.server_address, timeout=3) as client:
+                client.sendall(b"GET http://[bad HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                client.shutdown(socket.SHUT_WR)
+                response = bytearray()
+                while True:
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+
+        self.assertIn(b"HTTP/1.0 400 Bad Request", response)
+        self.assertIn(b'"error":"INVALID_TARGET"', response)
+        self.assertNotIn(b"http://[bad", response)
+        self.assertNotIn("Traceback", captured.getvalue())
+        self.assertNotIn("ValueError", captured.getvalue())
+        self.assertNotIn("http://[bad", captured.getvalue())
+        self.assertEqual(self.upstream.calls, [])
+
     def test_admin_read_rejects_dns_rebinding_host(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.open(
@@ -206,6 +256,25 @@ class ProxyTests(unittest.TestCase):
         caught.exception.close()
         self.assertEqual(self.upstream.calls, [])
 
+    def test_explicit_local_admin_bypass_requires_loopback_client(self):
+        handler = object.__new__(serve.Handler)
+        handler.headers = {"Host": "localhost:8787"}
+
+        with (
+            mock.patch.object(serve, "ALLOW_LOCAL_ADMIN", True),
+            mock.patch.object(
+                serve, "ALLOWED_ADMIN_HOSTS", frozenset(("localhost:8787",))
+            ),
+            mock.patch.object(
+                serve, "LOCAL_ADMIN_HOSTS", frozenset(("localhost:8787",))
+            ),
+        ):
+            handler.client_address = ("127.0.0.1", 49152)
+            self.assertTrue(handler._authorized_admin_client())
+
+            handler.client_address = ("192.0.2.25", 49152)
+            self.assertFalse(handler._authorized_admin_client())
+
     def test_admin_bearer_never_follows_upstream_redirect(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.open("/api/v1/admin/device-corpus/audit")
@@ -216,6 +285,51 @@ class ProxyTests(unittest.TestCase):
             self.upstream.calls[0]["authorization"], "Bearer " + "a" * 32
         )
         self.assertEqual(self.upstream.calls[0]["path"], "/api/v1/admin/device-corpus/audit")
+
+    def test_upstream_http_error_body_is_closed_after_forwarding(self):
+        body = io.BytesIO(b'{"error":"rate limited"}')
+        error = urllib.error.HTTPError(
+            "http://127.0.0.1/status",
+            429,
+            "Too Many Requests",
+            {"Content-Type": "application/json", "Retry-After": "3"},
+            body,
+        )
+        with mock.patch.object(serve, "UPSTREAM_OPENER", RaisingOpener(error)):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.open("/api/v1/status")
+            self.assertEqual(caught.exception.code, 429)
+            self.assertEqual(caught.exception.read(), b'{"error":"rate limited"}')
+            caught.exception.close()
+
+        self.assertTrue(body.closed)
+
+    def test_oversized_upstream_http_error_body_is_closed(self):
+        body = io.BytesIO(b"x" * 9)
+        error = urllib.error.HTTPError(
+            "http://127.0.0.1/status",
+            500,
+            "Internal Server Error",
+            {"Content-Type": "application/json"},
+            body,
+        )
+        with (
+            mock.patch.object(serve, "UPSTREAM_OPENER", RaisingOpener(error)),
+            mock.patch.object(serve, "MAX_RESPONSE_BYTES", 8),
+        ):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.open("/api/v1/status")
+            self.assertEqual(caught.exception.code, 502)
+            self.assertEqual(
+                json.loads(caught.exception.read()),
+                {
+                    "error": "UPSTREAM_TOO_LARGE",
+                    "message": "upstream response exceeded limit",
+                },
+            )
+            caught.exception.close()
+
+        self.assertTrue(body.closed)
 
     def test_mutation_requires_same_origin_and_action_header(self):
         body = b'{"reason_code":"publish_reviewed"}'
@@ -337,6 +451,14 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn("expected_corpus_revision:preview.currentRevision", dashboard)
         self.assertIn("errorValue.message||errorValue.code", dashboard)
         self.assertIn("current-to-proposed", dashboard.lower())
+        self.assertIn("reviewedCorpusRevision", dashboard)
+        self.assertEqual(
+            dashboard.count("expected_corpus_revision:expectedRevision"), 2
+        )
+        self.assertIn('error.code==="CORPUS_ADVANCED"', dashboard)
+        self.assertIn(
+            'body:{reason_code:"signal_correction"}', dashboard
+        )
         self.assertFalse(
             serve._is_admin_route(
                 "POST", "/api/v1/admin/device-corpus/releases/12"

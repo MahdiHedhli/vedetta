@@ -59,7 +59,7 @@ func (db *DB) PreviewCorpusProfile(profileID string, meta CorpusMutation) (Corpu
 		return CorpusPreview{}, err
 	}
 	if len(previewBytes) > maxCorpusSnapshotBytes {
-		return CorpusPreview{}, fmt.Errorf("device corpus snapshot exceeds 16 MiB publication limit")
+		return CorpusPreview{}, corpusValidationf("device corpus snapshot exceeds 16 MiB publication limit")
 	}
 	return CorpusPreview{
 		ETag:                   etag,
@@ -84,29 +84,7 @@ func validateCorpusPreviewEligibility(tx *sql.Tx, profileID string) error {
 		return ErrCorpusNoChanges
 	}
 
-	var usableVariants int
-	if err := tx.QueryRow(`SELECT COUNT(DISTINCT v.variant_id)
-		FROM device_corpus_variants v
-		JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
-		WHERE v.profile_id = ? AND vr.status IN ('draft','published')`, profileID).Scan(&usableVariants); err != nil {
-		return err
-	}
-	if usableVariants == 0 {
-		return fmt.Errorf("publish requires at least one fingerprint variant")
-	}
-
-	var unsourced int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM device_corpus_variants v
-		JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
-		WHERE v.profile_id = ? AND vr.status IN ('draft','published')
-		  AND NOT EXISTS (SELECT 1 FROM device_corpus_sources s
-		                  WHERE s.variant_revision_id = vr.variant_revision_id)`, profileID).Scan(&unsourced); err != nil {
-		return err
-	}
-	if unsourced > 0 {
-		return fmt.Errorf("publish requires at least one source per variant")
-	}
-	return validateCorpusPublishQuality(tx, profileID)
+	return validateCorpusPublishReadiness(tx, profileID)
 }
 
 // buildCorpusPreviewSnapshot mirrors publication selection: the target
@@ -144,6 +122,10 @@ func buildCorpusPreviewSnapshot(q corpusQuerier, targetProfileID string, revisio
 		if !exists || (candidate.profile.ProfileID == targetProfileID && candidate.status == "draft" && current.status != "draft") {
 			selected[candidate.profile.ProfileID] = candidate
 		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return snapshot, err
 	}
 	if err = rows.Close(); err != nil {
 		return snapshot, err
@@ -214,6 +196,10 @@ func loadCorpusPreviewVariants(q corpusQuerier, profile *corpus.PublicProfile, p
 		if !exists || (preferDraft && candidate.status == "draft" && current.status != "draft") {
 			selected[candidate.value.VariantID] = candidate
 		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err = rows.Close(); err != nil {
 		return err
