@@ -118,6 +118,13 @@ func TestCorpusAdminPreviewRequiresCurrentETag(t *testing.T) {
 		t.Fatalf("publish without corpus precondition status=%d body=%s", resp.StatusCode, body)
 	}
 	resp = adminRequest(t, http.DefaultClient, http.MethodPost, publishTarget,
+		`{"reason_code":"new_variant","expected_corpus_revision":0}`, profile.ETag)
+	body = readResponse(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity ||
+		!bytes.Contains(body, []byte(`"code":"VALIDATION_FAILED"`)) {
+		t.Fatalf("publish with misleading reason status=%d body=%s", resp.StatusCode, body)
+	}
+	resp = adminRequest(t, http.DefaultClient, http.MethodPost, publishTarget,
 		`{"reason_code":"publish_reviewed","expected_corpus_revision":1}`, profile.ETag)
 	body = readResponse(t, resp)
 	if resp.StatusCode != http.StatusConflict || !bytes.Contains(body, []byte(`"code":"CORPUS_ADVANCED"`)) {

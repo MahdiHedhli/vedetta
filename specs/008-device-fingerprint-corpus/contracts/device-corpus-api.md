@@ -53,7 +53,9 @@ never logged or returned.
 ```
 
 Empty fields are omitted from canonical JSON. Set-valued arrays are sorted/deduplicated;
-DHCP option order is significant. This object has no extension map.
+DHCP option order is significant. A hostname template contains exactly one supported
+placeholder and at least one ASCII alphanumeric product literal outside it. This object
+has no extension map.
 
 ## Mutation lifecycle
 
@@ -70,7 +72,7 @@ release because it was never present in the public corpus. Prior
 release bytes remain available to management for inspection and manual recovery.
 
 Publish, profile-retire, and full variant-withdraw requests require both
-concurrency preconditions:
+concurrency preconditions. The publish request body is:
 
 ```json
 {
@@ -78,6 +80,9 @@ concurrency preconditions:
   "expected_corpus_revision": 12
 }
 ```
+
+Publish accepts only the `publish_reviewed` reason. Retire and withdraw use their
+documented lifecycle reason codes with the same revision precondition.
 
 `If-Match` binds the target profile/variant state. `expected_corpus_revision` binds the
 rest of the complete public snapshot the curator reviewed. If either changed, the

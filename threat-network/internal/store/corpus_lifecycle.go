@@ -38,6 +38,9 @@ func (db *DB) PublishCorpusProfile(ctx context.Context, profileID string, req co
 	if err != nil {
 		return nil, corpusValidationError(err)
 	}
+	if reason != "publish_reviewed" {
+		return nil, corpusValidationf("reason_code must be publish_reviewed for publication")
+	}
 	if err = validateExpectedCorpusRevision(req.ExpectedCorpusRevision); err != nil {
 		return nil, err
 	}
@@ -194,24 +197,32 @@ func validateCorpusPublishReadiness(ctx context.Context, tx *sql.Tx, profileID s
 }
 
 func validateCorpusPublishQuality(ctx context.Context, tx *sql.Tx, profileID string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT vr.variant_revision_id, s.signal_family_count, s.canonical_json
+	rows, err := tx.QueryContext(ctx, `SELECT s.signal_family_count, s.canonical_json,
+		COALESCE(authoritative.citations, 0)
 		FROM device_corpus_variants v
 		JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
 		JOIN device_corpus_shapes s ON s.shape_hash = vr.shape_hash
+		LEFT JOIN (
+			SELECT variant_revision_id, COUNT(*) AS citations
+			FROM device_corpus_sources
+			WHERE public_url <> ''
+			  AND kind IN ('vendor_doc','standards','security_advisory')
+			GROUP BY variant_revision_id
+		) authoritative ON authoritative.variant_revision_id = vr.variant_revision_id
 		WHERE v.profile_id = ? AND vr.status IN ('draft','published')`, profileID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close() // panic backstop; explicit close precedes the nested citation queries
+	defer rows.Close()
 	type candidate struct {
-		revisionID string
-		families   int
-		shapeJSON  string
+		families  int
+		shapeJSON string
+		citations int
 	}
 	var candidates []candidate
 	for rows.Next() {
 		var candidate candidate
-		if err = rows.Scan(&candidate.revisionID, &candidate.families, &candidate.shapeJSON); err != nil {
+		if err = rows.Scan(&candidate.families, &candidate.shapeJSON, &candidate.citations); err != nil {
 			rows.Close()
 			return err
 		}
@@ -247,13 +258,7 @@ func validateCorpusPublishQuality(ctx context.Context, tx *sql.Tx, profileID str
 		if families >= 2 {
 			continue
 		}
-		var citations int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_corpus_sources
-			WHERE variant_revision_id = ? AND public_url <> ''
-			  AND kind IN ('vendor_doc','standards','security_advisory')`, candidate.revisionID).Scan(&citations); err != nil {
-			return err
-		}
-		if citations == 0 {
+		if candidate.citations == 0 {
 			return corpusValidationf("single-family product signatures require a public authoritative citation")
 		}
 	}

@@ -54,6 +54,24 @@ func TestCanonicalShapeGoldenVector(t *testing.T) {
 	}
 }
 
+func TestCanonicalShapeRejectsWildcardOnlyHostnameTemplates(t *testing.T) {
+	for _, value := range []string{"{hex}", "{digits}", "{random}", "-{hex}_", " {HEX} ", "{hex}{digits}"} {
+		t.Run(value, func(t *testing.T) {
+			_, _, _, _, err := CanonicalizeShape(CanonicalShapeV1{HostnameTemplates: []string{value}})
+			if err == nil || !strings.Contains(err.Error(), "alphanumeric literal") {
+				t.Fatalf("wildcard-only hostname template %q error = %v", value, err)
+			}
+		})
+	}
+	for _, value := range []string{"camera-{hex}", "{digits}-camera", "x{random}", "{hex}-cam_2"} {
+		t.Run("accept "+value, func(t *testing.T) {
+			if _, _, _, _, err := CanonicalizeShape(CanonicalShapeV1{HostnameTemplates: []string{value}}); err != nil {
+				t.Fatalf("constrained hostname template %q rejected: %v", value, err)
+			}
+		})
+	}
+}
+
 func TestCanonicalShapeSetOrderingDoesNotChangeHash(t *testing.T) {
 	t.Parallel()
 

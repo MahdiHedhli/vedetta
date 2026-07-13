@@ -125,6 +125,82 @@ func corpusLifecycleRequest(reasonCode string, expectedRevision int) corpus.Life
 	return corpus.LifecycleRequest{ReasonCode: reasonCode, ExpectedCorpusRevision: &expectedRevision}
 }
 
+func TestCorpusActiveRevisionPointersReferenceHistory(t *testing.T) {
+	db := newTestDB(t)
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("pointer-v1"),
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	labels := profile.Published.Labels
+	labels.Model = "Camera Two Revised"
+	profile, err = db.ReviseCorpusProfile(context.Background(), profile.ProfileID, corpus.ReviseProfileRequest{
+		Labels: labels, ReasonCode: "label_correction",
+	}, CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant := profile.Variants[0]
+	clean := corpusVariantRequest("unused")
+	profile, err = db.ReviseCorpusVariant(context.Background(), variant.VariantID, corpus.ReviseVariantRequest{
+		ConfidenceBP: variant.Published.ConfidenceBP,
+		Shape:        variant.Published.Shape,
+		Sources:      clean.Sources,
+		VersionFacts: clean.VersionFacts,
+		ReasonCode:   "signal_correction",
+	}, CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertProfileRevisionPointer := func(status string, active *corpus.ProfileRevision) {
+		t.Helper()
+		if active == nil {
+			t.Fatalf("active profile %s revision is nil", status)
+		}
+		for i := range profile.History {
+			if profile.History[i].Status == status {
+				if active != &profile.History[i] {
+					t.Fatalf("profile %s pointer does not reference History element", status)
+				}
+				return
+			}
+		}
+		t.Fatalf("profile History has no %s revision", status)
+	}
+	assertProfileRevisionPointer("draft", profile.Draft)
+	assertProfileRevisionPointer("published", profile.Published)
+
+	variant = profile.Variants[0]
+	assertVariantRevisionPointer := func(status string, active *corpus.VariantRevision) {
+		t.Helper()
+		if active == nil {
+			t.Fatalf("active variant %s revision is nil", status)
+		}
+		for i := range variant.History {
+			if variant.History[i].Status == status {
+				if active != &variant.History[i] {
+					t.Fatalf("variant %s pointer does not reference History element", status)
+				}
+				return
+			}
+		}
+		t.Fatalf("variant History has no %s revision", status)
+	}
+	assertVariantRevisionPointer("draft", variant.Draft)
+	assertVariantRevisionPointer("published", variant.Published)
+}
+
 func TestCorpusVariantReasonsDistinguishEvolutionFromCorrection(t *testing.T) {
 	db := newTestDB(t)
 	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
@@ -479,6 +555,40 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 	}
 }
 
+func TestCorpusPublishRequiresReviewedReasonWithoutMutation(t *testing.T) {
+	db := newTestDB(t)
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("publish-reason"),
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditBefore, releasesBefore := corpusMutationCounts(t, db)
+	for _, reason := range []string{
+		"new_profile", "new_variant", "label_correction", "signal_correction", "firmware_evolution",
+		"source_update", "privacy_withdrawal", "obsolete_product", "restore_reviewed",
+	} {
+		request := corpusPublishRequest(0)
+		request.ReasonCode = reason
+		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, request,
+			CorpusMutation{ExpectedETag: profile.ETag}); !errors.Is(err, ErrCorpusValidation) {
+			t.Fatalf("publish reason %q error = %v, want ErrCorpusValidation", reason, err)
+		}
+	}
+	unchanged, err := db.GetCorpusProfile(context.Background(), profile.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.ETag != profile.ETag || unchanged.Published != nil || unchanged.Draft == nil ||
+		len(unchanged.Variants) != 1 || unchanged.Variants[0].Published != nil || unchanged.Variants[0].Draft == nil {
+		t.Fatalf("rejected publish reason mutated profile: %+v", unchanged)
+	}
+	assertCorpusReleaseState(t, db, 0, auditBefore, releasesBefore)
+}
+
 func TestCorpusPublicationFailureRollsBackLifecycle(t *testing.T) {
 	db := newTestDB(t)
 	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
@@ -570,6 +680,34 @@ func TestCorpusPublicationQualityGate(t *testing.T) {
 		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 			corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
 			t.Fatalf("authoritative exact signature rejected: %v", err)
+		}
+	})
+	t.Run("authoritative citation count is isolated per revision", func(t *testing.T) {
+		db := newTestDB(t)
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cited := corpusVariantRequest("cited-exact")
+		cited.Shape = corpus.CanonicalShapeV1{MDNSModels: []string{"Example Camera Two"}}
+		cited.VersionFacts = nil
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, cited,
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		uncited := corpusVariantRequest("uncited-exact")
+		uncited.Shape = corpus.CanonicalShapeV1{MDNSModels: []string{"Example Camera Three"}}
+		uncited.Sources = []corpus.Source{{Kind: "lab_observation"}}
+		uncited.VersionFacts = nil
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, uncited,
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
+			corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
+			t.Fatal("authoritative citation from another revision satisfied uncited signature")
 		}
 	})
 }

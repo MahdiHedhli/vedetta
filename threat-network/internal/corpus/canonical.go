@@ -33,6 +33,7 @@ var (
 	mdnsServiceRe     = regexp.MustCompile(`^_[a-z0-9-]{1,63}\._(?:tcp|udp)$`)
 	ssdpDeviceRe      = regexp.MustCompile(`^urn:[a-z0-9][a-z0-9.-]{0,63}:device:[a-z0-9][a-z0-9._-]{0,63}:[0-9]{1,5}$`)
 	hostTemplateRe    = regexp.MustCompile(`^[a-z0-9_-]*(?:\{(?:hex|digits|random)\})[a-z0-9_-]*$`)
+	hostTemplateParts = strings.NewReplacer("{hex}", "", "{digits}", "", "{random}", "")
 	variantKeyRe      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 	sourceRefRe       = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 	safeLicenseRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
@@ -213,8 +214,10 @@ func normalizeHostnameTemplates(values []string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	for _, raw := range values {
 		v := strings.ToLower(strings.TrimSpace(raw))
-		if len(v) > 64 || !hostTemplateRe.MatchString(v) {
-			return nil, fmt.Errorf("hostname_templates must use literals plus {hex}, {digits}, or {random}")
+		literal := hostTemplateParts.Replace(v)
+		if len(v) > 64 || !hostTemplateRe.MatchString(v) ||
+			!strings.ContainsAny(literal, "abcdefghijklmnopqrstuvwxyz0123456789") {
+			return nil, fmt.Errorf("hostname_templates must include an alphanumeric literal plus {hex}, {digits}, or {random}")
 		}
 		if err := validatePublicToken("hostname_templates", v, 64); err != nil {
 			return nil, err

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/vedetta-network/vedetta/threat-network/internal/adminauth"
 	"github.com/vedetta-network/vedetta/threat-network/internal/corpus"
@@ -508,7 +509,7 @@ func walkJSONValue(decoder *json.Decoder, containerDepth int) error {
 		if containerDepth >= maxAdminJSONNestingDepth {
 			return fmt.Errorf("JSON nesting depth exceeds limit")
 		}
-		seen := []string{}
+		seen := make(map[string]struct{})
 		for decoder.More() {
 			keyToken, err := decoder.Token()
 			if err != nil {
@@ -518,15 +519,16 @@ func walkJSONValue(decoder *json.Decoder, containerDepth int) error {
 			if !ok {
 				return fmt.Errorf("invalid JSON object key")
 			}
-			for _, prior := range seen {
-				// encoding/json matches struct fields case-insensitively. Apply
-				// the same semantic duplicate rule before decoding so `labels`
-				// and `Labels` cannot become a last-value-wins bypass.
-				if strings.EqualFold(prior, key) {
-					return fmt.Errorf("duplicate JSON key")
-				}
+			// encoding/json matches struct fields case-insensitively. Apply the
+			// same semantic duplicate rule before decoding so `labels` and
+			// `Labels` cannot become a last-value-wins bypass. A canonical
+			// Unicode simple-fold key preserves EqualFold semantics without a
+			// quadratic scan over every prior key.
+			folded := foldJSONKey(key)
+			if _, exists := seen[folded]; exists {
+				return fmt.Errorf("duplicate JSON key")
 			}
-			seen = append(seen, key)
+			seen[folded] = struct{}{}
 			if err := walkJSONValue(decoder, containerDepth+1); err != nil {
 				return err
 			}
@@ -550,6 +552,24 @@ func walkJSONValue(decoder *json.Decoder, containerDepth int) error {
 		return fmt.Errorf("invalid JSON delimiter")
 	}
 	return nil
+}
+
+// foldJSONKey returns one stable representative for each Unicode simple-fold
+// equivalence class. strings.ToLower is insufficient here (for example, final
+// sigma and ordinary sigma are EqualFold-equivalent but lowercase differently).
+func foldJSONKey(key string) string {
+	var result strings.Builder
+	result.Grow(len(key))
+	for _, r := range key {
+		representative := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			if next < representative {
+				representative = next
+			}
+		}
+		result.WriteRune(representative)
+	}
+	return result.String()
 }
 
 func writeCorpusStrictError(w http.ResponseWriter, _ error) {

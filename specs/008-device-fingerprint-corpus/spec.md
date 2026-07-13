@@ -63,8 +63,9 @@ The version-1 canonical shape is a fixed structure containing only:
 - ordered DHCP option-55 codes;
 - vetted DHCP vendor-class product tokens;
 - 24-bit globally administered unicast OUI prefixes;
-- curator-authored constrained hostname templates (literals plus `{hex}`,
-  `{digits}`, or `{random}` only; never arbitrary regex or observed hostnames);
+- curator-authored constrained hostname templates (at least one alphanumeric
+  product literal plus `{hex}`, `{digits}`, or `{random}`; never a wildcard-only
+  template, arbitrary regex, or observed hostname);
 - mDNS service types, public product model tokens, and public vendor tokens;
 - SSDP device-type URNs and public product/server tokens;
 - TCP and UDP service-port sets.

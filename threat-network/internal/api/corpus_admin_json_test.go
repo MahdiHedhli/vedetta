@@ -54,6 +54,48 @@ func TestRejectDuplicateJSONKeysNestingDepthBoundary(t *testing.T) {
 	}
 }
 
+func TestRejectDuplicateJSONKeysUsesUnicodeFoldClasses(t *testing.T) {
+	for _, tt := range []struct {
+		name, first, second string
+	}{
+		{name: "ASCII", first: "labels", second: "Labels"},
+		{name: "Greek sigma", first: "Σ", second: "ς"},
+		{name: "Kelvin sign", first: "K", second: "K"},
+		{name: "long s", first: "S", second: "ſ"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.EqualFold(tt.first, tt.second) {
+				t.Fatalf("invalid test pair %q/%q", tt.first, tt.second)
+			}
+			if foldJSONKey(tt.first) != foldJSONKey(tt.second) {
+				t.Fatalf("fold keys differ for %q/%q", tt.first, tt.second)
+			}
+			body := fmt.Sprintf(`{%q:1,%q:2}`, tt.first, tt.second)
+			if err := rejectDuplicateJSONKeys([]byte(body)); err == nil || err.Error() != "duplicate JSON key" {
+				t.Fatalf("duplicate fold pair error = %v", err)
+			}
+		})
+	}
+}
+
+func TestRejectDuplicateJSONKeysHandlesManyUniqueKeys(t *testing.T) {
+	var body strings.Builder
+	body.WriteByte('{')
+	for i := 0; i < 2_000; i++ {
+		if i > 0 {
+			body.WriteByte(',')
+		}
+		fmt.Fprintf(&body, `"key_%04d":0`, i)
+	}
+	body.WriteByte('}')
+	if body.Len() > maxAdminBodyBytes {
+		t.Fatalf("test body exceeds request limit: %d", body.Len())
+	}
+	if err := rejectDuplicateJSONKeys([]byte(body.String())); err != nil {
+		t.Fatalf("unique-key object rejected: %v", err)
+	}
+}
+
 func TestCorpusAdminRejectsExcessiveJSONNestingWithoutEcho(t *testing.T) {
 	_, _, admin := newCorpusAPIServers(t)
 	const secret = "DEPTH-LIMIT-SECRET"

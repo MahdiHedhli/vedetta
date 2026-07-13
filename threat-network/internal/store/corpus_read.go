@@ -90,13 +90,6 @@ func getCorpusProfile(ctx context.Context, q corpusQuerier, profileID string) (*
 			rows.Close()
 			return nil, err
 		}
-		copyRev := rev
-		if rev.Status == "draft" {
-			result.Draft = &copyRev
-		}
-		if rev.Status == "published" {
-			result.Published = &copyRev
-		}
 		result.History = append(result.History, rev)
 	}
 	if err = rows.Err(); err != nil {
@@ -105,6 +98,16 @@ func getCorpusProfile(ctx context.Context, q corpusQuerier, profileID string) (*
 	}
 	if err = rows.Close(); err != nil {
 		return nil, err
+	}
+	// Bind active revisions only after History is complete so later appends
+	// cannot reallocate the slice and detach these pointers from its elements.
+	for i := range result.History {
+		if result.History[i].Status == "draft" {
+			result.Draft = &result.History[i]
+		}
+		if result.History[i].Status == "published" {
+			result.Published = &result.History[i]
+		}
 	}
 
 	rows, err = q.QueryContext(ctx, `SELECT variant_id, variant_key, COALESCE(predecessor_variant_id, ''), created_at
@@ -195,12 +198,11 @@ func loadCorpusVariantRevisions(ctx context.Context, q corpusQuerier, variant *c
 		if err = loadCorpusEvidence(ctx, q, variant.History[i].VariantRevisionID, &variant.History[i]); err != nil {
 			return err
 		}
-		copyRev := variant.History[i]
-		if copyRev.Status == "draft" {
-			variant.Draft = &copyRev
+		if variant.History[i].Status == "draft" {
+			variant.Draft = &variant.History[i]
 		}
-		if copyRev.Status == "published" {
-			variant.Published = &copyRev
+		if variant.History[i].Status == "published" {
+			variant.Published = &variant.History[i]
 		}
 	}
 	return nil
