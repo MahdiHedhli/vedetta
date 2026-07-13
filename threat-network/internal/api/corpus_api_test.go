@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -236,6 +237,126 @@ func TestCorpusAdminStrictJSONAndPrivacyErrorsDoNotEcho(t *testing.T) {
 				t.Fatalf("error reflected submitted content: %s", body)
 			}
 		})
+	}
+}
+
+func TestCorpusAdminRequiresExplicitVariantConfidence(t *testing.T) {
+	s, _, admin := newCorpusAPIServers(t)
+	profile, err := s.DB.CreateCorpusProfile(context.Background(), corpus.CreateProfileRequest{
+		Labels: corpus.ProfileLabels{
+			Manufacturer: "Example Devices", Model: "Confidence Camera", DeviceType: "camera",
+		},
+		ReasonCode: "new_profile",
+	}, store.CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createTarget := admin.URL + "/api/v1/admin/device-corpus/profiles/" + profile.ProfileID + "/variants"
+	validShape := `"shape":{"schema_version":1,"mdns_models":["Confidence Camera"]}`
+	validSource := `"sources":[{"source_ref":"vendor","kind":"vendor_doc","title":"Confidence Camera Support","public_url":"https://docs.example.com/confidence-camera"}]`
+
+	assertValidation := func(method, target, body, etag string) {
+		t.Helper()
+		resp := adminRequest(t, http.DefaultClient, method, target, body, etag)
+		responseBody := readResponse(t, resp)
+		if resp.StatusCode != http.StatusUnprocessableEntity ||
+			!bytes.Contains(responseBody, []byte(`"code":"VALIDATION_FAILED"`)) {
+			t.Fatalf("status=%d body=%s", resp.StatusCode, responseBody)
+		}
+	}
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing variant confidence",
+			body: `{"variant_key":"missing-confidence",` + validShape + `,` + validSource + `,"reason_code":"new_variant"}`,
+		},
+		{
+			name: "null variant confidence",
+			body: `{"variant_key":"null-confidence","confidence_bp":null,` + validShape + `,` + validSource + `,"reason_code":"new_variant"}`,
+		},
+		{
+			name: "missing version fact confidence",
+			body: `{"variant_key":"missing-fact-confidence","confidence_bp":0,` + validShape + `,` + validSource + `,"version_facts":[{"attribute":"firmware_version","relation":"exact","value":"1.0","source_ref":"vendor"}],"reason_code":"new_variant"}`,
+		},
+		{
+			name: "null version fact confidence",
+			body: `{"variant_key":"null-fact-confidence","confidence_bp":0,` + validShape + `,` + validSource + `,"version_facts":[{"attribute":"firmware_version","relation":"exact","value":"1.0","confidence_bp":null,"source_ref":"vendor"}],"reason_code":"new_variant"}`,
+		},
+	} {
+		t.Run("create "+tt.name, func(t *testing.T) {
+			assertValidation(http.MethodPost, createTarget, tt.body, profile.ETag)
+			current, getErr := s.DB.GetCorpusProfile(context.Background(), profile.ProfileID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if current.ETag != profile.ETag || len(current.Variants) != 0 {
+				t.Fatalf("invalid create mutated profile: %+v", current)
+			}
+		})
+	}
+
+	explicitZero := `{"variant_key":"explicit-zero","confidence_bp":0,` + validShape + `,` + validSource + `,"reason_code":"new_variant"}`
+	resp := adminRequest(t, http.DefaultClient, http.MethodPost, createTarget, explicitZero, profile.ETag)
+	body := readResponse(t, resp)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("explicit zero create status=%d body=%s", resp.StatusCode, body)
+	}
+	if err = json.Unmarshal(body, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if len(profile.Variants) != 1 || profile.Variants[0].Draft == nil || profile.Variants[0].Draft.ConfidenceBP != 0 {
+		t.Fatalf("explicit zero confidence was not preserved: %+v", profile)
+	}
+
+	reviseTarget := admin.URL + "/api/v1/admin/device-corpus/variants/" + profile.Variants[0].VariantID
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing variant confidence",
+			body: `{` + validShape + `,` + validSource + `,"reason_code":"signal_correction"}`,
+		},
+		{
+			name: "missing version fact confidence",
+			body: `{"confidence_bp":0,` + validShape + `,` + validSource + `,"version_facts":[{"attribute":"firmware_version","relation":"exact","value":"1.1","source_ref":"vendor"}],"reason_code":"signal_correction"}`,
+		},
+		{
+			name: "null variant confidence",
+			body: `{"confidence_bp":null,` + validShape + `,` + validSource + `,"reason_code":"signal_correction"}`,
+		},
+		{
+			name: "null version fact confidence",
+			body: `{"confidence_bp":0,` + validShape + `,` + validSource + `,"version_facts":[{"attribute":"firmware_version","relation":"exact","value":"1.1","confidence_bp":null,"source_ref":"vendor"}],"reason_code":"signal_correction"}`,
+		},
+	} {
+		t.Run("revise "+tt.name, func(t *testing.T) {
+			assertValidation(http.MethodPut, reviseTarget, tt.body, profile.ETag)
+			current, getErr := s.DB.GetCorpusProfile(context.Background(), profile.ProfileID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if current.ETag != profile.ETag || len(current.Variants) != 1 || current.Variants[0].Draft.ConfidenceBP != 0 {
+				t.Fatalf("invalid revision mutated profile: %+v", current)
+			}
+		})
+	}
+
+	explicitZeroRevision := `{"confidence_bp":0,` + validShape + `,` + validSource + `,"version_facts":[{"attribute":"firmware_version","relation":"exact","value":"1.1","confidence_bp":0,"source_ref":"vendor"}],"reason_code":"signal_correction"}`
+	resp = adminRequest(t, http.DefaultClient, http.MethodPut, reviseTarget, explicitZeroRevision, profile.ETag)
+	body = readResponse(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("explicit zero revision status=%d body=%s", resp.StatusCode, body)
+	}
+	if err = json.Unmarshal(body, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Variants[0].Draft == nil || profile.Variants[0].Draft.ConfidenceBP != 0 ||
+		len(profile.Variants[0].Draft.VersionFacts) != 1 || profile.Variants[0].Draft.VersionFacts[0].ConfidenceBP != 0 {
+		t.Fatalf("explicit zero revision confidence was not preserved: %+v", profile.Variants[0].Draft)
 	}
 }
 

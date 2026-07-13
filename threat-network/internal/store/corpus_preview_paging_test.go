@@ -184,6 +184,18 @@ func TestCorpusProfileBatchedETagsAndSummariesCoverLifecycleHistories(t *testing
 	publishedVariant := published.Variants[0]
 	clean := corpusVariantRequest("unused")
 	var err error
+	variantDraft := publish(addVariant(create("ETag Variant Draft"), "variant-draft-v1"))
+	variantDraftSeries := variantDraft.Variants[0]
+	variantDraft, err = db.ReviseCorpusVariant(context.Background(), variantDraftSeries.VariantID, corpus.ReviseVariantRequest{
+		ConfidenceBP: variantDraftSeries.Published.ConfidenceBP,
+		Shape:        variantDraftSeries.Published.Shape,
+		Sources:      clean.Sources,
+		VersionFacts: clean.VersionFacts,
+		ReasonCode:   "signal_correction",
+	}, CorpusMutation{ExpectedETag: variantDraft.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
 	published, err = db.ReviseCorpusVariant(context.Background(), publishedVariant.VariantID, corpus.ReviseVariantRequest{
 		ConfidenceBP: publishedVariant.Published.ConfidenceBP,
 		Shape:        publishedVariant.Published.Shape,
@@ -225,7 +237,7 @@ func TestCorpusProfileBatchedETagsAndSummariesCoverLifecycleHistories(t *testing
 		t.Fatal(err)
 	}
 
-	profiles := []*corpus.Profile{draft, published, withdrawn, retired}
+	profiles := []*corpus.Profile{draft, published, variantDraft, withdrawn, retired}
 	ids := make([]string, 0, len(profiles))
 	for _, profile := range profiles {
 		ids = append(ids, profile.ProfileID)
@@ -258,10 +270,11 @@ func TestCorpusProfileBatchedETagsAndSummariesCoverLifecycleHistories(t *testing
 		profile                 *corpus.Profile
 	}
 	want := map[string]wantSummary{
-		draft.ProfileID:     {status: "draft", draft: 0, dirty: 1, profile: draft},
-		published.ProfileID: {status: "published", published: 1, profile: published},
-		withdrawn.ProfileID: {status: "published", profile: withdrawn},
-		retired.ProfileID:   {status: "retired", profile: retired},
+		draft.ProfileID:        {status: "draft", draft: 0, dirty: 1, profile: draft},
+		published.ProfileID:    {status: "published", published: 1, profile: published},
+		variantDraft.ProfileID: {status: "published", published: 1, draft: 1, dirty: 1, profile: variantDraft},
+		withdrawn.ProfileID:    {status: "published", profile: withdrawn},
+		retired.ProfileID:      {status: "retired", profile: retired},
 	}
 	for _, summary := range page.Items {
 		expected, ok := want[summary.ProfileID]

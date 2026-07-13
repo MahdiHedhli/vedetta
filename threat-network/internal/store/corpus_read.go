@@ -420,7 +420,9 @@ func (db *DB) PageCorpusProfiles(ctx context.Context, search string, limit, offs
 				summary.UpdatedAt = updatedAt
 			}
 		}
-		summary.HasDraftChanges = summary.Status == "draft"
+		// A published profile can have a variant correction draft without a
+		// profile-label draft. Both are reviewable/publishable changes.
+		summary.HasDraftChanges = summary.Status == "draft" || summary.DraftVariants > 0
 		ids = append(ids, summary.ProfileID)
 		page.Items = append(page.Items, summary)
 	}

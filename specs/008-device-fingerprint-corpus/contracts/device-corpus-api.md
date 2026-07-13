@@ -152,4 +152,6 @@ curator must reload and review the new snapshot before retrying.
 Every version fact must use a nonempty request-local `source_ref` that resolves to a
 source in the same request. Server output IDs (`source_id` and `fact_id`) are rejected
 on writes. `import` sources additionally require a nonempty redistributable
-`license_code` recorded by the curator.
+`license_code` recorded by the curator. `confidence_bp` is required on every variant
+create/revise request and on every included version fact; an explicit value of `0` is
+valid, while omission or `null` returns `422 VALIDATION_FAILED`.

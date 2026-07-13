@@ -130,9 +130,14 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 	}
 	switch parts[1] {
 	case "variants":
-		var req corpus.CreateVariantRequest
-		if err := decodeAdminJSON(r, &req); err != nil {
+		var input createVariantInput
+		if err := decodeAdminJSON(r, &input); err != nil {
 			writeCorpusStrictError(w, err)
+			return
+		}
+		req, err := input.corpusRequest()
+		if err != nil {
+			writeCorpusAdminError(w, err)
 			return
 		}
 		profile, err := s.DB.CreateCorpusVariant(r.Context(), profileID, req, corpusMeta(r))
@@ -183,9 +188,14 @@ func (s *Server) handleAdminCorpusVariant(w http.ResponseWriter, r *http.Request
 			writeMethodNotAllowed(w, http.MethodPut, "PUT only")
 			return
 		}
-		var req corpus.ReviseVariantRequest
-		if err := decodeAdminJSON(r, &req); err != nil {
+		var input reviseVariantInput
+		if err := decodeAdminJSON(r, &input); err != nil {
 			writeCorpusStrictError(w, err)
+			return
+		}
+		req, err := input.corpusRequest()
+		if err != nil {
+			writeCorpusAdminError(w, err)
 			return
 		}
 		profile, err := s.DB.ReviseCorpusVariant(r.Context(), variantID, req, corpusMeta(r))
@@ -221,6 +231,80 @@ func (s *Server) handleAdminCorpusVariant(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeCorpusProfile(w, http.StatusOK, profile)
+}
+
+// Variant write inputs use pointers for required numeric fields so omitted or
+// null JSON cannot silently become a valid zero-confidence draft. The durable
+// corpus types intentionally retain plain integers because zero is a valid,
+// explicit stored value.
+type createVariantInput struct {
+	VariantKey           string                  `json:"variant_key"`
+	PredecessorVariantID string                  `json:"predecessor_variant_id,omitempty"`
+	ConfidenceBP         *int                    `json:"confidence_bp"`
+	Shape                corpus.CanonicalShapeV1 `json:"shape"`
+	VersionFacts         []versionFactInput      `json:"version_facts,omitempty"`
+	Sources              []corpus.Source         `json:"sources,omitempty"`
+	ReasonCode           string                  `json:"reason_code"`
+}
+
+type reviseVariantInput struct {
+	ConfidenceBP *int                    `json:"confidence_bp"`
+	Shape        corpus.CanonicalShapeV1 `json:"shape"`
+	VersionFacts []versionFactInput      `json:"version_facts,omitempty"`
+	Sources      []corpus.Source         `json:"sources,omitempty"`
+	ReasonCode   string                  `json:"reason_code"`
+}
+
+type versionFactInput struct {
+	FactID       string `json:"fact_id,omitempty"`
+	Attribute    string `json:"attribute"`
+	Relation     string `json:"relation"`
+	Value        string `json:"value"`
+	ValueEnd     string `json:"value_end,omitempty"`
+	ConfidenceBP *int   `json:"confidence_bp"`
+	SourceID     string `json:"source_id,omitempty"`
+	SourceRef    string `json:"source_ref,omitempty"`
+}
+
+func (input createVariantInput) corpusRequest() (corpus.CreateVariantRequest, error) {
+	confidence, facts, err := requiredVariantConfidence(input.ConfidenceBP, input.VersionFacts)
+	if err != nil {
+		return corpus.CreateVariantRequest{}, err
+	}
+	return corpus.CreateVariantRequest{
+		VariantKey: input.VariantKey, PredecessorVariantID: input.PredecessorVariantID,
+		ConfidenceBP: confidence, Shape: input.Shape, VersionFacts: facts,
+		Sources: input.Sources, ReasonCode: input.ReasonCode,
+	}, nil
+}
+
+func (input reviseVariantInput) corpusRequest() (corpus.ReviseVariantRequest, error) {
+	confidence, facts, err := requiredVariantConfidence(input.ConfidenceBP, input.VersionFacts)
+	if err != nil {
+		return corpus.ReviseVariantRequest{}, err
+	}
+	return corpus.ReviseVariantRequest{
+		ConfidenceBP: confidence, Shape: input.Shape, VersionFacts: facts,
+		Sources: input.Sources, ReasonCode: input.ReasonCode,
+	}, nil
+}
+
+func requiredVariantConfidence(confidence *int, inputs []versionFactInput) (int, []corpus.VersionFact, error) {
+	if confidence == nil {
+		return 0, nil, fmt.Errorf("%w: confidence_bp is required", store.ErrCorpusValidation)
+	}
+	facts := make([]corpus.VersionFact, 0, len(inputs))
+	for _, input := range inputs {
+		if input.ConfidenceBP == nil {
+			return 0, nil, fmt.Errorf("%w: version_fact.confidence_bp is required", store.ErrCorpusValidation)
+		}
+		facts = append(facts, corpus.VersionFact{
+			FactID: input.FactID, Attribute: input.Attribute, Relation: input.Relation,
+			Value: input.Value, ValueEnd: input.ValueEnd, ConfidenceBP: *input.ConfidenceBP,
+			SourceID: input.SourceID, SourceRef: input.SourceRef,
+		})
+	}
+	return *confidence, facts, nil
 }
 
 func (s *Server) handleAdminCorpusAudit(w http.ResponseWriter, r *http.Request) {
