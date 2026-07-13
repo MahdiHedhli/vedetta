@@ -208,50 +208,50 @@ func loadCorpusVariantRevisions(q corpusQuerier, variant *corpus.Variant) error 
 func loadCorpusEvidence(q corpusQuerier, revisionID string, rev *corpus.VariantRevision) error {
 	rev.Sources = []corpus.Source{}
 	rev.VersionFacts = []corpus.VersionFact{}
-	rows, err := q.Query(`SELECT source_id, kind, title, public_url,
+	sourceRows, err := q.Query(`SELECT source_id, kind, title, public_url,
         COALESCE(retrieved_at, ''), license_code FROM device_corpus_sources
         WHERE variant_revision_id = ? ORDER BY kind, title, source_id`, revisionID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
+	defer sourceRows.Close()
+	for sourceRows.Next() {
 		var source corpus.Source
-		if err = rows.Scan(&source.SourceID, &source.Kind, &source.Title, &source.PublicURL,
+		if err = sourceRows.Scan(&source.SourceID, &source.Kind, &source.Title, &source.PublicURL,
 			&source.RetrievedAt, &source.LicenseCode); err != nil {
-			rows.Close()
+			sourceRows.Close()
 			return err
 		}
 		rev.Sources = append(rev.Sources, source)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
+	if err = sourceRows.Err(); err != nil {
+		sourceRows.Close()
 		return err
 	}
-	if err = rows.Close(); err != nil {
+	if err = sourceRows.Close(); err != nil {
 		return err
 	}
-	rows, err = q.Query(`SELECT fact_id, attribute, relation, value, value_end,
+	factRows, err := q.Query(`SELECT fact_id, attribute, relation, value, value_end,
         confidence_bp, COALESCE(source_id, '') FROM device_corpus_version_facts
         WHERE variant_revision_id = ? ORDER BY attribute, value, fact_id`, revisionID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
+	defer factRows.Close()
+	for factRows.Next() {
 		var fact corpus.VersionFact
-		if err = rows.Scan(&fact.FactID, &fact.Attribute, &fact.Relation, &fact.Value,
+		if err = factRows.Scan(&fact.FactID, &fact.Attribute, &fact.Relation, &fact.Value,
 			&fact.ValueEnd, &fact.ConfidenceBP, &fact.SourceID); err != nil {
-			rows.Close()
+			factRows.Close()
 			return err
 		}
 		rev.VersionFacts = append(rev.VersionFacts, fact)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
+	if err = factRows.Err(); err != nil {
+		factRows.Close()
 		return err
 	}
-	return rows.Close()
+	return factRows.Close()
 }
 
 func corpusProfileETag(q corpusQuerier, profileID string) (string, error) {

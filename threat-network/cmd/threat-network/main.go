@@ -88,10 +88,11 @@ func run() error {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 	srv := api.NewServer(db, logger)
 	httpSrv := &http.Server{
-		Addr:         ":" + port,
-		Handler:      srv.Handler(),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		Addr:              ":" + port,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
 	}
 
 	var adminHTTP *http.Server
@@ -114,10 +115,11 @@ func run() error {
 			log.Printf("WARNING: plaintext management API uses a non-loopback in-process bind; this is safe only inside an isolated container with loopback-only host publication, or behind authenticated TLS termination; never expose port 9091 directly")
 		}
 		adminHTTP = &http.Server{
-			Addr:         adminAddr,
-			Handler:      srv.AdminHandler(authenticator),
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
+			Addr:              adminAddr,
+			Handler:           srv.AdminHandler(authenticator),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      15 * time.Second,
 		}
 	}
 
