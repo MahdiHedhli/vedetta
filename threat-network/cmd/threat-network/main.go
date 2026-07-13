@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +38,22 @@ type runMode struct {
 	denylist      string
 	reinstate     string
 	reason        string
+}
+
+type httpShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+func shutdownHTTPServers(ctx context.Context, servers ...httpShutdowner) {
+	var wg sync.WaitGroup
+	for _, server := range servers {
+		wg.Add(1)
+		go func(server httpShutdowner) {
+			defer wg.Done()
+			_ = server.Shutdown(ctx)
+		}(server)
+	}
+	wg.Wait()
 }
 
 func run() error {
@@ -168,10 +185,11 @@ func run() error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = httpSrv.Shutdown(shutdownCtx)
+	shutdowners := []httpShutdowner{httpSrv}
 	if adminHTTP != nil {
-		_ = adminHTTP.Shutdown(shutdownCtx)
+		shutdowners = append(shutdowners, adminHTTP)
 	}
+	shutdownHTTPServers(shutdownCtx, shutdowners...)
 	logger.Printf("threat-network backend stopped")
 	return serveErr
 }

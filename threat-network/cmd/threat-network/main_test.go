@@ -1,13 +1,30 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vedetta-network/vedetta/threat-network/internal/store"
 )
+
+type blockingShutdowner struct {
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (s *blockingShutdowner) Shutdown(ctx context.Context) error {
+	close(s.started)
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 func newCommandTestDB(t *testing.T) *store.DB {
 	t.Helper()
@@ -150,5 +167,32 @@ func TestValidateAdminListenAddr(t *testing.T) {
 				t.Fatalf("validateAdminListenAddr(%q, %t) error=%v, want ok=%t", tt.addr, tt.allow, err, tt.ok)
 			}
 		})
+	}
+}
+
+func TestShutdownHTTPServersStartsAllServersConcurrently(t *testing.T) {
+	release := make(chan struct{})
+	first := &blockingShutdowner{started: make(chan struct{}), release: release}
+	second := &blockingShutdowner{started: make(chan struct{}), release: release}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		shutdownHTTPServers(ctx, first, second)
+		close(done)
+	}()
+
+	for index, started := range []<-chan struct{}{first.started, second.started} {
+		select {
+		case <-started:
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("shutdown %d did not start concurrently", index+1)
+		}
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("concurrent shutdown did not finish after both servers released")
 	}
 }
