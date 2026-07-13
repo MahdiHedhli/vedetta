@@ -56,6 +56,19 @@ func assertCorpusReleaseState(t *testing.T, db *DB, revision, audit, releases in
 	}
 }
 
+func TestRequireExpectedCorpusRevisionRejectsNil(t *testing.T) {
+	db := newTestDB(t)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	if err = requireExpectedCorpusRevision(tx, nil); !errors.Is(err, ErrCorpusValidation) {
+		t.Fatalf("nil expected revision error = %v, want ErrCorpusValidation", err)
+	}
+}
+
 func TestCorpusLifecycleRejectsInterveningReleaseFromAnotherProfile(t *testing.T) {
 	t.Run("retire profile", func(t *testing.T) {
 		db := newTestDB(t)

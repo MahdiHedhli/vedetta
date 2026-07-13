@@ -17,6 +17,9 @@ func validateExpectedCorpusRevision(expected *int) error {
 }
 
 func requireExpectedCorpusRevision(tx *sql.Tx, expected *int) error {
+	if expected == nil {
+		return corpusValidationf("expected_corpus_revision is required")
+	}
 	var current int
 	if err := tx.QueryRow(`SELECT current_revision FROM device_corpus_state WHERE singleton = 1`).Scan(&current); err != nil {
 		return err
