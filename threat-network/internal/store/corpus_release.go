@@ -228,9 +228,9 @@ func (db *DB) CorpusManifest() (corpus.Manifest, error) {
 		GeneratedAt: generatedAt, SnapshotPath: corpusSnapshotPath}, nil
 }
 
-// CurrentCorpusSnapshot returns the exact bytes and metadata of the current
-// immutable release. Revision zero is a deterministic empty bootstrap snapshot.
-// The returned bytes are immutable and must not be modified by callers.
+// CurrentCorpusSnapshot returns a caller-owned copy of the exact bytes and
+// metadata of the current immutable release. Revision zero is a deterministic
+// empty bootstrap snapshot; callers may safely reuse or mutate their copy.
 func (db *DB) CurrentCorpusSnapshot() ([]byte, corpus.Manifest, error) {
 	manifest, err := db.CorpusManifest()
 	if err != nil {
@@ -240,7 +240,7 @@ func (db *DB) CurrentCorpusSnapshot() ([]byte, corpus.Manifest, error) {
 	cached := db.corpusCache
 	if cached != nil && cached.manifest.CorpusRevision == manifest.CorpusRevision &&
 		cached.manifest.SnapshotSHA256 == manifest.SnapshotSHA256 {
-		data := cached.data
+		data := bytes.Clone(cached.data)
 		db.corpusCacheMu.RUnlock()
 		return data, cached.manifest, nil
 	}
@@ -255,7 +255,7 @@ func (db *DB) CurrentCorpusSnapshot() ([]byte, corpus.Manifest, error) {
 	cached = db.corpusCache
 	if cached != nil && cached.manifest.CorpusRevision == manifest.CorpusRevision &&
 		cached.manifest.SnapshotSHA256 == manifest.SnapshotSHA256 {
-		data := cached.data
+		data := bytes.Clone(cached.data)
 		db.corpusCacheMu.RUnlock()
 		return data, cached.manifest, nil
 	}
@@ -296,11 +296,11 @@ func (db *DB) CurrentCorpusSnapshot() ([]byte, corpus.Manifest, error) {
 	// validated value is equivalent; keeping the existing slice avoids churn.
 	if db.corpusCache != nil && db.corpusCache.manifest.CorpusRevision == manifest.CorpusRevision &&
 		db.corpusCache.manifest.SnapshotSHA256 == manifest.SnapshotSHA256 {
-		data = db.corpusCache.data
 		manifest = db.corpusCache.manifest
 	} else {
 		db.corpusCache = &corpusSnapshotCache{data: data, manifest: manifest}
 	}
+	data = bytes.Clone(db.corpusCache.data)
 	db.corpusCacheMu.Unlock()
 	return data, manifest, nil
 }

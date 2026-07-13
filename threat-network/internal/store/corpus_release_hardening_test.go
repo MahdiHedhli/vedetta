@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -8,6 +9,66 @@ import (
 	"testing"
 	"unicode/utf8"
 )
+
+func TestCurrentCorpusSnapshotReturnsCallerOwnedBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *DB)
+	}{
+		{name: "bootstrap"},
+		{
+			name: "published release",
+			setup: func(t *testing.T, db *DB) {
+				profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("cache-copy"),
+					CorpusMutation{ExpectedETag: profile.ETag})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0),
+					CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newTestDB(t)
+			if tt.setup != nil {
+				tt.setup(t, db)
+			}
+			first, manifest, err := db.CurrentCorpusSnapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := bytes.Clone(first)
+			if len(first) == 0 {
+				t.Fatal("snapshot unexpectedly empty")
+			}
+			first[0] ^= 0xff
+
+			second, secondManifest, err := db.CurrentCorpusSnapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(second, want) || secondManifest != manifest {
+				t.Fatalf("caller mutation corrupted cached snapshot or manifest")
+			}
+			second[len(second)-1] ^= 0xff
+			third, thirdManifest, err := db.CurrentCorpusSnapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(third, want) || thirdManifest != manifest {
+				t.Fatalf("cache-hit mutation corrupted a later snapshot or manifest")
+			}
+		})
+	}
+}
 
 func installSyntheticCorpusRelease(t *testing.T, db *DB, raw string, profileCount, variantCount int, createdAt string) {
 	t.Helper()
