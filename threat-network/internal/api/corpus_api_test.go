@@ -101,6 +101,37 @@ func TestCorpusAdminAuthAndPublicSeparation(t *testing.T) {
 	}
 }
 
+func TestCorpusAdminMethodNotAllowedAdvertisesAllowedMethods(t *testing.T) {
+	_, _, admin := newCorpusAPIServers(t)
+	tests := []struct {
+		path   string
+		method string
+		allow  string
+	}{
+		{path: "/api/v1/admin/device-corpus/profiles", method: http.MethodDelete, allow: "GET, POST"},
+		{path: "/api/v1/admin/device-corpus/profiles/profile_1", method: http.MethodPost, allow: "GET, PUT"},
+		{path: "/api/v1/admin/device-corpus/profiles/profile_1/preview", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/admin/device-corpus/profiles/profile_1/variants", method: http.MethodGet, allow: "POST"},
+		{path: "/api/v1/admin/device-corpus/variants/variant_1", method: http.MethodGet, allow: "PUT"},
+		{path: "/api/v1/admin/device-corpus/variants/variant_1/withdraw", method: http.MethodGet, allow: "POST"},
+		{path: "/api/v1/admin/device-corpus/audit", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/admin/device-corpus/releases", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/admin/device-corpus/releases/1", method: http.MethodPost, allow: "GET"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			resp := adminRequest(t, http.DefaultClient, tt.method, admin.URL+tt.path, "", "")
+			readResponse(t, resp)
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", resp.StatusCode)
+			}
+			if got := resp.Header.Get("Allow"); got != tt.allow {
+				t.Fatalf("Allow = %q, want %q", got, tt.allow)
+			}
+		})
+	}
+}
+
 func TestCorpusAdminEndToEndAndPublicETag(t *testing.T) {
 	_, public, admin := newCorpusAPIServers(t)
 	createBody := `{"labels":{"manufacturer":"Example Devices","model":"Camera Two","device_type":"camera","os_family":"embedded"},"reason_code":"new_profile"}`

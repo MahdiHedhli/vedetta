@@ -70,6 +70,7 @@ PUBLIC_ROUTES = {
     ("GET", "/api/v1/device-corpus/manifest"),
     ("GET", "/api/v1/device-corpus/snapshot"),
 }
+DASHBOARD_PATHS = frozenset(("/", "/index.html", "/dashboard.html"))
 ADMIN_ROUTES = (
     (re.compile(r"^/api/v1/admin/device-corpus/profiles$"), {"GET", "POST"}),
     (re.compile(rf"^/api/v1/admin/device-corpus/profiles/{ID}$"), {"GET", "PUT"}),
@@ -153,8 +154,14 @@ def _is_admin_route(method: str, path: str) -> bool:
     return any(pattern.fullmatch(path) and method in methods for pattern, methods in ADMIN_ROUTES)
 
 
-def _is_admin_path(path: str) -> bool:
-    return path.startswith("/api/v1/admin/device-corpus/")
+def _allowed_methods(path: str) -> tuple[str, ...]:
+    methods = {method for method, route in PUBLIC_ROUTES if route == path}
+    for pattern, allowed in ADMIN_ROUTES:
+        if pattern.fullmatch(path):
+            methods.update(allowed)
+    if path in DASHBOARD_PATHS:
+        methods.add("GET")
+    return tuple(method for method in ("GET", "POST", "PUT") if method in methods)
 
 
 def _read_limited(response, limit: int) -> bytes:
@@ -179,6 +186,33 @@ def _forwarded_header_value(
     ):
         raise ValueError("unsafe upstream response header")
     return value[:512]
+
+
+def _validated_if_match(headers) -> str | None:
+    """Return one strong opaque corpus ETag or reject ambiguous input."""
+    get_all = getattr(headers, "get_all", None)
+    if callable(get_all):
+        values = get_all("If-Match", [])
+    else:
+        value = headers.get("If-Match")
+        values = [] if value is None else [value]
+    if not values:
+        return None
+    # If-Match is an opaque, strong entity tag. Do not couple the proxy to the
+    # current SHA-256 implementation, but reject weak tags, lists, folds,
+    # controls, non-ASCII bytes, and overlong values rather than rewriting them.
+    if len(values) != 1 or not re.fullmatch(
+        r'"[\x21\x23-\x7e]{1,510}"', values[0]
+    ):
+        raise ValueError("invalid If-Match header")
+    return values[0]
+
+
+def _forwarded_allow_value(headers) -> str:
+    value = _forwarded_header_value(headers, "Allow")
+    if value is None or not re.fullmatch(r"[A-Z]+(?:, [A-Z]+)*", value):
+        raise ValueError("invalid upstream Allow header")
+    return value
 
 
 def _validated_query(method: str, path: str, raw_query: str) -> str:
@@ -251,11 +285,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
 
-    def _json_error(self, status: int, code: str, message: str) -> None:
+    def _json_error(
+        self, status: int, code: str, message: str, allow: tuple[str, ...] = ()
+    ) -> None:
         body = json.dumps({"error": code, "message": message}, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        if allow:
+            self.send_header("Allow", ", ".join(allow))
         self._security_headers()
         self.end_headers()
         if self.command != "HEAD":
@@ -357,8 +395,13 @@ class Handler(BaseHTTPRequestHandler):
         is_public = (self.command, path) in PUBLIC_ROUTES
         is_admin = _is_admin_route(self.command, path)
         if not is_public and not is_admin:
-            status = 405 if _is_admin_path(path) else 403
-            self._json_error(status, "ROUTE_DENIED", "method or path is not proxyable")
+            allowed = _allowed_methods(path)
+            if allowed:
+                self._json_error(
+                    405, "METHOD_NOT_ALLOWED", "method is not supported", allowed
+                )
+            else:
+                self._json_error(403, "ROUTE_DENIED", "path is not proxyable")
             return
         try:
             query = _validated_query(self.command, path, parsed.query)
@@ -381,6 +424,11 @@ class Handler(BaseHTTPRequestHandler):
         if is_admin and token is None:
             self._json_error(503, "ADMIN_DISABLED", "management proxy is not configured")
             return
+        try:
+            if_match = _validated_if_match(self.headers) if is_admin else None
+        except ValueError:
+            self._json_error(400, "INVALID_IF_MATCH", "invalid If-Match header")
+            return
         target = upstream + path + (("?" + query) if query else "")
         request = urllib.request.Request(target, data=body, method=self.command)
         request.add_header("Accept", "application/json")
@@ -388,9 +436,8 @@ class Handler(BaseHTTPRequestHandler):
             request.add_header("Content-Type", "application/json")
         if is_admin:
             request.add_header("Authorization", "Bearer " + token.decode("ascii"))
-            if_match = self.headers.get("If-Match")
             if if_match:
-                request.add_header("If-Match", if_match[:512])
+                request.add_header("If-Match", if_match)
         try:
             with UPSTREAM_OPENER.open(request, timeout=15) as response:
                 data = _read_limited(response, MAX_RESPONSE_BYTES)
@@ -422,6 +469,8 @@ class Handler(BaseHTTPRequestHandler):
                 for name in ("ETag", "Last-Modified", "Retry-After")
                 if (value := _forwarded_header_value(headers, name)) is not None
             )
+            if status == 405:
+                forwarded_headers += (("Allow", _forwarded_allow_value(headers)),)
         except ValueError:
             self._json_error(502, "UPSTREAM_HEADERS", "upstream returned invalid headers")
             return
@@ -449,7 +498,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/"):
             self._proxy()
-        elif not parsed.query and parsed.path in ("/", "/index.html", "/dashboard.html"):
+        elif not parsed.query and parsed.path in DASHBOARD_PATHS:
             self._send_dashboard()
         else:
             self._json_error(404, "NOT_FOUND", "resource not found")
@@ -460,11 +509,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         self._proxy()
 
+    def _reject_unsupported_method(self, message: str) -> None:
+        try:
+            path = urllib.parse.urlsplit(self.path).path
+        except ValueError:
+            self._json_error(400, "INVALID_TARGET", "invalid request target")
+            return
+        allowed = _allowed_methods(path)
+        if allowed:
+            self._json_error(405, "METHOD_NOT_ALLOWED", message, allowed)
+        else:
+            self._json_error(403, "ROUTE_DENIED", "path is not proxyable")
+
     def do_DELETE(self) -> None:
-        self._json_error(405, "METHOD_NOT_ALLOWED", "DELETE is not supported")
+        self._reject_unsupported_method("DELETE is not supported")
 
     def do_OPTIONS(self) -> None:
-        self._json_error(405, "METHOD_NOT_ALLOWED", "cross-origin requests are not supported")
+        self._reject_unsupported_method("cross-origin requests are not supported")
 
     def log_message(self, fmt: str, *args) -> None:
         # BaseHTTPRequestHandler's default request line contains the raw query.

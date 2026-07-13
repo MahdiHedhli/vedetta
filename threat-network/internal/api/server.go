@@ -94,7 +94,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
+		writeMethodNotAllowed(w, http.MethodGet, "GET only")
 		return
 	}
 	if r.URL.RawQuery != "" {
@@ -128,7 +128,7 @@ func (s *Server) handleDeprecated(key string) http.HandlerFunc {
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
+		writeMethodNotAllowed(w, http.MethodPost, "POST only")
 		return
 	}
 	if ok, retry := s.regLimit.Allow(clientIP(r, s.trustedProxy)); !ok {
@@ -156,7 +156,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
+		writeMethodNotAllowed(w, http.MethodPost, "POST only")
 		return
 	}
 	if ok, retry := s.ingLimit.Allow(clientIP(r, s.trustedProxy)); !ok {
@@ -245,7 +245,7 @@ func (s *Server) writeIngestError(w http.ResponseWriter, reporterID string, body
 
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
+		writeMethodNotAllowed(w, http.MethodGet, "GET only")
 		return
 	}
 	if ok, retry := s.feedLimit.Allow(clientIP(r, s.trustedProxy)); !ok {
@@ -325,6 +325,11 @@ func writeErr(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{
 		"error": map[string]any{"code": code, "message": msg},
 	})
+}
+
+func writeMethodNotAllowed(w http.ResponseWriter, allow, msg string) {
+	w.Header().Set("Allow", allow)
+	writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", msg)
 }
 
 func writeRateLimit(w http.ResponseWriter, retryAfter int) {

@@ -28,7 +28,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("threat-network stopped after listener failure: %v", err)
+		log.Fatalf("threat-network stopped: %v", err)
 	}
 }
 
@@ -54,7 +54,7 @@ func run() error {
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
-		log.Fatalf("open db: %v", err)
+		return fmt.Errorf("open db: %w", err)
 	}
 	defer db.Close()
 
@@ -74,7 +74,7 @@ func run() error {
 		reason:        *reason,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if handled {
 		return nil
@@ -100,7 +100,7 @@ func run() error {
 		tokenPath := os.Getenv("THREAT_NETWORK_ADMIN_TOKEN_FILE")
 		authenticator, authErr := adminauth.LoadFile(tokenPath)
 		if authErr != nil {
-			log.Fatalf("management API enabled but token file is invalid: %v", authErr)
+			return fmt.Errorf("management API enabled but token file is invalid: %w", authErr)
 		}
 		adminAddr := os.Getenv("THREAT_NETWORK_ADMIN_ADDR")
 		if adminAddr == "" {
@@ -108,7 +108,7 @@ func run() error {
 		}
 		allowNonLoopback := os.Getenv("THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK") == "true"
 		if err = validateAdminListenAddr(adminAddr, allowNonLoopback); err != nil {
-			log.Fatalf("management API address is unsafe: %v", err)
+			return fmt.Errorf("management API address is unsafe: %w", err)
 		}
 		adminHost, _, _ := net.SplitHostPort(adminAddr)
 		if !net.ParseIP(adminHost).IsLoopback() {

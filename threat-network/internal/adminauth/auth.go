@@ -105,7 +105,7 @@ func LoadFile(path string) (*Authenticator, error) {
 	if len(token) > MaxTokenBytes {
 		return nil, ErrTokenTooLarge
 	}
-	for _, b := range []byte(token) {
+	for _, b := range token {
 		// Bearer credentials must fit safely in one HTTP header token. In
 		// particular, reject embedded whitespace and non-printable/non-ASCII
 		// bytes rather than accepting a credential that cannot be presented.
@@ -130,7 +130,13 @@ func (a *Authenticator) Authenticate(r *http.Request) bool {
 	if !ok || len(token) > MaxTokenBytes {
 		return false
 	}
-	presented := sha256.Sum256([]byte(token))
+	tokenBytes := []byte(token)
+	defer func() {
+		for i := range tokenBytes {
+			tokenBytes[i] = 0
+		}
+	}()
+	presented := sha256.Sum256(tokenBytes)
 	return subtle.ConstantTimeCompare(a.digest[:], presented[:]) == 1
 }
 

@@ -24,6 +24,7 @@ SPEC = importlib.util.spec_from_file_location("vedetta_operations_serve", MODULE
 serve = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(serve)
+TEST_ETAG = '"' + "a" * 64 + '"'
 
 
 class UpstreamHandler(BaseHTTPRequestHandler):
@@ -165,14 +166,74 @@ class ProxyTests(unittest.TestCase):
     def test_publish_preview_route_forwards_captured_etag(self):
         with self.open(
             "/api/v1/admin/device-corpus/profiles/profile_1/preview",
-            headers={"If-Match": '"profile-etag"'},
+            headers={"If-Match": TEST_ETAG},
         ) as response:
             self.assertEqual(response.status, 200)
         self.assertEqual(
             self.upstream.calls[0]["path"],
             "/api/v1/admin/device-corpus/profiles/profile_1/preview",
         )
-        self.assertEqual(self.upstream.calls[0]["if_match"], '"profile-etag"')
+        self.assertEqual(self.upstream.calls[0]["if_match"], TEST_ETAG)
+
+    def test_if_match_forwarding_rejects_folded_and_duplicate_headers(self):
+        body = b'{"reason_code":"publish_reviewed"}'
+        host = self.base.removeprefix("http://")
+        base_headers = (
+            "POST /api/v1/admin/device-corpus/profiles/profile_1/publish HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Tailscale-User-Login: curator@example.com\r\n"
+            f"Origin: {self.base}\r\n"
+            "X-Vedetta-Admin-Action: 1\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+        )
+        cases = (
+            f"If-Match: {TEST_ETAG}\r\n X-Injected: yes\r\n",
+            f"If-Match: {TEST_ETAG}\r\nIf-Match: {TEST_ETAG}\r\n",
+        )
+        for injected_headers in cases:
+            with self.subTest(headers=repr(injected_headers)):
+                request = (
+                    base_headers + injected_headers + "Connection: close\r\n\r\n"
+                ).encode("ascii") + body
+                with socket.create_connection(
+                    self.proxy.server_address, timeout=3
+                ) as client:
+                    client.sendall(request)
+                    client.shutdown(socket.SHUT_WR)
+                    response = bytearray()
+                    while True:
+                        chunk = client.recv(4096)
+                        if not chunk:
+                            break
+                        response.extend(chunk)
+
+                self.assertIn(b"HTTP/1.0 400 Bad Request", response)
+                self.assertIn(b'"error":"INVALID_IF_MATCH"', response)
+                self.assertNotIn(TEST_ETAG.encode("ascii"), response)
+                self.assertEqual(self.upstream.calls, [])
+
+    def test_if_match_must_be_one_strong_opaque_etag(self):
+        self.assertEqual(serve._validated_if_match({"If-Match": TEST_ETAG}), TEST_ETAG)
+        self.assertEqual(
+            serve._validated_if_match({"If-Match": '"opaque-profile-etag"'}),
+            '"opaque-profile-etag"',
+        )
+        self.assertIsNone(serve._validated_if_match({}))
+        invalid = (
+            "*",
+            "W/" + TEST_ETAG,
+            TEST_ETAG + ", " + TEST_ETAG,
+            TEST_ETAG.strip('"'),
+            '"contains space"',
+            '"' + "a" * 511 + '"',
+            '"contains\x00control"',
+            '"contains\x7fdelete"',
+            '"contains-☃"',
+        )
+        for value in invalid:
+            with self.subTest(value=repr(value)), self.assertRaises(ValueError):
+                serve._validated_if_match({"If-Match": value})
 
     def test_request_log_never_contains_query_values(self):
         canary = "QUERY_CANARY_NEVER_LOG"
@@ -418,6 +479,64 @@ class ProxyTests(unittest.TestCase):
                     self.open(path)
                 caught.exception.close()
         self.assertEqual(self.upstream.calls, [])
+
+    def test_method_not_allowed_responses_advertise_allowed_methods(self):
+        cases = (
+            ("POST", "/api/v1/status", "GET"),
+            ("PUT", "/api/v1/admin/device-corpus/profiles", "GET, POST"),
+            ("DELETE", "/", "GET"),
+            ("OPTIONS", "/api/v1/admin/device-corpus/profiles", "GET, POST"),
+        )
+        for method, path, allow in cases:
+            with self.subTest(method=method, path=path):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self.open(path, method)
+                self.assertEqual(caught.exception.code, 405)
+                self.assertEqual(caught.exception.headers.get("Allow"), allow)
+                caught.exception.close()
+        self.assertEqual(self.upstream.calls, [])
+
+    def test_validated_upstream_405_preserves_allow_header(self):
+        body = io.BytesIO(b'{"error":"method not allowed"}')
+        error = urllib.error.HTTPError(
+            "http://127.0.0.1/status",
+            405,
+            "Method Not Allowed",
+            {"Content-Type": "application/json", "Allow": "GET, POST"},
+            body,
+        )
+        with mock.patch.object(serve, "UPSTREAM_OPENER", RaisingOpener(error)):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.open("/api/v1/status")
+            self.assertEqual(caught.exception.code, 405)
+            self.assertEqual(caught.exception.headers.get("Allow"), "GET, POST")
+            caught.exception.close()
+        self.assertTrue(body.closed)
+
+    def test_upstream_405_without_safe_allow_fails_closed(self):
+        for allow in (None, "GET\r\nX-Injected: yes", "get, post"):
+            with self.subTest(allow=allow):
+                body = io.BytesIO(b'{"error":"method not allowed"}')
+                headers = {"Content-Type": "application/json"}
+                if allow is not None:
+                    headers["Allow"] = allow
+                error = urllib.error.HTTPError(
+                    "http://127.0.0.1/status",
+                    405,
+                    "Method Not Allowed",
+                    headers,
+                    body,
+                )
+                with mock.patch.object(serve, "UPSTREAM_OPENER", RaisingOpener(error)):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        self.open("/api/v1/status")
+                    self.assertEqual(caught.exception.code, 502)
+                    self.assertEqual(
+                        json.loads(caught.exception.read())["error"],
+                        "UPSTREAM_HEADERS",
+                    )
+                    caught.exception.close()
+                self.assertTrue(body.closed)
 
     def test_body_limit_is_enforced_before_upstream(self):
         headers = {

@@ -57,7 +57,7 @@ func (s *Server) handleCorpusSnapshot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) allowCorpusRead(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
+		writeMethodNotAllowed(w, http.MethodGet, "GET only")
 		return false
 	}
 	// The public corpus is immutable and has no query contract. Rejecting every

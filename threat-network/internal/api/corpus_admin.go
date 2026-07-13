@@ -65,7 +65,7 @@ func (s *Server) handleAdminCorpusProfiles(w http.ResponseWriter, r *http.Reques
 		}
 		writeCorpusProfile(w, http.StatusCreated, profile)
 	default:
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET or POST only")
+		writeMethodNotAllowed(w, "GET, POST", "GET or POST only")
 	}
 }
 
@@ -99,13 +99,13 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 			}
 			writeCorpusProfile(w, http.StatusOK, profile)
 		default:
-			writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET or PUT only")
+			writeMethodNotAllowed(w, "GET, PUT", "GET or PUT only")
 		}
 		return
 	}
 	if parts[1] == "preview" {
 		if r.Method != http.MethodGet {
-			writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
+			writeMethodNotAllowed(w, http.MethodGet, "GET only")
 			return
 		}
 		if r.URL.RawQuery != "" {
@@ -122,7 +122,7 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
+		writeMethodNotAllowed(w, http.MethodPost, "POST only")
 		return
 	}
 	switch parts[1] {
@@ -177,7 +177,7 @@ func (s *Server) handleAdminCorpusVariant(w http.ResponseWriter, r *http.Request
 	variantID := parts[0]
 	if len(parts) == 1 {
 		if r.Method != http.MethodPut {
-			writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "PUT only")
+			writeMethodNotAllowed(w, http.MethodPut, "PUT only")
 			return
 		}
 		var req corpus.ReviseVariantRequest
@@ -198,7 +198,7 @@ func (s *Server) handleAdminCorpusVariant(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
+		writeMethodNotAllowed(w, http.MethodPost, "POST only")
 		return
 	}
 	var req corpus.LifecycleRequest
@@ -222,7 +222,7 @@ func (s *Server) handleAdminCorpusVariant(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleAdminCorpusAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
+		writeMethodNotAllowed(w, http.MethodGet, "GET only")
 		return
 	}
 	params, err := parseCorpusPageQuery(r.URL.RawQuery, false)
@@ -240,7 +240,7 @@ func (s *Server) handleAdminCorpusAudit(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleAdminCorpusReleases(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
+		writeMethodNotAllowed(w, http.MethodGet, "GET only")
 		return
 	}
 	params, err := parseCorpusPageQuery(r.URL.RawQuery, false)
@@ -258,7 +258,7 @@ func (s *Server) handleAdminCorpusReleases(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleAdminCorpusRelease(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
+		writeMethodNotAllowed(w, http.MethodGet, "GET only")
 		return
 	}
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/device-corpus/releases/"), "/")
