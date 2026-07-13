@@ -164,6 +164,23 @@ def _read_limited(response, limit: int) -> bytes:
     return data
 
 
+def _forwarded_header_value(
+    headers, name: str, default: str | None = None
+) -> str | None:
+    """Return one bounded upstream header value or reject unsafe bytes."""
+    value = headers.get(name, default)
+    if value is None or value == "":
+        return None
+    if (
+        not isinstance(value, str)
+        or "\r" in value
+        or "\n" in value
+        or "\x00" in value
+    ):
+        raise ValueError("unsafe upstream response header")
+    return value[:512]
+
+
 def _validated_query(method: str, path: str, raw_query: str) -> str:
     """Return a canonical allowlisted query or reject it.
 
@@ -396,17 +413,26 @@ class Handler(BaseHTTPRequestHandler):
             self._json_error(502, "UPSTREAM_UNAVAILABLE", "upstream service unavailable")
 
     def _send_upstream(self, status: int, headers, data: bytes) -> None:
-        content_type = headers.get("Content-Type", "application/json; charset=utf-8")
-        if not content_type.lower().startswith("application/json"):
+        try:
+            content_type = _forwarded_header_value(
+                headers, "Content-Type", "application/json; charset=utf-8"
+            )
+            forwarded_headers = tuple(
+                (name, value)
+                for name in ("ETag", "Last-Modified", "Retry-After")
+                if (value := _forwarded_header_value(headers, name)) is not None
+            )
+        except ValueError:
+            self._json_error(502, "UPSTREAM_HEADERS", "upstream returned invalid headers")
+            return
+        if not content_type or not content_type.lower().startswith("application/json"):
             self._json_error(502, "UPSTREAM_CONTENT_TYPE", "upstream did not return JSON")
             return
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        for name in ("ETag", "Last-Modified", "Retry-After"):
-            value = headers.get(name)
-            if value:
-                self.send_header(name, value[:512])
+        for name, value in forwarded_headers:
+            self.send_header(name, value)
         self._security_headers()
         self.end_headers()
         self.wfile.write(data)

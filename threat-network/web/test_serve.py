@@ -304,6 +304,39 @@ class ProxyTests(unittest.TestCase):
 
         self.assertTrue(body.closed)
 
+    def test_upstream_response_header_injection_is_rejected(self):
+        cases = (
+            ("ETag", '"tag"\rX-Injected: yes'),
+            ("Last-Modified", "yesterday\nX-Injected: yes"),
+            ("Retry-After", "3\r\nX-Injected: yes"),
+            ("Content-Type", "application/json\r\nX-Injected: yes"),
+        )
+        for name, value in cases:
+            with self.subTest(name=name):
+                body = io.BytesIO(b'{"error":"rate limited"}')
+                headers = {"Content-Type": "application/json", name: value}
+                error = urllib.error.HTTPError(
+                    "http://127.0.0.1/status",
+                    429,
+                    "Too Many Requests",
+                    headers,
+                    body,
+                )
+                with mock.patch.object(serve, "UPSTREAM_OPENER", RaisingOpener(error)):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        self.open("/api/v1/status")
+                    self.assertEqual(caught.exception.code, 502)
+                    self.assertEqual(
+                        json.loads(caught.exception.read()),
+                        {
+                            "error": "UPSTREAM_HEADERS",
+                            "message": "upstream returned invalid headers",
+                        },
+                    )
+                    self.assertIsNone(caught.exception.headers.get("X-Injected"))
+                    caught.exception.close()
+                self.assertTrue(body.closed)
+
     def test_oversized_upstream_http_error_body_is_closed(self):
         body = io.BytesIO(b"x" * 9)
         error = urllib.error.HTTPError(
