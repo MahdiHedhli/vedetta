@@ -220,7 +220,7 @@ func prepareRunMode(db *store.DB, mode runMode) (bool, error) {
 		return true, nil
 	}
 
-	if _, _, err := db.CurrentCorpusSnapshot(); err != nil {
+	if _, _, err := db.CurrentCorpusSnapshot(context.Background()); err != nil {
 		return false, fmt.Errorf("validate current device corpus release: %w", err)
 	}
 	return false, nil

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -41,13 +42,13 @@ func parseOptionalCorpusTime(value sql.NullString) (*time.Time, error) {
 	return &t, nil
 }
 
-func (db *DB) GetCorpusProfile(profileID string) (*corpus.Profile, error) {
-	return getCorpusProfile(db, profileID)
+func (db *DB) GetCorpusProfile(ctx context.Context, profileID string) (*corpus.Profile, error) {
+	return getCorpusProfile(ctx, db, profileID)
 }
 
-func getCorpusProfile(q corpusQuerier, profileID string) (*corpus.Profile, error) {
+func getCorpusProfile(ctx context.Context, q corpusQuerier, profileID string) (*corpus.Profile, error) {
 	var createdRaw string
-	if err := q.QueryRow(`SELECT created_at FROM device_corpus_profiles WHERE profile_id = ?`, profileID).Scan(&createdRaw); errors.Is(err, sql.ErrNoRows) {
+	if err := q.QueryRowContext(ctx, `SELECT created_at FROM device_corpus_profiles WHERE profile_id = ?`, profileID).Scan(&createdRaw); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrCorpusNotFound
 	} else if err != nil {
 		return nil, err
@@ -58,7 +59,7 @@ func getCorpusProfile(q corpusQuerier, profileID string) (*corpus.Profile, error
 	}
 	result := &corpus.Profile{ProfileID: profileID, CreatedAt: createdAt, Variants: []corpus.Variant{}}
 
-	rows, err := q.Query(`SELECT profile_revision_id, revision,
+	rows, err := q.QueryContext(ctx, `SELECT profile_revision_id, revision,
         COALESCE(supersedes_profile_revision_id, ''), manufacturer, model,
         product_family, device_type, os_family, status, created_at, published_at, retired_at
         FROM device_corpus_profile_revisions WHERE profile_id = ? ORDER BY revision DESC`, profileID)
@@ -106,7 +107,7 @@ func getCorpusProfile(q corpusQuerier, profileID string) (*corpus.Profile, error
 		return nil, err
 	}
 
-	rows, err = q.Query(`SELECT variant_id, variant_key, COALESCE(predecessor_variant_id, ''), created_at
+	rows, err = q.QueryContext(ctx, `SELECT variant_id, variant_key, COALESCE(predecessor_variant_id, ''), created_at
         FROM device_corpus_variants WHERE profile_id = ? ORDER BY created_at, variant_key`, profileID)
 	if err != nil {
 		return nil, err
@@ -133,19 +134,19 @@ func getCorpusProfile(q corpusQuerier, profileID string) (*corpus.Profile, error
 		return nil, err
 	}
 	for i := range result.Variants {
-		if err = loadCorpusVariantRevisions(q, &result.Variants[i]); err != nil {
+		if err = loadCorpusVariantRevisions(ctx, q, &result.Variants[i]); err != nil {
 			return nil, err
 		}
 	}
-	result.ETag, err = corpusProfileETag(q, profileID)
+	result.ETag, err = corpusProfileETag(ctx, q, profileID)
 	if err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func loadCorpusVariantRevisions(q corpusQuerier, variant *corpus.Variant) error {
-	rows, err := q.Query(`SELECT vr.variant_revision_id, vr.revision,
+func loadCorpusVariantRevisions(ctx context.Context, q corpusQuerier, variant *corpus.Variant) error {
+	rows, err := q.QueryContext(ctx, `SELECT vr.variant_revision_id, vr.revision,
         COALESCE(vr.supersedes_revision_id, ''), vr.shape_hash, s.canonical_json,
         vr.confidence_bp, vr.status, vr.created_at, vr.published_at, vr.withdrawn_at
         FROM device_corpus_variant_revisions vr
@@ -191,7 +192,7 @@ func loadCorpusVariantRevisions(q corpusQuerier, variant *corpus.Variant) error 
 		return err
 	}
 	for i := range variant.History {
-		if err = loadCorpusEvidence(q, variant.History[i].VariantRevisionID, &variant.History[i]); err != nil {
+		if err = loadCorpusEvidence(ctx, q, variant.History[i].VariantRevisionID, &variant.History[i]); err != nil {
 			return err
 		}
 		copyRev := variant.History[i]
@@ -205,10 +206,10 @@ func loadCorpusVariantRevisions(q corpusQuerier, variant *corpus.Variant) error 
 	return nil
 }
 
-func loadCorpusEvidence(q corpusQuerier, revisionID string, rev *corpus.VariantRevision) error {
+func loadCorpusEvidence(ctx context.Context, q corpusQuerier, revisionID string, rev *corpus.VariantRevision) error {
 	rev.Sources = []corpus.Source{}
 	rev.VersionFacts = []corpus.VersionFact{}
-	sourceRows, err := q.Query(`SELECT source_id, kind, title, public_url,
+	sourceRows, err := q.QueryContext(ctx, `SELECT source_id, kind, title, public_url,
         COALESCE(retrieved_at, ''), license_code FROM device_corpus_sources
         WHERE variant_revision_id = ? ORDER BY kind, title, source_id`, revisionID)
 	if err != nil {
@@ -231,7 +232,7 @@ func loadCorpusEvidence(q corpusQuerier, revisionID string, rev *corpus.VariantR
 	if err = sourceRows.Close(); err != nil {
 		return err
 	}
-	factRows, err := q.Query(`SELECT fact_id, attribute, relation, value, value_end,
+	factRows, err := q.QueryContext(ctx, `SELECT fact_id, attribute, relation, value, value_end,
         confidence_bp, COALESCE(source_id, '') FROM device_corpus_version_facts
         WHERE variant_revision_id = ? ORDER BY attribute, value, fact_id`, revisionID)
 	if err != nil {
@@ -254,9 +255,9 @@ func loadCorpusEvidence(q corpusQuerier, revisionID string, rev *corpus.VariantR
 	return factRows.Close()
 }
 
-func corpusProfileETag(q corpusQuerier, profileID string) (string, error) {
+func corpusProfileETag(ctx context.Context, q corpusQuerier, profileID string) (string, error) {
 	parts := []string{"profile:" + profileID}
-	rows, err := q.Query(`SELECT profile_revision_id, status FROM device_corpus_profile_revisions
+	rows, err := q.QueryContext(ctx, `SELECT profile_revision_id, status FROM device_corpus_profile_revisions
         WHERE profile_id = ? ORDER BY revision`, profileID)
 	if err != nil {
 		return "", err
@@ -282,7 +283,7 @@ func corpusProfileETag(q corpusQuerier, profileID string) (string, error) {
 	if !seen {
 		return "", ErrCorpusNotFound
 	}
-	rows, err = q.Query(`SELECT v.variant_id, v.variant_key, COALESCE(v.predecessor_variant_id, ''),
+	rows, err = q.QueryContext(ctx, `SELECT v.variant_id, v.variant_key, COALESCE(v.predecessor_variant_id, ''),
         vr.variant_revision_id, vr.status
         FROM device_corpus_variants v
         JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
@@ -334,13 +335,13 @@ type CorpusReleasePage struct {
 // PageCorpusProfiles returns one stable page ordered by the most recent
 // profile or variant revision. Search is applied before pagination so Total is
 // the complete filtered result count rather than the current page length.
-func (db *DB) PageCorpusProfiles(search string, limit, offset int) (CorpusProfilePage, error) {
+func (db *DB) PageCorpusProfiles(ctx context.Context, search string, limit, offset int) (CorpusProfilePage, error) {
 	page := CorpusProfilePage{Items: []corpus.ProfileSummary{}, Limit: limit, Offset: offset}
 	search = strings.ToLower(strings.TrimSpace(search))
 	if limit < 1 || limit > 100 || offset < 0 || len(search) > 128 || strings.ContainsAny(search, "\r\n\x00") {
 		return page, fmt.Errorf("invalid corpus profile page")
 	}
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return page, err
 	}
@@ -356,20 +357,34 @@ func (db *DB) PageCorpusProfiles(search string, limit, offset int) (CorpusProfil
 				candidate.revision DESC
 			LIMIT 1
 		)
+	), latest_variant_revision AS (
+		SELECT vr.variant_id, vr.created_at
+		FROM device_corpus_variant_revisions vr
+		WHERE vr.revision = (
+			SELECT MAX(candidate.revision)
+			FROM device_corpus_variant_revisions candidate
+			WHERE candidate.variant_id = vr.variant_id
+		)
 	)`
 	filter := `instr(lower(apr.manufacturer || ' ' || apr.model || ' ' ||
 		apr.product_family || ' ' || apr.device_type || ' ' || apr.os_family), ?) > 0`
-	if err = tx.QueryRow(activeRevisions+`
+	if err = tx.QueryRowContext(ctx, activeRevisions+`
 		SELECT COUNT(*) FROM active_profile_revision apr WHERE `+filter, search).Scan(&page.Total); err != nil {
 		return page, err
 	}
-	rows, err := tx.Query(activeRevisions+`
-		SELECT apr.profile_id
+	rows, err := tx.QueryContext(ctx, activeRevisions+`
+		SELECT apr.profile_id, apr.manufacturer, apr.model, apr.product_family,
+			apr.device_type, apr.os_family, apr.status, apr.created_at,
+			COALESCE(MAX(latest_vr.created_at), ''),
+			COUNT(DISTINCT CASE WHEN vr.status = 'published' THEN v.variant_id END),
+			COUNT(DISTINCT CASE WHEN vr.status = 'draft' THEN v.variant_id END)
 		FROM active_profile_revision apr
 		LEFT JOIN device_corpus_variants v ON v.profile_id = apr.profile_id
 		LEFT JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
+		LEFT JOIN latest_variant_revision latest_vr ON latest_vr.variant_id = v.variant_id
 		WHERE `+filter+`
-		GROUP BY apr.profile_id, apr.created_at
+		GROUP BY apr.profile_id, apr.manufacturer, apr.model, apr.product_family,
+			apr.device_type, apr.os_family, apr.status, apr.created_at
 		ORDER BY CASE
 			WHEN COALESCE(MAX(vr.created_at), '') > apr.created_at THEN MAX(vr.created_at)
 			ELSE apr.created_at
@@ -379,14 +394,35 @@ func (db *DB) PageCorpusProfiles(search string, limit, offset int) (CorpusProfil
 		return page, err
 	}
 	defer rows.Close()
-	var ids []string
+	page.Items = make([]corpus.ProfileSummary, 0, limit)
+	ids := make([]string, 0, limit)
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
+		var summary corpus.ProfileSummary
+		var profileCreated, variantUpdated string
+		if err = rows.Scan(&summary.ProfileID, &summary.Labels.Manufacturer, &summary.Labels.Model,
+			&summary.Labels.ProductFamily, &summary.Labels.DeviceType, &summary.Labels.OSFamily,
+			&summary.Status, &profileCreated, &variantUpdated, &summary.PublishedVariants,
+			&summary.DraftVariants); err != nil {
 			rows.Close()
 			return page, err
 		}
-		ids = append(ids, id)
+		if summary.UpdatedAt, err = parseCorpusTime(profileCreated); err != nil {
+			rows.Close()
+			return page, err
+		}
+		if variantUpdated != "" {
+			var updatedAt time.Time
+			if updatedAt, err = parseCorpusTime(variantUpdated); err != nil {
+				rows.Close()
+				return page, err
+			}
+			if updatedAt.After(summary.UpdatedAt) {
+				summary.UpdatedAt = updatedAt
+			}
+		}
+		summary.HasDraftChanges = summary.Status == "draft"
+		ids = append(ids, summary.ProfileID)
+		page.Items = append(page.Items, summary)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
@@ -395,68 +431,114 @@ func (db *DB) PageCorpusProfiles(search string, limit, offset int) (CorpusProfil
 	if err = rows.Close(); err != nil {
 		return page, err
 	}
-	page.Items = make([]corpus.ProfileSummary, 0, len(ids))
-	for _, id := range ids {
-		profile, getErr := getCorpusProfile(tx, id)
-		if getErr != nil {
-			return page, getErr
+	etags, err := corpusProfileETags(ctx, tx, ids)
+	if err != nil {
+		return page, err
+	}
+	for i := range page.Items {
+		etag, ok := etags[page.Items[i].ProfileID]
+		if !ok {
+			return page, ErrCorpusNotFound
 		}
-		var active *corpus.ProfileRevision
-		status := "retired"
-		if profile.Draft != nil {
-			active = profile.Draft
-			status = "draft"
-		} else if profile.Published != nil {
-			active = profile.Published
-			status = "published"
-		} else if len(profile.History) > 0 {
-			active = &profile.History[0]
-			status = profile.History[0].Status
-		}
-		if active == nil {
-			continue
-		}
-		summary := corpus.ProfileSummary{ProfileID: id, Labels: active.Labels, Status: status,
-			HasDraftChanges: profile.Draft != nil, UpdatedAt: active.CreatedAt, ETag: profile.ETag}
-		for _, variant := range profile.Variants {
-			if variant.Published != nil {
-				summary.PublishedVariants++
-			}
-			if variant.Draft != nil {
-				summary.DraftVariants++
-			}
-			if len(variant.History) > 0 && variant.History[0].CreatedAt.After(summary.UpdatedAt) {
-				summary.UpdatedAt = variant.History[0].CreatedAt
-			}
-		}
-		page.Items = append(page.Items, summary)
+		page.Items[i].ETag = etag
 	}
 	return page, nil
 }
 
+// corpusProfileETags computes the same optimistic-lock value as
+// corpusProfileETag for a bounded page of profiles. It reads only the immutable
+// revision identity/status ledger in one batch; profile list requests therefore
+// never hydrate shapes, sources, facts, or revision histories per item.
+func corpusProfileETags(ctx context.Context, q corpusQuerier, profileIDs []string) (map[string]string, error) {
+	result := make(map[string]string, len(profileIDs))
+	if len(profileIDs) == 0 {
+		return result, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(profileIDs)), ",")
+	args := make([]any, 0, len(profileIDs)*2)
+	for _, profileID := range profileIDs {
+		args = append(args, profileID)
+	}
+	for _, profileID := range profileIDs {
+		args = append(args, profileID)
+	}
+	rows, err := q.QueryContext(ctx, `SELECT pr.profile_id, 0 AS entry_kind, '' AS variant_id,
+		pr.profile_revision_id, pr.status, '' AS variant_key, '' AS predecessor, pr.revision
+		FROM device_corpus_profile_revisions pr
+		WHERE pr.profile_id IN (`+placeholders+`)
+		UNION ALL
+		SELECT v.profile_id, 1 AS entry_kind, v.variant_id,
+		vr.variant_revision_id, vr.status, v.variant_key,
+		COALESCE(v.predecessor_variant_id, '') AS predecessor, vr.revision
+		FROM device_corpus_variants v
+		JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
+		WHERE v.profile_id IN (`+placeholders+`)
+		ORDER BY profile_id, entry_kind, variant_id, revision`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	parts := make(map[string][]string, len(profileIDs))
+	seen := make(map[string]bool, len(profileIDs))
+	for _, profileID := range profileIDs {
+		parts[profileID] = []string{"profile:" + profileID}
+	}
+	for rows.Next() {
+		var profileID, variantID, revisionID, status, variantKey, predecessor string
+		var kind, revision int
+		if err = rows.Scan(&profileID, &kind, &variantID, &revisionID, &status,
+			&variantKey, &predecessor, &revision); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if kind == 0 {
+			seen[profileID] = true
+			parts[profileID] = append(parts[profileID], "p:"+revisionID+":"+status)
+			continue
+		}
+		parts[profileID] = append(parts[profileID], "v:"+variantID+":"+variantKey+":"+
+			predecessor+":"+revisionID+":"+status)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	for _, profileID := range profileIDs {
+		if !seen[profileID] {
+			return nil, ErrCorpusNotFound
+		}
+		sum := sha256.Sum256([]byte(strings.Join(parts[profileID], "\n")))
+		result[profileID] = hex.EncodeToString(sum[:])
+	}
+	return result, nil
+}
+
 // ListCorpusProfiles is retained for callers that do not need paging.
-func (db *DB) ListCorpusProfiles(search string, limit int) ([]corpus.ProfileSummary, error) {
+func (db *DB) ListCorpusProfiles(ctx context.Context, search string, limit int) ([]corpus.ProfileSummary, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	page, err := db.PageCorpusProfiles(search, limit, 0)
+	page, err := db.PageCorpusProfiles(ctx, search, limit, 0)
 	return page.Items, err
 }
 
-func (db *DB) PageCorpusAudit(limit, offset int) (CorpusAuditPage, error) {
+func (db *DB) PageCorpusAudit(ctx context.Context, limit, offset int) (CorpusAuditPage, error) {
 	page := CorpusAuditPage{Items: []corpus.AuditEntry{}, Limit: limit, Offset: offset}
 	if limit < 1 || limit > 100 || offset < 0 {
 		return page, fmt.Errorf("invalid corpus audit page")
 	}
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return page, err
 	}
 	defer tx.Rollback()
-	if err = tx.QueryRow(`SELECT COUNT(*) FROM device_corpus_audit`).Scan(&page.Total); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_corpus_audit`).Scan(&page.Total); err != nil {
 		return page, err
 	}
-	rows, err := tx.Query(`SELECT audit_id, actor, entity_type, entity_id, action,
+	rows, err := tx.QueryContext(ctx, `SELECT audit_id, actor, entity_type, entity_id, action,
         reason_code, before_hash, after_hash, request_id, corpus_revision, created_at
         FROM device_corpus_audit ORDER BY created_at DESC, audit_id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
@@ -493,28 +575,28 @@ func (db *DB) PageCorpusAudit(limit, offset int) (CorpusAuditPage, error) {
 	return page, nil
 }
 
-func (db *DB) ListCorpusAudit(limit int) ([]corpus.AuditEntry, error) {
+func (db *DB) ListCorpusAudit(ctx context.Context, limit int) ([]corpus.AuditEntry, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	page, err := db.PageCorpusAudit(limit, 0)
+	page, err := db.PageCorpusAudit(ctx, limit, 0)
 	return page.Items, err
 }
 
-func (db *DB) PageCorpusReleases(limit, offset int) (CorpusReleasePage, error) {
+func (db *DB) PageCorpusReleases(ctx context.Context, limit, offset int) (CorpusReleasePage, error) {
 	page := CorpusReleasePage{Items: []CorpusReleaseSummary{}, Limit: limit, Offset: offset}
 	if limit < 1 || limit > 100 || offset < 0 {
 		return page, fmt.Errorf("invalid corpus release page")
 	}
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return page, err
 	}
 	defer tx.Rollback()
-	if err = tx.QueryRow(`SELECT COUNT(*) FROM device_corpus_releases`).Scan(&page.Total); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_corpus_releases`).Scan(&page.Total); err != nil {
 		return page, err
 	}
-	rows, err := tx.Query(`SELECT corpus_revision, schema_version, snapshot_sha256,
+	rows, err := tx.QueryContext(ctx, `SELECT corpus_revision, schema_version, snapshot_sha256,
         profile_count, variant_count, created_at FROM device_corpus_releases
         ORDER BY corpus_revision DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
@@ -546,20 +628,20 @@ func (db *DB) PageCorpusReleases(limit, offset int) (CorpusReleasePage, error) {
 	return page, nil
 }
 
-func (db *DB) ListCorpusReleases(limit int) ([]CorpusReleaseSummary, error) {
+func (db *DB) ListCorpusReleases(ctx context.Context, limit int) ([]CorpusReleaseSummary, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	page, err := db.PageCorpusReleases(limit, 0)
+	page, err := db.PageCorpusReleases(ctx, limit, 0)
 	return page.Items, err
 }
 
-func (db *DB) GetCorpusRelease(revision int) ([]byte, CorpusReleaseSummary, error) {
+func (db *DB) GetCorpusRelease(ctx context.Context, revision int) ([]byte, CorpusReleaseSummary, error) {
 	var summary CorpusReleaseSummary
 	var raw sql.NullString
 	var storedBytes int64
 	var created string
-	err := db.QueryRow(`SELECT corpus_revision, schema_version, snapshot_sha256, `+
+	err := db.QueryRowContext(ctx, `SELECT corpus_revision, schema_version, snapshot_sha256, `+
 		boundedCorpusSnapshotColumns+`,
 		profile_count, variant_count, created_at
 		FROM device_corpus_releases WHERE corpus_revision = ?`, maxCorpusSnapshotBytes, revision).Scan(

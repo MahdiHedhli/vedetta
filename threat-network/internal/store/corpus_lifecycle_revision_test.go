@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -12,17 +13,17 @@ func createPublishedCorpusTestProfile(t *testing.T, db *DB, model string, expect
 	t.Helper()
 	req := corpusProfileRequest()
 	req.Labels.Model = model
-	profile, err := db.CreateCorpusProfile(req, CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), req, CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("initial"),
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("initial"),
 		CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
 	variantID := profile.Variants[0].VariantID
-	profile, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(expectedRevision),
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(expectedRevision),
 		CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +44,7 @@ func corpusMutationCounts(t *testing.T, db *DB) (audit, releases int) {
 
 func assertCorpusReleaseState(t *testing.T, db *DB, revision, audit, releases int) {
 	t.Helper()
-	manifest, err := db.CorpusManifest()
+	manifest, err := db.CorpusManifest(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +65,7 @@ func TestRequireExpectedCorpusRevisionRejectsNil(t *testing.T) {
 	}
 	defer tx.Rollback()
 
-	if err = requireExpectedCorpusRevision(tx, nil); !errors.Is(err, ErrCorpusValidation) {
+	if err = requireExpectedCorpusRevision(context.Background(), tx, nil); !errors.Is(err, ErrCorpusValidation) {
 		t.Fatalf("nil expected revision error = %v, want ErrCorpusValidation", err)
 	}
 }
@@ -76,14 +77,14 @@ func TestCorpusLifecycleRejectsInterveningReleaseFromAnotherProfile(t *testing.T
 		createPublishedCorpusTestProfile(t, db, "Lifecycle Retire B", 1)
 		auditBefore, releasesBefore := corpusMutationCounts(t, db)
 
-		_, err := db.RetireCorpusProfile(target.ProfileID,
+		_, err := db.RetireCorpusProfile(context.Background(), target.ProfileID,
 			corpusLifecycleRequest("obsolete_product", 1),
 			CorpusMutation{ExpectedETag: target.ETag})
 		if !errors.Is(err, ErrCorpusRevisionConflict) {
 			t.Fatalf("stale retire error = %v, want ErrCorpusRevisionConflict", err)
 		}
 		assertCorpusReleaseState(t, db, 2, auditBefore, releasesBefore)
-		unchanged, err := db.GetCorpusProfile(target.ProfileID)
+		unchanged, err := db.GetCorpusProfile(context.Background(), target.ProfileID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +92,7 @@ func TestCorpusLifecycleRejectsInterveningReleaseFromAnotherProfile(t *testing.T
 			t.Fatalf("stale retire changed target profile: %+v", unchanged)
 		}
 
-		if _, err = db.RetireCorpusProfile(target.ProfileID,
+		if _, err = db.RetireCorpusProfile(context.Background(), target.ProfileID,
 			corpusLifecycleRequest("obsolete_product", 2),
 			CorpusMutation{ExpectedETag: target.ETag}); err != nil {
 			t.Fatalf("current retire failed: %v", err)
@@ -105,14 +106,14 @@ func TestCorpusLifecycleRejectsInterveningReleaseFromAnotherProfile(t *testing.T
 		createPublishedCorpusTestProfile(t, db, "Lifecycle Withdraw B", 1)
 		auditBefore, releasesBefore := corpusMutationCounts(t, db)
 
-		_, err := db.WithdrawCorpusVariant(variantID,
+		_, err := db.WithdrawCorpusVariant(context.Background(), variantID,
 			corpusLifecycleRequest("privacy_withdrawal", 1),
 			CorpusMutation{ExpectedETag: target.ETag})
 		if !errors.Is(err, ErrCorpusRevisionConflict) {
 			t.Fatalf("stale withdrawal error = %v, want ErrCorpusRevisionConflict", err)
 		}
 		assertCorpusReleaseState(t, db, 2, auditBefore, releasesBefore)
-		unchanged, err := db.GetCorpusProfile(target.ProfileID)
+		unchanged, err := db.GetCorpusProfile(context.Background(), target.ProfileID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +121,7 @@ func TestCorpusLifecycleRejectsInterveningReleaseFromAnotherProfile(t *testing.T
 			t.Fatalf("stale withdrawal changed target variant: %+v", unchanged)
 		}
 
-		if _, err = db.WithdrawCorpusVariant(variantID,
+		if _, err = db.WithdrawCorpusVariant(context.Background(), variantID,
 			corpusLifecycleRequest("privacy_withdrawal", 2),
 			CorpusMutation{ExpectedETag: target.ETag}); err != nil {
 			t.Fatalf("current withdrawal failed: %v", err)
@@ -142,7 +143,7 @@ func TestConcurrentCorpusLifecycleActionsCreateOnlyOneReviewedRelease(t *testing
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err := db.RetireCorpusProfile(retireTarget.ProfileID,
+		_, err := db.RetireCorpusProfile(context.Background(), retireTarget.ProfileID,
 			corpusLifecycleRequest("obsolete_product", 2),
 			CorpusMutation{ExpectedETag: retireTarget.ETag})
 		results <- err
@@ -150,7 +151,7 @@ func TestConcurrentCorpusLifecycleActionsCreateOnlyOneReviewedRelease(t *testing
 	go func() {
 		defer wg.Done()
 		<-start
-		_, err := db.WithdrawCorpusVariant(variantID,
+		_, err := db.WithdrawCorpusVariant(context.Background(), variantID,
 			corpusLifecycleRequest("privacy_withdrawal", 2),
 			CorpusMutation{ExpectedETag: withdrawTarget.ETag})
 		results <- err

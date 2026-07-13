@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 func TestCorpusAdminListPaginationAndQueryValidation(t *testing.T) {
 	s, _, admin := newCorpusAPIServers(t)
 	for _, model := range []string{"HTTP Paging Alpha", "HTTP Paging Beta"} {
-		_, err := s.DB.CreateCorpusProfile(corpus.CreateProfileRequest{Labels: corpus.ProfileLabels{
+		_, err := s.DB.CreateCorpusProfile(context.Background(), corpus.CreateProfileRequest{Labels: corpus.ProfileLabels{
 			Manufacturer: "Example Devices", Model: model, ProductFamily: "Paging",
 			DeviceType: "camera", OSFamily: "embedded",
 		}, ReasonCode: "new_profile"}, store.CorpusMutation{})
@@ -68,14 +69,14 @@ func TestCorpusAdminListPaginationAndQueryValidation(t *testing.T) {
 
 func TestCorpusAdminPreviewRequiresCurrentETag(t *testing.T) {
 	s, _, admin := newCorpusAPIServers(t)
-	profile, err := s.DB.CreateCorpusProfile(corpus.CreateProfileRequest{Labels: corpus.ProfileLabels{
+	profile, err := s.DB.CreateCorpusProfile(context.Background(), corpus.CreateProfileRequest{Labels: corpus.ProfileLabels{
 		Manufacturer: "Example Devices", Model: "API Preview Camera", ProductFamily: "Preview",
 		DeviceType: "camera", OSFamily: "embedded",
 	}, ReasonCode: "new_profile"}, store.CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err = s.DB.CreateCorpusVariant(profile.ProfileID, corpus.CreateVariantRequest{
+	profile, err = s.DB.CreateCorpusVariant(context.Background(), profile.ProfileID, corpus.CreateVariantRequest{
 		VariantKey: "api-preview", ConfidenceBP: 9200,
 		Shape: corpus.CanonicalShapeV1{MDNSModels: []string{"API Preview Camera"}},
 		Sources: []corpus.Source{{SourceRef: "vendor", Kind: "vendor_doc",

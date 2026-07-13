@@ -17,7 +17,10 @@ import (
 	"github.com/vedetta-network/vedetta/threat-network/internal/store"
 )
 
-const maxAdminBodyBytes = 64 << 10
+const (
+	maxAdminBodyBytes        = 64 << 10
+	maxAdminJSONNestingDepth = 100
+)
 
 // AdminHandler constructs the management API. Callers must mount this handler
 // on the dedicated management listener; Handler never exposes these routes.
@@ -46,7 +49,7 @@ func (s *Server) handleAdminCorpusProfiles(w http.ResponseWriter, r *http.Reques
 			writeCorpusQueryError(w)
 			return
 		}
-		profiles, err := s.DB.PageCorpusProfiles(params.search, params.limit, params.offset)
+		profiles, err := s.DB.PageCorpusProfiles(r.Context(), params.search, params.limit, params.offset)
 		if err != nil {
 			writeCorpusAdminError(w, err)
 			return
@@ -58,7 +61,7 @@ func (s *Server) handleAdminCorpusProfiles(w http.ResponseWriter, r *http.Reques
 			writeCorpusStrictError(w, err)
 			return
 		}
-		profile, err := s.DB.CreateCorpusProfile(req, corpusMeta(r))
+		profile, err := s.DB.CreateCorpusProfile(r.Context(), req, corpusMeta(r))
 		if err != nil {
 			writeCorpusAdminError(w, err)
 			return
@@ -80,7 +83,7 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
-			profile, err := s.DB.GetCorpusProfile(profileID)
+			profile, err := s.DB.GetCorpusProfile(r.Context(), profileID)
 			if err != nil {
 				writeCorpusAdminError(w, err)
 				return
@@ -92,7 +95,7 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 				writeCorpusStrictError(w, err)
 				return
 			}
-			profile, err := s.DB.ReviseCorpusProfile(profileID, req, corpusMeta(r))
+			profile, err := s.DB.ReviseCorpusProfile(r.Context(), profileID, req, corpusMeta(r))
 			if err != nil {
 				writeCorpusAdminError(w, err)
 				return
@@ -112,7 +115,7 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 			writeCorpusQueryError(w)
 			return
 		}
-		preview, err := s.DB.PreviewCorpusProfile(profileID, corpusMeta(r))
+		preview, err := s.DB.PreviewCorpusProfile(r.Context(), profileID, corpusMeta(r))
 		if err != nil {
 			writeCorpusAdminError(w, err)
 			return
@@ -132,7 +135,7 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 			writeCorpusStrictError(w, err)
 			return
 		}
-		profile, err := s.DB.CreateCorpusVariant(profileID, req, corpusMeta(r))
+		profile, err := s.DB.CreateCorpusVariant(r.Context(), profileID, req, corpusMeta(r))
 		if err != nil {
 			writeCorpusAdminError(w, err)
 			return
@@ -144,7 +147,7 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 			writeCorpusStrictError(w, err)
 			return
 		}
-		profile, err := s.DB.PublishCorpusProfile(profileID, req, corpusMeta(r))
+		profile, err := s.DB.PublishCorpusProfile(r.Context(), profileID, req, corpusMeta(r))
 		if err != nil {
 			writeCorpusAdminError(w, err)
 			return
@@ -156,7 +159,7 @@ func (s *Server) handleAdminCorpusProfile(w http.ResponseWriter, r *http.Request
 			writeCorpusStrictError(w, err)
 			return
 		}
-		profile, err := s.DB.RetireCorpusProfile(profileID, req, corpusMeta(r))
+		profile, err := s.DB.RetireCorpusProfile(r.Context(), profileID, req, corpusMeta(r))
 		if err != nil {
 			writeCorpusAdminError(w, err)
 			return
@@ -185,7 +188,7 @@ func (s *Server) handleAdminCorpusVariant(w http.ResponseWriter, r *http.Request
 			writeCorpusStrictError(w, err)
 			return
 		}
-		profile, err := s.DB.ReviseCorpusVariant(variantID, req, corpusMeta(r))
+		profile, err := s.DB.ReviseCorpusVariant(r.Context(), variantID, req, corpusMeta(r))
 		if err != nil {
 			writeCorpusAdminError(w, err)
 			return
@@ -209,9 +212,9 @@ func (s *Server) handleAdminCorpusVariant(w http.ResponseWriter, r *http.Request
 	var profile *corpus.Profile
 	var err error
 	if parts[1] == "discard-draft" {
-		profile, err = s.DB.DiscardCorpusVariantDraft(variantID, req, corpusMeta(r))
+		profile, err = s.DB.DiscardCorpusVariantDraft(r.Context(), variantID, req, corpusMeta(r))
 	} else {
-		profile, err = s.DB.WithdrawCorpusVariant(variantID, req, corpusMeta(r))
+		profile, err = s.DB.WithdrawCorpusVariant(r.Context(), variantID, req, corpusMeta(r))
 	}
 	if err != nil {
 		writeCorpusAdminError(w, err)
@@ -230,7 +233,7 @@ func (s *Server) handleAdminCorpusAudit(w http.ResponseWriter, r *http.Request) 
 		writeCorpusQueryError(w)
 		return
 	}
-	entries, err := s.DB.PageCorpusAudit(params.limit, params.offset)
+	entries, err := s.DB.PageCorpusAudit(r.Context(), params.limit, params.offset)
 	if err != nil {
 		writeCorpusAdminError(w, err)
 		return
@@ -248,7 +251,7 @@ func (s *Server) handleAdminCorpusReleases(w http.ResponseWriter, r *http.Reques
 		writeCorpusQueryError(w)
 		return
 	}
-	releases, err := s.DB.PageCorpusReleases(params.limit, params.offset)
+	releases, err := s.DB.PageCorpusReleases(r.Context(), params.limit, params.offset)
 	if err != nil {
 		writeCorpusAdminError(w, err)
 		return
@@ -271,7 +274,7 @@ func (s *Server) handleAdminCorpusRelease(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, "INVALID_REVISION", "positive corpus revision required")
 		return
 	}
-	data, release, err := s.DB.GetCorpusRelease(revision)
+	data, release, err := s.DB.GetCorpusRelease(r.Context(), revision)
 	if err != nil {
 		writeCorpusAdminError(w, err)
 		return
@@ -391,7 +394,7 @@ func decodeAdminJSON(r *http.Request, dst any) error {
 
 func rejectDuplicateJSONKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	if err := walkJSONValue(decoder); err != nil {
+	if err := walkJSONValue(decoder, 0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
@@ -403,7 +406,11 @@ func rejectDuplicateJSONKeys(data []byte) error {
 	return nil
 }
 
-func walkJSONValue(decoder *json.Decoder) error {
+// walkJSONValue rejects semantic duplicate object keys while consuming one
+// JSON value. containerDepth is the number of open object/array containers;
+// bounding it keeps adversarial JSON from growing the Go call stack without
+// limit. A scalar nested inside the deepest permitted container is still valid.
+func walkJSONValue(decoder *json.Decoder, containerDepth int) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
@@ -414,6 +421,9 @@ func walkJSONValue(decoder *json.Decoder) error {
 	}
 	switch delim {
 	case '{':
+		if containerDepth >= maxAdminJSONNestingDepth {
+			return fmt.Errorf("JSON nesting depth exceeds limit")
+		}
 		seen := []string{}
 		for decoder.More() {
 			keyToken, err := decoder.Token()
@@ -433,7 +443,7 @@ func walkJSONValue(decoder *json.Decoder) error {
 				}
 			}
 			seen = append(seen, key)
-			if err := walkJSONValue(decoder); err != nil {
+			if err := walkJSONValue(decoder, containerDepth+1); err != nil {
 				return err
 			}
 		}
@@ -441,8 +451,11 @@ func walkJSONValue(decoder *json.Decoder) error {
 			return fmt.Errorf("invalid JSON object")
 		}
 	case '[':
+		if containerDepth >= maxAdminJSONNestingDepth {
+			return fmt.Errorf("JSON nesting depth exceeds limit")
+		}
 		for decoder.More() {
-			if err := walkJSONValue(decoder); err != nil {
+			if err := walkJSONValue(decoder, containerDepth+1); err != nil {
 				return err
 			}
 		}

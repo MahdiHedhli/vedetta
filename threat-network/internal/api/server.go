@@ -108,7 +108,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"schema_version": 1,
 		"feed_items":     count,
 	}
-	if manifest, err := s.DB.CorpusManifest(); err == nil {
+	if manifest, err := s.DB.CorpusManifest(r.Context()); err == nil {
 		status["corpus_schema_version"] = manifest.SchemaVersion
 		status["corpus_revision"] = manifest.CorpusRevision
 		status["corpus_profiles"] = manifest.ProfileCount

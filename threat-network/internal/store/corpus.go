@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -49,9 +50,9 @@ type CorpusMutation struct {
 }
 
 type corpusQuerier interface {
-	Query(query string, args ...any) (*sql.Rows, error)
-	QueryRow(query string, args ...any) *sql.Row
-	Exec(query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 type normalizedVariant struct {
@@ -142,9 +143,9 @@ func corpusProfileLabelKey(labels corpus.ProfileLabels) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func ensureCorpusProfileIdentityAvailable(q corpusQuerier, labelKey, profileID string) error {
+func ensureCorpusProfileIdentityAvailable(ctx context.Context, q corpusQuerier, labelKey, profileID string) error {
 	var count int
-	err := q.QueryRow(`SELECT COUNT(*) FROM device_corpus_profile_revisions
+	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_corpus_profile_revisions
 		WHERE label_key = ? AND profile_id <> ? AND status IN ('draft','published')`,
 		labelKey, profileID).Scan(&count)
 	if err != nil {
@@ -156,12 +157,12 @@ func ensureCorpusProfileIdentityAvailable(q corpusQuerier, labelKey, profileID s
 	return nil
 }
 
-func requireCorpusETag(q corpusQuerier, profileID string, meta CorpusMutation) (string, error) {
+func requireCorpusETag(ctx context.Context, q corpusQuerier, profileID string, meta CorpusMutation) (string, error) {
 	meta = normalizeMutation(meta)
 	if meta.ExpectedETag == "" {
 		return "", ErrCorpusPrecondition
 	}
-	current, err := corpusProfileETag(q, profileID)
+	current, err := corpusProfileETag(ctx, q, profileID)
 	if err != nil {
 		return "", err
 	}
@@ -172,7 +173,7 @@ func requireCorpusETag(q corpusQuerier, profileID string, meta CorpusMutation) (
 }
 
 // CreateCorpusProfile creates a stable product identity and its first draft.
-func (db *DB) CreateCorpusProfile(req corpus.CreateProfileRequest, meta CorpusMutation) (*corpus.Profile, error) {
+func (db *DB) CreateCorpusProfile(ctx context.Context, req corpus.CreateProfileRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	labels, err := corpus.ValidateLabels(req.Labels)
 	if err != nil {
 		return nil, corpusValidationError(err)
@@ -196,18 +197,18 @@ func (db *DB) CreateCorpusProfile(req corpus.CreateProfileRequest, meta CorpusMu
 	meta = normalizeMutation(meta)
 	now := nowRFC3339()
 	labelKey := corpusProfileLabelKey(labels)
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err = ensureCorpusProfileIdentityAvailable(tx, labelKey, profileID); err != nil {
+	if err = ensureCorpusProfileIdentityAvailable(ctx, tx, labelKey, profileID); err != nil {
 		return nil, err
 	}
-	if _, err = tx.Exec(`INSERT INTO device_corpus_profiles (profile_id, created_at) VALUES (?, ?)`, profileID, now); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_profiles (profile_id, created_at) VALUES (?, ?)`, profileID, now); err != nil {
 		return nil, fmt.Errorf("insert corpus profile: %w", err)
 	}
-	if _, err = tx.Exec(`INSERT INTO device_corpus_profile_revisions
+	if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_profile_revisions
 		(profile_revision_id, profile_id, revision, label_key, manufacturer, model, product_family,
 		 device_type, os_family, status, created_at)
 		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, 'draft', ?)`, revisionID, profileID, labelKey,
@@ -217,18 +218,18 @@ func (db *DB) CreateCorpusProfile(req corpus.CreateProfileRequest, meta CorpusMu
 		}
 		return nil, fmt.Errorf("insert corpus profile revision: %w", err)
 	}
-	if err = insertCorpusAudit(tx, auditID, meta, "profile", profileID, "create", reason, "", hashCorpusValue(labels), nil, now); err != nil {
+	if err = insertCorpusAudit(ctx, tx, auditID, meta, "profile", profileID, "create", reason, "", hashCorpusValue(labels), nil, now); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	return db.GetCorpusProfile(profileID)
+	return db.GetCorpusProfile(ctx, profileID)
 }
 
 // ReviseCorpusProfile creates a new immutable draft based on the current draft
 // or published revision. The published revision remains live until publication.
-func (db *DB) ReviseCorpusProfile(profileID string, req corpus.ReviseProfileRequest, meta CorpusMutation) (*corpus.Profile, error) {
+func (db *DB) ReviseCorpusProfile(ctx context.Context, profileID string, req corpus.ReviseProfileRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	labels, err := corpus.ValidateLabels(req.Labels)
 	if err != nil {
 		return nil, corpusValidationError(err)
@@ -238,22 +239,22 @@ func (db *DB) ReviseCorpusProfile(profileID string, req corpus.ReviseProfileRequ
 		return nil, corpusValidationError(err)
 	}
 	meta = normalizeMutation(meta)
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	before, err := requireCorpusETag(tx, profileID, meta)
+	before, err := requireCorpusETag(ctx, tx, profileID, meta)
 	if err != nil {
 		return nil, err
 	}
 	labelKey := corpusProfileLabelKey(labels)
-	if err = ensureCorpusProfileIdentityAvailable(tx, labelKey, profileID); err != nil {
+	if err = ensureCorpusProfileIdentityAvailable(ctx, tx, labelKey, profileID); err != nil {
 		return nil, err
 	}
 	var baseID, baseStatus string
 	var baseRevision int
-	err = tx.QueryRow(`SELECT profile_revision_id, revision, status
+	err = tx.QueryRowContext(ctx, `SELECT profile_revision_id, revision, status
         FROM device_corpus_profile_revisions
         WHERE profile_id = ? AND status IN ('draft','published')
         ORDER BY CASE status WHEN 'draft' THEN 0 ELSE 1 END LIMIT 1`, profileID).
@@ -265,7 +266,7 @@ func (db *DB) ReviseCorpusProfile(profileID string, req corpus.ReviseProfileRequ
 		return nil, err
 	}
 	if baseStatus == "draft" {
-		if _, err = tx.Exec(`UPDATE device_corpus_profile_revisions SET status = 'superseded' WHERE profile_revision_id = ?`, baseID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE device_corpus_profile_revisions SET status = 'superseded' WHERE profile_revision_id = ?`, baseID); err != nil {
 			return nil, err
 		}
 	}
@@ -274,7 +275,7 @@ func (db *DB) ReviseCorpusProfile(profileID string, req corpus.ReviseProfileRequ
 		return nil, err
 	}
 	now := nowRFC3339()
-	if _, err = tx.Exec(`INSERT INTO device_corpus_profile_revisions
+	if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_profile_revisions
 		(profile_revision_id, profile_id, revision, supersedes_profile_revision_id, label_key,
 		 manufacturer, model, product_family, device_type, os_family, status, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`, revisionID, profileID,
@@ -285,7 +286,7 @@ func (db *DB) ReviseCorpusProfile(profileID string, req corpus.ReviseProfileRequ
 		}
 		return nil, fmt.Errorf("insert corpus profile revision: %w", err)
 	}
-	after, err := corpusProfileETag(tx, profileID)
+	after, err := corpusProfileETag(ctx, tx, profileID)
 	if err != nil {
 		return nil, err
 	}
@@ -293,17 +294,17 @@ func (db *DB) ReviseCorpusProfile(profileID string, req corpus.ReviseProfileRequ
 	if err != nil {
 		return nil, err
 	}
-	if err = insertCorpusAudit(tx, auditID, meta, "profile", profileID, "revise", reason, before, after, nil, now); err != nil {
+	if err = insertCorpusAudit(ctx, tx, auditID, meta, "profile", profileID, "revise", reason, before, after, nil, now); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	return db.GetCorpusProfile(profileID)
+	return db.GetCorpusProfile(ctx, profileID)
 }
 
 // CreateCorpusVariant adds a new firmware/hardware lineage as a draft.
-func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequest, meta CorpusMutation) (*corpus.Profile, error) {
+func (db *DB) CreateCorpusVariant(ctx context.Context, profileID string, req corpus.CreateVariantRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	variantKey, err := corpus.ValidateVariantKey(req.VariantKey)
 	if err != nil {
 		return nil, corpusValidationError(err)
@@ -317,17 +318,17 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 		return nil, err
 	}
 	meta = normalizeMutation(meta)
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	before, err := requireCorpusETag(tx, profileID, meta)
+	before, err := requireCorpusETag(ctx, tx, profileID, meta)
 	if err != nil {
 		return nil, err
 	}
 	var active int
-	if err = tx.QueryRow(`SELECT COUNT(*) FROM device_corpus_profile_revisions
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_corpus_profile_revisions
         WHERE profile_id = ? AND status IN ('draft','published')`, profileID).Scan(&active); err != nil {
 		return nil, err
 	}
@@ -335,7 +336,7 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 		return nil, ErrCorpusNotFound
 	}
 	if req.PredecessorVariantID != "" {
-		if err = requireActiveCorpusVariantPredecessor(tx, profileID, req.PredecessorVariantID); err != nil {
+		if err = requireActiveCorpusVariantPredecessor(ctx, tx, profileID, req.PredecessorVariantID); err != nil {
 			return nil, err
 		}
 	}
@@ -343,7 +344,7 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 	revisionNumber := 1
 	auditAction := "create"
 	var everPublished int
-	err = tx.QueryRow(`SELECT v.variant_id,
+	err = tx.QueryRowContext(ctx, `SELECT v.variant_id,
 		(SELECT COUNT(*) FROM device_corpus_variant_revisions vr
 		 WHERE vr.variant_id = v.variant_id AND vr.status IN ('draft','published')),
 		(SELECT COUNT(*) FROM device_corpus_variant_revisions vr
@@ -369,14 +370,14 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 		// be corrected; once published the database trigger freezes it.
 		revisionNumber++
 		auditAction = "restore"
-		cycle, cycleErr := corpusVariantCycle(tx, variantID, req.PredecessorVariantID)
+		cycle, cycleErr := corpusVariantCycle(ctx, tx, variantID, req.PredecessorVariantID)
 		if cycleErr != nil {
 			return nil, cycleErr
 		}
 		if cycle {
 			return nil, corpusValidationf("predecessor_variant_id would create a lineage cycle")
 		}
-		if _, err = tx.Exec(`UPDATE device_corpus_variants SET predecessor_variant_id = NULLIF(?, '')
+		if _, err = tx.ExecContext(ctx, `UPDATE device_corpus_variants SET predecessor_variant_id = NULLIF(?, '')
 			WHERE variant_id = ?`, req.PredecessorVariantID, variantID); err != nil {
 			return nil, err
 		}
@@ -395,11 +396,11 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 		return nil, err
 	}
 	now := nowRFC3339()
-	if err = insertCorpusShape(tx, nv, now); err != nil {
+	if err = insertCorpusShape(ctx, tx, nv, now); err != nil {
 		return nil, err
 	}
 	if auditAction == "create" {
-		if _, err = tx.Exec(`INSERT INTO device_corpus_variants
+		if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_variants
 			(variant_id, profile_id, variant_key, predecessor_variant_id, created_at)
 			VALUES (?, ?, ?, NULLIF(?, ''), ?)`, variantID, profileID, variantKey, req.PredecessorVariantID, now); err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
@@ -408,15 +409,15 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 			return nil, err
 		}
 	}
-	if _, err = tx.Exec(`INSERT INTO device_corpus_variant_revisions
+	if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_variant_revisions
 		(variant_revision_id, variant_id, revision, shape_hash, confidence_bp, status, created_at)
 		VALUES (?, ?, ?, ?, ?, 'draft', ?)`, revisionID, variantID, revisionNumber, nv.shapeHash, nv.confidence, now); err != nil {
 		return nil, err
 	}
-	if err = insertCorpusEvidence(tx, revisionID, nv, now); err != nil {
+	if err = insertCorpusEvidence(ctx, tx, revisionID, nv, now); err != nil {
 		return nil, err
 	}
-	after, err := corpusProfileETag(tx, profileID)
+	after, err := corpusProfileETag(ctx, tx, profileID)
 	if err != nil {
 		return nil, err
 	}
@@ -424,23 +425,23 @@ func (db *DB) CreateCorpusVariant(profileID string, req corpus.CreateVariantRequ
 	if err != nil {
 		return nil, err
 	}
-	if err = insertCorpusAudit(tx, auditID, meta, "variant", variantID, auditAction, reason, before, after, nil, now); err != nil {
+	if err = insertCorpusAudit(ctx, tx, auditID, meta, "variant", variantID, auditAction, reason, before, after, nil, now); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	return db.GetCorpusProfile(profileID)
+	return db.GetCorpusProfile(ctx, profileID)
 }
 
 // requireActiveCorpusVariantPredecessor prevents a new lineage from pointing at
 // an abandoned or withdrawn identity. Such links could never produce a valid
 // public snapshot, so reject them before creating a stable variant identity or
 // changing the profile ETag.
-func requireActiveCorpusVariantPredecessor(tx *sql.Tx, profileID, predecessorID string) error {
+func requireActiveCorpusVariantPredecessor(ctx context.Context, tx *sql.Tx, profileID, predecessorID string) error {
 	var predecessorProfile string
 	var active int
-	err := tx.QueryRow(`SELECT v.profile_id,
+	err := tx.QueryRowContext(ctx, `SELECT v.profile_id,
 		EXISTS (SELECT 1 FROM device_corpus_variant_revisions vr
 			WHERE vr.variant_id = v.variant_id AND vr.status IN ('draft','published'))
 		FROM device_corpus_variants v WHERE v.variant_id = ?`, predecessorID).
@@ -460,14 +461,14 @@ func requireActiveCorpusVariantPredecessor(tx *sql.Tx, profileID, predecessorID 
 	return nil
 }
 
-func corpusVariantCycle(tx *sql.Tx, variantID, predecessorID string) (bool, error) {
+func corpusVariantCycle(ctx context.Context, tx *sql.Tx, variantID, predecessorID string) (bool, error) {
 	current := predecessorID
 	for depth := 0; current != "" && depth < 1024; depth++ {
 		if current == variantID {
 			return true, nil
 		}
 		var next sql.NullString
-		err := tx.QueryRow(`SELECT predecessor_variant_id FROM device_corpus_variants WHERE variant_id = ?`, current).Scan(&next)
+		err := tx.QueryRowContext(ctx, `SELECT predecessor_variant_id FROM device_corpus_variants WHERE variant_id = ?`, current).Scan(&next)
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, ErrCorpusNotFound
 		}
@@ -484,7 +485,7 @@ func corpusVariantCycle(tx *sql.Tx, variantID, predecessorID string) (bool, erro
 
 // ReviseCorpusVariant creates a curator correction; it never changes the
 // product-evolution predecessor link.
-func (db *DB) ReviseCorpusVariant(variantID string, req corpus.ReviseVariantRequest, meta CorpusMutation) (*corpus.Profile, error) {
+func (db *DB) ReviseCorpusVariant(ctx context.Context, variantID string, req corpus.ReviseVariantRequest, meta CorpusMutation) (*corpus.Profile, error) {
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
 		return nil, corpusValidationError(err)
@@ -497,24 +498,24 @@ func (db *DB) ReviseCorpusVariant(variantID string, req corpus.ReviseVariantRequ
 		return nil, err
 	}
 	meta = normalizeMutation(meta)
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 	var profileID string
-	if err = tx.QueryRow(`SELECT profile_id FROM device_corpus_variants WHERE variant_id = ?`, variantID).Scan(&profileID); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(ctx, `SELECT profile_id FROM device_corpus_variants WHERE variant_id = ?`, variantID).Scan(&profileID); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrCorpusNotFound
 	} else if err != nil {
 		return nil, err
 	}
-	before, err := requireCorpusETag(tx, profileID, meta)
+	before, err := requireCorpusETag(ctx, tx, profileID, meta)
 	if err != nil {
 		return nil, err
 	}
 	var baseID, baseStatus string
 	var baseRevision int
-	err = tx.QueryRow(`SELECT variant_revision_id, revision, status
+	err = tx.QueryRowContext(ctx, `SELECT variant_revision_id, revision, status
         FROM device_corpus_variant_revisions
         WHERE variant_id = ? AND status IN ('draft','published')
         ORDER BY CASE status WHEN 'draft' THEN 0 ELSE 1 END LIMIT 1`, variantID).
@@ -526,7 +527,7 @@ func (db *DB) ReviseCorpusVariant(variantID string, req corpus.ReviseVariantRequ
 		return nil, err
 	}
 	if baseStatus == "draft" {
-		if _, err = tx.Exec(`UPDATE device_corpus_variant_revisions SET status = 'superseded' WHERE variant_revision_id = ?`, baseID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE device_corpus_variant_revisions SET status = 'superseded' WHERE variant_revision_id = ?`, baseID); err != nil {
 			return nil, err
 		}
 	}
@@ -535,20 +536,20 @@ func (db *DB) ReviseCorpusVariant(variantID string, req corpus.ReviseVariantRequ
 		return nil, err
 	}
 	now := nowRFC3339()
-	if err = insertCorpusShape(tx, nv, now); err != nil {
+	if err = insertCorpusShape(ctx, tx, nv, now); err != nil {
 		return nil, err
 	}
-	if _, err = tx.Exec(`INSERT INTO device_corpus_variant_revisions
+	if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_variant_revisions
         (variant_revision_id, variant_id, revision, supersedes_revision_id,
          shape_hash, confidence_bp, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)`, revisionID, variantID,
 		baseRevision+1, baseID, nv.shapeHash, nv.confidence, now); err != nil {
 		return nil, err
 	}
-	if err = insertCorpusEvidence(tx, revisionID, nv, now); err != nil {
+	if err = insertCorpusEvidence(ctx, tx, revisionID, nv, now); err != nil {
 		return nil, err
 	}
-	after, err := corpusProfileETag(tx, profileID)
+	after, err := corpusProfileETag(ctx, tx, profileID)
 	if err != nil {
 		return nil, err
 	}
@@ -556,23 +557,23 @@ func (db *DB) ReviseCorpusVariant(variantID string, req corpus.ReviseVariantRequ
 	if err != nil {
 		return nil, err
 	}
-	if err = insertCorpusAudit(tx, auditID, meta, "variant", variantID, "revise", reason, before, after, nil, now); err != nil {
+	if err = insertCorpusAudit(ctx, tx, auditID, meta, "variant", variantID, "revise", reason, before, after, nil, now); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	return db.GetCorpusProfile(profileID)
+	return db.GetCorpusProfile(ctx, profileID)
 }
 
-func insertCorpusShape(tx *sql.Tx, nv normalizedVariant, now string) error {
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO device_corpus_shapes
+func insertCorpusShape(ctx context.Context, tx *sql.Tx, nv normalizedVariant, now string) error {
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO device_corpus_shapes
         (shape_hash, schema_version, canonical_json, signal_family_count, created_at)
         VALUES (?, ?, ?, ?, ?)`, nv.shapeHash, corpus.SchemaVersion, string(nv.canonical), nv.families, now); err != nil {
 		return err
 	}
 	var existing string
-	if err := tx.QueryRow(`SELECT canonical_json FROM device_corpus_shapes WHERE shape_hash = ?`, nv.shapeHash).Scan(&existing); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT canonical_json FROM device_corpus_shapes WHERE shape_hash = ?`, nv.shapeHash).Scan(&existing); err != nil {
 		return err
 	}
 	if existing != string(nv.canonical) {
@@ -581,14 +582,14 @@ func insertCorpusShape(tx *sql.Tx, nv normalizedVariant, now string) error {
 	return nil
 }
 
-func insertCorpusEvidence(tx *sql.Tx, revisionID string, nv normalizedVariant, now string) error {
+func insertCorpusEvidence(ctx context.Context, tx *sql.Tx, revisionID string, nv normalizedVariant, now string) error {
 	refIDs := make(map[string]string, len(nv.sources))
 	for _, source := range nv.sources {
 		sourceID, err := newCorpusID()
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`INSERT INTO device_corpus_sources
+		if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_sources
             (source_id, variant_revision_id, kind, title, public_url, retrieved_at, license_code, created_at)
             VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)`, sourceID, revisionID, source.Kind,
 			source.Title, source.PublicURL, source.RetrievedAt, source.LicenseCode, now); err != nil {
@@ -604,7 +605,7 @@ func insertCorpusEvidence(tx *sql.Tx, revisionID string, nv normalizedVariant, n
 			return err
 		}
 		sourceID := refIDs[fact.SourceRef]
-		if _, err = tx.Exec(`INSERT INTO device_corpus_version_facts
+		if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_version_facts
             (fact_id, variant_revision_id, attribute, relation, value, value_end,
              confidence_bp, source_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, factID, revisionID,
@@ -615,11 +616,11 @@ func insertCorpusEvidence(tx *sql.Tx, revisionID string, nv normalizedVariant, n
 	return nil
 }
 
-func insertCorpusAudit(tx *sql.Tx, auditID string, meta CorpusMutation, entityType, entityID, action, reason, before, after string, corpusRevision *int, now string) error {
+func insertCorpusAudit(ctx context.Context, tx *sql.Tx, auditID string, meta CorpusMutation, entityType, entityID, action, reason, before, after string, corpusRevision *int, now string) error {
 	// The request correlation ID is service-generated. Never persist an
 	// arbitrary caller value that could encode operator/site data.
 	requestID := auditID
-	_, err := tx.Exec(`INSERT INTO device_corpus_audit
+	_, err := tx.ExecContext(ctx, `INSERT INTO device_corpus_audit
         (audit_id, actor, entity_type, entity_id, action, reason_code, before_hash,
          after_hash, request_id, corpus_revision, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, auditID, meta.Actor, entityType,

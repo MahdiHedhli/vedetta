@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -14,19 +15,19 @@ func TestCorpusProfilePagingSearchesBeforeOffset(t *testing.T) {
 	for _, model := range []string{"Paging Alpha", "Paging Beta", "Paging Gamma"} {
 		req := corpusProfileRequest()
 		req.Labels.Model = model
-		if _, err := db.CreateCorpusProfile(req, CorpusMutation{}); err != nil {
+		if _, err := db.CreateCorpusProfile(context.Background(), req, CorpusMutation{}); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	page, err := db.PageCorpusProfiles("paging", 1, 1)
+	page, err := db.PageCorpusProfiles(context.Background(), "paging", 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if page.Total != 3 || page.Limit != 1 || page.Offset != 1 || len(page.Items) != 1 {
 		t.Fatalf("unexpected page: %+v", page)
 	}
-	filtered, err := db.PageCorpusProfiles("Paging Beta", 100, 0)
+	filtered, err := db.PageCorpusProfiles(context.Background(), "Paging Beta", 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,14 +35,14 @@ func TestCorpusProfilePagingSearchesBeforeOffset(t *testing.T) {
 		t.Fatalf("search was not applied before pagination: %+v", filtered)
 	}
 
-	audit, err := db.PageCorpusAudit(2, 1)
+	audit, err := db.PageCorpusAudit(context.Background(), 2, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if audit.Total != 3 || len(audit.Items) != 2 || audit.Limit != 2 || audit.Offset != 1 {
 		t.Fatalf("unexpected audit page: %+v", audit)
 	}
-	releases, err := db.PageCorpusReleases(5, 0)
+	releases, err := db.PageCorpusReleases(context.Background(), 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,20 +51,259 @@ func TestCorpusProfilePagingSearchesBeforeOffset(t *testing.T) {
 	}
 }
 
+func TestCorpusProfilePagingBuildsExactSummariesWithoutHydratingEvidence(t *testing.T) {
+	db := newTestDB(t)
+	req := corpusProfileRequest()
+	req.Labels.Model = "Summary Camera"
+	profile, err := db.CreateCorpusProfile(context.Background(), req, CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"summary-v1", "summary-v2"} {
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest(key),
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	labels := req.Labels
+	labels.Model = "Summary Camera Revised"
+	profile, err = db.ReviseCorpusProfile(context.Background(), profile.ProfileID, corpus.ReviseProfileRequest{
+		Labels: labels, ReasonCode: "label_correction",
+	}, CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant := profile.Variants[0]
+	clean := corpusVariantRequest("unused")
+	profile, err = db.ReviseCorpusVariant(context.Background(), variant.VariantID, corpus.ReviseVariantRequest{
+		ConfidenceBP: variant.Published.ConfidenceBP,
+		Shape:        variant.Published.Shape,
+		Sources:      clean.Sources,
+		VersionFacts: clean.VersionFacts,
+		ReasonCode:   "signal_correction",
+	}, CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := db.PageCorpusProfiles(context.Background(), "summary camera revised", 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("unexpected profile page: %+v", page)
+	}
+	summary := page.Items[0]
+	if summary.ProfileID != profile.ProfileID || !reflect.DeepEqual(summary.Labels, profile.Draft.Labels) {
+		t.Fatalf("summary identity/labels = %+v, want profile %+v", summary, profile)
+	}
+	if summary.Status != "draft" || !summary.HasDraftChanges ||
+		summary.PublishedVariants != 2 || summary.DraftVariants != 1 {
+		t.Fatalf("summary lifecycle/counts = %+v", summary)
+	}
+	if summary.ETag != profile.ETag {
+		t.Fatalf("summary ETag = %q, want %q", summary.ETag, profile.ETag)
+	}
+	wantUpdated := profile.Draft.CreatedAt
+	for _, item := range profile.Variants {
+		if len(item.History) > 0 && item.History[0].CreatedAt.After(wantUpdated) {
+			wantUpdated = item.History[0].CreatedAt
+		}
+	}
+	if !summary.UpdatedAt.Equal(wantUpdated) {
+		t.Fatalf("summary updated_at = %s, want %s", summary.UpdatedAt, wantUpdated)
+	}
+
+	// A list request must not decode or otherwise hydrate the deeply nested
+	// shape/evidence graph. Corrupting shape JSON simulates a damaged detail row:
+	// the detail endpoint detects it, while the independent summary ledger still
+	// returns the exact labels, counts, lifecycle state, and ETag.
+	if _, err = db.Exec(`DROP TRIGGER trg_device_corpus_shapes_immutable`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE device_corpus_shapes SET canonical_json = 'not-json'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.GetCorpusProfile(context.Background(), profile.ProfileID); err == nil {
+		t.Fatal("corrupt shape unexpectedly hydrated as a valid profile detail")
+	}
+	lightweight, err := db.PageCorpusProfiles(context.Background(), "summary camera revised", 50, 0)
+	if err != nil {
+		t.Fatalf("lightweight summary loaded nested evidence: %v", err)
+	}
+	if len(lightweight.Items) != 1 || !reflect.DeepEqual(lightweight.Items[0], summary) {
+		t.Fatalf("lightweight summary changed after unrelated evidence corruption: %+v", lightweight)
+	}
+}
+
+func TestCorpusProfileBatchedETagsAndSummariesCoverLifecycleHistories(t *testing.T) {
+	db := newTestDB(t)
+	create := func(model string) *corpus.Profile {
+		t.Helper()
+		req := corpusProfileRequest()
+		req.Labels.Model = model
+		profile, err := db.CreateCorpusProfile(context.Background(), req, CorpusMutation{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return profile
+	}
+	addVariant := func(profile *corpus.Profile, key string) *corpus.Profile {
+		t.Helper()
+		updated, err := db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest(key),
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return updated
+	}
+	publish := func(profile *corpus.Profile) *corpus.Profile {
+		t.Helper()
+		manifest, err := db.CorpusManifest(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := db.PublishCorpusProfile(context.Background(), profile.ProfileID,
+			corpusPublishRequest(manifest.CorpusRevision), CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return updated
+	}
+
+	draft := create("ETag Draft")
+
+	published := publish(addVariant(create("ETag Published"), "published-v1"))
+	publishedVariant := published.Variants[0]
+	clean := corpusVariantRequest("unused")
+	var err error
+	published, err = db.ReviseCorpusVariant(context.Background(), publishedVariant.VariantID, corpus.ReviseVariantRequest{
+		ConfidenceBP: publishedVariant.Published.ConfidenceBP,
+		Shape:        publishedVariant.Published.Shape,
+		Sources:      clean.Sources,
+		VersionFacts: clean.VersionFacts,
+		ReasonCode:   "signal_correction",
+	}, CorpusMutation{ExpectedETag: published.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err = db.DiscardCorpusVariantDraft(context.Background(), publishedVariant.VariantID,
+		corpus.LifecycleRequest{ReasonCode: "signal_correction"},
+		CorpusMutation{ExpectedETag: published.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withdrawn := publish(addVariant(create("ETag Withdrawn"), "withdrawn-v1"))
+	manifest, err := db.CorpusManifest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	withdrawn, err = db.WithdrawCorpusVariant(context.Background(), withdrawn.Variants[0].VariantID,
+		corpusLifecycleRequest("privacy_withdrawal", manifest.CorpusRevision),
+		CorpusMutation{ExpectedETag: withdrawn.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retired := publish(addVariant(create("ETag Retired"), "retired-v1"))
+	manifest, err = db.CorpusManifest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err = db.RetireCorpusProfile(context.Background(), retired.ProfileID,
+		corpusLifecycleRequest("obsolete_product", manifest.CorpusRevision),
+		CorpusMutation{ExpectedETag: retired.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	profiles := []*corpus.Profile{draft, published, withdrawn, retired}
+	ids := make([]string, 0, len(profiles))
+	for _, profile := range profiles {
+		ids = append(ids, profile.ProfileID)
+	}
+	batched, err := corpusProfileETags(context.Background(), db, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range profiles {
+		individual, etagErr := corpusProfileETag(context.Background(), db, profile.ProfileID)
+		if etagErr != nil {
+			t.Fatal(etagErr)
+		}
+		if batched[profile.ProfileID] != individual || individual != profile.ETag {
+			t.Fatalf("profile %s batched ETag=%q individual=%q detail=%q",
+				profile.ProfileID, batched[profile.ProfileID], individual, profile.ETag)
+		}
+	}
+
+	page, err := db.PageCorpusProfiles(context.Background(), "etag", 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != len(profiles) || len(page.Items) != len(profiles) {
+		t.Fatalf("lifecycle page = %+v", page)
+	}
+	type wantSummary struct {
+		status                  string
+		published, draft, dirty int
+		profile                 *corpus.Profile
+	}
+	want := map[string]wantSummary{
+		draft.ProfileID:     {status: "draft", draft: 0, dirty: 1, profile: draft},
+		published.ProfileID: {status: "published", published: 1, profile: published},
+		withdrawn.ProfileID: {status: "published", profile: withdrawn},
+		retired.ProfileID:   {status: "retired", profile: retired},
+	}
+	for _, summary := range page.Items {
+		expected, ok := want[summary.ProfileID]
+		if !ok {
+			t.Fatalf("unexpected summary: %+v", summary)
+		}
+		if summary.Status != expected.status || summary.PublishedVariants != expected.published ||
+			summary.DraftVariants != expected.draft || summary.HasDraftChanges != (expected.dirty == 1) {
+			t.Fatalf("profile %s lifecycle summary = %+v, want %+v", summary.ProfileID, summary, expected)
+		}
+		activeUpdated := expected.profile.History[0].CreatedAt
+		if expected.profile.Draft != nil {
+			activeUpdated = expected.profile.Draft.CreatedAt
+		} else if expected.profile.Published != nil {
+			activeUpdated = expected.profile.Published.CreatedAt
+		}
+		for _, variant := range expected.profile.Variants {
+			if len(variant.History) > 0 && variant.History[0].CreatedAt.After(activeUpdated) {
+				activeUpdated = variant.History[0].CreatedAt
+			}
+		}
+		if !summary.UpdatedAt.Equal(activeUpdated) || summary.ETag != expected.profile.ETag {
+			t.Fatalf("profile %s timestamp/ETag summary = %+v, want updated=%s etag=%s",
+				summary.ProfileID, summary, activeUpdated, expected.profile.ETag)
+		}
+	}
+}
+
 func TestCorpusPreviewUsesDraftsWithoutMutation(t *testing.T) {
 	db := newTestDB(t)
 	req := corpusProfileRequest()
 	req.Labels.Model = "Preview Camera"
-	profile, err := db.CreateCorpusProfile(req, CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), req, CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	variantReq := corpusVariantRequest("preview-v1")
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, variantReq, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, variantReq, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err = db.PublishCorpusProfile(profile.ProfileID,
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 		corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +311,7 @@ func TestCorpusPreviewUsesDraftsWithoutMutation(t *testing.T) {
 
 	reviseProfile := corpus.ReviseProfileRequest{Labels: req.Labels, ReasonCode: "label_correction"}
 	reviseProfile.Labels.Model = "Preview Camera Revised"
-	profile, err = db.ReviseCorpusProfile(profile.ProfileID, reviseProfile, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.ReviseCorpusProfile(context.Background(), profile.ProfileID, reviseProfile, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,22 +328,22 @@ func TestCorpusPreviewUsesDraftsWithoutMutation(t *testing.T) {
 			Value: "3.0.0", ConfidenceBP: 9000, SourceRef: "vendor"}},
 		ReasonCode: "signal_correction",
 	}
-	profile, err = db.ReviseCorpusVariant(variant.VariantID, reviseVariant, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.ReviseCorpusVariant(context.Background(), variant.VariantID, reviseVariant, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err = db.PreviewCorpusProfile(profile.ProfileID, CorpusMutation{}); !errors.Is(err, ErrCorpusPrecondition) {
+	if _, err = db.PreviewCorpusProfile(context.Background(), profile.ProfileID, CorpusMutation{}); !errors.Is(err, ErrCorpusPrecondition) {
 		t.Fatalf("missing preview precondition returned %v", err)
 	}
-	if _, err = db.PreviewCorpusProfile(profile.ProfileID, CorpusMutation{ExpectedETag: "stale"}); !errors.Is(err, ErrCorpusConflict) {
+	if _, err = db.PreviewCorpusProfile(context.Background(), profile.ProfileID, CorpusMutation{ExpectedETag: "stale"}); !errors.Is(err, ErrCorpusConflict) {
 		t.Fatalf("stale preview precondition returned %v", err)
 	}
-	auditBefore, err := db.PageCorpusAudit(100, 0)
+	auditBefore, err := db.PageCorpusAudit(context.Background(), 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	preview, err := db.PreviewCorpusProfile(profile.ProfileID, CorpusMutation{ExpectedETag: profile.ETag})
+	preview, err := db.PreviewCorpusProfile(context.Background(), profile.ProfileID, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,21 +357,21 @@ func TestCorpusPreviewUsesDraftsWithoutMutation(t *testing.T) {
 		t.Fatalf("preview did not select variant draft: %v", got)
 	}
 
-	currentBytes, manifest, err := db.CurrentCorpusSnapshot()
+	currentBytes, manifest, err := db.CurrentCorpusSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manifest.CorpusRevision != 1 || len(currentBytes) == 0 {
 		t.Fatalf("preview advanced current release: %+v", manifest)
 	}
-	unchanged, err := db.GetCorpusProfile(profile.ProfileID)
+	unchanged, err := db.GetCorpusProfile(context.Background(), profile.ProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if unchanged.ETag != profile.ETag || unchanged.Draft == nil || unchanged.Variants[0].Draft == nil {
 		t.Fatalf("preview mutated draft lifecycle: %+v", unchanged)
 	}
-	auditAfter, err := db.PageCorpusAudit(100, 0)
+	auditAfter, err := db.PageCorpusAudit(context.Background(), 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,12 +379,12 @@ func TestCorpusPreviewUsesDraftsWithoutMutation(t *testing.T) {
 		t.Fatalf("preview wrote an audit record: before=%d after=%d", auditBefore.Total, auditAfter.Total)
 	}
 
-	if _, err = db.PublishCorpusProfile(profile.ProfileID,
+	if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 		corpusPublishRequest(preview.CurrentCorpusRevision),
 		CorpusMutation{ExpectedETag: preview.ETag}); err != nil {
 		t.Fatalf("publish rejected the ETag returned by preview: %v", err)
 	}
-	releasedBytes, releasedManifest, err := db.CurrentCorpusSnapshot()
+	releasedBytes, releasedManifest, err := db.CurrentCorpusSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,12 +403,12 @@ func TestCorpusPublishRejectsInterveningReleaseFromAnotherProfile(t *testing.T) 
 	makeDraft := func(model string) *corpus.Profile {
 		req := corpusProfileRequest()
 		req.Labels.Model = model
-		profile, err := db.CreateCorpusProfile(req, CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), req, CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		variant := corpusVariantRequest("initial")
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, variant,
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, variant,
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
@@ -178,21 +418,21 @@ func TestCorpusPublishRejectsInterveningReleaseFromAnotherProfile(t *testing.T) 
 	first := makeDraft("Concurrent Camera A")
 	second := makeDraft("Concurrent Camera B")
 
-	preview, err := db.PreviewCorpusProfile(first.ProfileID,
+	preview, err := db.PreviewCorpusProfile(context.Background(), first.ProfileID,
 		CorpusMutation{ExpectedETag: first.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.PublishCorpusProfile(second.ProfileID, corpusPublishRequest(0),
+	if _, err = db.PublishCorpusProfile(context.Background(), second.ProfileID, corpusPublishRequest(0),
 		CorpusMutation{ExpectedETag: second.ETag}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.PublishCorpusProfile(first.ProfileID,
+	if _, err = db.PublishCorpusProfile(context.Background(), first.ProfileID,
 		corpusPublishRequest(preview.CurrentCorpusRevision),
 		CorpusMutation{ExpectedETag: preview.ETag}); !errors.Is(err, ErrCorpusRevisionConflict) {
 		t.Fatalf("intervening release returned %v, want ErrCorpusRevisionConflict", err)
 	}
-	unchanged, err := db.GetCorpusProfile(first.ProfileID)
+	unchanged, err := db.GetCorpusProfile(context.Background(), first.ProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}

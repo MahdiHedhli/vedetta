@@ -17,8 +17,11 @@ import json
 import os
 import re
 import secrets
+import socket
 import stat
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,6 +46,9 @@ ADMIN_UPSTREAM = os.environ.get(
 ADMIN_TOKEN_FILE = os.environ.get("MON_ADMIN_TOKEN_FILE", "")
 DASHBOARD = os.environ.get("MON_DASHBOARD", os.path.join(HERE, "dashboard.html"))
 MAX_REQUEST_BYTES = 64 * 1024
+REQUEST_SOCKET_TIMEOUT_SECONDS = 10
+REQUEST_BODY_DEADLINE_SECONDS = 10
+REQUEST_READ_DEADLINE_SECONDS = 10
 MAX_RESPONSE_BYTES = _environment_int("MON_MAX_RESPONSE_BYTES", 16 * 1024 * 1024)
 MAX_RESPONSE_BYTES_CEILING = 32 * 1024 * 1024
 _DEFAULT_ORIGINS = "http://127.0.0.1:%d,http://localhost:%d" % (PORT, PORT)
@@ -268,6 +274,34 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "vedetta-operations/2.0"
     sys_version = ""
 
+    def setup(self) -> None:
+        super().setup()
+        # Bound both request-header and request-body reads. In particular,
+        # rfile.read(Content-Length) must not let a slow or abandoned client
+        # retain a ThreadingHTTPServer worker indefinitely.
+        self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
+        # A socket timeout measures inactivity and can be reset by a slow-drip
+        # client. This absolute watchdog also covers request-line/header reads,
+        # which happen before any do_* handler can enforce the body deadline.
+        self._request_read_deadline = threading.Timer(
+            REQUEST_READ_DEADLINE_SECONDS, self._expire_request_read
+        )
+        self._request_read_deadline.daemon = True
+        self._request_read_deadline.start()
+
+    def _expire_request_read(self) -> None:
+        self.close_connection = True
+        try:
+            self.connection.shutdown(socket.SHUT_RD)
+        except OSError:
+            pass
+
+    def handle_one_request(self) -> None:
+        try:
+            super().handle_one_request()
+        finally:
+            self._request_read_deadline.cancel()
+
     def _security_headers(self, nonce: str | None = None) -> None:
         script = f"'nonce-{nonce}'" if nonce else "'none'"
         style = f"'nonce-{nonce}'" if nonce else "'none'"
@@ -319,12 +353,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _same_origin_mutation(self) -> bool:
-        if not hmac.compare_digest(self.headers.get("X-Vedetta-Admin-Action", ""), "1"):
+        action = self.headers.get("X-Vedetta-Admin-Action", "")
+        origin = self.headers.get("Origin", "")
+        host = self.headers.get("Host", "")
+        # compare_digest intentionally rejects non-ASCII str values. HTTP
+        # headers arrive as ISO-8859-1 text, so reject such input as an ordinary
+        # failed CSRF check instead of terminating the request thread.
+        if not all(
+            isinstance(value, str) and value.isascii()
+            for value in (action, origin, host)
+        ):
+            return False
+        if not hmac.compare_digest(action, "1"):
             return False
         if self.headers.get("Sec-Fetch-Site", "") not in ("", "same-origin"):
             return False
-        origin = self.headers.get("Origin", "")
-        host = self.headers.get("Host", "")
         try:
             parsed = urllib.parse.urlsplit(origin)
         except ValueError:
@@ -341,7 +384,12 @@ class Handler(BaseHTTPRequestHandler):
         return (
             bool(host)
             and hmac.compare_digest(parsed.netloc.lower(), host.lower())
-            and any(hmac.compare_digest(normalized, allowed) for allowed in ALLOWED_ORIGINS)
+            and any(
+                isinstance(allowed, str)
+                and allowed.isascii()
+                and hmac.compare_digest(normalized, allowed)
+                for allowed in ALLOWED_ORIGINS
+            )
         )
 
     def _authorized_admin_client(self) -> bool:
@@ -376,11 +424,38 @@ class Handler(BaseHTTPRequestHandler):
         if content_type != "application/json":
             self._json_error(415, "JSON_REQUIRED", "Content-Type must be application/json")
             return None
-        data = self.rfile.read(length)
+        data = bytearray()
+        deadline = time.monotonic() + REQUEST_BODY_DEADLINE_SECONDS
+        try:
+            while len(data) < length:
+                remaining_seconds = deadline - time.monotonic()
+                if remaining_seconds <= 0:
+                    raise TimeoutError
+                self.connection.settimeout(
+                    min(REQUEST_SOCKET_TIMEOUT_SECONDS, remaining_seconds)
+                )
+                # BufferedReader.read1 performs at most one underlying socket
+                # read. Recomputing the timeout before every read turns the
+                # deadline into an absolute bound instead of a resettable
+                # per-byte inactivity timer.
+                chunk = self.rfile.read1(min(8192, length - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+        except (TimeoutError, socket.timeout):
+            # A timed-out buffered reader cannot safely serve another request.
+            # Preserve the existing opaque incomplete-body response and close
+            # the connection after writing it.
+            self.close_connection = True
+            self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
+            self._json_error(400, "INCOMPLETE_BODY", "request body was incomplete")
+            return None
+        finally:
+            self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
         if len(data) != length:
             self._json_error(400, "INCOMPLETE_BODY", "request body was incomplete")
             return None
-        return data
+        return bytes(data)
 
     def _proxy(self) -> None:
         try:
@@ -445,17 +520,33 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as error:
             # HTTPError doubles as the response body. It owns a socket/file
             # object just like a successful response, so close it on every
-            # branch, including body-limit and downstream-write failures.
+            # branch, including body-limit and downstream-write failures. Close
+            # it before sending the downstream response so completion cannot be
+            # observed while the upstream resource is still live.
+            proxy_error = None
             with error:
                 if 300 <= error.code < 400:
-                    self._json_error(502, "UPSTREAM_REDIRECT", "upstream redirects are forbidden")
-                    return
-                try:
-                    data = _read_limited(error, MAX_RESPONSE_BYTES)
-                except ValueError:
-                    self._json_error(502, "UPSTREAM_TOO_LARGE", "upstream response exceeded limit")
-                    return
-                self._send_upstream(error.code, error.headers, data)
+                    proxy_error = (
+                        502,
+                        "UPSTREAM_REDIRECT",
+                        "upstream redirects are forbidden",
+                    )
+                else:
+                    try:
+                        data = _read_limited(error, MAX_RESPONSE_BYTES)
+                    except ValueError:
+                        proxy_error = (
+                            502,
+                            "UPSTREAM_TOO_LARGE",
+                            "upstream response exceeded limit",
+                        )
+                    else:
+                        status = error.code
+                        headers = error.headers
+            if proxy_error is not None:
+                self._json_error(*proxy_error)
+                return
+            self._send_upstream(status, headers, data)
         except (urllib.error.URLError, TimeoutError, ValueError):
             self._json_error(502, "UPSTREAM_UNAVAILABLE", "upstream service unavailable")
 

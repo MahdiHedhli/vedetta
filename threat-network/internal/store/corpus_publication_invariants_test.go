@@ -1,17 +1,18 @@
 package store
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
 
 func TestCorpusPublishReconstructsStoredSignalFamilyCount(t *testing.T) {
 	db := newTestDB(t)
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("corrupt-count"),
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("corrupt-count"),
 		CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +29,7 @@ func TestCorpusPublishReconstructsStoredSignalFamilyCount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0),
+	_, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
 		CorpusMutation{ExpectedETag: profile.ETag})
 	if err == nil {
 		t.Fatal("shape with a corrupt stored signal family count unexpectedly published")
@@ -36,7 +37,7 @@ func TestCorpusPublishReconstructsStoredSignalFamilyCount(t *testing.T) {
 	if !strings.Contains(err.Error(), "signal family count") {
 		t.Fatalf("corrupt family count error = %v", err)
 	}
-	manifest, manifestErr := db.CorpusManifest()
+	manifest, manifestErr := db.CorpusManifest(context.Background())
 	if manifestErr != nil {
 		t.Fatal(manifestErr)
 	}
@@ -50,17 +51,17 @@ func TestCorpusPublishRejectsStoredCrossProfilePredecessor(t *testing.T) {
 
 	baseRequest := corpusProfileRequest()
 	baseRequest.Labels.Model = "Lineage Base Camera"
-	base, err := db.CreateCorpusProfile(baseRequest, CorpusMutation{})
+	base, err := db.CreateCorpusProfile(context.Background(), baseRequest, CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err = db.CreateCorpusVariant(base.ProfileID, corpusVariantRequest("base"),
+	base, err = db.CreateCorpusVariant(context.Background(), base.ProfileID, corpusVariantRequest("base"),
 		CorpusMutation{ExpectedETag: base.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
 	baseVariantID := base.Variants[0].VariantID
-	base, err = db.PublishCorpusProfile(base.ProfileID, corpusPublishRequest(0),
+	base, err = db.PublishCorpusProfile(context.Background(), base.ProfileID, corpusPublishRequest(0),
 		CorpusMutation{ExpectedETag: base.ETag})
 	if err != nil {
 		t.Fatal(err)
@@ -68,11 +69,11 @@ func TestCorpusPublishRejectsStoredCrossProfilePredecessor(t *testing.T) {
 
 	childRequest := corpusProfileRequest()
 	childRequest.Labels.Model = "Lineage Child Camera"
-	child, err := db.CreateCorpusProfile(childRequest, CorpusMutation{})
+	child, err := db.CreateCorpusProfile(context.Background(), childRequest, CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err = db.CreateCorpusVariant(child.ProfileID, corpusVariantRequest("child"),
+	child, err = db.CreateCorpusVariant(context.Background(), child.ProfileID, corpusVariantRequest("child"),
 		CorpusMutation{ExpectedETag: child.ETag})
 	if err != nil {
 		t.Fatal(err)
@@ -85,12 +86,12 @@ func TestCorpusPublishRejectsStoredCrossProfilePredecessor(t *testing.T) {
 		WHERE variant_id = ?`, baseVariantID, childVariantID); err != nil {
 		t.Fatal(err)
 	}
-	child, err = db.GetCorpusProfile(child.ProfileID)
+	child, err = db.GetCorpusProfile(context.Background(), child.ProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = db.PublishCorpusProfile(child.ProfileID, corpusPublishRequest(1),
+	_, err = db.PublishCorpusProfile(context.Background(), child.ProfileID, corpusPublishRequest(1),
 		CorpusMutation{ExpectedETag: child.ETag})
 	if err == nil {
 		t.Fatal("stored cross-profile predecessor unexpectedly published")
@@ -98,14 +99,14 @@ func TestCorpusPublishRejectsStoredCrossProfilePredecessor(t *testing.T) {
 	if !strings.Contains(err.Error(), "predecessor belongs to another profile") {
 		t.Fatalf("cross-profile predecessor error = %v", err)
 	}
-	manifest, manifestErr := db.CorpusManifest()
+	manifest, manifestErr := db.CorpusManifest(context.Background())
 	if manifestErr != nil {
 		t.Fatal(manifestErr)
 	}
 	if manifest.CorpusRevision != 1 {
 		t.Fatalf("failed publication advanced corpus revision to %d", manifest.CorpusRevision)
 	}
-	unchanged, getErr := db.GetCorpusProfile(child.ProfileID)
+	unchanged, getErr := db.GetCorpusProfile(context.Background(), child.ProfileID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}

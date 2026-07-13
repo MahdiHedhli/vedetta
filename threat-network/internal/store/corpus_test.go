@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -24,7 +25,7 @@ func corpusProfileRequest() corpus.CreateProfileRequest {
 
 func TestCorpusOptimisticConcurrencySerializesWriters(t *testing.T) {
 	db := newTestDB(t)
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func TestCorpusOptimisticConcurrencySerializesWriters(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, writeErr := db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest(key), CorpusMutation{ExpectedETag: profile.ETag})
+			_, writeErr := db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest(key), CorpusMutation{ExpectedETag: profile.ETag})
 			errs <- writeErr
 		}()
 	}
@@ -70,7 +71,7 @@ func TestCorpusProfileIdentityIsUniqueUnderConcurrentCreate(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+			_, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 			errs <- err
 		}()
 	}
@@ -126,17 +127,17 @@ func corpusLifecycleRequest(reasonCode string, expectedRevision int) corpus.Life
 
 func TestCorpusVariantReasonsDistinguishEvolutionFromCorrection(t *testing.T) {
 	db := newTestDB(t)
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := corpusVariantRequest("base")
 	base.ReasonCode = "firmware_evolution"
-	if _, err = db.CreateCorpusVariant(profile.ProfileID, base, CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
+	if _, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, base, CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
 		t.Fatal("new root variant accepted firmware_evolution reason")
 	}
 	base.ReasonCode = "new_variant"
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, base, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, base, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,11 +150,11 @@ func TestCorpusVariantReasonsDistinguishEvolutionFromCorrection(t *testing.T) {
 		VersionFacts: clean.VersionFacts,
 		ReasonCode:   "firmware_evolution",
 	}
-	if _, err = db.ReviseCorpusVariant(variant.VariantID, revise, CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
+	if _, err = db.ReviseCorpusVariant(context.Background(), variant.VariantID, revise, CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
 		t.Fatal("curator correction accepted firmware_evolution reason")
 	}
 	revise.ReasonCode = "signal_correction"
-	if _, err = db.ReviseCorpusVariant(variant.VariantID, revise, CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
+	if _, err = db.ReviseCorpusVariant(context.Background(), variant.VariantID, revise, CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
 		t.Fatalf("signal correction rejected: %v", err)
 	}
 }
@@ -171,16 +172,16 @@ func assertPredecessorRejectionLeavesCorpusUnchanged(t *testing.T, db *DB, profi
 	if err := db.QueryRow(`SELECT COUNT(*) FROM device_corpus_audit`).Scan(&auditsBefore); err != nil {
 		t.Fatal(err)
 	}
-	manifestBefore, err := db.CorpusManifest()
+	manifestBefore, err := db.CorpusManifest(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err = db.CreateCorpusVariant(profile.ProfileID, req,
+	if _, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, req,
 		CorpusMutation{ExpectedETag: profile.ETag}); err == nil || !checkErr(err) {
 		t.Fatalf("predecessor rejection error = %v", err)
 	}
-	unchanged, err := db.GetCorpusProfile(profile.ProfileID)
+	unchanged, err := db.GetCorpusProfile(context.Background(), profile.ProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func assertPredecessorRejectionLeavesCorpusUnchanged(t *testing.T, db *DB, profi
 	if err = db.QueryRow(`SELECT COUNT(*) FROM device_corpus_audit`).Scan(&auditsAfter); err != nil {
 		t.Fatal(err)
 	}
-	manifestAfter, err := db.CorpusManifest()
+	manifestAfter, err := db.CorpusManifest(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func assertPredecessorRejectionLeavesCorpusUnchanged(t *testing.T, db *DB, profi
 
 	// The same ETag must remain usable after the rejected request; an optimistic
 	// concurrency token is not consumed by a failed predecessor validation.
-	if _, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("etag-reuse"),
+	if _, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("etag-reuse"),
 		CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
 		t.Fatalf("rejected predecessor spent current ETag: %v", err)
 	}
@@ -221,7 +222,7 @@ func assertPredecessorRejectionLeavesCorpusUnchanged(t *testing.T, db *DB, profi
 func TestCorpusVariantPredecessorMustBeActiveAndSameProfile(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,17 +235,17 @@ func TestCorpusVariantPredecessorMustBeActiveAndSameProfile(t *testing.T) {
 
 	t.Run("another profile", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		otherReq := corpusProfileRequest()
 		otherReq.Labels.Model = "Other Camera"
-		other, err := db.CreateCorpusProfile(otherReq, CorpusMutation{})
+		other, err := db.CreateCorpusProfile(context.Background(), otherReq, CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		other, err = db.CreateCorpusVariant(other.ProfileID, corpusVariantRequest("other-base"),
+		other, err = db.CreateCorpusVariant(context.Background(), other.ProfileID, corpusVariantRequest("other-base"),
 			CorpusMutation{ExpectedETag: other.ETag})
 		if err != nil {
 			t.Fatal(err)
@@ -258,17 +259,17 @@ func TestCorpusVariantPredecessorMustBeActiveAndSameProfile(t *testing.T) {
 
 	t.Run("abandoned draft", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("abandoned"),
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("abandoned"),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
 		}
 		predecessorID := profile.Variants[0].VariantID
-		profile, err = db.DiscardCorpusVariantDraft(predecessorID,
+		profile, err = db.DiscardCorpusVariantDraft(context.Background(), predecessorID,
 			corpus.LifecycleRequest{ReasonCode: "signal_correction"},
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
@@ -283,22 +284,22 @@ func TestCorpusVariantPredecessorMustBeActiveAndSameProfile(t *testing.T) {
 
 	t.Run("withdrawn published revision", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("withdrawn"),
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("withdrawn"),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
 		}
 		predecessorID := profile.Variants[0].VariantID
-		profile, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0),
+		profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile, err = db.WithdrawCorpusVariant(predecessorID,
+		profile, err = db.WithdrawCorpusVariant(context.Background(), predecessorID,
 			corpusLifecycleRequest("obsolete_product", 1),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
@@ -314,17 +315,17 @@ func TestCorpusVariantPredecessorMustBeActiveAndSameProfile(t *testing.T) {
 
 func TestCorpusVariantAcceptsPublishedPredecessor(t *testing.T) {
 	db := newTestDB(t)
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("base"),
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("base"),
 		CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
 	predecessorID := profile.Variants[0].VariantID
-	profile, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0),
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
 		CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +333,7 @@ func TestCorpusVariantAcceptsPublishedPredecessor(t *testing.T) {
 	child := corpusVariantRequest("child")
 	child.PredecessorVariantID = predecessorID
 	child.ReasonCode = "firmware_evolution"
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, child,
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, child,
 		CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatalf("valid firmware evolution from published predecessor: %v", err)
@@ -353,7 +354,7 @@ func TestCorpusVariantAcceptsPublishedPredecessor(t *testing.T) {
 
 func TestWithdrawCorpusVariantWithoutRevisionReturnsNotFound(t *testing.T) {
 	db := newTestDB(t)
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +366,7 @@ func TestWithdrawCorpusVariantWithoutRevisionReturnsNotFound(t *testing.T) {
 		"orphan-variant", profile.ProfileID, "orphan", "2026-07-13T16:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.WithdrawCorpusVariant("orphan-variant",
+	if _, err = db.WithdrawCorpusVariant(context.Background(), "orphan-variant",
 		corpusLifecycleRequest("obsolete_product", 0),
 		CorpusMutation{ExpectedETag: profile.ETag}); !errors.Is(err, ErrCorpusNotFound) {
 		t.Fatalf("withdraw orphan error = %v, want ErrCorpusNotFound", err)
@@ -374,7 +375,7 @@ func TestWithdrawCorpusVariantWithoutRevisionReturnsNotFound(t *testing.T) {
 
 func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 	db := newTestDB(t)
-	initialBytes, initial, err := db.CurrentCorpusSnapshot()
+	initialBytes, initial, err := db.CurrentCorpusSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +383,7 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 		t.Fatalf("unexpected bootstrap snapshot: %+v", initial)
 	}
 
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{Actor: "admin"})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{Actor: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +391,7 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 		t.Fatalf("unexpected created profile: %+v", profile)
 	}
 	staleETag := profile.ETag
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("firmware-2"), CorpusMutation{
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("firmware-2"), CorpusMutation{
 		Actor: "admin", ExpectedETag: profile.ETag,
 	})
 	if err != nil {
@@ -399,7 +400,7 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 	if profile.ETag == staleETag || len(profile.Variants) != 1 || profile.Variants[0].Draft == nil {
 		t.Fatalf("variant did not update profile state: %+v", profile)
 	}
-	if _, err = db.ReviseCorpusProfile(profile.ProfileID, corpus.ReviseProfileRequest{
+	if _, err = db.ReviseCorpusProfile(context.Background(), profile.ProfileID, corpus.ReviseProfileRequest{
 		Labels: corpusProfileRequest().Labels, ReasonCode: "label_correction",
 	}, CorpusMutation{ExpectedETag: staleETag}); !errors.Is(err, ErrCorpusConflict) {
 		t.Fatalf("stale ETag error = %v, want conflict", err)
@@ -414,7 +415,7 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 		t.Fatalf("stored draft shape is not canonical: stored=%s canonical=%s raw=%s", storedBytes, canonicalStructBytes, canonicalBytes)
 	}
 
-	profile, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0), CorpusMutation{
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0), CorpusMutation{
 		ExpectedETag: profile.ETag,
 	})
 	if err != nil {
@@ -423,7 +424,7 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 	if profile.Published == nil || profile.Draft != nil || profile.Variants[0].Published == nil {
 		t.Fatalf("profile was not atomically published: %+v", profile)
 	}
-	releaseOneBytes, releaseOne, err := db.CurrentCorpusSnapshot()
+	releaseOneBytes, releaseOne, err := db.CurrentCorpusSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,23 +444,23 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 		Sources:      corpusVariantRequest("ignored").Sources,
 		VersionFacts: corpusVariantRequest("ignored").VersionFacts, ReasonCode: "signal_correction"}
 	revise.Shape.TCPPorts = append(revise.Shape.TCPPorts, 8443)
-	profile, err = db.ReviseCorpusVariant(variant.VariantID, revise, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.ReviseCorpusVariant(context.Background(), variant.VariantID, revise, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Draft corrections must not alter current release bytes.
-	stillOne, manifest, err := db.CurrentCorpusSnapshot()
+	stillOne, manifest, err := db.CurrentCorpusSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manifest.CorpusRevision != 1 || string(stillOne) != string(releaseOneBytes) {
 		t.Fatal("draft revision changed the public release")
 	}
-	profile, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(1), CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(1), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, releaseTwo, err := db.CurrentCorpusSnapshot()
+	_, releaseTwo, err := db.CurrentCorpusSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,29 +481,29 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 
 func TestCorpusPublicationFailureRollsBackLifecycle(t *testing.T) {
 	db := newTestDB(t)
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := corpusVariantRequest("unsourced")
 	req.Sources = nil
 	req.VersionFacts = nil
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, req, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, req, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag})
+	_, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag})
 	if err == nil {
 		t.Fatal("unsourced corpus unexpectedly published")
 	}
-	after, getErr := db.GetCorpusProfile(profile.ProfileID)
+	after, getErr := db.GetCorpusProfile(context.Background(), profile.ProfileID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
 	if after.Draft == nil || after.Published != nil || after.Variants[0].Draft == nil {
 		t.Fatalf("failed publication partially changed lifecycle: %+v", after)
 	}
-	manifest, err := db.CorpusManifest()
+	manifest, err := db.CorpusManifest(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +515,7 @@ func TestCorpusPublicationFailureRollsBackLifecycle(t *testing.T) {
 func TestCorpusPublicationQualityGate(t *testing.T) {
 	t.Run("generic OUI and ports claim rejected", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -522,18 +523,18 @@ func TestCorpusPublicationQualityGate(t *testing.T) {
 		req.Shape = corpus.CanonicalShapeV1{OUIPrefixes: []string{"00:00:5e"}, TCPPorts: []uint16{80, 443}}
 		req.Sources = []corpus.Source{{Kind: "lab_observation"}}
 		req.VersionFacts = nil
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, req, CorpusMutation{ExpectedETag: profile.ETag})
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, req, CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = db.PublishCorpusProfile(profile.ProfileID,
+		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 			corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
 			t.Fatal("generic OUI/ports lab claim unexpectedly published")
 		}
 	})
 	t.Run("correlated DHCP fields count as one family", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -544,29 +545,29 @@ func TestCorpusPublicationQualityGate(t *testing.T) {
 		}
 		req.Sources = []corpus.Source{{Kind: "lab_observation"}}
 		req.VersionFacts = nil
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, req, CorpusMutation{ExpectedETag: profile.ETag})
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, req, CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = db.PublishCorpusProfile(profile.ProfileID,
+		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 			corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
 			t.Fatal("correlated DHCP fields bypassed the single-family citation gate")
 		}
 	})
 	t.Run("single exact signature with authoritative citation accepted", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		req := corpusVariantRequest("exact")
 		req.Shape = corpus.CanonicalShapeV1{MDNSModels: []string{"Example Camera Two"}}
 		req.VersionFacts = nil
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, req, CorpusMutation{ExpectedETag: profile.ETag})
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, req, CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = db.PublishCorpusProfile(profile.ProfileID,
+		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 			corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
 			t.Fatalf("authoritative exact signature rejected: %v", err)
 		}
@@ -587,7 +588,7 @@ func TestCorpusStoredSnapshotIsRevalidatedBeforeServing(t *testing.T) {
 		current_snapshot_sha256 = ?, updated_at = '2026-07-13T16:00:00Z' WHERE singleton = 1`, hash); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := db.CurrentCorpusSnapshot(); err == nil {
+	if _, _, err := db.CurrentCorpusSnapshot(context.Background()); err == nil {
 		t.Fatal("stored snapshot with an unreviewed field was served")
 	}
 }
@@ -597,11 +598,11 @@ func TestCorpusAllowsAmbiguousShapeAcrossProfiles(t *testing.T) {
 	for i, model := range []string{"Camera Two", "Shared Chipset Camera"} {
 		req := corpusProfileRequest()
 		req.Labels.Model = model
-		profile, err := db.CreateCorpusProfile(req, CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), req, CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("shared"), CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
+		if _, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("shared"), CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
 			t.Fatalf("profile %d shared shape: %v", i, err)
 		}
 	}
@@ -616,11 +617,11 @@ func TestCorpusAllowsAmbiguousShapeAcrossProfiles(t *testing.T) {
 
 func TestCorpusAbandonedUnpublishedVariantCanRestartIdentity(t *testing.T) {
 	db := newTestDB(t)
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("base"), CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("base"), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +629,7 @@ func TestCorpusAbandonedUnpublishedVariantCanRestartIdentity(t *testing.T) {
 	childReq := corpusVariantRequest("child")
 	childReq.PredecessorVariantID = baseID
 	childReq.ReasonCode = "firmware_evolution"
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, childReq, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, childReq, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +639,7 @@ func TestCorpusAbandonedUnpublishedVariantCanRestartIdentity(t *testing.T) {
 			childID = variant.VariantID
 		}
 	}
-	profile, err = db.DiscardCorpusVariantDraft(childID,
+	profile, err = db.DiscardCorpusVariantDraft(context.Background(), childID,
 		corpus.LifecycleRequest{ReasonCode: "signal_correction"},
 		CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
@@ -646,7 +647,7 @@ func TestCorpusAbandonedUnpublishedVariantCanRestartIdentity(t *testing.T) {
 	}
 	restarted := corpusVariantRequest("child")
 	restarted.ReasonCode = "restore_reviewed"
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, restarted, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, restarted, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatalf("restart abandoned variant: %v", err)
 	}
@@ -659,7 +660,7 @@ func TestCorpusAbandonedUnpublishedVariantCanRestartIdentity(t *testing.T) {
 	if got == nil || got.VariantID != childID || got.PredecessorVariantID != "" || got.Draft == nil || got.Draft.Revision != 2 {
 		t.Fatalf("abandoned identity was not safely restarted: %+v", got)
 	}
-	profile, err = db.PublishCorpusProfile(profile.ProfileID,
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 		corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
@@ -671,11 +672,11 @@ func TestCorpusAbandonedUnpublishedVariantCanRestartIdentity(t *testing.T) {
 
 func TestCorpusCannotWithdrawPublishedPredecessorBeforeDescendant(t *testing.T) {
 	db := newTestDB(t)
-	profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("base"), CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("base"), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,11 +684,11 @@ func TestCorpusCannotWithdrawPublishedPredecessorBeforeDescendant(t *testing.T) 
 	childReq := corpusVariantRequest("child")
 	childReq.PredecessorVariantID = baseID
 	childReq.ReasonCode = "firmware_evolution"
-	profile, err = db.CreateCorpusVariant(profile.ProfileID, childReq, CorpusMutation{ExpectedETag: profile.ETag})
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, childReq, CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err = db.PublishCorpusProfile(profile.ProfileID,
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 		corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
@@ -698,16 +699,16 @@ func TestCorpusCannotWithdrawPublishedPredecessorBeforeDescendant(t *testing.T) 
 			childID = variant.VariantID
 		}
 	}
-	if _, err = db.WithdrawCorpusVariant(baseID,
+	if _, err = db.WithdrawCorpusVariant(context.Background(), baseID,
 		corpusLifecycleRequest("obsolete_product", 1), CorpusMutation{ExpectedETag: profile.ETag}); !errors.Is(err, ErrCorpusHasDependents) {
 		t.Fatalf("predecessor withdrawal error=%v, want active descendants", err)
 	}
-	profile, err = db.WithdrawCorpusVariant(childID,
+	profile, err = db.WithdrawCorpusVariant(context.Background(), childID,
 		corpusLifecycleRequest("obsolete_product", 1), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.WithdrawCorpusVariant(baseID,
+	if _, err = db.WithdrawCorpusVariant(context.Background(), baseID,
 		corpusLifecycleRequest("obsolete_product", 2), CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
 		t.Fatalf("base withdrawal after child: %v", err)
 	}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -31,9 +32,9 @@ type corpusSnapshotCache struct {
 	manifest corpus.Manifest
 }
 
-func createCorpusReleaseTx(tx *sql.Tx, now string) (int, string, error) {
+func createCorpusReleaseTx(ctx context.Context, tx *sql.Tx, now string) (int, string, error) {
 	var current int
-	if err := tx.QueryRow(`SELECT current_revision FROM device_corpus_state WHERE singleton = 1`).Scan(&current); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT current_revision FROM device_corpus_state WHERE singleton = 1`).Scan(&current); err != nil {
 		return 0, "", err
 	}
 	revision := current + 1
@@ -41,7 +42,7 @@ func createCorpusReleaseTx(tx *sql.Tx, now string) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	snapshot, err := buildPublicCorpusSnapshot(tx, revision, generatedAt)
+	snapshot, err := buildPublicCorpusSnapshot(ctx, tx, revision, generatedAt)
 	if err != nil {
 		return 0, "", err
 	}
@@ -61,26 +62,26 @@ func createCorpusReleaseTx(tx *sql.Tx, now string) (int, string, error) {
 	for _, profile := range snapshot.Profiles {
 		variants += len(profile.Variants)
 	}
-	if _, err = tx.Exec(`INSERT INTO device_corpus_releases
+	if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_releases
         (corpus_revision, schema_version, snapshot_sha256, snapshot_json,
 		 profile_count, variant_count, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`, revision, corpus.SchemaVersion, hash,
 		string(snapshotBytes), len(snapshot.Profiles), variants, now); err != nil {
 		return 0, "", err
 	}
-	if _, err = tx.Exec(`UPDATE device_corpus_state SET current_revision = ?,
+	if _, err = tx.ExecContext(ctx, `UPDATE device_corpus_state SET current_revision = ?,
         current_snapshot_sha256 = ?, updated_at = ? WHERE singleton = 1`, revision, hash, now); err != nil {
 		return 0, "", err
 	}
 	return revision, hash, nil
 }
 
-func buildPublicCorpusSnapshot(q corpusQuerier, revision int, generatedAt time.Time) (corpus.PublicSnapshot, error) {
+func buildPublicCorpusSnapshot(ctx context.Context, q corpusQuerier, revision int, generatedAt time.Time) (corpus.PublicSnapshot, error) {
 	snapshot := corpus.PublicSnapshot{
 		SchemaVersion: corpus.SchemaVersion, CorpusRevision: revision,
 		GeneratedAt: generatedAt.UTC(), Profiles: []corpus.PublicProfile{},
 	}
-	rows, err := q.Query(`SELECT p.profile_id, pr.revision, pr.manufacturer, pr.model,
+	rows, err := q.QueryContext(ctx, `SELECT p.profile_id, pr.revision, pr.manufacturer, pr.model,
         pr.product_family, pr.device_type, pr.os_family
         FROM device_corpus_profiles p
         JOIN device_corpus_profile_revisions pr ON pr.profile_id = p.profile_id
@@ -112,7 +113,7 @@ func buildPublicCorpusSnapshot(q corpusQuerier, revision int, generatedAt time.T
 	filtered := snapshot.Profiles[:0]
 	for i := range snapshot.Profiles {
 		profile := &snapshot.Profiles[i]
-		if err = loadPublicCorpusVariants(q, profile); err != nil {
+		if err = loadPublicCorpusVariants(ctx, q, profile); err != nil {
 			return snapshot, err
 		}
 		if len(profile.Variants) > 0 {
@@ -123,8 +124,8 @@ func buildPublicCorpusSnapshot(q corpusQuerier, revision int, generatedAt time.T
 	return snapshot, nil
 }
 
-func loadPublicCorpusVariants(q corpusQuerier, profile *corpus.PublicProfile) error {
-	rows, err := q.Query(`SELECT v.variant_id, v.variant_key,
+func loadPublicCorpusVariants(ctx context.Context, q corpusQuerier, profile *corpus.PublicProfile) error {
+	rows, err := q.QueryContext(ctx, `SELECT v.variant_id, v.variant_key,
         COALESCE(v.predecessor_variant_id, ''), vr.revision, vr.shape_hash,
         s.canonical_json, vr.confidence_bp, vr.variant_revision_id
         FROM device_corpus_variants v
@@ -165,7 +166,7 @@ func loadPublicCorpusVariants(q corpusQuerier, profile *corpus.PublicProfile) er
 	}
 	for _, item := range variants {
 		managementRevision := corpus.VariantRevision{}
-		if err = loadCorpusEvidence(q, item.revisionID, &managementRevision); err != nil {
+		if err = loadCorpusEvidence(ctx, q, item.revisionID, &managementRevision); err != nil {
 			return err
 		}
 		item.value.Sources = managementRevision.Sources
@@ -178,10 +179,10 @@ func loadPublicCorpusVariants(q corpusQuerier, profile *corpus.PublicProfile) er
 // CorpusManifest reads only release metadata. It deliberately does not load or
 // decode snapshot_json, which keeps status, manifests, and conditional snapshot
 // requests cheap even when the corpus approaches its publication size limit.
-func (db *DB) CorpusManifest() (corpus.Manifest, error) {
+func (db *DB) CorpusManifest(ctx context.Context) (corpus.Manifest, error) {
 	var revision int
 	var hash, updated string
-	if err := db.QueryRow(`SELECT current_revision, current_snapshot_sha256, updated_at
+	if err := db.QueryRowContext(ctx, `SELECT current_revision, current_snapshot_sha256, updated_at
         FROM device_corpus_state WHERE singleton = 1`).Scan(&revision, &hash, &updated); err != nil {
 		return corpus.Manifest{}, err
 	}
@@ -207,7 +208,7 @@ func (db *DB) CorpusManifest() (corpus.Manifest, error) {
 	}
 	var created string
 	var profiles, variants, schemaVersion int
-	err := db.QueryRow(`SELECT schema_version, profile_count, variant_count, created_at
+	err := db.QueryRowContext(ctx, `SELECT schema_version, profile_count, variant_count, created_at
         FROM device_corpus_releases WHERE corpus_revision = ? AND snapshot_sha256 = ?`, revision, hash).
 		Scan(&schemaVersion, &profiles, &variants, &created)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -231,8 +232,11 @@ func (db *DB) CorpusManifest() (corpus.Manifest, error) {
 // CurrentCorpusSnapshot returns a caller-owned copy of the exact bytes and
 // metadata of the current immutable release. Revision zero is a deterministic
 // empty bootstrap snapshot; callers may safely reuse or mutate their copy.
-func (db *DB) CurrentCorpusSnapshot() ([]byte, corpus.Manifest, error) {
-	manifest, err := db.CorpusManifest()
+func (db *DB) CurrentCorpusSnapshot(ctx context.Context) ([]byte, corpus.Manifest, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, corpus.Manifest{}, err
+	}
+	manifest, err := db.CorpusManifest(ctx)
 	if err != nil {
 		return nil, corpus.Manifest{}, err
 	}
@@ -249,8 +253,17 @@ func (db *DB) CurrentCorpusSnapshot() ([]byte, corpus.Manifest, error) {
 	// Collapse a cold-cache stampede after publication or process start. The
 	// first reader validates and caches the immutable release; waiters re-check
 	// the key and reuse it rather than loading the same 16 MiB body repeatedly.
-	db.corpusLoadMu.Lock()
-	defer db.corpusLoadMu.Unlock()
+	select {
+	case db.corpusLoadGate <- struct{}{}:
+		defer func() { <-db.corpusLoadGate }()
+	case <-ctx.Done():
+		return nil, corpus.Manifest{}, ctx.Err()
+	}
+	// If cancellation raced with an available gate, fail before consulting the
+	// cache or beginning any release load.
+	if err := ctx.Err(); err != nil {
+		return nil, corpus.Manifest{}, err
+	}
 	db.corpusCacheMu.RLock()
 	cached = db.corpusCache
 	if cached != nil && cached.manifest.CorpusRevision == manifest.CorpusRevision &&
@@ -272,7 +285,7 @@ func (db *DB) CurrentCorpusSnapshot() ([]byte, corpus.Manifest, error) {
 	} else {
 		var raw sql.NullString
 		var storedBytes int64
-		err = db.QueryRow(`SELECT `+boundedCorpusSnapshotColumns+`
+		err = db.QueryRowContext(ctx, `SELECT `+boundedCorpusSnapshotColumns+`
 	            FROM device_corpus_releases
             WHERE corpus_revision = ? AND snapshot_sha256 = ?`, maxCorpusSnapshotBytes,
 			manifest.CorpusRevision, manifest.SnapshotSHA256).Scan(&storedBytes, &raw)

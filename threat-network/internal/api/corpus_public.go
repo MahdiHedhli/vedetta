@@ -9,7 +9,7 @@ func (s *Server) handleCorpusManifest(w http.ResponseWriter, r *http.Request) {
 	if !s.allowCorpusRead(w, r) {
 		return
 	}
-	manifest, err := s.DB.CorpusManifest()
+	manifest, err := s.DB.CorpusManifest(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "device corpus unavailable")
 		return
@@ -28,7 +28,7 @@ func (s *Server) handleCorpusSnapshot(w http.ResponseWriter, r *http.Request) {
 	if !s.allowCorpusRead(w, r) {
 		return
 	}
-	manifest, err := s.DB.CorpusManifest()
+	manifest, err := s.DB.CorpusManifest(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "device corpus unavailable")
 		return
@@ -40,7 +40,7 @@ func (s *Server) handleCorpusSnapshot(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	data, manifest, err := s.DB.CurrentCorpusSnapshot()
+	data, manifest, err := s.DB.CurrentCorpusSnapshot(r.Context())
 	if err != nil {
 		w.Header().Del("ETag")
 		w.Header().Set("Cache-Control", "no-store")

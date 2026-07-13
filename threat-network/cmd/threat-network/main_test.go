@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,17 +13,28 @@ import (
 )
 
 type blockingShutdowner struct {
-	started chan struct{}
-	release <-chan struct{}
+	started   chan struct{}
+	release   <-chan struct{}
+	completed chan struct{}
 }
 
 func (s *blockingShutdowner) Shutdown(ctx context.Context) error {
 	close(s.started)
+	defer close(s.completed)
 	select {
 	case <-s.release:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func waitForShutdownSignal(t *testing.T, ctx context.Context, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for %s: %v", description, ctx.Err())
 	}
 }
 
@@ -117,7 +129,7 @@ func TestPrepareRunModeDispatchesEarlyExitCommandsBeforeCorpusValidation(t *test
 			tt.setup(t, db)
 			installCorruptCorpusRelease(t, db)
 
-			if _, _, err := db.CurrentCorpusSnapshot(); err == nil {
+			if _, _, err := db.CurrentCorpusSnapshot(context.Background(), ); err == nil {
 				t.Fatal("test setup did not corrupt the current corpus release")
 			}
 			handled, err := prepareRunMode(db, tt.mode)
@@ -171,10 +183,19 @@ func TestValidateAdminListenAddr(t *testing.T) {
 }
 
 func TestShutdownHTTPServersStartsAllServersConcurrently(t *testing.T) {
-	release := make(chan struct{})
-	first := &blockingShutdowner{started: make(chan struct{}), release: release}
-	second := &blockingShutdowner{started: make(chan struct{}), release: release}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	firstRelease := make(chan struct{})
+	secondRelease := make(chan struct{})
+	first := &blockingShutdowner{
+		started:   make(chan struct{}),
+		release:   firstRelease,
+		completed: make(chan struct{}),
+	}
+	second := &blockingShutdowner{
+		started:   make(chan struct{}),
+		release:   secondRelease,
+		completed: make(chan struct{}),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
@@ -183,16 +204,18 @@ func TestShutdownHTTPServersStartsAllServersConcurrently(t *testing.T) {
 	}()
 
 	for index, started := range []<-chan struct{}{first.started, second.started} {
-		select {
-		case <-started:
-		case <-time.After(250 * time.Millisecond):
-			t.Fatalf("shutdown %d did not start concurrently", index+1)
-		}
+		waitForShutdownSignal(t, ctx, started, fmt.Sprintf("shutdown %d to start concurrently", index+1))
 	}
-	close(release)
+
+	close(firstRelease)
+	waitForShutdownSignal(t, ctx, first.completed, "first shutdown to complete")
 	select {
 	case <-done:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("concurrent shutdown did not finish after both servers released")
+		t.Fatal("shutdownHTTPServers returned before the second shutdown completed")
+	default:
 	}
+
+	close(secondRelease)
+	waitForShutdownSignal(t, ctx, second.completed, "second shutdown to complete")
+	waitForShutdownSignal(t, ctx, done, "shutdownHTTPServers to return after both shutdowns completed")
 }

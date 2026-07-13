@@ -26,7 +26,7 @@ func assertCorpusConnectionUsable(t *testing.T, db *DB) {
 func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 	t.Run("management timestamp", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +37,7 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 			WHERE profile_id = ?`, profile.ProfileID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = db.GetCorpusProfile(profile.ProfileID); err == nil || !strings.Contains(err.Error(), "timestamp") {
+		if _, err = db.GetCorpusProfile(context.Background(), profile.ProfileID); err == nil || !strings.Contains(err.Error(), "timestamp") {
 			t.Fatalf("corrupt management timestamp error = %v", err)
 		}
 		assertCorpusConnectionUsable(t, db)
@@ -45,11 +45,11 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 
 	t.Run("preview shape", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("preview-corrupt"),
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("preview-corrupt"),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
@@ -60,7 +60,7 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 		if _, err = db.Exec(`UPDATE device_corpus_shapes SET canonical_json = '{'`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = buildCorpusPreviewSnapshot(db, profile.ProfileID, 1, time.Now().UTC()); err == nil ||
+		if _, err = buildCorpusPreviewSnapshot(context.Background(), db, profile.ProfileID, 1, time.Now().UTC()); err == nil ||
 			!strings.Contains(err.Error(), "decode stored preview shape") {
 			t.Fatalf("corrupt preview shape error = %v", err)
 		}
@@ -69,16 +69,16 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 
 	t.Run("public shape", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("public-corrupt"),
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("public-corrupt"),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0),
+		profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
@@ -89,7 +89,7 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 		if _, err = db.Exec(`UPDATE device_corpus_shapes SET canonical_json = '{'`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = buildPublicCorpusSnapshot(db, 2, time.Now().UTC()); err == nil ||
+		if _, err = buildPublicCorpusSnapshot(context.Background(), db, 2, time.Now().UTC()); err == nil ||
 			!strings.Contains(err.Error(), "decode stored public shape") {
 			t.Fatalf("corrupt public shape error = %v", err)
 		}
@@ -98,11 +98,11 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 
 	t.Run("publication row scan", func(t *testing.T) {
 		db := newTestDB(t)
-		profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("quality-corrupt"),
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("quality-corrupt"),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
@@ -116,7 +116,7 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 		if _, err = db.Exec(`UPDATE device_corpus_shapes SET signal_family_count = 'broken'`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0),
+		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
 			CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
 			t.Fatal("corrupt publication row unexpectedly published")
 		}
@@ -130,7 +130,7 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 			VALUES ('audit-corrupt', 'admin', 'profile', 'profile-corrupt', 'create', 'new_profile', 'not-a-time')`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.PageCorpusAudit(10, 0); err == nil || !strings.Contains(err.Error(), "timestamp") {
+		if _, err := db.PageCorpusAudit(context.Background(), 10, 0); err == nil || !strings.Contains(err.Error(), "timestamp") {
 			t.Fatalf("corrupt audit timestamp error = %v", err)
 		}
 		assertCorpusConnectionUsable(t, db)
@@ -144,7 +144,7 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 			VALUES (1, 1, ?, '{}', 0, 0, 'not-a-time')`, strings.Repeat("a", 64)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.PageCorpusReleases(10, 0); err == nil || !strings.Contains(err.Error(), "timestamp") {
+		if _, err := db.PageCorpusReleases(context.Background(), 10, 0); err == nil || !strings.Contains(err.Error(), "timestamp") {
 			t.Fatalf("corrupt release timestamp error = %v", err)
 		}
 		assertCorpusConnectionUsable(t, db)

@@ -11,6 +11,7 @@ import socket
 import stat
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -448,6 +449,174 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(call["if_match"], '"profile-etag"')
         self.assertIsNone(call["action"])
         self.assertEqual(call["body"], body)
+
+    def test_mutation_rejects_non_ascii_security_headers_without_thread_crash(self):
+        body = b'{}'
+        path = b"/api/v1/admin/device-corpus/profiles"
+        valid_host = self.base.removeprefix("http://").encode("ascii")
+        valid_origin = self.base.encode("ascii")
+        cases = (
+            (b"\xff", valid_origin, valid_host),
+            (b"1", b"http://\xff.example", valid_host),
+            (b"1", valid_origin, b"\xff.example"),
+        )
+        for action, origin, host in cases:
+            with self.subTest(action=action, origin=origin, host=host):
+                request = b"\r\n".join(
+                    (
+                        b"POST " + path + b" HTTP/1.1",
+                        b"Host: " + host,
+                        b"Tailscale-User-Login: curator@example.com",
+                        b"Origin: " + origin,
+                        b"X-Vedetta-Admin-Action: " + action,
+                        b"Content-Type: application/json",
+                        b"Content-Length: " + str(len(body)).encode("ascii"),
+                        b"Connection: close",
+                        b"",
+                        b"",
+                    )
+                ) + body
+                captured = io.StringIO()
+                with contextlib.redirect_stderr(captured):
+                    with socket.create_connection(
+                        self.proxy.server_address, timeout=3
+                    ) as client:
+                        client.sendall(request)
+                        client.shutdown(socket.SHUT_WR)
+                        response = bytearray()
+                        while chunk := client.recv(4096):
+                            response.extend(chunk)
+
+                self.assertIn(b"HTTP/1.0 403 Forbidden", response)
+                self.assertNotIn("Traceback", captured.getvalue())
+                self.assertNotIn("TypeError", captured.getvalue())
+                self.assertEqual(self.upstream.calls, [])
+
+    def test_slow_request_body_times_out_as_incomplete(self):
+        body_prefix = b'{"labels":'
+        host = self.base.removeprefix("http://")
+        headers = (
+            "POST /api/v1/admin/device-corpus/profiles HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Tailscale-User-Login: curator@example.com\r\n"
+            f"Origin: {self.base}\r\n"
+            "X-Vedetta-Admin-Action: 1\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 128\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with (
+            mock.patch.object(serve, "REQUEST_SOCKET_TIMEOUT_SECONDS", 0.1),
+            socket.create_connection(self.proxy.server_address, timeout=3) as client,
+        ):
+            client.sendall(headers + body_prefix)
+            response = bytearray()
+            while chunk := client.recv(4096):
+                response.extend(chunk)
+
+        self.assertIn(b"HTTP/1.0 400 Bad Request", response)
+        self.assertIn(b'"error":"INCOMPLETE_BODY"', response)
+        self.assertEqual(self.upstream.calls, [])
+
+    def test_slow_drip_body_cannot_reset_absolute_deadline(self):
+        host = self.base.removeprefix("http://")
+        headers = (
+            "POST /api/v1/admin/device-corpus/profiles HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Tailscale-User-Login: curator@example.com\r\n"
+            f"Origin: {self.base}\r\n"
+            "X-Vedetta-Admin-Action: 1\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 128\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with (
+            mock.patch.object(serve, "REQUEST_SOCKET_TIMEOUT_SECONDS", 0.5),
+            mock.patch.object(serve, "REQUEST_BODY_DEADLINE_SECONDS", 0.15),
+            socket.create_connection(self.proxy.server_address, timeout=3) as client,
+        ):
+            client.sendall(headers + b"{")
+            stop_drip = threading.Event()
+
+            def drip_body():
+                while not stop_drip.wait(0.04):
+                    try:
+                        client.sendall(b"x")
+                    except OSError:
+                        return
+
+            drip = threading.Thread(target=drip_body, daemon=True)
+            drip.start()
+            started = time.monotonic()
+            response = bytearray()
+            while chunk := client.recv(4096):
+                response.extend(chunk)
+            elapsed = time.monotonic() - started
+            stop_drip.set()
+            drip.join(1)
+
+        self.assertLess(elapsed, 1.0)
+        self.assertIn(b"HTTP/1.0 400 Bad Request", response)
+        self.assertIn(b'"error":"INCOMPLETE_BODY"', response)
+        self.assertEqual(self.upstream.calls, [])
+
+    def test_slow_drip_headers_cannot_reset_total_deadline(self):
+        captured = io.StringIO()
+        with (
+            mock.patch.object(serve, "REQUEST_SOCKET_TIMEOUT_SECONDS", 0.5),
+            mock.patch.object(serve, "REQUEST_READ_DEADLINE_SECONDS", 0.15),
+            contextlib.redirect_stderr(captured),
+            socket.create_connection(self.proxy.server_address, timeout=3) as client,
+        ):
+            client.sendall(
+                b"GET /api/v1/admin/device-corpus/profiles HTTP/1.1\r\nHost: 127"
+            )
+            stop_drip = threading.Event()
+
+            def drip_headers():
+                while not stop_drip.wait(0.04):
+                    try:
+                        client.sendall(b"x")
+                    except OSError:
+                        return
+
+            drip = threading.Thread(target=drip_headers, daemon=True)
+            drip.start()
+            started = time.monotonic()
+            response = bytearray()
+            while chunk := client.recv(4096):
+                response.extend(chunk)
+            elapsed = time.monotonic() - started
+            stop_drip.set()
+            drip.join(1)
+
+        self.assertLess(elapsed, 1.0)
+        self.assertNotIn("Traceback", captured.getvalue())
+        self.assertEqual(self.upstream.calls, [])
+
+    def test_eof_during_request_body_remains_incomplete_body(self):
+        body_prefix = b'{"labels":'
+        host = self.base.removeprefix("http://")
+        request = (
+            "POST /api/v1/admin/device-corpus/profiles HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Tailscale-User-Login: curator@example.com\r\n"
+            f"Origin: {self.base}\r\n"
+            "X-Vedetta-Admin-Action: 1\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 128\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii") + body_prefix
+        with socket.create_connection(self.proxy.server_address, timeout=3) as client:
+            client.sendall(request)
+            client.shutdown(socket.SHUT_WR)
+            response = bytearray()
+            while chunk := client.recv(4096):
+                response.extend(chunk)
+
+        self.assertIn(b"HTTP/1.0 400 Bad Request", response)
+        self.assertIn(b'"error":"INCOMPLETE_BODY"', response)
+        self.assertEqual(self.upstream.calls, [])
 
     def test_cross_origin_mutation_is_rejected(self):
         headers = {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -19,16 +20,16 @@ func TestCurrentCorpusSnapshotReturnsCallerOwnedBytes(t *testing.T) {
 		{
 			name: "published release",
 			setup: func(t *testing.T, db *DB) {
-				profile, err := db.CreateCorpusProfile(corpusProfileRequest(), CorpusMutation{})
+				profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
 				if err != nil {
 					t.Fatal(err)
 				}
-				profile, err = db.CreateCorpusVariant(profile.ProfileID, corpusVariantRequest("cache-copy"),
+				profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("cache-copy"),
 					CorpusMutation{ExpectedETag: profile.ETag})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err = db.PublishCorpusProfile(profile.ProfileID, corpusPublishRequest(0),
+				if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
 					CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
 					t.Fatal(err)
 				}
@@ -41,7 +42,7 @@ func TestCurrentCorpusSnapshotReturnsCallerOwnedBytes(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(t, db)
 			}
-			first, manifest, err := db.CurrentCorpusSnapshot()
+			first, manifest, err := db.CurrentCorpusSnapshot(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -51,7 +52,7 @@ func TestCurrentCorpusSnapshotReturnsCallerOwnedBytes(t *testing.T) {
 			}
 			first[0] ^= 0xff
 
-			second, secondManifest, err := db.CurrentCorpusSnapshot()
+			second, secondManifest, err := db.CurrentCorpusSnapshot(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -59,7 +60,7 @@ func TestCurrentCorpusSnapshotReturnsCallerOwnedBytes(t *testing.T) {
 				t.Fatalf("caller mutation corrupted cached snapshot or manifest")
 			}
 			second[len(second)-1] ^= 0xff
-			third, thirdManifest, err := db.CurrentCorpusSnapshot()
+			third, thirdManifest, err := db.CurrentCorpusSnapshot(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,10 +116,10 @@ func TestStoredCorpusReleaseMetadataMustMatchSnapshot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			db := newTestDB(t)
 			installSyntheticCorpusRelease(t, db, tt.raw, tt.profiles, tt.variants, tt.createdAt)
-			if _, _, err := db.CurrentCorpusSnapshot(); err == nil {
+			if _, _, err := db.CurrentCorpusSnapshot(context.Background()); err == nil {
 				t.Fatal("current snapshot served despite release metadata mismatch")
 			}
-			if _, _, err := db.GetCorpusRelease(1); err == nil {
+			if _, _, err := db.GetCorpusRelease(context.Background(), 1); err == nil {
 				t.Fatal("historical snapshot served despite release metadata mismatch")
 			}
 		})
@@ -130,10 +131,10 @@ func TestOversizedStoredCorpusReleaseRejectedBeforeDecode(t *testing.T) {
 	raw := `{"schema_version":1,"corpus_revision":1,"generated_at":"2026-07-13T16:00:00Z","profiles":[],"padding":"` +
 		strings.Repeat("x", maxCorpusSnapshotBytes) + `"}`
 	installSyntheticCorpusRelease(t, db, raw, 0, 0, "2026-07-13T16:00:00Z")
-	if _, _, err := db.CurrentCorpusSnapshot(); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+	if _, _, err := db.CurrentCorpusSnapshot(context.Background()); err == nil || !strings.Contains(err.Error(), "16 MiB") {
 		t.Fatalf("oversized current snapshot error=%v", err)
 	}
-	if _, _, err := db.GetCorpusRelease(1); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+	if _, _, err := db.GetCorpusRelease(context.Background(), 1); err == nil || !strings.Contains(err.Error(), "16 MiB") {
 		t.Fatalf("oversized historical snapshot error=%v", err)
 	}
 }
@@ -180,12 +181,12 @@ func TestStoredCorpusReleaseSizeLimitCountsUTF8Bytes(t *testing.T) {
 	}
 
 	t.Run("current release", func(t *testing.T) {
-		if _, _, err := db.CurrentCorpusSnapshot(); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+		if _, _, err := db.CurrentCorpusSnapshot(context.Background()); err == nil || !strings.Contains(err.Error(), "16 MiB") {
 			t.Fatalf("multibyte oversized current snapshot error=%v", err)
 		}
 	})
 	t.Run("historical release", func(t *testing.T) {
-		if _, _, err := db.GetCorpusRelease(1); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+		if _, _, err := db.GetCorpusRelease(context.Background(), 1); err == nil || !strings.Contains(err.Error(), "16 MiB") {
 			t.Fatalf("multibyte oversized historical snapshot error=%v", err)
 		}
 	})

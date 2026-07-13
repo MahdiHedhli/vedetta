@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -24,30 +25,30 @@ type CorpusPreview struct {
 // PreviewCorpusProfile builds a proposed public release without mutating the
 // database. All reads and the ETag check occur in one transaction, so the
 // response cannot combine revisions from different curator states.
-func (db *DB) PreviewCorpusProfile(profileID string, meta CorpusMutation) (CorpusPreview, error) {
+func (db *DB) PreviewCorpusProfile(ctx context.Context, profileID string, meta CorpusMutation) (CorpusPreview, error) {
 	meta = normalizeMutation(meta)
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return CorpusPreview{}, err
 	}
 	defer tx.Rollback()
 
-	etag, err := requireCorpusETag(tx, profileID, meta)
+	etag, err := requireCorpusETag(ctx, tx, profileID, meta)
 	if err != nil {
 		return CorpusPreview{}, err
 	}
-	if err = validateCorpusPreviewEligibility(tx, profileID); err != nil {
+	if err = validateCorpusPreviewEligibility(ctx, tx, profileID); err != nil {
 		return CorpusPreview{}, err
 	}
 	var currentRevision int
-	if err = tx.QueryRow(`SELECT current_revision FROM device_corpus_state WHERE singleton = 1`).Scan(&currentRevision); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT current_revision FROM device_corpus_state WHERE singleton = 1`).Scan(&currentRevision); err != nil {
 		return CorpusPreview{}, err
 	}
 	generatedAt, err := parseCorpusTime(nowRFC3339())
 	if err != nil {
 		return CorpusPreview{}, err
 	}
-	snapshot, err := buildCorpusPreviewSnapshot(tx, profileID, currentRevision+1, generatedAt)
+	snapshot, err := buildCorpusPreviewSnapshot(ctx, tx, profileID, currentRevision+1, generatedAt)
 	if err != nil {
 		return CorpusPreview{}, err
 	}
@@ -69,13 +70,13 @@ func (db *DB) PreviewCorpusProfile(profileID string, meta CorpusMutation) (Corpu
 	}, nil
 }
 
-func validateCorpusPreviewEligibility(tx *sql.Tx, profileID string) error {
+func validateCorpusPreviewEligibility(ctx context.Context, tx *sql.Tx, profileID string) error {
 	var draftProfiles, draftVariants int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM device_corpus_profile_revisions
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_corpus_profile_revisions
 		WHERE profile_id = ? AND status = 'draft'`, profileID).Scan(&draftProfiles); err != nil {
 		return err
 	}
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM device_corpus_variants v
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_corpus_variants v
 		JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
 		WHERE v.profile_id = ? AND vr.status = 'draft'`, profileID).Scan(&draftVariants); err != nil {
 		return err
@@ -84,13 +85,13 @@ func validateCorpusPreviewEligibility(tx *sql.Tx, profileID string) error {
 		return ErrCorpusNoChanges
 	}
 
-	return validateCorpusPublishReadiness(tx, profileID)
+	return validateCorpusPublishReadiness(ctx, tx, profileID)
 }
 
 // buildCorpusPreviewSnapshot mirrors publication selection: the target
 // profile and its variants prefer drafts, while every other profile is read
 // strictly from published revisions.
-func buildCorpusPreviewSnapshot(q corpusQuerier, targetProfileID string, revision int, generatedAt time.Time) (corpus.PublicSnapshot, error) {
+func buildCorpusPreviewSnapshot(ctx context.Context, q corpusQuerier, targetProfileID string, revision int, generatedAt time.Time) (corpus.PublicSnapshot, error) {
 	snapshot := corpus.PublicSnapshot{
 		SchemaVersion: corpus.SchemaVersion, CorpusRevision: revision,
 		GeneratedAt: generatedAt.UTC(), Profiles: []corpus.PublicProfile{},
@@ -100,7 +101,7 @@ func buildCorpusPreviewSnapshot(q corpusQuerier, targetProfileID string, revisio
 		status  string
 	}
 	selected := map[string]profileCandidate{}
-	rows, err := q.Query(`SELECT p.profile_id, pr.revision, pr.manufacturer, pr.model,
+	rows, err := q.QueryContext(ctx, `SELECT p.profile_id, pr.revision, pr.manufacturer, pr.model,
 		pr.product_family, pr.device_type, pr.os_family, pr.status
 		FROM device_corpus_profiles p
 		JOIN device_corpus_profile_revisions pr ON pr.profile_id = p.profile_id
@@ -150,7 +151,7 @@ func buildCorpusPreviewSnapshot(q corpusQuerier, targetProfileID string, revisio
 	filtered := snapshot.Profiles[:0]
 	for i := range snapshot.Profiles {
 		profile := &snapshot.Profiles[i]
-		if err = loadCorpusPreviewVariants(q, profile, profile.ProfileID == targetProfileID); err != nil {
+		if err = loadCorpusPreviewVariants(ctx, q, profile, profile.ProfileID == targetProfileID); err != nil {
 			return snapshot, err
 		}
 		if len(profile.Variants) > 0 {
@@ -161,14 +162,14 @@ func buildCorpusPreviewSnapshot(q corpusQuerier, targetProfileID string, revisio
 	return snapshot, nil
 }
 
-func loadCorpusPreviewVariants(q corpusQuerier, profile *corpus.PublicProfile, preferDraft bool) error {
+func loadCorpusPreviewVariants(ctx context.Context, q corpusQuerier, profile *corpus.PublicProfile, preferDraft bool) error {
 	type variantCandidate struct {
 		value      corpus.PublicVariant
 		revisionID string
 		status     string
 	}
 	selected := map[string]variantCandidate{}
-	rows, err := q.Query(`SELECT v.variant_id, v.variant_key,
+	rows, err := q.QueryContext(ctx, `SELECT v.variant_id, v.variant_key,
 		COALESCE(v.predecessor_variant_id, ''), vr.revision, vr.shape_hash,
 		s.canonical_json, vr.confidence_bp, vr.variant_revision_id, vr.status
 		FROM device_corpus_variants v
@@ -218,7 +219,7 @@ func loadCorpusPreviewVariants(q corpusQuerier, profile *corpus.PublicProfile, p
 	})
 	for _, candidate := range variants {
 		managementRevision := corpus.VariantRevision{}
-		if err = loadCorpusEvidence(q, candidate.revisionID, &managementRevision); err != nil {
+		if err = loadCorpusEvidence(ctx, q, candidate.revisionID, &managementRevision); err != nil {
 			return err
 		}
 		candidate.value.Sources = managementRevision.Sources
