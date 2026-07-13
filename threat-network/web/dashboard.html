@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Vedetta Threat Network — Operations</title>
+<style nonce="__CSP_NONCE__">
+  :root {
+    --bg:#0b0f14; --panel:#121821; --panel2:#0e141c; --border:#233043;
+    --text:#e5e7eb; --muted:#94a3b8; --faint:#64748b; --accent:#2dd4bf;
+    --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --info:#38bdf8;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans)}
+  body{padding:20px;max-width:1320px;margin:0 auto;-webkit-font-smoothing:antialiased}
+  [hidden]{display:none!important} button,input,select,textarea{font:inherit}
+  header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.brand{font-size:20px;margin:0}.mark{color:var(--accent)}
+  .chip{font:600 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.7px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);color:var(--muted)}
+  .chip.beta{color:var(--accent);border-color:#14b8a655;background:#0d1b1a}.sub{color:var(--faint);font-size:12.5px;margin:4px 0 16px}
+  nav{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px}nav button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--muted);padding:10px 14px}
+  nav button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:8px 12px;font-weight:650;cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent)}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#0d1b1a;color:var(--accent);border-color:#14b8a666}.danger{color:#fecaca;border-color:#7f1d1d}.small{font-size:12px;padding:6px 9px}
+  input,select,textarea{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:8px 9px}textarea{min-height:76px;resize:vertical;font:12px/1.5 var(--mono)}.bar input[type=checkbox]{width:auto;margin:0;accent-color:var(--accent)}
+  input:focus,select:focus,textarea:focus{outline:1px solid var(--accent);border-color:var(--accent)}label{display:block;color:var(--muted);font-size:12px}label>input,label>select,label>textarea{margin-top:5px}
+  .bar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:16px}.bar .grow{flex:1 1 250px}.spacer{flex:1}.updated{font:11px var(--mono);color:var(--faint)}
+  .pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:9px 0}.pager span{font:11px var(--mono);color:var(--faint)}
+  .banner{border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px}.banner.error{background:#1c0f12;border:1px solid #7f1d1d;color:#fecaca}.banner.success{background:#0d1b1a;border:1px solid #14532d;color:#a7f3d0}
+  .privacy{background:#17150d;border:1px solid #713f12;border-radius:10px;padding:12px 14px;color:#fde68a;font-size:13px;line-height:1.5;margin-bottom:14px}.privacy strong{color:#fff}
+  .cards{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px}.card,.panel{background:var(--panel);border:1px solid var(--border);border-radius:11px}.card{padding:13px}.card .k{font:10px var(--mono);text-transform:uppercase;letter-spacing:.7px;color:var(--faint)}.card .v{font-size:23px;font-weight:750;margin-top:8px}.card small{font:11px var(--mono);color:var(--muted)}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px}.dot.ok{background:var(--ok)}.dot.down{background:var(--bad)}
+  .section-h{display:flex;align-items:center;gap:9px;margin:0 0 9px}.section-h h2,.section-h h3{margin:0;font-size:14px}.count{font:11px var(--mono);color:var(--faint)}
+  .table-wrap{overflow:auto;border:1px solid var(--border);border-radius:10px;background:var(--panel)}table{border-collapse:collapse;width:100%;min-width:720px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;vertical-align:top}th{font:600 10px var(--mono);text-transform:uppercase;letter-spacing:.6px;color:var(--faint);background:var(--panel2)}tr:last-child td{border-bottom:0}.mono{font-family:var(--mono);word-break:break-word}.muted{color:var(--muted)}.faint{color:var(--faint)}
+  .empty{text-align:center;padding:32px;color:var(--muted)}.status{display:inline-block;padding:3px 7px;border-radius:5px;font:600 10px var(--mono);text-transform:uppercase;background:#1b2430;color:var(--muted)}.status.published{color:var(--ok);background:#052e201f}.status.draft{color:var(--warn);background:#42200655}.status.retired,.status.withdrawn{color:var(--bad);background:#450a0a55}
+  .corpus-layout{display:grid;grid-template-columns:minmax(250px,330px) 1fr;gap:14px}.profile-list{padding:8px;max-height:72vh;overflow:auto}.profile-item{display:block;width:100%;text-align:left;background:transparent;border:1px solid transparent;padding:10px;margin-bottom:4px}.profile-item.active{background:var(--panel2);border-color:var(--accent)}.profile-item strong{display:block}.profile-item span{display:block;color:var(--muted);font-size:11px;margin-top:3px}.detail{padding:16px;min-height:420px}.detail-head{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}.detail-head .title{flex:1}.detail-head h2{margin:0;font-size:21px}.detail-head p{margin:4px 0;color:var(--muted)}.actions{display:flex;gap:7px;flex-wrap:wrap}
+  .kv{display:grid;grid-template-columns:150px 1fr;gap:7px 12px;margin:14px 0;font-size:12px}.kv dt{color:var(--faint)}.kv dd{margin:0;font-family:var(--mono);word-break:break-word}.variant{border:1px solid var(--border);background:var(--panel2);border-radius:9px;padding:12px;margin-top:10px}.variant-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.variant-head strong{font-family:var(--mono)}.variant-head .actions{margin-left:auto}.signal-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px;margin-top:10px}.signal{font-size:11px}.signal b{color:var(--faint);font:600 10px var(--mono);text-transform:uppercase}.signal span{display:block;color:var(--muted);word-break:break-word;margin-top:3px}.history{margin-top:16px}.history details{border-top:1px solid var(--border);padding:9px 0}.history summary{cursor:pointer;color:var(--muted);font-size:12px}
+  pre{white-space:pre-wrap;word-break:break-word;background:#080c11;border:1px solid var(--border);border-radius:8px;padding:11px;max-height:360px;overflow:auto;color:#cbd5e1;font:11px/1.55 var(--mono)}
+  .editor{margin:16px 0;padding:15px}.editor-head{display:flex;align-items:center;margin-bottom:13px}.editor-head h2{margin:0;font-size:17px}.editor-head button{margin-left:auto}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.wide{grid-column:1/-1}.shape-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.fieldset{border:1px solid var(--border);border-radius:9px;padding:12px;margin-top:13px}.fieldset legend{font:600 11px var(--mono);color:var(--accent);padding:0 5px;text-transform:uppercase}.row-editor{display:grid;gap:7px;grid-template-columns:.8fr 1fr 1.2fr 1.5fr 1.2fr .8fr auto;margin-bottom:7px}.row-editor.fact{grid-template-columns:1.2fr .8fr 1.4fr 1.2fr .7fr 1fr auto}.row-editor input,.row-editor select{font-size:11px;padding:7px}.form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+  .publish-preview{border:1px solid #0f766e;background:#091b1b;border-radius:10px;padding:13px;margin:16px 0}.publish-preview h3{margin:0 0 5px;font-size:15px}.publish-preview .diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.publish-preview pre{max-height:300px}.publish-preview .form-actions{margin-top:10px}
+  footer{border-top:1px solid var(--border);margin-top:24px;padding-top:13px;color:var(--faint);font-size:11px;line-height:1.55}
+  @media(max-width:1000px){.cards{grid-template-columns:repeat(3,1fr)}.corpus-layout{grid-template-columns:1fr}.profile-list{max-height:260px}.shape-grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:680px){body{padding:12px}.cards{grid-template-columns:repeat(2,1fr)}.form-grid,.shape-grid,.signal-grid,.publish-preview .diff-grid{grid-template-columns:1fr}.row-editor,.row-editor.fact{grid-template-columns:1fr 1fr}.wide{grid-column:auto}}
+</style>
+</head>
+<body>
+  <header><h1 class="brand"><span class="mark">Vedetta</span> Threat Network</h1><span class="chip">Operations</span><span class="chip beta">Beta</span></header>
+  <p class="sub">Tailnet-only corpus curation and public-feed monitoring. The management credential remains on this server.</p>
+  <nav aria-label="Operations views">
+    <button type="button" data-tab="monitor" aria-selected="true">Monitor</button>
+    <button type="button" data-tab="corpus" aria-selected="false">Device corpus</button>
+    <button type="button" data-tab="audit" aria-selected="false">Audit &amp; releases</button>
+  </nav>
+  <div id="banner" hidden></div>
+
+  <main>
+    <section id="tab-monitor">
+      <div class="bar"><button id="monitor-refresh" class="primary" type="button">Refresh</button><label><input id="monitor-auto" type="checkbox" checked> Auto refresh (15s)</label><span class="spacer"></span><span id="monitor-updated" class="updated">not loaded</span></div>
+      <div class="cards">
+        <div class="card"><div class="k">Service</div><div class="v" id="m-status">—</div></div>
+        <div class="card"><div class="k">Feed items</div><div class="v" id="m-feed">—</div></div>
+        <div class="card"><div class="k">Feed schema</div><div class="v" id="m-schema">—</div></div>
+        <div class="card"><div class="k">Feed TTL</div><div class="v" id="m-ttl">—</div></div>
+        <div class="card"><div class="k">Corpus revision</div><div class="v" id="m-revision">—</div></div>
+        <div class="card"><div class="k">Published corpus</div><div class="v" id="m-corpus">—</div></div>
+      </div>
+      <div class="section-h"><h2>Community feed</h2><span id="feed-count" class="count"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>Indicator</th><th>Kind</th><th>Severity</th><th>Confidence</th><th>Sources</th><th>Reasons</th><th>Last seen</th><th>Expires</th></tr></thead><tbody id="feed-body"><tr><td class="empty" colspan="8">Loading…</td></tr></tbody></table></div>
+    </section>
+
+    <section id="tab-corpus" hidden>
+      <div class="privacy"><strong>Privacy boundary:</strong> store only reusable product-shape signals. Never enter a full MAC, IP/CIDR, observed hostname, DHCP client ID, SSDP UUID/USN/location, mDNS instance/TXT identifier, serial, account, token, certificate, sensor/reporter ID, household timestamp, or arbitrary metadata. Shape hashes are content addresses — not anonymization.</div>
+      <div id="corpus-browser">
+        <div class="bar"><label class="grow">Search profiles<input id="profile-search" type="search" maxlength="128" autocomplete="off" placeholder="Manufacturer, model, family, or type"></label><button id="corpus-refresh" type="button">Refresh</button><button id="new-profile" class="primary" type="button">New profile</button><span class="spacer"></span><button id="profile-prev" class="small" type="button">Previous</button><span id="profile-count" class="updated"></span><button id="profile-next" class="small" type="button">Next</button></div>
+        <div class="corpus-layout"><aside class="panel profile-list" id="profile-list" aria-label="Device profiles"></aside><article class="panel detail" id="profile-detail"><div class="empty">Select a profile, or create the first one.</div></article></div>
+      </div>
+
+      <section id="profile-editor" class="panel editor" hidden>
+        <div class="editor-head"><h2 id="profile-editor-title">New profile</h2><button type="button" data-close-editor="profile">Close</button></div>
+        <form id="profile-form"><div class="form-grid">
+          <label>Manufacturer<input id="p-manufacturer" maxlength="64" required></label>
+          <label>Model<input id="p-model" maxlength="96" required></label>
+          <label>Product family<input id="p-family" maxlength="96"></label>
+          <label>Device type<select id="p-type" required></select></label>
+          <label>OS family<select id="p-os"></select></label>
+          <label>Reason<select id="p-reason"></select></label>
+        </div><div class="form-actions"><button type="button" data-close-editor="profile">Cancel</button><button id="profile-submit" class="primary" type="submit">Save draft</button></div></form>
+      </section>
+
+      <section id="variant-editor" class="panel editor" hidden>
+        <div class="editor-head"><h2 id="variant-editor-title">New fingerprint variant</h2><button type="button" data-close-editor="variant">Close</button></div>
+        <form id="variant-form">
+          <div class="form-grid">
+            <label>Variant key<input id="v-key" pattern="[a-z0-9][a-z0-9._-]{0,63}" maxlength="64" required placeholder="firmware-2x"></label>
+            <label>Predecessor variant ID<input id="v-predecessor" maxlength="128" placeholder="Only for genuine product evolution"></label>
+            <label>Confidence (basis points)<input id="v-confidence" type="number" min="0" max="10000" value="8000" required></label>
+            <label>Reason<select id="v-reason"></select></label>
+          </div>
+          <fieldset class="fieldset"><legend>Privacy-reduced canonical shape v1</legend><p class="muted">One text value per line. DHCP option order is significant. Set-like fields are normalized by the server.</p>
+            <div class="shape-grid">
+              <label>DHCP option 55<textarea id="s-dhcp55" placeholder="1, 3, 6, 15, 119"></textarea></label>
+              <label>DHCP vendor classes<textarea id="s-dhcp-vendor"></textarea></label>
+              <label>OUI prefixes (6 hex only)<textarea id="s-oui" placeholder="00005E"></textarea></label>
+              <label>Hostname templates<textarea id="s-hostname" placeholder="camera-{hex}"></textarea></label>
+              <label>mDNS service types<textarea id="s-mdns-service" placeholder="_rtsp._tcp"></textarea></label>
+              <label>mDNS model tokens<textarea id="s-mdns-model"></textarea></label>
+              <label>mDNS vendor tokens<textarea id="s-mdns-vendor"></textarea></label>
+              <label>SSDP device types<textarea id="s-ssdp-type" placeholder="urn:schemas-upnp-org:device:DigitalSecurityCamera:1"></textarea></label>
+              <label>SSDP server product tokens<textarea id="s-ssdp-server"></textarea></label>
+              <label>TCP ports<textarea id="s-tcp" placeholder="80, 443, 554"></textarea></label>
+              <label>UDP ports<textarea id="s-udp"></textarea></label>
+            </div>
+          </fieldset>
+          <fieldset class="fieldset"><legend>Evidence sources</legend><p class="muted">Vendor, standards, advisory, and import evidence requires a public HTTPS citation. Lab observation and manual curation retain only the source kind and request-local reference; no private notes or observation metadata are stored.</p><div id="source-rows"></div><button id="add-source" class="small" type="button">Add source</button></fieldset>
+          <fieldset class="fieldset"><legend>Version facts</legend><div id="fact-rows"></div><button id="add-fact" class="small" type="button">Add version fact</button></fieldset>
+          <div class="form-actions"><button type="button" data-close-editor="variant">Cancel</button><button id="variant-submit" class="primary" type="submit">Save variant draft</button></div>
+        </form>
+      </section>
+    </section>
+
+    <section id="tab-audit" hidden>
+      <div class="bar"><button id="audit-refresh" class="primary" type="button">Refresh</button><span class="spacer"></span><span id="audit-updated" class="updated">not loaded</span></div>
+      <div class="section-h"><h2>Immutable releases</h2><span id="release-count" class="count"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>Corpus revision</th><th>Snapshot SHA-256</th><th>Profiles</th><th>Variants</th><th>Created</th><th>Snapshot</th></tr></thead><tbody id="release-body"></tbody></table></div>
+      <div class="pager"><button id="release-prev" class="small" type="button">Previous</button><span id="release-page"></span><button id="release-next" class="small" type="button">Next</button></div>
+      <pre id="release-preview" hidden></pre>
+      <div class="section-h history"><h2>Management audit</h2><span id="audit-count" class="count"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Entity</th><th>Action</th><th>Reason</th><th>Before → after</th><th>Release</th></tr></thead><tbody id="audit-body"></tbody></table></div>
+      <div class="pager"><button id="audit-prev" class="small" type="button">Previous</button><span id="audit-page"></span><button id="audit-next" class="small" type="button">Next</button></div>
+    </section>
+  </main>
+  <footer>Community indicators remain advisory-only. Device corpus curation is a separate management plane: drafts and curator identities never appear in the public snapshot. Public source: <code>GET /api/v1/device-corpus/snapshot</code>.</footer>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  "use strict";
+  var state={profiles:[],selectedId:"",selected:null,etag:"",snapshot:null,timer:null,editor:null,publishPreview:null,searchTimer:null,profilePage:{limit:50,offset:0,total:0,search:""},auditPage:{limit:50,offset:0,total:0},releasePage:{limit:50,offset:0,total:0}};
+  var deviceTypes=["access_point","camera","computer","desktop","doorbell","firewall","game_console","gateway","iot_generic","laptop","media_player","nas","phone","printer","router","server","smart_light","smart_speaker","smart_tv","switch","tablet","thermostat","wearable"];
+  var osFamilies=["","android","chromeos","cisco_ios","cisco_ios_xe","embedded","fireos","ios","ipados","linux","macos","nx_os","routeros","tizen","tvos","unknown","webos","windows"];
+  var profileReasons=["new_profile","label_correction","source_update"];
+  var sourceKinds=["vendor_doc","standards","security_advisory","lab_observation","manual_curation","import"];
+  var factAttrs=["firmware_version","os_version","hardware_revision","model_number","software_version"];
+  var factRelations=["exact","range","family"];
+  var $=function(id){return document.getElementById(id)};
+  function node(tag,cls,text){var n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text);return n}
+  function clear(n){n.replaceChildren()}
+  function option(value,label){var n=node("option","",label===undefined?value:label);n.value=value;return n}
+  function fillSelect(id,values){var s=$(id);values.forEach(function(v){s.appendChild(option(v,v||"(unspecified)"))})}
+  fillSelect("p-type",deviceTypes);fillSelect("p-os",osFamilies);fillSelect("p-reason",profileReasons);
+
+  function notify(message,kind){var b=$("banner");b.className="banner "+(kind||"error");b.textContent=message;b.hidden=false;window.scrollTo({top:0,behavior:"smooth"})}
+  function clearNotice(){$("banner").hidden=true}
+  function asList(value,key){if(Array.isArray(value))return value;if(value&&Array.isArray(value[key]))return value[key];if(value&&Array.isArray(value.items))return value.items;return []}
+  function pageOf(value){if(!value||!Array.isArray(value.items))throw new Error("Server returned an invalid paged response");var total=Number(value.total),limit=Number(value.limit),offset=Number(value.offset);if(!Number.isSafeInteger(total)||total<0||!Number.isSafeInteger(limit)||limit<1||!Number.isSafeInteger(offset)||offset<0)throw new Error("Server returned invalid pagination metadata");return {items:value.items,total:total,limit:limit,offset:offset}}
+  function pageQuery(page,search){var values=["limit="+encodeURIComponent(page.limit),"offset="+encodeURIComponent(page.offset)];if(search)values.push("search="+encodeURIComponent(search));return "?"+values.join("&")}
+  function pageRange(page,count){if(!page.total)return "0 of 0";if(!count)return "0 shown · "+page.total+" total";return (page.offset+1)+"–"+(page.offset+count)+" of "+page.total}
+  async function request(path,options){
+    options=options||{};var headers={Accept:"application/json"};
+    if(options.body!==undefined){headers["Content-Type"]="application/json";headers["X-Vedetta-Admin-Action"]="1"}
+    if(options.etag)headers["If-Match"]=options.etag;
+    var response=await fetch(path,{method:options.method||"GET",headers:headers,body:options.body===undefined?undefined:JSON.stringify(options.body),cache:"no-store",credentials:"same-origin"});
+    var text=await response.text(),data=null;if(text){try{data=JSON.parse(text)}catch(_){throw new Error("Server returned invalid JSON")}}
+    if(!response.ok){var errorValue=data&&data.error,message=data&&(data.message||(errorValue&&typeof errorValue==="object"&&(errorValue.message||errorValue.code))||(typeof errorValue==="string"&&errorValue));throw new Error(message||("HTTP "+response.status))}
+    return {data:data,etag:response.headers.get("ETag")||""};
+  }
+  function rel(iso){if(!iso)return "—";var t=Date.parse(iso);if(isNaN(t))return iso;var d=(t-Date.now())/1000,past=d<0,a=Math.abs(d),u=[["y",31536000],["mo",2592000],["d",86400],["h",3600],["m",60],["s",1]];for(var i=0;i<u.length;i++){if(a>=u[i][1]||u[i][0]==="s"){var x=Math.floor(a/u[i][1]);return past?x+u[i][0]+" ago":"in "+x+u[i][0]}}return iso}
+  function ttl(s){if(s===undefined||s===null)return "—";if(s%3600===0)return s/3600+"h";if(s%60===0)return s/60+"m";return s+"s"}
+  function statusBadge(value){return node("span","status "+String(value||"").toLowerCase(),value||"unknown")}
+
+  document.querySelectorAll("nav button[data-tab]").forEach(function(button){button.addEventListener("click",function(){
+    if(button.dataset.tab!=="corpus"&&state.editor){if(!closeEditors(false))return}
+    document.querySelectorAll("nav button[data-tab]").forEach(function(b){var active=b===button;b.setAttribute("aria-selected",String(active));$("tab-"+b.dataset.tab).hidden=!active});
+    if(button.dataset.tab==="corpus"&&!state.editor)loadProfiles();if(button.dataset.tab==="audit")loadAudit();
+  })});
+
+  async function loadMonitor(){try{
+    var results=await Promise.all([request("/api/v1/status"),request("/api/v1/feed/community"),request("/api/v1/device-corpus/manifest")]);
+    var s=results[0].data||{},feed=results[1].data||{},manifest=results[2].data||{},ok=s.status==="ok";
+    clear($("m-status"));$("m-status").appendChild(node("span","dot "+(ok?"ok":"down")));$("m-status").appendChild(document.createTextNode(ok?"ok":"down"));
+    $("m-feed").textContent=s.feed_items!==undefined?s.feed_items:(feed.total_items!==undefined?feed.total_items:"—");
+    $("m-schema").textContent=s.schema_version!==undefined?"v"+s.schema_version:"—";$("m-ttl").textContent=ttl(feed.ttl_seconds);
+    $("m-revision").textContent=manifest.corpus_revision!==undefined?manifest.corpus_revision:"—";
+    $("m-corpus").textContent=(manifest.profile_count||0)+" / "+(manifest.variant_count||0);$("m-corpus").appendChild(node("small",""," profiles / variants"));
+    renderFeed(feed);$("monitor-updated").textContent="updated "+new Date().toLocaleTimeString();if(document.querySelector('[data-tab="monitor"]').getAttribute("aria-selected")==="true")clearNotice();
+  }catch(error){if(document.querySelector('[data-tab="monitor"]').getAttribute("aria-selected")==="true")notify("Monitor refresh failed: "+error.message,"error");clear($("m-status"));$("m-status").appendChild(node("span","dot down"));$("m-status").appendChild(document.createTextNode("down"))}}
+  function renderFeed(feed){var items=asList(feed,"items"),body=$("feed-body");clear(body);$("feed-count").textContent=items.length+" shown · "+(feed.total_items||0)+" total";
+    if(!items.length){var tr=node("tr"),td=node("td","empty","No advisory items in the community feed yet.");td.colSpan=8;tr.appendChild(td);body.appendChild(tr);return}
+    items.forEach(function(it){var tr=node("tr");[[it.indicator,"mono"],[it.kind||it.indicator_type,""],[it.severity,""],[it.confidence,"mono"],[(it.sources_observed||0)+" / "+(it.sources_required||0),"mono"],[(it.reasons||[]).join(", "),""],[rel(it.last_seen),"mono"],[rel(it.expires_at),"mono"]].forEach(function(v){tr.appendChild(node("td",v[1],v[0]===undefined?"—":v[0]))});body.appendChild(tr)})}
+  $("monitor-refresh").addEventListener("click",loadMonitor);$("monitor-auto").addEventListener("change",scheduleMonitor);
+  function scheduleMonitor(){if(state.timer)clearInterval(state.timer);state.timer=null;if($("monitor-auto").checked)state.timer=setInterval(function(){if(!document.hidden)loadMonitor()},15000)}
+
+  async function loadProfiles(selectId){try{
+    var search=$("profile-search").value.trim();state.profilePage.search=search;
+    var results=await Promise.all([request("/api/v1/admin/device-corpus/profiles"+pageQuery(state.profilePage,search)),request("/api/v1/device-corpus/snapshot")]),page=pageOf(results[0].data);
+    state.profiles=page.items;state.profilePage.total=page.total;state.profilePage.limit=page.limit;state.profilePage.offset=page.offset;state.snapshot=results[1].data||null;state.publishPreview=null;renderProfileList();
+    var wanted=selectId||state.selectedId;if(selectId)await selectProfile(selectId);else if(wanted&&state.profiles.some(function(p){return p.profile_id===wanted}))await selectProfile(wanted);else if(state.profiles.length)await selectProfile(state.profiles[0].profile_id);else{state.selectedId="";state.selected=null;state.etag="";renderProfileDetail()}
+    clearNotice();
+  }catch(error){notify("Corpus management unavailable: "+error.message,"error")}}
+  function labelsOf(profile){var revision=profile.draft||profile.published||(profile.history&&profile.history[0])||profile;return revision.labels||profile.labels||{}}
+  function renderProfileList(){var list=$("profile-list");clear(list);$("profile-count").textContent=pageRange(state.profilePage,state.profiles.length)+" profiles";$("profile-prev").disabled=state.profilePage.offset===0;$("profile-next").disabled=state.profilePage.offset+state.profiles.length>=state.profilePage.total;
+    if(!state.profiles.length){list.appendChild(node("div","empty",state.profilePage.search?"No matching profiles.":"No profiles yet."));return}
+    state.profiles.forEach(function(p){var l=labelsOf(p),b=node("button","profile-item"+(p.profile_id===state.selectedId?" active":""));b.type="button";b.appendChild(node("strong","",(l.manufacturer||"Unknown")+" "+(l.model||"device")));b.appendChild(node("span","",(p.status||((p.draft&&"draft")||(p.published&&"published"))||"unknown")+" · "+(l.device_type||"untyped")+" · "+(p.published_variants||0)+" published / "+(p.draft_variants||0)+" draft"));b.addEventListener("click",function(){selectProfile(p.profile_id)});list.appendChild(b)})}
+  async function selectProfile(id){try{var result=await request("/api/v1/admin/device-corpus/profiles/"+encodeURIComponent(id));state.selectedId=id;state.selected=result.data;state.etag=result.etag||(result.data&&result.data.etag)||"";state.publishPreview=null;renderProfileList();renderProfileDetail()}catch(error){notify("Could not load profile: "+error.message,"error")}}
+  function kv(dl,key,value){dl.appendChild(node("dt","",key));dl.appendChild(node("dd","",value===undefined||value===""?"—":value))}
+  function actionButton(label,cls,fn){var b=node("button",cls||"",label);b.type="button";b.addEventListener("click",async function(){if(b.disabled)return;b.disabled=true;try{await fn()}finally{if(b.isConnected)b.disabled=false}});return b}
+  function renderProfileDetail(){var root=$("profile-detail");clear(root);var p=state.selected;if(!p){root.appendChild(node("div","empty","Select a profile, or create the first one."));return}var active=!!(p.draft||p.published),revision=p.draft||p.published||(p.history&&p.history[0])||{},l=revision.labels||{};
+    var head=node("div","detail-head"),title=node("div","title");title.appendChild(node("h2","",(l.manufacturer||"Unknown")+" "+(l.model||"device")));title.appendChild(node("p","",(l.product_family||"No product family")+" · "+(l.device_type||"untyped")+" · "+(l.os_family||"OS unspecified")));if(revision.status)title.appendChild(statusBadge(revision.status));head.appendChild(title);var actions=node("div","actions");if(active){actions.appendChild(actionButton("Edit labels","",openEditProfile));actions.appendChild(actionButton("Add variant","primary",function(){openVariantEditor()}));actions.appendChild(actionButton("Preview publish","primary",preparePublish));actions.appendChild(actionButton("Retire","danger",function(){return lifecycleProfile("retire","obsolete_product")}))}head.appendChild(actions);root.appendChild(head);
+    var dl=node("dl","kv");kv(dl,"Profile ID",p.profile_id);kv(dl,"Draft revision",p.draft&&p.draft.revision);kv(dl,"Published revision",p.published&&p.published.revision);kv(dl,"Optimistic-lock ETag",state.etag);root.appendChild(dl);
+    var section=node("div","section-h");section.appendChild(node("h3","","Fingerprint variants"));section.appendChild(node("span","count",(p.variants||[]).length+" total"));root.appendChild(section);
+    if(!(p.variants||[]).length)root.appendChild(node("div","empty","No fingerprint variants. Add one before publishing."));
+    (p.variants||[]).forEach(function(v){root.appendChild(renderVariant(v))});
+    if(state.publishPreview&&state.publishPreview.profileId===p.profile_id)root.appendChild(renderPublishPreview(state.publishPreview));
+    var preview=node("div","history"),details=node("details");details.open=true;details.appendChild(node("summary","","Exact current public snapshot entry"));var publicProfile=state.snapshot&&asList(state.snapshot,"profiles").find(function(x){return x.profile_id===p.profile_id});details.appendChild(node("pre","",publicProfile?JSON.stringify(publicProfile,null,2):"Not present in the current public snapshot. Draft content is not public and the server will perform privacy validation at publish time."));preview.appendChild(details);root.appendChild(preview);
+    var ph=node("div","history"),pd=node("details");pd.appendChild(node("summary","","Profile revision history ("+(p.history||[]).length+")"));var pre=node("pre","",JSON.stringify(p.history||[],null,2));pd.appendChild(pre);ph.appendChild(pd);root.appendChild(ph)
+  }
+  function signal(container,label,values){if(!values||!values.length)return;var d=node("div","signal");d.appendChild(node("b","",label));d.appendChild(node("span","",values.join(", ")));container.appendChild(d)}
+  function renderVariant(v){var current=v.draft||v.published||(v.history&&v.history[0])||{},box=node("section","variant"),head=node("div","variant-head");head.appendChild(node("strong","",v.variant_key||v.variant_id));if(v.draft)head.appendChild(statusBadge("draft"));if(v.published)head.appendChild(statusBadge("published"));if(!v.draft&&!v.published&&current.status)head.appendChild(statusBadge(current.status));head.appendChild(node("span","count",Math.round((current.confidence_bp||0)/100)+"% confidence"));var actions=node("div","actions"),profileActive=state.selected.draft||state.selected.published,neverPublished=(v.history||[]).every(function(rev){return !rev.published_at});if((v.draft||v.published)&&profileActive){actions.appendChild(actionButton("Edit draft","small",function(){openVariantEditor(v)}));if(v.draft)actions.appendChild(actionButton(v.published?"Discard correction draft":"Discard draft","small danger",function(){return discardVariantDraft(v)}));if(v.published)actions.appendChild(actionButton(v.draft?"Withdraw all revisions":"Withdraw","small danger",function(){return withdrawVariant(v)}))}else if(profileActive&&current.status==="withdrawn"&&neverPublished){actions.appendChild(actionButton("Restart discarded draft","small primary",function(){openVariantEditor(v,true)}))}head.appendChild(actions);box.appendChild(head);
+    var lineage=node("div","muted mono",v.predecessor_variant_id?"evolves from "+v.predecessor_variant_id:"root variant · "+v.variant_id);box.appendChild(lineage);var grid=node("div","signal-grid"),s=current.shape||{};signal(grid,"DHCP option 55",s.dhcp_option_55);signal(grid,"DHCP vendor",s.dhcp_vendor_classes);signal(grid,"OUIs",s.oui_prefixes);signal(grid,"Hostname templates",s.hostname_templates);signal(grid,"mDNS services",s.mdns_services);signal(grid,"mDNS model/vendor",(s.mdns_models||[]).concat(s.mdns_vendors||[]));signal(grid,"SSDP types",s.ssdp_device_types);signal(grid,"SSDP server",s.ssdp_server_tokens);signal(grid,"TCP ports",s.tcp_ports);signal(grid,"UDP ports",s.udp_ports);box.appendChild(grid);
+    var facts=node("details","history"),summary=node("summary","","Evidence, versions, and revisions · "+(current.sources||[]).length+" sources · "+(current.version_facts||[]).length+" version facts");facts.appendChild(summary);facts.appendChild(node("pre","",JSON.stringify({shape_hash:current.shape_hash,sources:current.sources||[],version_facts:current.version_facts||[],history:v.history||[]},null,2)));box.appendChild(facts);return box
+  }
+  function normalizedETag(value){var text=String(value||"").trim();if(text.slice(0,2)==="W/")text=text.slice(2);if(text.length>=2&&text[0]==='"'&&text[text.length-1]==='"')text=text.slice(1,-1);return text}
+  function snapshotProfile(snapshot,id){return asList(snapshot||{},"profiles").find(function(profile){return profile.profile_id===id})||null}
+  function jsonDiff(before,after,path,out){if(JSON.stringify(before)===JSON.stringify(after))return;var beforeObject=before&&typeof before==="object"&&!Array.isArray(before),afterObject=after&&typeof after==="object"&&!Array.isArray(after);if(beforeObject&&afterObject){Array.from(new Set(Object.keys(before).concat(Object.keys(after)))).sort().forEach(function(key){jsonDiff(before[key],after[key],path+"/"+key,out)});return}out.push({path:path||"/",before:before===undefined?"(absent)":before,after:after===undefined?"(absent)":after})}
+  function renderPublishPreview(preview){var box=node("section","publish-preview");box.appendChild(node("h3","","Server-validated publish preview"));box.appendChild(node("p","muted","Current corpus revision "+preview.currentRevision+" → proposed revision "+preview.proposedRevision+". The diff below is computed from the current public snapshot and the exact server-produced candidate at preview time."));var current=snapshotProfile(preview.currentSnapshot,preview.profileId),proposed=snapshotProfile(preview.proposedSnapshot,preview.profileId),diff=[];jsonDiff(current,proposed,"/profiles/"+preview.profileId,diff);var grid=node("div","diff-grid"),currentBox=node("div"),proposedBox=node("div");currentBox.appendChild(node("div","count","CURRENT PUBLIC PROFILE"));currentBox.appendChild(node("pre","",current?JSON.stringify(current,null,2):"(profile is not currently public)"));proposedBox.appendChild(node("div","count","PROPOSED PUBLIC PROFILE"));proposedBox.appendChild(node("pre","",proposed?JSON.stringify(proposed,null,2):"(profile will not be public)"));grid.appendChild(currentBox);grid.appendChild(proposedBox);box.appendChild(grid);var changes=node("details","history");changes.open=true;changes.appendChild(node("summary","","Current-to-proposed changes ("+diff.length+")"));changes.appendChild(node("pre","",JSON.stringify(diff,null,2)));box.appendChild(changes);var exact=node("details","history");exact.appendChild(node("summary","","Exact complete proposed public snapshot"));exact.appendChild(node("pre","",JSON.stringify(preview.proposedSnapshot,null,2)));box.appendChild(exact);var actions=node("div","form-actions");actions.appendChild(actionButton("Cancel preview","",function(){state.publishPreview=null;renderProfileDetail()}));actions.appendChild(actionButton("Publish reviewed change","primary",publishCapturedPreview));box.appendChild(actions);return box}
+  async function preparePublish(){var profileId=state.selectedId,capturedETag=state.etag;if(!profileId||!capturedETag){notify("Cannot preview publish without a current profile ETag.","error");return}try{var result=await request("/api/v1/admin/device-corpus/profiles/"+encodeURIComponent(profileId)+"/preview",{etag:capturedETag}),data=result.data||{};if(!data.snapshot||typeof data.snapshot!=="object")throw new Error("Server did not return a proposed snapshot");[result.etag,data.etag].filter(Boolean).forEach(function(value){if(normalizedETag(value)!==normalizedETag(capturedETag))throw new Error("Profile changed while the publish preview was generated")});var currentResult=await request("/api/v1/device-corpus/snapshot"),current=currentResult.data||{},currentRevision=Number(data.current_corpus_revision),proposedRevision=Number(data.proposed_corpus_revision);if(state.selectedId!==profileId||normalizedETag(state.etag)!==normalizedETag(capturedETag))throw new Error("Profile selection changed; generate a fresh preview");if(!Number.isSafeInteger(currentRevision)||!Number.isSafeInteger(proposedRevision)||proposedRevision<=currentRevision)throw new Error("Server returned invalid preview revision metadata");if(Number(current.corpus_revision)!==currentRevision)throw new Error("The public corpus changed during preview; generate a fresh preview");state.snapshot=current;state.publishPreview={profileId:profileId,etag:capturedETag,currentRevision:currentRevision,proposedRevision:proposedRevision,currentSnapshot:current,proposedSnapshot:data.snapshot};renderProfileDetail();clearNotice()}catch(error){notify("Publish preview failed: "+error.message,"error")}}
+  async function publishCapturedPreview(){var preview=state.publishPreview;if(!preview)return;if(!confirm("Publish the reviewed profile change as the next corpus release? The captured profile ETag and corpus revision prevent publishing any intervening change."))return;try{var manifest=await request("/api/v1/device-corpus/manifest");if(Number((manifest.data||{}).corpus_revision)!==preview.currentRevision)throw new Error("the public corpus advanced after this preview");await request("/api/v1/admin/device-corpus/profiles/"+encodeURIComponent(preview.profileId)+"/publish",{method:"POST",body:{reason_code:"publish_reviewed",expected_corpus_revision:preview.currentRevision},etag:preview.etag});state.publishPreview=null;await loadProfiles(preview.profileId);notify("Profile published in a new corpus release.","success")}catch(error){notify("Publish failed; generate a fresh preview before retrying: "+error.message,"error")}}
+  $("profile-search").addEventListener("input",function(){if(state.searchTimer)clearTimeout(state.searchTimer);state.searchTimer=setTimeout(function(){state.profilePage.offset=0;loadProfiles()},250)});$("corpus-refresh").addEventListener("click",function(){loadProfiles()});$("new-profile").addEventListener("click",openNewProfile);
+  $("profile-prev").addEventListener("click",function(){state.profilePage.offset=Math.max(0,state.profilePage.offset-state.profilePage.limit);loadProfiles()});
+  $("profile-next").addEventListener("click",function(){if(state.profilePage.offset+state.profilePage.limit<state.profilePage.total){state.profilePage.offset+=state.profilePage.limit;loadProfiles()}});
+
+  function showEditor(name,context){state.editor=Object.assign({kind:name,dirty:false,pending:false},context||{});state.publishPreview=null;$("corpus-browser").hidden=true;$("profile-editor").hidden=name!=="profile";$("variant-editor").hidden=name!=="variant"}
+  function closeEditors(force){if(!force&&state.editor&&state.editor.pending){notify("Wait for the save request to finish before closing the editor.","error");return false}if(!force&&state.editor&&state.editor.dirty&&!confirm("Discard your unsaved changes?"))return false;$("profile-editor").hidden=true;$("variant-editor").hidden=true;$("corpus-browser").hidden=false;state.editor=null;return true}
+  function markEditorDirty(){if(state.editor&&!state.editor.pending)state.editor.dirty=true}
+  document.querySelectorAll("[data-close-editor]").forEach(function(b){b.addEventListener("click",function(){closeEditors(false)})});
+  [$("profile-form"),$("variant-form")].forEach(function(form){form.addEventListener("input",markEditorDirty);form.addEventListener("change",markEditorDirty)});
+  function setProfileFields(labels){$("p-manufacturer").value=labels.manufacturer||"";$("p-model").value=labels.model||"";$("p-family").value=labels.product_family||"";$("p-type").value=labels.device_type||"iot_generic";$("p-os").value=labels.os_family||""}
+  function openNewProfile(){$("profile-editor-title").textContent="New device profile";setProfileFields({device_type:"iot_generic"});$("p-reason").value="new_profile";showEditor("profile",{mode:"create",profileId:"",baseETag:""})}
+  function openEditProfile(){var profileId=state.selectedId,baseETag=state.etag;$("profile-editor-title").textContent="Revise profile labels";setProfileFields(labelsOf(state.selected));$("p-reason").value="label_correction";showEditor("profile",{mode:"edit",profileId:profileId,baseETag:baseETag})}
+  $("profile-form").addEventListener("submit",async function(event){event.preventDefault();var context=state.editor,submit=$("profile-submit");if(!context||context.kind!=="profile"||context.pending||submit.disabled)return;context.pending=true;submit.disabled=true;var body={labels:{manufacturer:$("p-manufacturer").value,model:$("p-model").value,product_family:$("p-family").value,device_type:$("p-type").value,os_family:$("p-os").value},reason_code:$("p-reason").value};try{var path="/api/v1/admin/device-corpus/profiles",method="POST",etag="";if(context.mode==="edit"){path+="/"+encodeURIComponent(context.profileId);method="PUT";etag=context.baseETag}var result=await request(path,{method:method,body:body,etag:etag}),id=(result.data&&result.data.profile_id)||context.profileId;context.dirty=false;closeEditors(true);await loadProfiles(id);notify("Profile draft saved.","success")}catch(error){notify("Profile was not saved: "+error.message,"error")}finally{if(state.editor===context)context.pending=false;submit.disabled=false}});
+
+  function textLines(id){return $(id).value.split(/\r?\n/).map(function(x){return x.trim()}).filter(Boolean)}
+  function numbers(id){var raw=$(id).value.trim();if(!raw)return [];return raw.split(/[\s,]+/).filter(Boolean).map(function(x){return Number(x)})}
+  function setLines(id,values){$(id).value=(values||[]).join("\n")}
+  function addRow(kind,value){value=value||{};var row=node("div","row-editor"+(kind==="fact"?" fact":""));row.dataset.kind=kind;
+    if(kind==="source"){
+      row.appendChild(field("input","source_ref",value.source_ref||"",{placeholder:"source ref",maxlength:"32",pattern:"[a-z0-9][a-z0-9._-]{0,31}"}));var kindSelect=selectField("kind",sourceKinds,value.kind||"vendor_doc");row.appendChild(kindSelect);row.appendChild(field("input","title",value.title||"",{placeholder:"public title"}));row.appendChild(field("input","public_url",value.public_url||"",{placeholder:"https://…",type:"url"}));row.appendChild(field("input","retrieved_at",value.retrieved_at||"",{placeholder:"2026-07-13T16:00:00Z"}));row.appendChild(field("input","license_code",value.license_code||"",{placeholder:"license"}));kindSelect.addEventListener("change",function(){updateSourceFields(row,true)});
+    }else{
+      row.appendChild(selectField("attribute",factAttrs,value.attribute||"firmware_version"));row.appendChild(selectField("relation",factRelations,value.relation||"exact"));row.appendChild(field("input","value",value.value||"",{placeholder:"value"}));row.appendChild(field("input","value_end",value.value_end||"",{placeholder:"range end"}));row.appendChild(field("input","confidence_bp",value.confidence_bp===undefined?"8000":value.confidence_bp,{type:"number",min:"0",max:"10000"}));row.appendChild(field("input","source_ref",value.source_ref||"",{placeholder:"source ref"}));
+    }var remove=actionButton("Remove","small danger",function(){row.remove();markEditorDirty()});row.appendChild(remove);$(kind==="source"?"source-rows":"fact-rows").appendChild(row);if(kind==="source")updateSourceFields(row,false)
+  }
+  function updateSourceFields(row,clearPrivate){var kind=row.querySelector('[data-field="kind"]').value,privateKind=kind==="lab_observation"||kind==="manual_curation";["title","public_url","retrieved_at","license_code"].forEach(function(name){var input=row.querySelector('[data-field="'+name+'"]');input.hidden=privateKind;input.disabled=privateKind;if(privateKind&&clearPrivate)input.value=""});var url=row.querySelector('[data-field="public_url"]'),license=row.querySelector('[data-field="license_code"]');url.required=!privateKind;license.required=kind==="import"}
+  function field(tag,name,value,attrs){var n=document.createElement(tag);n.dataset.field=name;n.value=value;Object.keys(attrs||{}).forEach(function(k){n.setAttribute(k,attrs[k])});return n}
+  function selectField(name,values,selected){var s=document.createElement("select");s.dataset.field=name;values.forEach(function(v){s.appendChild(option(v));});s.value=selected;return s}
+  function rows(kind){return Array.from($(kind==="source"?"source-rows":"fact-rows").querySelectorAll("[data-kind]" )).map(function(row){var out={};row.querySelectorAll("[data-field]").forEach(function(f){if(f.disabled)return;var value=f.value.trim();if(f.dataset.field==="confidence_bp")value=Number(value);if(value!=="")out[f.dataset.field]=value});return out})}
+  $("add-source").addEventListener("click",function(){addRow("source");markEditorDirty()});$("add-fact").addEventListener("click",function(){addRow("fact");markEditorDirty()});
+  function resetVariantShape(shape){shape=shape||{};setLines("s-dhcp55",shape.dhcp_option_55);setLines("s-dhcp-vendor",shape.dhcp_vendor_classes);setLines("s-oui",shape.oui_prefixes);setLines("s-hostname",shape.hostname_templates);setLines("s-mdns-service",shape.mdns_services);setLines("s-mdns-model",shape.mdns_models);setLines("s-mdns-vendor",shape.mdns_vendors);setLines("s-ssdp-type",shape.ssdp_device_types);setLines("s-ssdp-server",shape.ssdp_server_tokens);setLines("s-tcp",shape.tcp_ports);setLines("s-udp",shape.udp_ports)}
+  function setVariantReasons(values,selected){var select=$("v-reason");clear(select);values.forEach(function(value){select.appendChild(option(value))});select.value=selected}
+  function openVariantEditor(variant,restart){var current=variant&&(variant.draft||variant.published||(variant.history&&variant.history[0])),creating=!variant||restart,profileId=state.selectedId,variantId=variant?variant.variant_id:"",baseETag=state.etag;$("variant-editor-title").textContent=restart?"Restart discarded fingerprint draft":(variant?"Revise fingerprint variant":"New fingerprint variant");$("v-key").value=variant?variant.variant_key:"";$("v-key").disabled=!!variant;$("v-predecessor").value=variant?(variant.predecessor_variant_id||""):"";$("v-predecessor").disabled=!!variant&&!restart;$("v-confidence").value=current?current.confidence_bp:8000;if(restart)setVariantReasons(["restore_reviewed"],"restore_reviewed");else if(variant)setVariantReasons(["signal_correction","source_update"],"signal_correction");else setVariantReasons(["new_variant","firmware_evolution"],"new_variant");resetVariantShape(current&&current.shape);clear($("source-rows"));clear($("fact-rows"));var sources=(current&&current.sources)||[],idToRef={};sources.forEach(function(src,i){var copy=Object.assign({},src),ref=copy.source_ref||("source"+(i+1));if(copy.source_id)idToRef[copy.source_id]=ref;copy.source_ref=ref;addRow("source",copy)});((current&&current.version_facts)||[]).forEach(function(f){var copy=Object.assign({},f);if(!copy.source_ref&&copy.source_id)copy.source_ref=idToRef[copy.source_id]||"";addRow("fact",copy)});showEditor("variant",{mode:creating?"create":"edit",restart:!!restart,profileId:profileId,variantId:variantId,baseETag:baseETag})}
+  $("v-predecessor").addEventListener("input",function(){if(state.editor&&state.editor.kind==="variant"&&state.editor.mode==="create"&&!state.editor.restart){$("v-reason").value=$("v-predecessor").value.trim()?"firmware_evolution":"new_variant"}});
+  function variantPayload(){return {variant_key:$("v-key").value,predecessor_variant_id:$("v-predecessor").value,confidence_bp:Number($("v-confidence").value),shape:{schema_version:1,dhcp_option_55:numbers("s-dhcp55"),dhcp_vendor_classes:textLines("s-dhcp-vendor"),oui_prefixes:textLines("s-oui"),hostname_templates:textLines("s-hostname"),mdns_services:textLines("s-mdns-service"),mdns_models:textLines("s-mdns-model"),mdns_vendors:textLines("s-mdns-vendor"),ssdp_device_types:textLines("s-ssdp-type"),ssdp_server_tokens:textLines("s-ssdp-server"),tcp_ports:numbers("s-tcp"),udp_ports:numbers("s-udp")},sources:rows("source"),version_facts:rows("fact"),reason_code:$("v-reason").value}}
+  $("variant-form").addEventListener("submit",async function(event){event.preventDefault();var context=state.editor,submit=$("variant-submit");if(!context||context.kind!=="variant"||context.pending||submit.disabled)return;context.pending=true;submit.disabled=true;try{var body=variantPayload(),path,method="POST";if(context.mode==="create")path="/api/v1/admin/device-corpus/profiles/"+encodeURIComponent(context.profileId)+"/variants";else{path="/api/v1/admin/device-corpus/variants/"+encodeURIComponent(context.variantId);method="PUT";delete body.variant_key;delete body.predecessor_variant_id}await request(path,{method:method,body:body,etag:context.baseETag});context.dirty=false;closeEditors(true);await loadProfiles(context.profileId);notify("Variant draft saved.","success")}catch(error){notify("Variant was not saved: "+error.message,"error")}finally{if(state.editor===context)context.pending=false;submit.disabled=false}});
+  async function lifecycleProfile(action,reason){var profileId=state.selectedId,capturedETag=state.etag;if(!profileId||!confirm("Retire this profile from the next public corpus release?"))return;try{await request("/api/v1/admin/device-corpus/profiles/"+encodeURIComponent(profileId)+"/"+action,{method:"POST",body:{reason_code:reason},etag:capturedETag});await loadProfiles(profileId);notify("Profile retired in a new corpus release.","success")}catch(error){notify("Lifecycle action failed: "+error.message,"error")}}
+  async function discardVariantDraft(variant){var profileId=state.selectedId,capturedETag=state.etag;if(!confirm(variant.published?"Discard only the pending correction and retain the currently published fingerprint?":"Discard this unpublished variant draft? Its immutable audit history remains available."))return;try{await request("/api/v1/admin/device-corpus/variants/"+encodeURIComponent(variant.variant_id)+"/discard-draft",{method:"POST",body:{reason_code:"signal_correction"},etag:capturedETag});await loadProfiles(profileId);notify("Variant draft discarded; any published revision was retained.","success")}catch(error){notify("Variant draft was not discarded: "+error.message,"error")}}
+  async function withdrawVariant(variant){var profileId=state.selectedId,capturedETag=state.etag,message=variant.draft?"Withdraw both the pending correction and the currently published variant? This creates a new public release; use only when the product fingerprint itself should leave the corpus.":"Withdraw this fingerprint variant from the next public release? Historical releases and audit records remain immutable.";if(!confirm(message))return;try{await request("/api/v1/admin/device-corpus/variants/"+encodeURIComponent(variant.variant_id)+"/withdraw",{method:"POST",body:{reason_code:"privacy_withdrawal"},etag:capturedETag});await loadProfiles(profileId);notify("Variant withdrawn.","success")}catch(error){notify("Variant withdrawal failed: "+error.message,"error")}}
+
+  async function loadAudit(){try{var results=await Promise.all([request("/api/v1/admin/device-corpus/audit"+pageQuery(state.auditPage)),request("/api/v1/admin/device-corpus/releases"+pageQuery(state.releasePage))]),audit=pageOf(results[0].data),releases=pageOf(results[1].data);Object.assign(state.auditPage,{total:audit.total,limit:audit.limit,offset:audit.offset});Object.assign(state.releasePage,{total:releases.total,limit:releases.limit,offset:releases.offset});renderReleases(releases.items);renderAudit(audit.items);$("audit-updated").textContent="updated "+new Date().toLocaleTimeString();clearNotice()}catch(error){notify("Audit data unavailable: "+error.message,"error")}}
+  function emptyRow(body,cols,message){clear(body);var tr=node("tr"),td=node("td","empty",message);td.colSpan=cols;tr.appendChild(td);body.appendChild(tr)}
+  function renderReleases(items){var body=$("release-body");$("release-count").textContent=pageRange(state.releasePage,items.length)+" releases";$("release-page").textContent=pageRange(state.releasePage,items.length);$("release-prev").disabled=state.releasePage.offset===0;$("release-next").disabled=state.releasePage.offset+items.length>=state.releasePage.total;$("release-preview").hidden=true;if(!items.length){emptyRow(body,6,"No public corpus releases yet.");return}clear(body);items.forEach(function(r){var tr=node("tr");[r.corpus_revision,r.snapshot_sha256,r.profile_count,r.variant_count,r.created_at||r.generated_at].forEach(function(v,i){tr.appendChild(node("td",i===1?"mono":"",v===undefined?"—":v))});var action=node("td");action.appendChild(actionButton("View JSON content","small",function(){return loadRelease(r.corpus_revision)}));tr.appendChild(action);body.appendChild(tr)})}
+  async function loadRelease(revision){try{var result=await request("/api/v1/admin/device-corpus/releases/"+encodeURIComponent(revision)),preview=$("release-preview");preview.textContent=JSON.stringify(result.data,null,2);preview.hidden=false;preview.scrollIntoView({behavior:"smooth",block:"nearest"})}catch(error){notify("Historical release unavailable: "+error.message,"error")}}
+  function renderAudit(items){var body=$("audit-body");$("audit-count").textContent=pageRange(state.auditPage,items.length)+" entries";$("audit-page").textContent=pageRange(state.auditPage,items.length);$("audit-prev").disabled=state.auditPage.offset===0;$("audit-next").disabled=state.auditPage.offset+items.length>=state.auditPage.total;if(!items.length){emptyRow(body,7,"No management actions recorded yet.");return}clear(body);items.forEach(function(a){var tr=node("tr");[a.created_at,a.actor,(a.entity_type||"")+" "+(a.entity_id||""),a.action,a.reason_code,(a.before_hash||"—")+" → "+(a.after_hash||"—"),a.corpus_revision].forEach(function(v,i){tr.appendChild(node("td",i===1||i===2||i===5?"mono":"",v===undefined||v===null?"—":v))});body.appendChild(tr)})}
+  $("audit-refresh").addEventListener("click",loadAudit);
+  $("release-prev").addEventListener("click",function(){state.releasePage.offset=Math.max(0,state.releasePage.offset-state.releasePage.limit);loadAudit()});$("release-next").addEventListener("click",function(){if(state.releasePage.offset+state.releasePage.limit<state.releasePage.total){state.releasePage.offset+=state.releasePage.limit;loadAudit()}});
+  $("audit-prev").addEventListener("click",function(){state.auditPage.offset=Math.max(0,state.auditPage.offset-state.auditPage.limit);loadAudit()});$("audit-next").addEventListener("click",function(){if(state.auditPage.offset+state.auditPage.limit<state.auditPage.total){state.auditPage.offset+=state.auditPage.limit;loadAudit()}});
+  window.addEventListener("beforeunload",function(event){if(state.editor&&state.editor.dirty){event.preventDefault();event.returnValue=""}});
+  document.addEventListener("visibilitychange",function(){if(!document.hidden&&document.querySelector('[data-tab="monitor"]').getAttribute("aria-selected")==="true")loadMonitor()});
+  loadMonitor();scheduleMonitor();
+})();
+</script>
+</body>
+</html>

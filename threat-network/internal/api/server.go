@@ -26,14 +26,15 @@ const maxBodyBytes = 4 << 20 // 4 MiB
 
 // Server holds the service dependencies.
 type Server struct {
-	DB        *store.DB
-	Auth      *auth.Authenticator
-	Ingest    *ingest.Processor
-	Feed      *feed.Builder
-	regLimit  *RateLimiter
-	ingLimit  *RateLimiter
-	feedLimit *RateLimiter
-	logger    *log.Logger
+	DB          *store.DB
+	Auth        *auth.Authenticator
+	Ingest      *ingest.Processor
+	Feed        *feed.Builder
+	regLimit    *RateLimiter
+	ingLimit    *RateLimiter
+	feedLimit   *RateLimiter
+	corpusLimit *RateLimiter
+	logger      *log.Logger
 	// trustedProxy reports whether a socket peer is a trusted forwarding proxy
 	// (e.g. the co-located cloudflared tunnel). Only then are forwarding headers
 	// consulted for the rate-limit key — see clientIP (GHSA-573f).
@@ -54,10 +55,11 @@ func NewServer(db *store.DB, logger *log.Logger) *Server {
 		// tight: ~1 registration / 5 min sustained, burst 2. This raises the cost
 		// of spraying reporter_ids across IPs; the primary Sybil defense is the
 		// consensus maturation gate (see consensus.ReporterMaturationDelay).
-		regLimit:  NewRateLimiter(1.0/300.0, 2),
-		ingLimit:  NewRateLimiter(1.0, 20), // 1 ingest/s sustained, burst 20
-		feedLimit: NewRateLimiter(2.0, 30), // feed reads, burst 30
-		logger:    logger,
+		regLimit:    NewRateLimiter(1.0/300.0, 2),
+		ingLimit:    NewRateLimiter(1.0, 20), // 1 ingest/s sustained, burst 20
+		feedLimit:   NewRateLimiter(2.0, 30), // feed reads, burst 30
+		corpusLimit: NewRateLimiter(2.0, 30), // immutable corpus reads, burst 30
+		logger:      logger,
 		// Trusted forwarding proxies for rate-limit keying (GHSA-573f). Default
 		// loopback: cloudflared is co-located, so only it may set CF-Connecting-IP.
 		trustedProxy: buildTrustedProxy(os.Getenv("THREAT_NETWORK_TRUSTED_PROXIES")),
@@ -72,6 +74,7 @@ func (s *Server) StartSweepers(ctx context.Context) {
 	s.regLimit.StartSweeper(ctx)
 	s.ingLimit.StartSweeper(ctx)
 	s.feedLimit.StartSweeper(ctx)
+	s.corpusLimit.StartSweeper(ctx)
 }
 
 // Handler builds the http.Handler (mux) for the service.
@@ -81,6 +84,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/reporters/register", s.handleRegister)
 	mux.HandleFunc("/api/v1/ingest", s.handleIngest)
 	mux.HandleFunc("/api/v1/feed/community", s.handleFeed)
+	mux.HandleFunc("/api/v1/device-corpus/manifest", s.handleCorpusManifest)
+	mux.HandleFunc("/api/v1/device-corpus/snapshot", s.handleCorpusSnapshot)
 	// Deprecated stubs kept returning empty for one release (T5.3).
 	mux.HandleFunc("/api/v1/feed/top-domains", s.handleDeprecated("domains"))
 	mux.HandleFunc("/api/v1/feed/anomalies", s.handleDeprecated("anomalies"))
@@ -88,13 +93,30 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeErr(w, http.StatusBadRequest, "INVALID_QUERY", "query parameters are not supported")
+		return
+	}
 	count, _ := s.DB.CountLiveFeedItems(time.Now())
-	writeJSON(w, http.StatusOK, map[string]any{
+	status := map[string]any{
 		"status":         "ok",
 		"service":        "vedetta-threat-network",
 		"schema_version": 1,
 		"feed_items":     count,
-	})
+	}
+	if manifest, err := s.DB.CorpusManifest(); err == nil {
+		status["corpus_schema_version"] = manifest.SchemaVersion
+		status["corpus_revision"] = manifest.CorpusRevision
+		status["corpus_profiles"] = manifest.ProfileCount
+		status["corpus_variants"] = manifest.VariantCount
+	} else {
+		status["corpus_status"] = "error"
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleDeprecated(key string) http.HandlerFunc {

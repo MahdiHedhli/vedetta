@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -21,6 +22,9 @@ var migrationsFS embed.FS
 // DB wraps the SQLite connection for the threat-network service.
 type DB struct {
 	*sql.DB
+	corpusCacheMu sync.RWMutex
+	corpusLoadMu  sync.Mutex
+	corpusCache   *corpusSnapshotCache
 }
 
 // Open opens (or creates) the service-local SQLite database, applies the
@@ -42,7 +46,7 @@ func Open(dbPath string) (*DB, error) {
 	if err := sqldb.Ping(); err != nil {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
-	db := &DB{sqldb}
+	db := &DB{DB: sqldb}
 	if err := db.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}

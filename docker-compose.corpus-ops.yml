@@ -1,0 +1,19 @@
+# Explicit opt-in overlay for the off-node Threat Network corpus management API.
+# The browser dashboard still runs as a separate loopback process; this overlay
+# exposes only the authenticated Go listener to the host loopback interface.
+services:
+  threat-network:
+    ports:
+      - "127.0.0.1:${THREAT_NETWORK_ADMIN_HOST_PORT:-9091}:9091"
+    environment:
+      THREAT_NETWORK_ADMIN_ENABLED: "true"
+      # Container loopback cannot cross Docker's port mapping. The second guard
+      # is mandatory, while the host mapping above remains loopback-only.
+      THREAT_NETWORK_ADMIN_ADDR: "0.0.0.0:9091"
+      THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK: "true"
+      THREAT_NETWORK_ADMIN_TOKEN_FILE: "/run/secrets/threat-network-admin-token"
+    volumes:
+      - type: bind
+        source: "${THREAT_NETWORK_ADMIN_TOKEN_FILE:?set THREAT_NETWORK_ADMIN_TOKEN_FILE to a private host token file}"
+        target: /run/secrets/threat-network-admin-token
+        read_only: true

@@ -18,6 +18,10 @@ docker volume ls | grep vedetta-data      # e.g. vedetta_vedetta-data
 The community stack (`--profile community`) adds two more volumes worth backing
 up the same way: `telemetry-state` and `threat-network-data`.
 
+The central `threat-network-data` database also contains the curated device corpus,
+its append-only audit trail, and every immutable published corpus release. Backing up
+that one SQLite file therefore preserves both the community feed and corpus history.
+
 ---
 
 ## 1. Back up
@@ -38,6 +42,20 @@ Also copy your config (it is not in the volume):
 
 ```sh
 cp .env ./vedetta-env-$ts.bak    # contains deployment config; keep it private
+```
+
+For the central Threat Network database (community feed **and** curated corpus),
+the runtime image also ships `sqlite3` so the same online-backup guarantee is
+available without stopping ingestion:
+
+```sh
+ts=$(date +%Y%m%d-%H%M%S)
+docker compose --profile community exec threat-network \
+  sqlite3 /data/threat-network.db ".backup '/data/threat-network-backup-$ts.db'"
+docker compose --profile community cp \
+  threat-network:/data/threat-network-backup-$ts.db ./threat-network-backup-$ts.db
+docker compose --profile community exec threat-network \
+  rm /data/threat-network-backup-$ts.db
 ```
 
 ### Option B — cold volume tarball (Core stopped)
@@ -83,6 +101,41 @@ curl -fsS http://localhost:8080/healthz
 curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
   http://localhost:8080/api/v1/status
 unset VED_TOKEN
+```
+
+### Restore the community feed and curated corpus
+
+Restore the full Threat Network database, not an individual corpus table or
+release row. The first procedure is a same-version data recovery: stop the writer,
+retain a safety copy, replace the file, and resume the unchanged container:
+
+```sh
+docker compose --profile community stop threat-network
+docker compose --profile community cp \
+  threat-network:/data/threat-network.db ./threat-network-before-restore.db
+docker compose --profile community cp \
+  ./threat-network-backup-<ts>.db threat-network:/data/threat-network.db
+docker compose --profile community run --rm --no-deps --entrypoint sh \
+  threat-network -c 'rm -f /data/threat-network.db-wal /data/threat-network.db-shm'
+docker compose --profile community start threat-network
+docker compose --profile community logs --tail=100 threat-network
+curl -fsS http://127.0.0.1:9090/api/v1/status
+curl -fsS http://127.0.0.1:9090/api/v1/device-corpus/manifest
+```
+
+Startup revalidates the current immutable snapshot against its stored SHA-256,
+schema, revision, timestamp, and counts. A mismatch prevents the listener from
+starting, so do not ignore a validation failure.
+
+For rollback across a Threat Network schema migration, do **not** use `start` on
+the upgraded container. After replacing the full database as above, check out the
+release that created the backup (or pin its exact image), then recreate the service:
+
+```sh
+git checkout <matching-release-tag>
+docker compose --profile community up -d --no-deps --build --force-recreate threat-network
+docker compose --profile community logs --tail=100 threat-network
+curl -fsS http://127.0.0.1:9090/api/v1/device-corpus/manifest
 ```
 
 ---
@@ -144,3 +197,10 @@ both the code **and** the database to a known-good, mutually-compatible state.
 > Migration 025 is forward-only. Rollback across it requires the backup taken
 > **before** updating; deleting its tables or reusing the migrated database with
 > an older binary is not a supported rollback path.
+
+The Threat Network corpus migration is likewise forward-only operationally.
+Its state pointer is monotonic and must never be edited backward to "restore" a
+historical release. To undo ordinary corpus content, publish a reviewed forward
+correction/withdrawal. To recover the service or schema, restore the **entire**
+pre-change `threat-network.db` together with its matching binary, using the
+procedure above.
