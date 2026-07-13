@@ -99,6 +99,7 @@ func (db *DB) PublishCorpusProfile(profileID string, req corpus.PublishRequest, 
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close() // panic backstop; explicit close below releases the transaction early
 	type promotion struct {
 		variantID, draftID string
 		publishedID        sql.NullString
@@ -197,6 +198,7 @@ func validateCorpusPublishQuality(tx *sql.Tx, profileID string) error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close() // panic backstop; explicit close precedes the nested citation queries
 	type candidate struct {
 		revisionID string
 		families   int

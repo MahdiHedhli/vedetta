@@ -108,6 +108,7 @@ func buildCorpusPreviewSnapshot(q corpusQuerier, targetProfileID string, revisio
 	if err != nil {
 		return snapshot, err
 	}
+	defer rows.Close() // panic backstop; explicit close precedes nested variant loads
 	for rows.Next() {
 		var candidate profileCandidate
 		if err = rows.Scan(&candidate.profile.ProfileID, &candidate.profile.Revision,
@@ -178,6 +179,7 @@ func loadCorpusPreviewVariants(q corpusQuerier, profile *corpus.PublicProfile, p
 	if err != nil {
 		return err
 	}
+	defer rows.Close() // panic backstop; explicit close precedes nested evidence loads
 	for rows.Next() {
 		var candidate variantCandidate
 		var shapeJSON string

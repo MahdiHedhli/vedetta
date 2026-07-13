@@ -89,6 +89,7 @@ func buildPublicCorpusSnapshot(q corpusQuerier, revision int, generatedAt time.T
 	if err != nil {
 		return snapshot, err
 	}
+	defer rows.Close() // panic backstop; explicit close precedes nested variant loads
 	for rows.Next() {
 		var profile corpus.PublicProfile
 		if err = rows.Scan(&profile.ProfileID, &profile.Revision,
@@ -111,52 +112,8 @@ func buildPublicCorpusSnapshot(q corpusQuerier, revision int, generatedAt time.T
 	filtered := snapshot.Profiles[:0]
 	for i := range snapshot.Profiles {
 		profile := &snapshot.Profiles[i]
-		rows, err = q.Query(`SELECT v.variant_id, v.variant_key,
-            COALESCE(v.predecessor_variant_id, ''), vr.revision, vr.shape_hash,
-            s.canonical_json, vr.confidence_bp, vr.variant_revision_id
-            FROM device_corpus_variants v
-            JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
-            JOIN device_corpus_shapes s ON s.shape_hash = vr.shape_hash
-            WHERE v.profile_id = ? AND vr.status = 'published'
-            ORDER BY v.variant_key, v.variant_id`, profile.ProfileID)
-		if err != nil {
+		if err = loadPublicCorpusVariants(q, profile); err != nil {
 			return snapshot, err
-		}
-		type publicWithRevision struct {
-			value      corpus.PublicVariant
-			revisionID string
-		}
-		var variants []publicWithRevision
-		for rows.Next() {
-			var item publicWithRevision
-			var shapeJSON string
-			if err = rows.Scan(&item.value.VariantID, &item.value.VariantKey,
-				&item.value.PredecessorVariantID, &item.value.Revision, &item.value.ShapeHash,
-				&shapeJSON, &item.value.ConfidenceBP, &item.revisionID); err != nil {
-				rows.Close()
-				return snapshot, err
-			}
-			if err = json.Unmarshal([]byte(shapeJSON), &item.value.Shape); err != nil {
-				rows.Close()
-				return snapshot, fmt.Errorf("decode stored public shape: %w", err)
-			}
-			variants = append(variants, item)
-		}
-		if err = rows.Err(); err != nil {
-			rows.Close()
-			return snapshot, err
-		}
-		if err = rows.Close(); err != nil {
-			return snapshot, err
-		}
-		for _, item := range variants {
-			managementRevision := corpus.VariantRevision{}
-			if err = loadCorpusEvidence(q, item.revisionID, &managementRevision); err != nil {
-				return snapshot, err
-			}
-			item.value.Sources = managementRevision.Sources
-			item.value.VersionFacts = managementRevision.VersionFacts
-			profile.Variants = append(profile.Variants, item.value)
 		}
 		if len(profile.Variants) > 0 {
 			filtered = append(filtered, *profile)
@@ -164,6 +121,58 @@ func buildPublicCorpusSnapshot(q corpusQuerier, revision int, generatedAt time.T
 	}
 	snapshot.Profiles = filtered
 	return snapshot, nil
+}
+
+func loadPublicCorpusVariants(q corpusQuerier, profile *corpus.PublicProfile) error {
+	rows, err := q.Query(`SELECT v.variant_id, v.variant_key,
+        COALESCE(v.predecessor_variant_id, ''), vr.revision, vr.shape_hash,
+        s.canonical_json, vr.confidence_bp, vr.variant_revision_id
+        FROM device_corpus_variants v
+        JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
+        JOIN device_corpus_shapes s ON s.shape_hash = vr.shape_hash
+        WHERE v.profile_id = ? AND vr.status = 'published'
+        ORDER BY v.variant_key, v.variant_id`, profile.ProfileID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close() // panic backstop; explicit close precedes nested evidence loads
+	type publicWithRevision struct {
+		value      corpus.PublicVariant
+		revisionID string
+	}
+	var variants []publicWithRevision
+	for rows.Next() {
+		var item publicWithRevision
+		var shapeJSON string
+		if err = rows.Scan(&item.value.VariantID, &item.value.VariantKey,
+			&item.value.PredecessorVariantID, &item.value.Revision, &item.value.ShapeHash,
+			&shapeJSON, &item.value.ConfidenceBP, &item.revisionID); err != nil {
+			rows.Close()
+			return err
+		}
+		if err = json.Unmarshal([]byte(shapeJSON), &item.value.Shape); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode stored public shape: %w", err)
+		}
+		variants = append(variants, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range variants {
+		managementRevision := corpus.VariantRevision{}
+		if err = loadCorpusEvidence(q, item.revisionID, &managementRevision); err != nil {
+			return err
+		}
+		item.value.Sources = managementRevision.Sources
+		item.value.VersionFacts = managementRevision.VersionFacts
+		profile.Variants = append(profile.Variants, item.value)
+	}
+	return nil
 }
 
 // CorpusManifest reads only release metadata. It deliberately does not load or

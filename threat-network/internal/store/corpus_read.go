@@ -65,6 +65,7 @@ func getCorpusProfile(q corpusQuerier, profileID string) (*corpus.Profile, error
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var rev corpus.ProfileRevision
 		var created string
@@ -110,6 +111,7 @@ func getCorpusProfile(q corpusQuerier, profileID string) (*corpus.Profile, error
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var v corpus.Variant
 		var created string
@@ -152,6 +154,7 @@ func loadCorpusVariantRevisions(q corpusQuerier, variant *corpus.Variant) error 
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var rev corpus.VariantRevision
 		var shapeJSON, created string
@@ -211,6 +214,7 @@ func loadCorpusEvidence(q corpusQuerier, revisionID string, rev *corpus.VariantR
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var source corpus.Source
 		if err = rows.Scan(&source.SourceID, &source.Kind, &source.Title, &source.PublicURL,
@@ -233,6 +237,7 @@ func loadCorpusEvidence(q corpusQuerier, revisionID string, rev *corpus.VariantR
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var fact corpus.VersionFact
 		if err = rows.Scan(&fact.FactID, &fact.Attribute, &fact.Relation, &fact.Value,
@@ -256,6 +261,7 @@ func corpusProfileETag(q corpusQuerier, profileID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer rows.Close()
 	seen := false
 	for rows.Next() {
 		seen = true
@@ -284,6 +290,7 @@ func corpusProfileETag(q corpusQuerier, profileID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var variantID, key, predecessor, revisionID, status string
 		if err = rows.Scan(&variantID, &key, &predecessor, &revisionID, &status); err != nil {
@@ -371,6 +378,7 @@ func (db *DB) PageCorpusProfiles(search string, limit, offset int) (CorpusProfil
 	if err != nil {
 		return page, err
 	}
+	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
@@ -454,6 +462,7 @@ func (db *DB) PageCorpusAudit(limit, offset int) (CorpusAuditPage, error) {
 	if err != nil {
 		return page, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var entry corpus.AuditEntry
 		var revision sql.NullInt64
@@ -511,6 +520,7 @@ func (db *DB) PageCorpusReleases(limit, offset int) (CorpusReleasePage, error) {
 	if err != nil {
 		return page, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var release CorpusReleaseSummary
 		var created string
