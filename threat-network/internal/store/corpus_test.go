@@ -125,6 +125,38 @@ func corpusLifecycleRequest(reasonCode string, expectedRevision int) corpus.Life
 	return corpus.LifecycleRequest{ReasonCode: reasonCode, ExpectedCorpusRevision: &expectedRevision}
 }
 
+// createLegacyPublishedCorpusVariant seeds pre-gate published state without a
+// release so tests can model content accepted before a newer publication rule.
+// Production writes still pass through PublishCorpusProfile.
+func createLegacyPublishedCorpusVariant(t *testing.T, db *DB, req corpus.CreateVariantRequest) (*corpus.Profile, string, string) {
+	t.Helper()
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, req,
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	variantID := profile.Variants[0].VariantID
+	revisionID := profile.Variants[0].Draft.VariantRevisionID
+	now := nowRFC3339()
+	if _, err = db.ExecContext(context.Background(), `UPDATE device_corpus_profile_revisions
+		SET status = 'published', published_at = ? WHERE profile_id = ? AND status = 'draft'`, now, profile.ProfileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(context.Background(), `UPDATE device_corpus_variant_revisions
+		SET status = 'published', published_at = ? WHERE variant_revision_id = ?`, now, revisionID); err != nil {
+		t.Fatal(err)
+	}
+	profile, err = db.GetCorpusProfile(context.Background(), profile.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile, variantID, revisionID
+}
+
 func TestCorpusActiveRevisionPointersReferenceHistory(t *testing.T) {
 	db := newTestDB(t)
 	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
@@ -589,6 +621,69 @@ func TestCorpusPublishRequiresReviewedReasonWithoutMutation(t *testing.T) {
 	assertCorpusReleaseState(t, db, 0, auditBefore, releasesBefore)
 }
 
+func TestCorpusRemovalReasonsAreOperationScopedWithoutMutation(t *testing.T) {
+	invalid := []string{
+		"new_profile", "new_variant", "label_correction", "signal_correction",
+		"firmware_evolution", "source_update", "publish_reviewed", "restore_reviewed",
+	}
+	for _, operation := range []string{"retire", "withdraw"} {
+		t.Run(operation+" rejects unrelated reasons", func(t *testing.T) {
+			db := newTestDB(t)
+			profile, variantID := createPublishedCorpusTestProfile(t, db, "Scoped Removal Reasons", 0)
+			before, err := json.Marshal(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			auditBefore, releasesBefore := corpusMutationCounts(t, db)
+			for _, reason := range invalid {
+				var actionErr error
+				if operation == "retire" {
+					_, actionErr = db.RetireCorpusProfile(context.Background(), profile.ProfileID,
+						corpusLifecycleRequest(reason, 1), CorpusMutation{ExpectedETag: profile.ETag})
+				} else {
+					_, actionErr = db.WithdrawCorpusVariant(context.Background(), variantID,
+						corpusLifecycleRequest(reason, 1), CorpusMutation{ExpectedETag: profile.ETag})
+				}
+				if !errors.Is(actionErr, ErrCorpusValidation) {
+					t.Fatalf("%s reason %q error = %v, want ErrCorpusValidation", operation, reason, actionErr)
+				}
+			}
+			unchanged, err := db.GetCorpusProfile(context.Background(), profile.ProfileID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := json.Marshal(unchanged)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("rejected %s reason mutated profile:\nbefore=%s\nafter=%s", operation, before, after)
+			}
+			assertCorpusReleaseState(t, db, 1, auditBefore, releasesBefore)
+		})
+	}
+
+	for _, operation := range []string{"retire", "withdraw"} {
+		for _, reason := range []string{"obsolete_product", "privacy_withdrawal"} {
+			t.Run(operation+" accepts "+reason, func(t *testing.T) {
+				db := newTestDB(t)
+				profile, variantID := createPublishedCorpusTestProfile(t, db, "Accepted Removal Reason", 0)
+				var err error
+				if operation == "retire" {
+					_, err = db.RetireCorpusProfile(context.Background(), profile.ProfileID,
+						corpusLifecycleRequest(reason, 1), CorpusMutation{ExpectedETag: profile.ETag})
+				} else {
+					_, err = db.WithdrawCorpusVariant(context.Background(), variantID,
+						corpusLifecycleRequest(reason, 1), CorpusMutation{ExpectedETag: profile.ETag})
+				}
+				if err != nil {
+					t.Fatalf("%s reason %q rejected: %v", operation, reason, err)
+				}
+			})
+		}
+	}
+}
+
 func TestCorpusPublicationFailureRollsBackLifecycle(t *testing.T) {
 	db := newTestDB(t)
 	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
@@ -708,6 +803,119 @@ func TestCorpusPublicationQualityGate(t *testing.T) {
 		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 			corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag}); err == nil {
 			t.Fatal("authoritative citation from another revision satisfied uncited signature")
+		}
+	})
+}
+
+func TestCorpusPublishReadinessUsesEffectiveVariantRevision(t *testing.T) {
+	t.Run("correction draft replaces legacy published quality candidate", func(t *testing.T) {
+		db := newTestDB(t)
+		legacy := corpusVariantRequest("legacy-weak")
+		legacy.Shape = corpus.CanonicalShapeV1{OUIPrefixes: []string{"00:00:5e"}, TCPPorts: []uint16{80, 443}}
+		legacy.Sources = []corpus.Source{{Kind: "lab_observation"}}
+		legacy.VersionFacts = nil
+		profile, variantID, legacyRevisionID := createLegacyPublishedCorpusVariant(t, db, legacy)
+
+		correction := corpusVariantRequest("unused")
+		profile, err := db.ReviseCorpusVariant(context.Background(), variantID, corpus.ReviseVariantRequest{
+			ConfidenceBP: correction.ConfidenceBP,
+			Shape:        correction.Shape,
+			Sources:      correction.Sources,
+			VersionFacts: correction.VersionFacts,
+			ReasonCode:   "signal_correction",
+		}, CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		draft := profile.Variants[0].Draft
+		preview, err := db.PreviewCorpusProfile(context.Background(), profile.ProfileID,
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatalf("correcting preview rejected legacy published quality: %v", err)
+		}
+		if len(preview.Snapshot.Profiles) != 1 || len(preview.Snapshot.Profiles[0].Variants) != 1 ||
+			preview.Snapshot.Profiles[0].Variants[0].ShapeHash != draft.ShapeHash {
+			t.Fatalf("preview did not select correction draft: %+v", preview.Snapshot)
+		}
+		profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatalf("correcting publish rejected legacy published quality: %v", err)
+		}
+		if profile.Variants[0].Published == nil ||
+			profile.Variants[0].Published.VariantRevisionID != draft.VariantRevisionID {
+			t.Fatalf("correction draft was not published: %+v", profile.Variants[0])
+		}
+		legacySuperseded := false
+		for _, revision := range profile.Variants[0].History {
+			if revision.VariantRevisionID != legacyRevisionID {
+				continue
+			}
+			if revision.Status != "superseded" {
+				t.Fatalf("legacy revision status = %q, want superseded", revision.Status)
+			}
+			legacySuperseded = true
+		}
+		if !legacySuperseded {
+			t.Fatal("legacy published revision missing from superseded history")
+		}
+	})
+
+	t.Run("sourced draft replaces legacy unsourced published revision", func(t *testing.T) {
+		db := newTestDB(t)
+		legacy := corpusVariantRequest("legacy-unsourced")
+		legacy.Sources = nil
+		legacy.VersionFacts = nil
+		profile, variantID, _ := createLegacyPublishedCorpusVariant(t, db, legacy)
+		correction := corpusVariantRequest("unused")
+		profile, err := db.ReviseCorpusVariant(context.Background(), variantID, corpus.ReviseVariantRequest{
+			ConfidenceBP: correction.ConfidenceBP,
+			Shape:        correction.Shape,
+			Sources:      correction.Sources,
+			VersionFacts: correction.VersionFacts,
+			ReasonCode:   "source_update",
+		}, CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = db.PreviewCorpusProfile(context.Background(), profile.ProfileID,
+			CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
+			t.Fatalf("sourced correction preview rejected legacy unsourced revision: %v", err)
+		}
+		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
+			CorpusMutation{ExpectedETag: profile.ETag}); err != nil {
+			t.Fatalf("sourced correction publish rejected legacy unsourced revision: %v", err)
+		}
+	})
+
+	t.Run("weak correction draft is not masked by published revision", func(t *testing.T) {
+		db := newTestDB(t)
+		profile, variantID := createPublishedCorpusTestProfile(t, db, "Weak Correction Draft", 0)
+		weak := corpus.ReviseVariantRequest{
+			ConfidenceBP: 5000,
+			Shape:        corpus.CanonicalShapeV1{OUIPrefixes: []string{"00:00:5e"}, TCPPorts: []uint16{80, 443}},
+			Sources:      []corpus.Source{{Kind: "lab_observation"}},
+			ReasonCode:   "signal_correction",
+		}
+		profile, err := db.ReviseCorpusVariant(context.Background(), variantID, weak,
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = db.PreviewCorpusProfile(context.Background(), profile.ProfileID,
+			CorpusMutation{ExpectedETag: profile.ETag}); !errors.Is(err, ErrCorpusValidation) {
+			t.Fatalf("weak correction preview error = %v, want ErrCorpusValidation", err)
+		}
+		if _, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(1),
+			CorpusMutation{ExpectedETag: profile.ETag}); !errors.Is(err, ErrCorpusValidation) {
+			t.Fatalf("weak correction publish error = %v, want ErrCorpusValidation", err)
+		}
+		unchanged, err := db.GetCorpusProfile(context.Background(), profile.ProfileID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unchanged.ETag != profile.ETag || unchanged.Variants[0].Draft == nil || unchanged.Variants[0].Published == nil {
+			t.Fatalf("rejected weak correction changed lifecycle: %+v", unchanged.Variants[0])
 		}
 	})
 }

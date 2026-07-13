@@ -143,9 +143,11 @@ func TestCorpusAdminPreviewRequiresCurrentETag(t *testing.T) {
 		{"retire missing revision", admin.URL + "/api/v1/admin/device-corpus/profiles/" + profile.ProfileID + "/retire", `{"reason_code":"obsolete_product"}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
 		{"retire negative revision", admin.URL + "/api/v1/admin/device-corpus/profiles/" + profile.ProfileID + "/retire", `{"reason_code":"obsolete_product","expected_corpus_revision":-1}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
 		{"retire stale revision", admin.URL + "/api/v1/admin/device-corpus/profiles/" + profile.ProfileID + "/retire", `{"reason_code":"obsolete_product","expected_corpus_revision":1}`, http.StatusConflict, `"code":"CORPUS_ADVANCED"`},
+		{"retire unrelated reason", admin.URL + "/api/v1/admin/device-corpus/profiles/" + profile.ProfileID + "/retire", `{"reason_code":"source_update","expected_corpus_revision":0}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
 		{"withdraw missing revision", admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/withdraw", `{"reason_code":"privacy_withdrawal"}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
 		{"withdraw negative revision", admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/withdraw", `{"reason_code":"privacy_withdrawal","expected_corpus_revision":-1}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
 		{"withdraw stale revision", admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/withdraw", `{"reason_code":"privacy_withdrawal","expected_corpus_revision":1}`, http.StatusConflict, `"code":"CORPUS_ADVANCED"`},
+		{"withdraw unrelated reason", admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/withdraw", `{"reason_code":"new_variant","expected_corpus_revision":0}`, http.StatusUnprocessableEntity, `"code":"VALIDATION_FAILED"`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			response := adminRequest(t, http.DefaultClient, http.MethodPost, tt.target, tt.body, profile.ETag)

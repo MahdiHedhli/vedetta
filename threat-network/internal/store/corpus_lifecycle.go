@@ -17,6 +17,24 @@ func validateExpectedCorpusRevision(expected *int) error {
 	return nil
 }
 
+// effectiveCorpusVariantRevisionPredicate selects the same per-variant state
+// that preview and publication retain: a pending draft when one exists,
+// otherwise the currently published revision. It expects the outer revision
+// alias to be `vr`.
+const effectiveCorpusVariantRevisionPredicate = `(vr.status = 'draft' OR (
+	vr.status = 'published' AND NOT EXISTS (
+		SELECT 1 FROM device_corpus_variant_revisions pending
+		WHERE pending.variant_id = vr.variant_id AND pending.status = 'draft'
+	)
+))`
+
+func validateCorpusRemovalReason(reason string) error {
+	if reason != "obsolete_product" && reason != "privacy_withdrawal" {
+		return corpusValidationf("reason_code must describe product removal")
+	}
+	return nil
+}
+
 func requireExpectedCorpusRevision(ctx context.Context, tx *sql.Tx, expected *int) error {
 	if expected == nil {
 		return corpusValidationf("expected_corpus_revision is required")
@@ -185,7 +203,7 @@ func validateCorpusPublishReadiness(ctx context.Context, tx *sql.Tx, profileID s
 	var unsourced int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM device_corpus_variants v
 		JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
-		WHERE v.profile_id = ? AND vr.status IN ('draft','published')
+		WHERE v.profile_id = ? AND `+effectiveCorpusVariantRevisionPredicate+`
 		  AND NOT EXISTS (SELECT 1 FROM device_corpus_sources s
 		                  WHERE s.variant_revision_id = vr.variant_revision_id)`, profileID).Scan(&unsourced); err != nil {
 		return err
@@ -209,7 +227,7 @@ func validateCorpusPublishQuality(ctx context.Context, tx *sql.Tx, profileID str
 			  AND kind IN ('vendor_doc','standards','security_advisory')
 			GROUP BY variant_revision_id
 		) authoritative ON authoritative.variant_revision_id = vr.variant_revision_id
-		WHERE v.profile_id = ? AND vr.status IN ('draft','published')`, profileID)
+		WHERE v.profile_id = ? AND `+effectiveCorpusVariantRevisionPredicate, profileID)
 	if err != nil {
 		return err
 	}
@@ -271,6 +289,9 @@ func (db *DB) RetireCorpusProfile(ctx context.Context, profileID string, req cor
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
 		return nil, corpusValidationError(err)
+	}
+	if err = validateCorpusRemovalReason(reason); err != nil {
+		return nil, err
 	}
 	if err = validateExpectedCorpusRevision(req.ExpectedCorpusRevision); err != nil {
 		return nil, err
@@ -350,6 +371,9 @@ func (db *DB) WithdrawCorpusVariant(ctx context.Context, variantID string, req c
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
 		return nil, corpusValidationError(err)
+	}
+	if err = validateCorpusRemovalReason(reason); err != nil {
+		return nil, err
 	}
 	if err = validateExpectedCorpusRevision(req.ExpectedCorpusRevision); err != nil {
 		return nil, err

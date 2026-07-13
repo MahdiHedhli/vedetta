@@ -81,8 +81,9 @@ concurrency preconditions. The publish request body is:
 }
 ```
 
-Publish accepts only the `publish_reviewed` reason. Retire and withdraw use their
-documented lifecycle reason codes with the same revision precondition.
+Publish accepts only the `publish_reviewed` reason. Profile retirement and full
+variant withdrawal accept only `obsolete_product` or `privacy_withdrawal`, with
+the same revision precondition.
 
 `If-Match` binds the target profile/variant state. `expected_corpus_revision` binds the
 rest of the complete public snapshot the curator reviewed. If either changed, the
