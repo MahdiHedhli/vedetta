@@ -93,6 +93,10 @@ hostname is `vedetta.example.com` (replace with your own). If you followed §4 t
 keep Core unpublished, the frontend is republished at `127.0.0.1:8088` instead —
 use that port below.
 
+> If `scripts/gen-env.sh` reported that port `3107` was already taken, it pinned a
+> different `VEDETTA_FRONTEND_PORT` in `.env` — use that value (`grep
+> VEDETTA_FRONTEND_PORT .env`) in place of `3107` in the examples below.
+
 ### Option A — Caddy (automatic HTTPS)
 
 ```caddy

@@ -17,7 +17,19 @@ PLIST_SRC="$PROJECT_DIR/sensor/deploy/com.vedetta.sensor.plist"
 PLIST_DEST="/Library/LaunchDaemons/com.vedetta.sensor.plist"
 SERVICE_ID="system/com.vedetta.sensor"
 SENSOR_BIN="/usr/local/bin/vedetta-sensor"
-CORE_URL="${VEDETTA_CORE_URL:-http://localhost:8080}"
+
+# Read a pinned host port from .env (scripts/gen-env.sh may have shifted it off
+# the default when the default was already taken on this host); fall back to the
+# documented default. Grep the exact key rather than sourcing .env, which holds
+# secrets and arbitrary values.
+env_port() {
+  local key="$1" default="$2" val=""
+  [ -f "$PROJECT_DIR/.env" ] && val="$(grep -E "^${key}=" "$PROJECT_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+  printf '%s' "${val:-$default}"
+}
+BACKEND_PORT="$(env_port VEDETTA_BACKEND_PORT 8080)"
+FRONTEND_PORT="$(env_port VEDETTA_FRONTEND_PORT 3107)"
+CORE_URL="${VEDETTA_CORE_URL:-http://localhost:${BACKEND_PORT}}"
 LOG_FILE="/usr/local/var/log/vedetta-sensor.log"
 MAX_RETRIES=3
 VERIFY_WAIT=5
@@ -258,10 +270,10 @@ echo ""
 # Wait for backend health check
 echo "▸ Waiting for backend to become healthy..."
 for i in $(seq 1 30); do
-    if curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
+    if curl -sf "${CORE_URL}/healthz" > /dev/null 2>&1; then
         echo "  Backend healthy."
         # Verify new routes are present
-        ROUTE_CHECK=$(curl -sf http://localhost:8080/api/v1/version 2>/dev/null)
+        ROUTE_CHECK=$(curl -sf "${CORE_URL}/api/v1/version" 2>/dev/null)
         if echo "$ROUTE_CHECK" | grep -q "suppression" 2>/dev/null; then
             echo "  ✓ New API routes verified."
         else
@@ -293,6 +305,6 @@ restart_sensor
 echo ""
 echo "═══════════════════════════════════════════"
 echo "  Update complete."
-echo "  Dashboard: http://localhost:3107"
-echo "  API:       http://localhost:8080/api/v1/status (read/admin bearer required)"
+echo "  Dashboard: http://localhost:${FRONTEND_PORT}"
+echo "  API:       http://localhost:${BACKEND_PORT}/api/v1/status (read/admin bearer required)"
 echo "═══════════════════════════════════════════"

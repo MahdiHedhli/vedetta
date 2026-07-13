@@ -17,7 +17,19 @@ PLIST_SRC="$PROJECT_DIR/sensor/deploy/com.vedetta.sensor.plist"
 PLIST_DEST="/Library/LaunchDaemons/com.vedetta.sensor.plist"
 SERVICE_ID="system/com.vedetta.sensor"
 SENSOR_BIN="/usr/local/bin/vedetta-sensor"
-CORE_URL="${VEDETTA_CORE_URL:-http://localhost:8080}"
+
+# Read a pinned host port from .env (scripts/gen-env.sh may have shifted it off
+# the default when the default was already taken on this host); fall back to the
+# documented default. Grep the exact key rather than sourcing .env, which holds
+# secrets and arbitrary values.
+env_port() {
+  local key="$1" default="$2" val=""
+  [ -f "$PROJECT_DIR/.env" ] && val="$(grep -E "^${key}=" "$PROJECT_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+  printf '%s' "${val:-$default}"
+}
+BACKEND_PORT="$(env_port VEDETTA_BACKEND_PORT 8080)"
+FRONTEND_PORT="$(env_port VEDETTA_FRONTEND_PORT 3107)"
+CORE_URL="${VEDETTA_CORE_URL:-http://localhost:${BACKEND_PORT}}"
 LOG_FILE="/usr/local/var/log/vedetta-sensor.log"
 MAX_RETRIES=3
 VERIFY_WAIT=5
@@ -245,5 +257,5 @@ restart_sensor
 echo ""
 echo "═══════════════════════════════════════════"
 echo "  Sensor update complete."
-echo "  Dashboard: http://localhost:3107"
+echo "  Dashboard: http://localhost:${FRONTEND_PORT}"
 echo "═══════════════════════════════════════════"

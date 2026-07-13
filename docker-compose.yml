@@ -14,8 +14,13 @@ services:
     # To reach Core/the dashboard from another machine, front it with the documented
     # TLS reverse proxy (docs/reverse-proxy.md). Change 127.0.0.1 to 0.0.0.0 ONLY if
     # you knowingly accept plaintext bearer tokens traversing your LAN.
+    #
+    # HOST PORT is ${VEDETTA_BACKEND_PORT:-8080} — the container always listens on
+    # 8080 internally (VEDETTA_PORT below); only the host side is parameterized so
+    # scripts/gen-env.sh can auto-pick a free port when 8080 is already taken on the
+    # host (e.g. another httpd owns 127.0.0.1:8080). The generated .env pins it.
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${VEDETTA_BACKEND_PORT:-8080}:8080"
     environment:
       VEDETTA_PORT: "8080"
       # Inside the container, loopback is unreachable through the published port and
@@ -108,8 +113,14 @@ services:
   collector:
     build: ./collector
     container_name: vedetta-collector
+    # HOST PORT is ${VEDETTA_COLLECTOR_PORT:-5140}; the container always listens on
+    # 5140/udp internally (collector/config/fluent-bit.conf). Unlike backend/frontend
+    # this stays LAN-reachable (no 127.0.0.1 prefix) — it must receive syslog from
+    # your network devices and carries no admin credentials. gen-env.sh auto-picks a
+    # free host port if 5140/udp is already taken and pins it in .env; point your
+    # firewall's syslog export at whatever port the generated .env reports.
     ports:
-      - "5140:5140/udp"  # Syslog input for firewalls (UniFi CEF + iptables)
+      - "${VEDETTA_COLLECTOR_PORT:-5140}:5140/udp"  # Syslog input for firewalls (UniFi CEF + iptables)
     environment:
       # Ingest credential (spec 001 FR-8/T2.4). /ingest is open only while NO
       # tokens exist; once any token is created (e.g. a sensor registers) a valid

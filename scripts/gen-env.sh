@@ -9,6 +9,15 @@
 #   VEDETTA_CORE_TOKEN    — telemetry read auth   (read scope)   [!= ingest token]
 #   VEDETTA_SETUP_CODE    — single-use first-admin bootstrap code
 #
+# It also PROBES the host ports docker-compose.yml publishes and seeds the chosen
+# values into .env, so a fresh `docker compose up` starts cleanly even when the
+# defaults are already taken (e.g. another httpd owns 127.0.0.1:8080):
+#   VEDETTA_BACKEND_PORT    — Core API host port   (default 8080/tcp, loopback)
+#   VEDETTA_FRONTEND_PORT   — dashboard host port  (default 3107/tcp, loopback)
+#   VEDETTA_COLLECTOR_PORT  — syslog host port      (default 5140/udp, LAN)
+# The final dashboard/Core/collector URLs are printed at the end. Skip probing
+# with VEDETTA_SKIP_PORT_PROBE=1 (keeps the defaults / any preset env values).
+#
 # Usage:
 #   ./scripts/gen-env.sh            # writes ./.env at the repo root
 #   ENV_FILE=/path/to.env ./scripts/gen-env.sh
@@ -95,6 +104,97 @@ if ! grep -qE '^VEDETTA_SETUP_CODE=' "${TMP_FILE}"; then
 fi
 set_var "VEDETTA_SETUP_CODE" "${SETUP_CODE}" "${TMP_FILE}"
 
+# --------------------------------------------------------------------------
+# Host-port probing. docker-compose.yml publishes three host ports; if a
+# default is already bound on this host, `docker compose up` fails with
+# "address already in use" and the service never starts (the exact failure a
+# fresh Mac Studio deploy hit — Apache httpd owned 127.0.0.1:8080). Detect a
+# conflict here and seed the next free port into .env instead of assuming the
+# defaults are free. Container-internal ports never change; only the host side.
+# --------------------------------------------------------------------------
+
+# port_in_use <tcp|udp> <port> — 0 (true) if something already uses <port>.
+# Prefers lsof (present in the macOS base system and on most Linux), then falls
+# back to ss / netstat. If none is available we cannot tell, so we treat the
+# port as free and note it (a later `docker compose up` still surfaces a real
+# clash). The match is port-scoped, not address-scoped: a listener on ANY
+# address counts as a conflict. That is deliberately conservative — at worst we
+# skip a port that might technically have been usable and pick the next one.
+PORT_PROBE_TOOL=""
+if command -v lsof >/dev/null 2>&1; then
+  PORT_PROBE_TOOL="lsof"
+elif command -v ss >/dev/null 2>&1; then
+  PORT_PROBE_TOOL="ss"
+elif command -v netstat >/dev/null 2>&1; then
+  PORT_PROBE_TOOL="netstat"
+fi
+
+port_in_use() {
+  local proto="$1" port="$2"
+  case "${PORT_PROBE_TOOL}" in
+    lsof)
+      if [ "${proto}" = udp ]; then
+        lsof -nP -iUDP:"${port}" >/dev/null 2>&1
+      else
+        lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+      fi
+      ;;
+    ss)
+      # -H (no header) -l (listening) -n (numeric) -t/-u (proto). Match the port
+      # at the end of the local-address column (":8080" / ".8080" / "]:8080").
+      ss -Hln"${proto:0:1}" 2>/dev/null | grep -qE "[:.]${port}([^0-9]|$)"
+      ;;
+    netstat)
+      netstat -an 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+      ;;
+    *)
+      return 1 # no probe tool — cannot determine; treat as free.
+      ;;
+  esac
+}
+
+# pick_port <tcp|udp> <preferred-start> <human-label> — echoes the first free
+# port at or above <preferred-start>. Falls back to the start value (with a
+# warning) rather than looping forever if the whole range up to 65535 is busy.
+pick_port() {
+  local proto="$1" port="$2" label="$3" start="$2"
+  while port_in_use "${proto}" "${port}"; do
+    if [ "${port}" -ge 65535 ]; then
+      echo "warn: no free ${label} ${proto} port found at/above ${start}; keeping ${start}" >&2
+      echo "      (free the port or set the matching VEDETTA_*_PORT before 'docker compose up')" >&2
+      port="${start}"
+      break
+    fi
+    port=$((port + 1))
+  done
+  printf '%s' "${port}"
+}
+
+# Respect any value already exported in the environment as the PREFERRED start;
+# otherwise fall back to the shipped defaults. Probing walks up from there. The
+# *_START values are the ports we hoped to use, so we can tell the operator which
+# one had to move (compare final vs. start, NOT vs. the hardcoded default — the
+# operator may have preferred a non-default start).
+BACKEND_PORT="${VEDETTA_BACKEND_PORT:-8080}"; BACKEND_START="${BACKEND_PORT}"
+FRONTEND_PORT="${VEDETTA_FRONTEND_PORT:-3107}"; FRONTEND_START="${FRONTEND_PORT}"
+COLLECTOR_PORT="${VEDETTA_COLLECTOR_PORT:-5140}"; COLLECTOR_START="${COLLECTOR_PORT}"
+
+if [ "${VEDETTA_SKIP_PORT_PROBE:-0}" = "1" ]; then
+  echo "Port probing skipped (VEDETTA_SKIP_PORT_PROBE=1); using ${BACKEND_PORT}/${FRONTEND_PORT}/${COLLECTOR_PORT}."
+elif [ -z "${PORT_PROBE_TOOL}" ]; then
+  echo "note: no port-probe tool (lsof/ss/netstat) found — cannot verify host ports;" >&2
+  echo "      using defaults ${BACKEND_PORT}/${FRONTEND_PORT}/${COLLECTOR_PORT}. If 'docker compose up'" >&2
+  echo "      reports 'address already in use', set the matching VEDETTA_*_PORT in .env." >&2
+else
+  BACKEND_PORT="$(pick_port tcp "${BACKEND_PORT}" "Core API")"
+  FRONTEND_PORT="$(pick_port tcp "${FRONTEND_PORT}" "dashboard")"
+  COLLECTOR_PORT="$(pick_port udp "${COLLECTOR_PORT}" "collector")"
+fi
+
+set_var "VEDETTA_BACKEND_PORT" "${BACKEND_PORT}" "${TMP_FILE}"
+set_var "VEDETTA_FRONTEND_PORT" "${FRONTEND_PORT}" "${TMP_FILE}"
+set_var "VEDETTA_COLLECTOR_PORT" "${COLLECTOR_PORT}" "${TMP_FILE}"
+
 mv "${TMP_FILE}" "${ENV_FILE}"
 chmod 600 "${ENV_FILE}" # secrets — owner read/write only
 trap - EXIT
@@ -103,6 +203,30 @@ echo "Wrote ${ENV_FILE} with fresh, distinct machine credentials:"
 echo "  VEDETTA_INGEST_TOKEN  (ingest scope)"
 echo "  VEDETTA_CORE_TOKEN    (read scope, distinct from ingest)"
 echo "  VEDETTA_SETUP_CODE    (single-use first-admin bootstrap)"
+echo
+echo "Host ports (probed for conflicts, pinned in ${ENV_FILE##*/}) — 'docker compose up' will use these:"
+echo "  Dashboard:  http://localhost:${FRONTEND_PORT}"
+echo "  Core API:   http://localhost:${BACKEND_PORT}   (health: http://localhost:${BACKEND_PORT}/healthz)"
+echo "  Collector:  udp/${COLLECTOR_PORT}   (LAN-reachable syslog input — point firewall exports here)"
+
+# Call out any port that had to move off its default so the operator updates
+# bookmarks, the sensor --core URL, and firewall syslog targets accordingly.
+shifted=""
+if [ "${BACKEND_PORT}" != "${BACKEND_START}" ]; then
+  shifted="${shifted}\n  - Core API is on ${BACKEND_PORT} (${BACKEND_START} was taken). Same-host sensors: --core http://localhost:${BACKEND_PORT}"
+fi
+if [ "${FRONTEND_PORT}" != "${FRONTEND_START}" ]; then
+  shifted="${shifted}\n  - Dashboard is on ${FRONTEND_PORT} (${FRONTEND_START} was taken). Update your bookmark."
+fi
+if [ "${COLLECTOR_PORT}" != "${COLLECTOR_START}" ]; then
+  shifted="${shifted}\n  - Collector is on ${COLLECTOR_PORT} (${COLLECTOR_START} was taken). Point firewall syslog export at this port."
+fi
+if [ -n "${shifted}" ]; then
+  echo
+  echo "One or more defaults were already in use, so free ports were selected:"
+  printf '%b\n' "${shifted}"
+fi
+
 echo
 echo "Keep this file private (it is gitignored). First admin bootstrap code:"
 echo "  ${SETUP_CODE}"

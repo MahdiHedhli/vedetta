@@ -125,6 +125,13 @@ launch the dashboard's onboarding wizard prompts for it to create your initial
 admin token. (If you ever lose it, Core also prints the active setup code to its
 logs on first start: `docker logs vedetta-backend`.)
 
+**`gen-env.sh` also probes the host ports** the stack publishes (`8080`, `3107`,
+`5140`) and, if one is already in use on this machine (a common case — e.g. another
+web server owns `127.0.0.1:8080`), it picks the next free port and pins it in `.env`
+so `docker compose up` starts cleanly instead of failing with *"address already in
+use"*. It then prints the **actual** dashboard / Core / collector URLs — use those.
+With the defaults free you get:
+
 Dashboard: [http://localhost:3107](http://localhost:3107)
 API health: [http://localhost:8080/healthz](http://localhost:8080/healthz)
 
@@ -248,13 +255,18 @@ This split is deliberate. The local network is the strongest source of truth Ved
 
 ## Services
 
-| Service | Port | Purpose |
-| --- | --- | --- |
-| Backend | 8080 | API, device/event storage, enrichment, scan coordination |
-| Frontend | 3107 | Dashboard UI |
-| Collector | 5140/udp | Syslog and normalized log ingestion path |
-| Telemetry | - | Privacy-reduced community sharing, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle) |
-| Threat Network | 9090 | Optional community backend (advisory-only feed) |
+Ports below are the **defaults**. `scripts/gen-env.sh` probes them at setup and, if
+a default is already taken, pins the next free host port in `.env` (via the listed
+env var) — so the actual port may differ; the generated `.env` and the script's
+output are the source of truth.
+
+| Service | Default port | `.env` override | Purpose |
+| --- | --- | --- | --- |
+| Backend | 8080 | `VEDETTA_BACKEND_PORT` | API, device/event storage, enrichment, scan coordination |
+| Frontend | 3107 | `VEDETTA_FRONTEND_PORT` | Dashboard UI |
+| Collector | 5140/udp | `VEDETTA_COLLECTOR_PORT` | Syslog and normalized log ingestion path |
+| Telemetry | - | - | Privacy-reduced community sharing, **on by default** (opt out: `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle) |
+| Threat Network | 9090 | - | Optional community backend (advisory-only feed) |
 
 ## Hardware And Platform Notes
 

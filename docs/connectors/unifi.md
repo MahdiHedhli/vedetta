@@ -27,9 +27,12 @@ off by default.
 ## 1. Prerequisites
 
 - A running Vedetta Core + collector deployment (`docker compose up -d`).
-- The collector's syslog input is already listening on **UDP port 5140** (see
-  `collector/config/fluent-bit.conf` and the `5140:5140/udp` mapping in
-  `docker-compose.yml`).
+- The collector's syslog input is listening on **UDP port 5140** by default (see
+  `collector/config/fluent-bit.conf` and the `${VEDETTA_COLLECTOR_PORT:-5140}:5140/udp`
+  mapping in `docker-compose.yml`). If `scripts/gen-env.sh` reported that `5140` was
+  already taken, it pinned a different `VEDETTA_COLLECTOR_PORT` in `.env` — run
+  `grep VEDETTA_COLLECTOR_PORT .env` and use that host port everywhere `5140`
+  appears below.
 - The IP or hostname of the machine running the Vedetta collector. In the examples
   below this is `198.51.100.10` — replace it with your collector's address.
 - A UniFi gateway/console running UniFi Network. Modern UniFi OS consoles
