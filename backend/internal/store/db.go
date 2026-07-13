@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -110,10 +111,36 @@ func (db *DB) migrate() error {
 		return db.applyInlineFallback()
 	}
 
+	// Apply migrations on ONE dedicated connection with FOREIGN KEY enforcement
+	// relaxed for the whole pass. SQLite silently ignores `PRAGMA foreign_keys`
+	// inside a transaction, and the runner wraps every migration file in one, so a
+	// migration can never disable enforcement itself. Table-rebuild migrations
+	// (019/020/025: RENAME old -> CREATE new -> copy rows -> DROP old) then fail on
+	// a POPULATED database, because DROPping the renamed old table performs an
+	// implicit row-by-row DELETE that enforces FK RESTRICT against child rows an
+	// earlier migration created (e.g. 018's device_signals/identities/networks ->
+	// devices). It only manifests with data present — which is why fresh-install
+	// tests (zero rows) stayed green while a real 015->025 upgrade of a live
+	// inventory crashed the backend fail-closed at 019. Fix: relax enforcement
+	// OUTSIDE any transaction on a reserved connection, run the whole loop on it,
+	// then re-validate the entire graph with `PRAGMA foreign_key_check` and refuse
+	// to start on any violation. Enforcement stays ON for the app's other pooled
+	// connections (per-connection DSN flag, db.go Open) and is restored on this one
+	// before it returns to the pool. Mirrors asset_schema.go ensureOpenEventQueryType.
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve migration connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("relax foreign keys for migration: %w", err)
+	}
+
 	// Apply each migration that hasn't been applied yet
 	for _, filename := range sqlFiles {
 		var applied int
-		err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE id = ?", filename).Scan(&applied)
+		err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE id = ?", filename).Scan(&applied)
 		if err != nil {
 			return fmt.Errorf("check migration %s: %w", filename, err)
 		}
@@ -127,8 +154,8 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("read migration %s: %w", filename, err)
 		}
 
-		// Execute in a transaction
-		tx, err := db.Begin()
+		// Execute in a transaction on the FK-relaxed migration connection.
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin tx for %s: %w", filename, err)
 		}
@@ -167,6 +194,38 @@ func (db *DB) migrate() error {
 		}
 
 		log.Printf("Migration applied: %s", filename)
+	}
+
+	// Now that every rebuild is done, re-validate all foreign keys across the
+	// whole schema. Enforcement was relaxed during the pass, so this is the gate
+	// that catches a migration which genuinely orphaned a row: fail closed rather
+	// than serve a corrupt graph.
+	fkRows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("foreign_key_check: %w", err)
+	}
+	var violations []string
+	for fkRows.Next() {
+		var table, parent sql.NullString
+		var rowid, fkID sql.NullInt64
+		if scanErr := fkRows.Scan(&table, &rowid, &parent, &fkID); scanErr != nil {
+			fkRows.Close()
+			return fmt.Errorf("scan foreign_key_check: %w", scanErr)
+		}
+		violations = append(violations, fmt.Sprintf("%s(rowid=%d)->%s", table.String, rowid.Int64, parent.String))
+	}
+	fkRows.Close()
+	if rowsErr := fkRows.Err(); rowsErr != nil {
+		return fmt.Errorf("foreign_key_check rows: %w", rowsErr)
+	}
+	if len(violations) > 0 {
+		return fmt.Errorf("post-migration foreign_key_check found %d violation(s): %s",
+			len(violations), strings.Join(violations, ", "))
+	}
+
+	// Restore enforcement before this connection is returned to the pool.
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("restore foreign keys after migration: %w", err)
 	}
 
 	log.Printf("Database migrations complete (%d files)", len(sqlFiles))

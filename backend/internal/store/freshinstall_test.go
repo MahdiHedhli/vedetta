@@ -815,3 +815,162 @@ func TestUpsertDevice_RealMigrationChainPersists(t *testing.T) {
 		}
 	}
 }
+
+// stageMigrationsUpTo copies siem/migrations/NNN_*.sql files whose 3-digit numeric
+// prefix is <= cutoff (e.g. "018") into <dst>/siem/migrations, so a store.Open run
+// advances the DB only to that migration. Zero-padded prefixes compare correctly as
+// strings.
+func stageMigrationsUpTo(t *testing.T, dst, cutoff string) {
+	t.Helper()
+	src := findMigrationsDir(t)
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	staged := filepath.Join(dst, "siem", "migrations")
+	if err := os.MkdirAll(staged, 0o755); err != nil {
+		t.Fatalf("mkdir staged migrations: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		if len(e.Name()) < 3 || e.Name()[:3] > cutoff {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(staged, e.Name()), b, 0o644); err != nil {
+			t.Fatalf("write staged %s: %v", e.Name(), err)
+		}
+	}
+}
+
+// TestFullMigrationChain_PopulatedLegacyDB_FKSafe is the regression gate for the
+// migration-runner foreign-key crash: applying the 019/025 events+devices table
+// REBUILDS to a database that already holds device rows + correlation child rows.
+//
+// The runner opens SQLite with _foreign_keys=on, and migration 019 rebuilds devices
+// via RENAME -> CREATE -> copy -> DROP old. With enforcement on, DROPping the renamed
+// old table does an implicit row-by-row DELETE that enforces FK RESTRICT against the
+// device_networks / device_identities / device_signals rows migration 018 created,
+// raising "FOREIGN KEY constraint failed". It ONLY fires with data present — which is
+// why every other real-runner test here (zero device rows) stayed green while a real
+// 015->025 upgrade of a live inventory crashed the backend fail-closed at 019.
+//
+// This test seeds a device + a device_networks child row at the 018 schema, then runs
+// the REAL runner over 019..025 and asserts it completes, preserves the data, and
+// leaves a clean foreign_key_check. It fails (store.Open error at 019) if the runner
+// stops relaxing FK enforcement for the migration pass.
+//
+// All values are synthetic per the constitution (RFC 5737 IPs, 00:00:5E:00:53:xx MACs).
+func TestFullMigrationChain_PopulatedLegacyDB_FKSafe(t *testing.T) {
+	tmp := t.TempDir()
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir to staged root: %v", err)
+	}
+
+	dbPath := filepath.Join(tmp, "legacy.db")
+
+	// Phase 1: advance a fresh DB only to migration 018 via the real runner, then
+	// populate it the way production does — a device with a correlation child row.
+	stageMigrationsUpTo(t, tmp, "018")
+	db18, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open to migration 018 failed: %v", err)
+	}
+	var head string
+	if err := db18.QueryRow(`SELECT MAX(id) FROM schema_migrations`).Scan(&head); err != nil {
+		t.Fatalf("read migration head: %v", err)
+	}
+	if !strings.HasPrefix(head, "018") {
+		t.Fatalf("expected DB staged at 018, got %q (staging filter broken)", head)
+	}
+	now := time.Now().UTC()
+	// segment='default' satisfies the pre-019 CHECK (IN 'default','iot','guest').
+	if _, err := db18.Exec(`INSERT INTO devices
+		(device_id, first_seen, last_seen, ip_address, mac_address, hostname, vendor, segment)
+		VALUES ('dev-legacy', ?, ?, '192.0.2.77', '00:00:5E:00:53:77', 'nas.local', 'ExampleCorp', 'default')`,
+		now, now); err != nil {
+		t.Fatalf("seed device at 018: %v", err)
+	}
+	// The correlation child row whose FK to devices makes 019's DROP-under-FK-on trip.
+	if _, err := db18.Exec(`INSERT INTO device_networks
+		(device_id, segment, ip_address, sensor_id, first_seen, last_seen)
+		VALUES ('dev-legacy', 'default', '192.0.2.77', 'sensor-1', ?, ?)`,
+		now, now); err != nil {
+		t.Fatalf("seed device_networks child row at 018: %v", err)
+	}
+	if err := db18.Close(); err != nil {
+		t.Fatalf("close 018 db: %v", err)
+	}
+
+	// Phase 2: complete the chain (019..025) and re-open. The real runner now applies
+	// the events+devices rebuilds to the POPULATED DB. Pre-fix this returned
+	// "FOREIGN KEY constraint failed" at 019; post-fix it must succeed.
+	stageMigrations(t, tmp)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open over 019..025 on a POPULATED legacy DB failed (the FK-on rebuild regression): %v", err)
+	}
+	defer db.Close()
+
+	if err := db.QueryRow(`SELECT MAX(id) FROM schema_migrations`).Scan(&head); err != nil {
+		t.Fatalf("read migration head after full chain: %v", err)
+	}
+	if !strings.HasPrefix(head, "025") {
+		t.Errorf("migration head = %q, want 025_*", head)
+	}
+
+	// The seeded device + child row survived the rebuilds.
+	var devCount, netCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM devices WHERE device_id = 'dev-legacy'`).Scan(&devCount); err != nil {
+		t.Fatalf("count seeded device: %v", err)
+	}
+	if devCount != 1 {
+		t.Errorf("seeded device count = %d after migration, want 1 (data lost in rebuild)", devCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_networks WHERE device_id = 'dev-legacy'`).Scan(&netCount); err != nil {
+		t.Fatalf("count seeded child row: %v", err)
+	}
+	if netCount != 1 {
+		t.Errorf("seeded device_networks count = %d after migration, want 1", netCount)
+	}
+
+	// The whole FK graph is consistent, and enforcement was restored (a bad child
+	// write must still be rejected after migration).
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	var violations int
+	for rows.Next() {
+		violations++
+	}
+	rows.Close()
+	if violations != 0 {
+		t.Errorf("PRAGMA foreign_key_check reported %d violation(s) after the populated upgrade, want 0", violations)
+	}
+
+	if _, err := db.Exec(`INSERT INTO device_networks
+		(device_id, segment, first_seen, last_seen)
+		VALUES ('ghost-device', 'default', ?, ?)`, now, now); err == nil {
+		t.Error("FK enforcement was NOT restored after migration: a child row referencing a nonexistent device was accepted")
+	}
+
+	var integrity string
+	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil {
+		t.Fatalf("integrity_check: %v", err)
+	}
+	if integrity != "ok" {
+		t.Errorf("integrity_check = %q, want ok", integrity)
+	}
+}
