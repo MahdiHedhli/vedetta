@@ -48,14 +48,14 @@ func createCorpusReleaseTx(tx *sql.Tx, now string) (int, string, error) {
 	if err := corpus.ValidatePublicSnapshot(snapshot); err != nil {
 		return 0, "", fmt.Errorf("device corpus privacy gate: %w", err)
 	}
-	bytes, err := json.Marshal(snapshot)
+	snapshotBytes, err := json.Marshal(snapshot)
 	if err != nil {
 		return 0, "", err
 	}
-	if len(bytes) > maxCorpusSnapshotBytes {
+	if len(snapshotBytes) > maxCorpusSnapshotBytes {
 		return 0, "", corpusValidationf("device corpus snapshot exceeds 16 MiB publication limit")
 	}
-	digest := sha256.Sum256(bytes)
+	digest := sha256.Sum256(snapshotBytes)
 	hash := hex.EncodeToString(digest[:])
 	variants := 0
 	for _, profile := range snapshot.Profiles {
@@ -63,9 +63,9 @@ func createCorpusReleaseTx(tx *sql.Tx, now string) (int, string, error) {
 	}
 	if _, err = tx.Exec(`INSERT INTO device_corpus_releases
         (corpus_revision, schema_version, snapshot_sha256, snapshot_json,
-         profile_count, variant_count, created_at)
+		 profile_count, variant_count, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`, revision, corpus.SchemaVersion, hash,
-		string(bytes), len(snapshot.Profiles), variants, now); err != nil {
+		string(snapshotBytes), len(snapshot.Profiles), variants, now); err != nil {
 		return 0, "", err
 	}
 	if _, err = tx.Exec(`UPDATE device_corpus_state SET current_revision = ?,
