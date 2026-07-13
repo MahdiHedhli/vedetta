@@ -65,6 +65,18 @@ if [ "$(id -u)" -ne 0 ]; then
   SUDO="sudo"
 fi
 
+# Fixed, root-only token location shared by the one-shot enrollment step and the
+# long-running service, so both agree regardless of $HOME/sudo resolution. Overridable
+# via VEDETTA_SENSOR_TOKEN_FILE (also honoured by the sensor binary; used by the tests).
+if [ -n "${VEDETTA_SENSOR_TOKEN_FILE:-}" ]; then
+  TOKEN_FILE="$VEDETTA_SENSOR_TOKEN_FILE"
+elif [ "$OS" = "Darwin" ]; then
+  TOKEN_FILE="/Library/Application Support/Vedetta/sensor-token"
+else
+  TOKEN_FILE="/var/lib/vedetta/sensor-token"
+fi
+TOKEN_DIR="$(dirname "$TOKEN_FILE")"
+
 echo "==> Vedetta Sensor installer"
 echo "    Core:   $CORE_URL"
 echo "    Target: ${GOOS}/${GOARCH}"
@@ -229,29 +241,49 @@ $SUDO install -d "$BIN_DIR"
 $SUDO install -m 0755 "$BINARY" "$BIN_DEST"
 "$BIN_DEST" --version
 
+# Guards (before any destructive/enrollment step) so a reset or a code-less fresh
+# install can't strand the sensor — mirrors install.ps1.
+if [ "$RESET" = true ] && [ -z "$ENROLL_CODE" ]; then
+  die "--reset clears the sensor's auth token. Also pass --enroll-code <bound reset code> so it can re-enroll (an admin mints one via POST /api/v1/enrollment-codes). Refusing to strand the sensor."
+fi
+if [ "$INSTALL_SERVICE" = true ] && [ -z "$ENROLL_CODE" ] && [ ! -f "$TOKEN_FILE" ]; then
+  die "no --enroll-code and no existing token at $TOKEN_FILE. A new sensor needs a one-time enrollment code to register. Mint one in the dashboard 'Connect a sensor' step and pass --enroll-code <CODE>."
+fi
+
 if [ "$RESET" = true ]; then
   echo "==> resetting sensor authentication"
-  $SUDO "$BIN_DEST" --reset || true
+  $SUDO env VEDETTA_SENSOR_TOKEN_FILE="$TOKEN_FILE" "$BIN_DEST" --reset || true
+fi
+
+# Enroll BEFORE creating the service, so the single-use code is spent in this one-shot
+# step (supplied via the ENVIRONMENT, never on a command line or in the launchd/systemd
+# service config where a local user could read it). The token persists to the fixed
+# TOKEN_FILE the service also reads (set in the unit below), so there is no $HOME/sudo
+# ambiguity between enrollment and the running service.
+if [ -n "$ENROLL_CODE" ]; then
+  echo "==> enrolling with Core (one-time code, kept out of the service configuration)"
+  $SUDO install -d -m 0700 "$TOKEN_DIR"
+  export VEDETTA_ENROLL_CODE="$ENROLL_CODE"
+  ${SUDO:+$SUDO -E} env VEDETTA_SENSOR_TOKEN_FILE="$TOKEN_FILE" "$BIN_DEST" --enroll-only --core "$CORE_URL" --cidr auto \
+    || die "enrollment failed (check --core, the enrollment code, and connectivity)"
+  unset VEDETTA_ENROLL_CODE
 fi
 
 if [ "$INSTALL_SERVICE" != true ]; then
   echo ""
-  echo "==> ✅ binary installed (service skipped: --no-service)"
-  echo "    run it with: sudo vedetta-sensor --core $CORE_URL${ENROLL_CODE:+ --enroll-code $ENROLL_CODE}"
+  echo "==> ✅ binary installed${ENROLL_CODE:+ and enrolled} (service skipped: --no-service)"
+  echo "    run it with: sudo env VEDETTA_SENSOR_TOKEN_FILE='$TOKEN_FILE' vedetta-sensor --core $CORE_URL --cidr auto --dns"
   exit 0
 fi
 
 echo "==> configuring service"
-EXTRA=""
-[ -n "$ENROLL_CODE" ] && EXTRA=" --enroll-code $ENROLL_CODE"
+# The enrollment code is intentionally NOT placed in the service definition — it was
+# already spent in the one-shot enrollment step above and the token is persisted. The
+# service authenticates with that token (VEDETTA_SENSOR_TOKEN_FILE), so a local user
+# reading the launchd/systemd config learns nothing secret (issue #35).
 
 if [ "$OS" = "Darwin" ]; then
   PLIST="${VEDETTA_PLIST_PATH:-/Library/LaunchDaemons/com.vedetta.sensor.plist}"
-  # Enrollment code must reach the LaunchDaemon's ProgramArguments for the
-  # INITIAL registration — otherwise a macOS service ignores a supplied code
-  # (issue #35). Each flag is its own <string> element in the array.
-  ENROLL_ARGS=""
-  [ -n "$ENROLL_CODE" ] && ENROLL_ARGS="    <string>--enroll-code</string><string>${ENROLL_CODE}</string>"
   $SUDO tee "$PLIST" >/dev/null <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -263,8 +295,10 @@ if [ "$OS" = "Darwin" ]; then
     <string>--cidr</string><string>auto</string>
     <string>--dns</string>
     <string>--passive-discovery</string>
-${ENROLL_ARGS}
   </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>VEDETTA_SENSOR_TOKEN_FILE</key><string>${TOKEN_FILE}</string>
+  </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/var/log/vedetta-sensor.log</string>
   <key>StandardErrorPath</key><string>/var/log/vedetta-sensor.log</string>
@@ -273,16 +307,6 @@ EOF
   $SUDO launchctl unload "$PLIST" 2>/dev/null || true
   $SUDO launchctl load -w "$PLIST"
   echo "==> installed as a LaunchDaemon"
-  if [ -n "$ENROLL_CODE" ]; then
-    echo ""
-    echo "    NOTE: the enrollment code is single-use. After the sensor's first"
-    echo "    successful registration it persists a token and no longer needs the"
-    echo "    code. Remove it from the LaunchDaemon so a KeepAlive restart does not"
-    echo "    replay a now-consumed code — re-run this installer WITHOUT --enroll-code:"
-    echo "      sudo ./install.sh --core $CORE_URL"
-    echo "    (or edit $PLIST, delete the two --enroll-code ProgramArguments <string>"
-    echo "    lines, then: sudo launchctl unload $PLIST && sudo launchctl load -w $PLIST)"
-  fi
 else
   SERVICE="${VEDETTA_SERVICE_PATH:-/etc/systemd/system/vedetta-sensor.service}"
   $SUDO tee "$SERVICE" >/dev/null <<EOF
@@ -293,7 +317,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${BIN_DEST} --core ${CORE_URL} --cidr auto --dns --passive-discovery${EXTRA}
+Environment=VEDETTA_SENSOR_TOKEN_FILE=${TOKEN_FILE}
+ExecStart=${BIN_DEST} --core ${CORE_URL} --cidr auto --dns --passive-discovery
 Restart=always
 RestartSec=10
 User=root

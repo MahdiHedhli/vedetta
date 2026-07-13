@@ -164,6 +164,10 @@ curl -fsSL -o /tmp/vedetta-sensor-install.sh \
 sudo bash /tmp/vedetta-sensor-install.sh \
   --core https://vedetta.example.com \
   --enroll-code <ENROLL_CODE>
+
+# update an already-enrolled sensor (no code needed):    sudo bash /tmp/vedetta-sensor-install.sh --core https://vedetta.example.com
+# override LAN auto-detection:                           --cidr 192.168.1.0/24
+# reset a stranded sensor (then re-enroll with a code):  sudo bash /tmp/vedetta-sensor-install.sh --core https://... --reset --enroll-code <CODE>
 ```
 
 **Windows** (driver-free — no Npcap, no nmap). Run in an **elevated** PowerShell; pin
