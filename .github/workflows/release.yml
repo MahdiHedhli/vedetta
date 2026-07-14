@@ -16,15 +16,39 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Git ref (tag) to build"
+        description: "Existing v* tag name to build (not a branch or commit)"
         required: true
+        type: string
 
 permissions:
-  contents: write # create the draft release
+  contents: read
 
 jobs:
+  validate-tag:
+    name: validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+    steps:
+      - name: Require an existing v* tag
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ github.event.inputs.ref || github.ref_name }}
+        run: |
+          if [[ ! "$REQUESTED_TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "::error::Release ref must be a v-prefixed tag name containing only letters, numbers, dot, underscore, or hyphen"
+            exit 1
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${REQUESTED_TAG}" >/dev/null; then
+            echo "::error::Tag '${REQUESTED_TAG}' does not exist in ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+          printf 'tag=%s\n' "$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+
   build-sensor:
     name: build sensor (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: validate-tag
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -37,12 +61,16 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          # Force the validated name into the tag namespace. A same-named branch
+          # can never substitute for the release tag.
+          ref: refs/tags/${{ needs.validate-tag.outputs.tag }}
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: stable
-          cache-dependency-path: sensor/go.sum
+          # Release runs are rare and privileged. Do not restore a cache written
+          # by a lower-trust workflow context.
+          cache: false
       - name: Install libpcap (cgo dependency)
         if: matrix.cgo == '1'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap-dev
@@ -52,9 +80,8 @@ jobs:
           CGO_ENABLED: ${{ matrix.cgo }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          # The tag being released: github.ref_name on a tag push (e.g. v1.2.3),
-          # or the workflow_dispatch ref input for a manual run.
-          VERSION: ${{ github.event.inputs.ref || github.ref_name }}
+          # The validated, existing tag shared by checkout and release assembly.
+          VERSION: ${{ needs.validate-tag.outputs.tag }}
         run: |
           bin=vedetta-sensor
           [ "$GOOS" = "windows" ] && bin=vedetta-sensor.exe
@@ -89,8 +116,10 @@ jobs:
 
   release:
     name: assemble draft release
-    needs: build-sensor
+    needs: [validate-tag, build-sensor]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create or refresh the draft release only in this job
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -104,6 +133,7 @@ jobs:
       - name: Create/refresh DRAFT release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
+          tag_name: ${{ needs.validate-tag.outputs.tag }}
           draft: true # never auto-publish — review and publish by hand
           fail_on_unmatched_files: true
           files: |
