@@ -52,6 +52,10 @@ set -euo pipefail
 if [ -z "${VEDETTA_UPGRADE_SELF:-}" ]; then
   _home="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   _tmp="$(mktemp "${TMPDIR:-/tmp}/vedetta-upgrade.XXXXXX")"
+  # Don't leak the temp copy if anything below fails under set -e. A successful
+  # exec replaces this process (trap and all); the child re-registers its own
+  # EXIT cleanup for the same file further down.
+  trap 'rm -f "$_tmp" 2>/dev/null' EXIT
   cat "${BASH_SOURCE[0]}" >"$_tmp"
   export VEDETTA_UPGRADE_SELF="$_tmp"
   export VEDETTA_UPGRADE_HOME="$_home"
@@ -60,6 +64,13 @@ fi
 
 PROJECT_DIR="${VEDETTA_UPGRADE_HOME}"
 SCRIPT_DIR="${PROJECT_DIR}/scripts"
+
+# Helper image for volume snapshot/restore one-off containers. Pinned to the
+# same Alpine the Dockerfiles use — an untagged `alpine` resolves to :latest
+# and `docker run` would PULL it mid-rollback on a host that only has the
+# compose base cached; a registry hiccup at that moment would strand the
+# restore. Preflighted below before anything is touched.
+HELPER_IMAGE="${VEDETTA_HELPER_IMAGE:-alpine:3.24}"
 
 # ─── Output helpers ───────────────────────────────────────────────────────────
 step() { printf '\n▸ %s\n' "$*"; }
@@ -127,26 +138,38 @@ detect_project() {
 }
 
 # resolve_volume <compose-key> — print the real (project-prefixed) volume name.
-# Accepts ONLY an exact "${PROJECT}_<key>" match or a single unambiguous
-# candidate. Never guesses between multiple matches: on a host running more
-# than one Vedetta stack, picking "the first one" could snapshot — and later
-# RESTORE over — another installation's database. Returns 1 when it cannot
-# decide; the caller surfaces the candidates.
+# Accepts ONLY a volume that belongs to the SAME Compose project the compose
+# commands in this script will control. A looser match (sole candidate on the
+# host, name-suffix guess) could pass while `docker compose down/up` targets a
+# different — possibly empty — project: the cold path would then fail to stop
+# the real backend, and rollback would restore INTO the live install's volume
+# while its containers keep writing. Returns 1 when it cannot prove the match;
+# the caller surfaces the candidates.
 resolve_volume() {
-  local key="$1" labeled name count
+  local key="$1" labeled vol_project
   labeled="$(docker volume ls --filter "label=com.docker.compose.volume=${key}" \
              --format '{{.Name}}' 2>/dev/null || true)"
-  # Exact project-prefixed match wins outright.
+  # Exact project-prefixed name — the volume Compose itself would use.
   if [ -n "${PROJECT:-}" ] && printf '%s\n' "$labeled" | grep -Fxq "${PROJECT}_${key}"; then
     printf '%s' "${PROJECT}_${key}"; return 0
   fi
-  count="$(printf '%s' "$labeled" | grep -c . || true)"
-  if [ "$count" = "1" ]; then printf '%s' "$labeled"; return 0; fi
-  [ "$count" != "0" ] && return 1   # several projects own a <key> volume — ambiguous
-  # No labeled candidates (e.g. volume created outside Compose): accept a
-  # uniquely-named fallback only.
-  name="$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E "(^|_)${key}$" || true)"
-  if [ "$(printf '%s' "$name" | grep -c . || true)" = "1" ]; then printf '%s' "$name"; return 0; fi
+  # A sole labeled candidate still must belong to OUR project (covers volumes
+  # with custom external names); a different project label means the compose
+  # commands would not be operating on the stack that owns this data.
+  if [ "$(printf '%s' "$labeled" | grep -c . || true)" = "1" ]; then
+    vol_project="$(docker volume inspect \
+      -f '{{ index .Labels "com.docker.compose.project" }}' "$labeled" 2>/dev/null || true)"
+    if [ -n "${PROJECT:-}" ] && [ "$vol_project" = "$PROJECT" ]; then
+      printf '%s' "$labeled"; return 0
+    fi
+    return 1
+  fi
+  [ -n "$labeled" ] && return 1   # several projects own a <key> volume — ambiguous
+  # Unlabeled fallback (volume pre-created outside Compose): accept only the
+  # exact name Compose resolves for this project.
+  if [ -n "${PROJECT:-}" ] && docker volume inspect "${PROJECT}_${key}" >/dev/null 2>&1; then
+    printf '%s' "${PROJECT}_${key}"; return 0
+  fi
   return 1
 }
 
@@ -167,6 +190,13 @@ command -v docker >/dev/null 2>&1 || { err "docker not found on PATH."; exit 2; 
 command -v curl   >/dev/null 2>&1 || { err "curl not found on PATH."; exit 2; }
 docker compose version >/dev/null 2>&1 || { err "docker compose v2 is required."; exit 2; }
 git rev-parse --git-dir >/dev/null 2>&1 || { err "not a git repository: $PROJECT_DIR"; exit 2; }
+
+# Ensure the snapshot/restore helper image is local NOW — never mid-rollback.
+if ! docker image inspect "$HELPER_IMAGE" >/dev/null 2>&1; then
+  echo "  Pulling helper image ${HELPER_IMAGE} (needed for snapshot/restore)…"
+  docker pull "$HELPER_IMAGE" >/dev/null \
+    || { err "could not pull ${HELPER_IMAGE} — refusing to start an upgrade whose rollback needs it."; exit 2; }
+fi
 
 # Only uncommitted changes to TRACKED files block checkout; untracked files
 # (operator notes, older checkouts without backups/ in .gitignore) must not
@@ -198,11 +228,14 @@ fi
 PROJECT="$(detect_project)"
 VOL_DATA="$(resolve_volume vedetta-data || true)"
 if [ -z "$VOL_DATA" ]; then
-  err "Could not resolve the vedetta-data volume for this stack (missing, or"
-  err "AMBIGUOUS — more than one Compose project on this host owns one; refusing"
-  err "to guess, since restoring into the wrong project would destroy its data)."
+  err "Could not resolve the vedetta-data volume for Compose project '${PROJECT}'"
+  err "(missing, owned by a DIFFERENT project, or ambiguous between projects)."
+  err "Refusing to guess: compose commands would target '${PROJECT}' while the"
+  err "snapshot/restore touched another install's live data."
   err "Candidates:"; docker volume ls --format '    {{.Name}}' | grep -i vedetta >&2 || true
-  err "Bring the stack up once (docker compose up -d) or set COMPOSE_PROJECT_NAME, then retry."
+  err "If this install uses a custom project name, export COMPOSE_PROJECT_NAME=<name>"
+  err "(check: docker volume inspect -f '{{ index .Labels \"com.docker.compose.project\" }}' <volume>)"
+  err "or bring the stack up once (docker compose up -d), then retry."
   exit 2
 fi
 
@@ -236,14 +269,14 @@ restore_main_volume() {
       # failed new backend so SQLite cannot replay migrated frames onto it.
       # Preserve the DB file's ownership (cp in the helper container runs as
       # root; a non-root backend could no longer open a root-owned DB).
-      docker run --rm -v "${VOL_DATA}:/data" -v "${SNAP_DIR}:/backup:ro" alpine \
+      docker run --rm -v "${VOL_DATA}:/data" -v "${SNAP_DIR}:/backup:ro" "$HELPER_IMAGE" \
         sh -ec 'owner="$(stat -c %u:%g /data/vedetta.db 2>/dev/null || stat -c %u:%g /data 2>/dev/null || echo 0:0)"
                 rm -f /data/vedetta.db /data/vedetta.db-wal /data/vedetta.db-shm
                 cp "/backup/$1" /data/vedetta.db
                 chown "$owner" /data/vedetta.db' _ "$(basename "$SNAP_ARTIFACT")"
       ;;
     cold)
-      docker run --rm -v "${VOL_DATA}:/data" -v "${SNAP_DIR}:/backup:ro" alpine \
+      docker run --rm -v "${VOL_DATA}:/data" -v "${SNAP_DIR}:/backup:ro" "$HELPER_IMAGE" \
         sh -ec 'rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true
                 tar xzf "/backup/$1" -C /data' _ "$(basename "$SNAP_ARTIFACT")"
       ;;
@@ -420,7 +453,7 @@ else
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-data-${TS}.tar.gz"
   # chown the tarball to the invoking host user — the helper container runs as
   # root, and a root-owned backup would need sudo to manage or prune later.
-  docker run --rm -v "${VOL_DATA}:/data:ro" -v "${SNAP_DIR}:/backup" alpine \
+  docker run --rm -v "${VOL_DATA}:/data:ro" -v "${SNAP_DIR}:/backup" "$HELPER_IMAGE" \
     sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
     _ "$(basename "$SNAP_ARTIFACT")" "$(id -u):$(id -g)" \
     || fail "cold volume snapshot failed"
@@ -445,7 +478,7 @@ if [ "$SKIP_AUX" != "1" ]; then
     vol="$(resolve_volume "$key" || true)"
     if [ -n "$vol" ] && volume_exists "$vol"; then
       out="${key}-${TS}.tar.gz"
-      if docker run --rm -v "${vol}:/data:ro" -v "${SNAP_DIR}:/backup" alpine \
+      if docker run --rm -v "${vol}:/data:ro" -v "${SNAP_DIR}:/backup" "$HELPER_IMAGE" \
            sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
            _ "${out}" "$(id -u):$(id -g)"; then
         ok "Snapshotted ${key} → ${out}"
