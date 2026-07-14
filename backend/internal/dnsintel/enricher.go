@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,12 @@ type Enricher struct {
 	Rebinding     *RebindingDetector
 	Bypass        *BypassDetector
 	IsWhitelisted func(domain string) bool // optional, for early noise suppression
+
+	// SelfDomains are Vedetta's own hosts (community feed + telemetry, plus any
+	// self-hosted mirror), derived from config in cmd/vedetta. Core polls its own feed
+	// on a fixed timer, which would otherwise trip the beaconing/C2 detector on the
+	// Core host's own DNS. Matched exact-or-suffix; nil = no-op.
+	SelfDomains []string
 
 	// Firewall (spec 001) — used only for event_type == "firewall_log".
 	FirewallSeen        *FirewallFirstSeen                                  // first-seen (src,dst,rule) tracker
@@ -77,6 +84,59 @@ var knownGoodUpdateDomains = []string{
 	// or high-risk device context (EOL, new, IoT).
 	"github.com", "raw.githubusercontent.com",
 	"discordapp.com", "discord.com", "cdn.discordapp.com",
+	// Plex Media Server — plex.direct is Plex's dynamic DNS for direct secure
+	// connections; the subdomain encodes the server's local IP + a per-server hash
+	// (e.g. 10-37-129-2.<hash>.plex.direct), which trips DGA / tunneling / beacon FPs.
+	"plex.tv", "plex.direct",
+}
+
+// isSelfDomain reports whether domain is one of Vedetta's own hosts (feed/telemetry
+// or a self-hosted mirror). Exact-or-suffix on the registrable host, so a mirror at
+// feed.mylab.example matches "feed.mylab.example" while "evilvedettas.com" does NOT
+// match "vedettas.com". Case/trailing-dot normalized to match the ingest pipeline.
+func (e *Enricher) isSelfDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if d == "" {
+		return false
+	}
+	for _, self := range e.SelfDomains {
+		if self == "" {
+			continue
+		}
+		if d == self || strings.HasSuffix(d, "."+self) {
+			return true
+		}
+	}
+	return false
+}
+
+// SelfDomainsFromURLs extracts lowercased, deduped hostnames from the given URLs
+// (Vedetta's community-feed / telemetry endpoints, including any operator override).
+// Used to seed Enricher.SelfDomains so Core's own feed poll isn't flagged as C2
+// beaconing. Blank/unparseable inputs are skipped.
+func SelfDomainsFromURLs(raw ...string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, r := range raw {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		u, err := url.Parse(r)
+		if err != nil {
+			continue
+		}
+		h := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+		if h == "" {
+			continue
+		}
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		out = append(out, h)
+	}
+	return out
 }
 
 // NewEnricher creates an Enricher with the default BeaconDetector,
@@ -234,7 +294,11 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	if knownGoodContext {
 		event.Tags = appendUnique(event.Tags, "known_good_context")
 	}
-	skipBehaviorHeuristics := operatorWhitelisted || knownGoodContext
+	selfDomain := e.isSelfDomain(event.Domain)
+	if selfDomain {
+		event.Tags = appendUnique(event.Tags, "vedetta_self")
+	}
+	skipBehaviorHeuristics := operatorWhitelisted || knownGoodContext || selfDomain
 
 	var scores []float64
 	var descriptions []string
