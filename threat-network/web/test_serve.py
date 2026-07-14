@@ -496,6 +496,42 @@ class ProxyTests(unittest.TestCase):
 
         self.assertTrue(body.closed)
 
+    def test_bodyless_upstream_status_omits_length_and_content(self):
+        for status in (204, 205, 304):
+            with self.subTest(status=status):
+                upstream = StaticResponse(
+                    b'{"must_not_be_forwarded":true}',
+                    status=status,
+                    headers={
+                        "Content-Type": "application/json",
+                        "ETag": '"bodyless-response"',
+                    },
+                )
+                with (
+                    mock.patch.object(
+                        serve, "UPSTREAM_OPENER", ReturningOpener(upstream)
+                    ),
+                    socket.create_connection(
+                        self.proxy.server_address, timeout=3
+                    ) as client,
+                ):
+                    client.sendall(
+                        b"GET /api/v1/status HTTP/1.0\r\n"
+                        b"Host: 127.0.0.1\r\n"
+                        b"Connection: close\r\n\r\n"
+                    )
+                    response = bytearray()
+                    while chunk := client.recv(4096):
+                        response.extend(chunk)
+
+                header_block, body = bytes(response).split(b"\r\n\r\n", 1)
+                self.assertIn(
+                    ("HTTP/1.0 %d " % status).encode("ascii"), header_block
+                )
+                self.assertNotIn(b"\r\nContent-Length:", b"\r\n" + header_block)
+                self.assertEqual(body, b"")
+                self.assertTrue(upstream.closed)
+
     def test_upstream_response_header_injection_is_rejected(self):
         cases = (
             ("ETag", '"tag"\rX-Injected: yes'),

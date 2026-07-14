@@ -182,6 +182,11 @@ def _read_limited(response, limit: int) -> bytes:
     return data
 
 
+def _status_allows_content(status: int) -> bool:
+    """Return whether an HTTP response status permits message content."""
+    return not (100 <= status < 200 or status in (204, 205, 304))
+
+
 def _forwarded_header_value(
     headers, name: str, default: str | None = None
 ) -> str | None:
@@ -575,14 +580,21 @@ class Handler(BaseHTTPRequestHandler):
         if not content_type or not content_type.lower().startswith("application/json"):
             self._json_error(502, "UPSTREAM_CONTENT_TYPE", "upstream did not return JSON")
             return
+        content_allowed = _status_allows_content(status)
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
+        # RFC 9110 forbids content on 1xx, 204, 205, and 304 responses. A 304
+        # Content-Length is only valid when it describes the hypothetical 200
+        # representation, which this bounded proxy cannot derive from an empty
+        # 304 body, so omit it rather than emitting a misleading zero.
+        if content_allowed:
+            self.send_header("Content-Length", str(len(data)))
         for name, value in forwarded_headers:
             self.send_header(name, value)
         self._security_headers()
         self.end_headers()
-        self.wfile.write(data)
+        if content_allowed:
+            self.wfile.write(data)
 
     def do_GET(self) -> None:
         try:
