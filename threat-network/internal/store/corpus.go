@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mattn/go-sqlite3"
 	"github.com/vedetta-network/vedetta/threat-network/internal/corpus"
 )
 
@@ -40,6 +41,23 @@ func corpusValidationError(err error) error {
 
 func corpusValidationf(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrCorpusValidation, fmt.Sprintf(format, args...))
+}
+
+// isCorpusProfileRevisionInsertConflict is intentionally scoped to the two
+// profile-revision INSERT call sites below. Those inserts can race after the
+// application-level identity check; the identity trigger is the database
+// backstop and reports SQLITE_CONSTRAINT_TRIGGER.
+func isCorpusProfileRevisionInsertConflict(err error) bool {
+	var sqliteErr sqlite3.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.ExtendedCode == sqlite3.ErrConstraintTrigger
+}
+
+// isCorpusVariantIdentityInsertConflict is intentionally scoped to the stable
+// variant INSERT below, whose (profile_id, variant_key) constraint reports
+// SQLITE_CONSTRAINT_UNIQUE when concurrent creators race.
+func isCorpusVariantIdentityInsertConflict(err error) bool {
+	var sqliteErr sqlite3.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.ExtendedCode == sqlite3.ErrConstraintUnique
 }
 
 // CorpusMutation identifies a management action without storing an operator's
@@ -216,7 +234,7 @@ func (db *DB) CreateCorpusProfile(ctx context.Context, req corpus.CreateProfileR
 		 device_type, os_family, status, created_at)
 		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, 'draft', ?)`, revisionID, profileID, labelKey,
 		labels.Manufacturer, labels.Model, labels.ProductFamily, labels.DeviceType, labels.OSFamily, now); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate active device corpus profile") {
+		if isCorpusProfileRevisionInsertConflict(err) {
 			return nil, ErrCorpusConflict
 		}
 		return nil, fmt.Errorf("insert corpus profile revision: %w", err)
@@ -287,7 +305,7 @@ func (db *DB) ReviseCorpusProfile(ctx context.Context, profileID string, req cor
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`, revisionID, profileID,
 		baseRevision+1, baseID, labelKey, labels.Manufacturer, labels.Model, labels.ProductFamily,
 		labels.DeviceType, labels.OSFamily, now); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate active device corpus profile") {
+		if isCorpusProfileRevisionInsertConflict(err) {
 			return nil, ErrCorpusConflict
 		}
 		return nil, fmt.Errorf("insert corpus profile revision: %w", err)
@@ -409,7 +427,7 @@ func (db *DB) CreateCorpusVariant(ctx context.Context, profileID string, req cor
 		if _, err = tx.ExecContext(ctx, `INSERT INTO device_corpus_variants
 			(variant_id, profile_id, variant_key, predecessor_variant_id, created_at)
 			VALUES (?, ?, ?, NULLIF(?, ''), ?)`, variantID, profileID, variantKey, req.PredecessorVariantID, now); err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			if isCorpusVariantIdentityInsertConflict(err) {
 				return nil, ErrCorpusConflict
 			}
 			return nil, err

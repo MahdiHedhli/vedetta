@@ -108,15 +108,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"schema_version": 1,
 		"feed_items":     count,
 	}
+	httpStatus := http.StatusOK
 	if manifest, err := s.DB.CorpusManifest(r.Context()); err == nil {
 		status["corpus_schema_version"] = manifest.SchemaVersion
 		status["corpus_revision"] = manifest.CorpusRevision
 		status["corpus_profiles"] = manifest.ProfileCount
 		status["corpus_variants"] = manifest.VariantCount
 	} else {
+		status["status"] = "error"
 		status["corpus_status"] = "error"
+		httpStatus = http.StatusServiceUnavailable
 	}
-	writeJSON(w, http.StatusOK, status)
+	writeJSON(w, httpStatus, status)
 }
 
 func (s *Server) handleDeprecated(key string) http.HandlerFunc {

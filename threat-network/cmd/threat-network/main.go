@@ -44,7 +44,10 @@ type httpShutdowner interface {
 	Shutdown(context.Context) error
 }
 
-const httpWriteTimeout = 150 * time.Second
+const (
+	httpWriteTimeout               = 150 * time.Second
+	corpusStartupValidationTimeout = 30 * time.Second
+)
 
 func shutdownHTTPServers(ctx context.Context, servers ...httpShutdowner) error {
 	errs := make([]error, len(servers))
@@ -60,6 +63,12 @@ func shutdownHTTPServers(ctx context.Context, servers ...httpShutdowner) error {
 	}
 	wg.Wait()
 	return errors.Join(errs...)
+}
+
+func validateCurrentCorpusSnapshot(ctx context.Context, timeout time.Duration, validate func(context.Context) error) error {
+	validationCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return validate(validationCtx)
 }
 
 func run() error {
@@ -231,7 +240,11 @@ func prepareRunMode(db *store.DB, mode runMode) (bool, error) {
 		return true, nil
 	}
 
-	if _, _, err := db.CurrentCorpusSnapshot(context.Background()); err != nil {
+	err := validateCurrentCorpusSnapshot(context.Background(), corpusStartupValidationTimeout, func(ctx context.Context) error {
+		_, _, err := db.CurrentCorpusSnapshot(ctx)
+		return err
+	})
+	if err != nil {
 		return false, fmt.Errorf("validate current device corpus release: %w", err)
 	}
 	return false, nil

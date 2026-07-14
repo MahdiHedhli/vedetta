@@ -7,12 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 	"github.com/vedetta-network/vedetta/threat-network/internal/corpus"
 )
 
@@ -97,6 +98,36 @@ func TestCorpusProfileIdentityIsUniqueUnderConcurrentCreate(t *testing.T) {
 	}
 	if profiles != 1 {
 		t.Fatalf("duplicate product identity created %d stable profiles", profiles)
+	}
+}
+
+func TestCorpusInsertConflictClassifiers(t *testing.T) {
+	trigger := sqlite3.Error{Code: sqlite3.ErrConstraint, ExtendedCode: sqlite3.ErrConstraintTrigger}
+	unique := sqlite3.Error{Code: sqlite3.ErrConstraint, ExtendedCode: sqlite3.ErrConstraintUnique}
+	foreignKey := sqlite3.Error{Code: sqlite3.ErrConstraint, ExtendedCode: sqlite3.ErrConstraintForeignKey}
+	tests := []struct {
+		name string
+		is   func(error) bool
+		err  error
+		want bool
+	}{
+		{name: "profile direct trigger", is: isCorpusProfileRevisionInsertConflict, err: trigger, want: true},
+		{name: "profile wrapped trigger", is: isCorpusProfileRevisionInsertConflict, err: fmt.Errorf("insert: %w", trigger), want: true},
+		{name: "profile unrelated unique", is: isCorpusProfileRevisionInsertConflict, err: unique, want: false},
+		{name: "profile unrelated constraint", is: isCorpusProfileRevisionInsertConflict, err: foreignKey, want: false},
+		{name: "profile text is not classification", is: isCorpusProfileRevisionInsertConflict, err: errors.New("duplicate active device corpus profile identity"), want: false},
+		{name: "variant direct unique", is: isCorpusVariantIdentityInsertConflict, err: unique, want: true},
+		{name: "variant wrapped unique", is: isCorpusVariantIdentityInsertConflict, err: fmt.Errorf("insert: %w", unique), want: true},
+		{name: "variant unrelated trigger", is: isCorpusVariantIdentityInsertConflict, err: trigger, want: false},
+		{name: "variant unrelated constraint", is: isCorpusVariantIdentityInsertConflict, err: foreignKey, want: false},
+		{name: "variant text is not classification", is: isCorpusVariantIdentityInsertConflict, err: errors.New("UNIQUE constraint failed"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.is(tt.err); got != tt.want {
+				t.Fatalf("classifier(%T: %v) = %t, want %t", tt.err, tt.err, got, tt.want)
+			}
+		})
 	}
 }
 

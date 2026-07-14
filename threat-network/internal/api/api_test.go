@@ -49,12 +49,50 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var m map[string]any
-	json.NewDecoder(resp.Body).Decode(&m)
+	if err = json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want 200; body=%v", resp.StatusCode, m)
+	}
 	if m["service"] != "vedetta-threat-network" || m["schema_version"].(float64) != 1 {
 		t.Fatalf("unexpected status body: %v", m)
 	}
 	if _, ok := m["feed_items"]; !ok {
 		t.Fatal("status must include feed_items count")
+	}
+	for _, key := range []string{"corpus_schema_version", "corpus_revision", "corpus_profiles", "corpus_variants"} {
+		if _, ok := m[key]; !ok {
+			t.Fatalf("healthy status must include %s: %v", key, m)
+		}
+	}
+}
+
+func TestStatusEndpointReportsCorpusManifestFailure(t *testing.T) {
+	_, db, ts := newTestServer(t)
+	if _, err := db.Exec(`UPDATE device_corpus_state SET updated_at = 'not-a-time' WHERE singleton = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/v1/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want 503; body=%v", resp.StatusCode, body)
+	}
+	if body["status"] != "error" || body["corpus_status"] != "error" {
+		t.Fatalf("manifest failure status = %v, want status:error and corpus_status:error", body)
+	}
+	for _, key := range []string{"corpus_schema_version", "corpus_revision", "corpus_profiles", "corpus_variants"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("failed manifest must not publish stale %s metadata: %v", key, body)
+		}
 	}
 }
 
