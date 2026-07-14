@@ -90,7 +90,8 @@ func TestStatusEndpoint(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status code = %d, want 200; body=%v", resp.StatusCode, m)
 	}
-	if m["service"] != "vedetta-threat-network" || m["schema_version"].(float64) != 1 {
+	schemaVersion, ok := m["schema_version"].(float64)
+	if m["service"] != "vedetta-threat-network" || !ok || schemaVersion != 1 {
 		t.Fatalf("unexpected status body: %v", m)
 	}
 	if _, ok := m["feed_items"]; !ok {
