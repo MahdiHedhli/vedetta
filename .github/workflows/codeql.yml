@@ -29,7 +29,7 @@ jobs:
             build-mode: none
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
@@ -37,7 +37,7 @@ jobs:
         if: matrix.language == 'go'
         # Go CodeQL extracts the requested package graph from each traced
         # top-level go build, including when GOCACHE satisfies compilation.
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: stable
           cache-dependency-path: |
@@ -50,7 +50,7 @@ jobs:
       # init prepends CodeQL's tracing wrapper to PATH; running setup-go later
       # replaces that wrapper and produces an empty Go database.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -71,6 +71,6 @@ jobs:
           (cd sensor && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...)
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
         with:
           category: /language:${{ matrix.language }}
