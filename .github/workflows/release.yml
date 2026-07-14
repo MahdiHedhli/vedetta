@@ -29,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.validate.outputs.tag }}
+      tag_object_sha: ${{ steps.validate.outputs.tag_object_sha }}
       commit_sha: ${{ steps.validate.outputs.commit_sha }}
     steps:
       - name: Require an existing v* tag
@@ -41,16 +42,51 @@ jobs:
             echo "::error::Release ref must be a v-prefixed tag name containing only letters, numbers, dot, underscore, or hyphen"
             exit 1
           fi
-          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${REQUESTED_TAG}" >/dev/null; then
+          if ! tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${REQUESTED_TAG}" \
+            --jq '[.object.type, .object.sha] | @tsv')"; then
             echo "::error::Tag '${REQUESTED_TAG}' does not exist in ${GITHUB_REPOSITORY}"
             exit 1
           fi
-          commit_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REQUESTED_TAG}" --jq .sha)"
-          if [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Tag '${REQUESTED_TAG}' did not resolve to a commit SHA"
+          IFS=$'\t' read -r object_type tag_object_sha <<< "$tag_ref"
+          if [[ ! "$tag_object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Tag '${REQUESTED_TAG}' has an invalid Git object SHA"
+            exit 1
+          fi
+
+          # Resolve the exact tag ref, never the ambiguous /commits/{name}
+          # endpoint (which prefers a same-named branch). Lightweight tags point
+          # directly to a commit; annotated tags can legally point to another
+          # annotated tag, so peel the immutable Git objects with a depth bound.
+          commit_sha="$tag_object_sha"
+          for _ in {1..16}; do
+            case "$object_type" in
+              commit)
+                break
+                ;;
+              tag)
+                if ! tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${commit_sha}" \
+                  --jq '[.object.type, .object.sha] | @tsv')"; then
+                  echo "::error::Could not peel annotated tag '${REQUESTED_TAG}'"
+                  exit 1
+                fi
+                IFS=$'\t' read -r object_type commit_sha <<< "$tag_target"
+                if [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                  echo "::error::Annotated tag '${REQUESTED_TAG}' has an invalid target SHA"
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "::error::Tag '${REQUESTED_TAG}' ultimately targets unsupported Git object type '${object_type}'"
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$object_type" != "commit" ]; then
+            echo "::error::Tag '${REQUESTED_TAG}' exceeds the 16-level annotated-tag depth limit"
             exit 1
           fi
           printf 'tag=%s\n' "$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+          printf 'tag_object_sha=%s\n' "$tag_object_sha" >> "$GITHUB_OUTPUT"
           printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_OUTPUT"
 
   build-sensor:
@@ -143,11 +179,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
-          EXPECTED_COMMIT: ${{ needs.validate-tag.outputs.commit_sha }}
+          EXPECTED_TAG_OBJECT: ${{ needs.validate-tag.outputs.tag_object_sha }}
         run: |
-          current_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)"
-          if [ "$current_commit" != "$EXPECTED_COMMIT" ]; then
-            echo "::error::Tag '${RELEASE_TAG}' moved during the build: expected ${EXPECTED_COMMIT}, got ${current_commit}"
+          current_tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.sha)"
+          if [ "$current_tag_object" != "$EXPECTED_TAG_OBJECT" ]; then
+            echo "::error::Tag '${RELEASE_TAG}' moved during the build: expected ref object ${EXPECTED_TAG_OBJECT}, got ${current_tag_object}"
             exit 1
           fi
       - name: Create/refresh DRAFT release
@@ -161,3 +197,14 @@ jobs:
             dist/vedetta-sensor_*.tar.gz
             dist/vedetta-sensor_*.zip
             dist/checksums.txt
+      - name: Verify release tag remained fixed through assembly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+          EXPECTED_TAG_OBJECT: ${{ needs.validate-tag.outputs.tag_object_sha }}
+        run: |
+          current_tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.sha)"
+          if [ "$current_tag_object" != "$EXPECTED_TAG_OBJECT" ]; then
+            echo "::error::Tag '${RELEASE_TAG}' moved during release assembly: expected ref object ${EXPECTED_TAG_OBJECT}, got ${current_tag_object}"
+            exit 1
+          fi
