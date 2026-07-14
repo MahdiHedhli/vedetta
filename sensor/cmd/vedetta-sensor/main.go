@@ -33,6 +33,61 @@ func elevationHint(argv string) string {
 	return "Run with sudo for packet capture: sudo " + argv
 }
 
+// runSelfCheck validates the sensor's runtime dependencies from THIS process's
+// environment WITHOUT installing, scanning, capturing, or persisting anything, and
+// returns 0 only if every MANDATORY gate passes. The two mandatory gates mirror the
+// only two log.Fatalf points on the long-running service path — nmap resolution
+// (netscan.NewScanner) and Core-client/token init (client.New) — so a green --check
+// means the daemon will not crash-loop on startup. Core reachability, token validity,
+// and root are reported as WARN (non-fatal): the running sensor tolerates a Core
+// outage and a missing token, and capture degrades rather than exiting without root.
+// The installer runs this under the service manager's exact PATH + token-file env, so
+// a dependency the daemon cannot see (e.g. Homebrew nmap off launchd's minimal PATH)
+// fails the install loudly instead of after a false "installed".
+func runSelfCheck(coreURL string) int {
+	fatal := 0
+	if s, err := netscan.NewScanner(); err != nil {
+		fmt.Printf("FAIL nmap: %v (PATH=%s)\n", err, os.Getenv("PATH"))
+		fatal++
+	} else {
+		fmt.Printf("OK   nmap: %s\n", s.BinaryPath)
+	}
+
+	core, err := client.New(coreURL)
+	if err != nil {
+		fmt.Printf("FAIL core client/token init: %v\n", err)
+		fatal++
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if rerr := core.Reachable(ctx); rerr != nil {
+			fmt.Printf("WARN core unreachable at %s: %v (the running sensor retries)\n", coreURL, rerr)
+		} else {
+			fmt.Printf("OK   core reachable: %s\n", coreURL)
+		}
+		if core.TokenConfigured() {
+			if herr := core.Heartbeat(ctx); herr != nil {
+				fmt.Printf("WARN sensor token present but heartbeat failed: %v\n", herr)
+			} else {
+				fmt.Println("OK   sensor token valid")
+			}
+		} else {
+			fmt.Println("WARN not enrolled yet (no token) — pass --enroll-code to register")
+		}
+	}
+
+	if os.Geteuid() != 0 {
+		fmt.Println("WARN not root — DNS/passive capture will be degraded (the service runs as root)")
+	}
+
+	if fatal > 0 {
+		fmt.Printf("preflight FAILED: %d mandatory dependency gap(s) — the daemon would crash-loop\n", fatal)
+		return 1
+	}
+	fmt.Println("preflight OK")
+	return 0
+}
+
 func main() {
 	// CLI flags
 	coreURL := flag.String("core", "http://localhost:8080", "Vedetta Core API URL")
@@ -52,6 +107,7 @@ func main() {
 	passiveSSDP := flag.Bool("passive-ssdp", true, "Enable passive SSDP/UPnP discovery")
 	printCapturePlan := flag.Bool("print-capture-plan", false, "Print the recommended DNS/passive capture interfaces and exit")
 	showVersion := flag.Bool("version", false, "Show version")
+	selfCheck := flag.Bool("check", false, "Verify runtime dependencies (nmap, token/client init, Core reachability) from THIS process's environment, print a per-dependency report, and exit non-zero on any fatal gap. The installer runs it under the service's exact PATH to catch problems the daemon would hit.")
 	enrollCode := flag.String("enroll-code", "", "One-time enrollment code from Core (or set VEDETTA_ENROLL_CODE). Required to register a NEW sensor once Core has admin auth configured.")
 	enrollOnly := flag.Bool("enroll-only", false, "Register with Core using the enrollment code, persist the sensor token, and exit. The installer runs this (with the code in the environment, not on the command line) so the secret never lives in the long-running service configuration.")
 	flag.Parse()
@@ -118,6 +174,15 @@ func main() {
 			log.Fatalf("Could not print capture plan: %v", err)
 		}
 		return
+	}
+
+	// --check is a preflight the installer runs under the SERVICE's exact environment
+	// (minimal PATH + the token-file override) to reproduce the daemon's two fatal
+	// startup gates — nmap resolution and Core-client init — without installing,
+	// scanning, capturing, or persisting anything. It exits non-zero on a fatal gap so
+	// the installer fails loudly instead of writing a service that crash-loops.
+	if *selfCheck {
+		os.Exit(runSelfCheck(*coreURL))
 	}
 
 	// Set up the device scanner (local: nmap presence on Unix, native ICMP/ARP on

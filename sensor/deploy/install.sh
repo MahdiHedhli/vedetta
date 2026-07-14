@@ -128,10 +128,90 @@ pkg_install() {
   fi
 }
 
+# The DAEMON runs under the service manager's PATH, not the installer's. launchd hands
+# a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that EXCLUDES the Homebrew bin dir
+# where `brew install nmap` lands (/opt/homebrew/bin on Apple Silicon, /usr/local/bin
+# on Intel) — so nmap can be present for the installer yet invisible to the daemon,
+# which then hits `log.Fatalf("device scanner unavailable")` and crash-loops. We
+# compute the exact PATH the service will run with ONCE, verify dependencies against
+# it, AND bake it into the plist/unit so "what we verify" and "what the daemon uses"
+# are identical. SIP forbids symlinking nmap into the default dirs, so baking PATH is
+# the only durable fix.
+brew_bin_dir() {
+  local b; b="$(find_brew)" || return 0
+  dirname "$b"
+}
+daemon_path() {
+  # Explicit override for non-standard layouts (and deterministic tests).
+  if [ -n "${VEDETTA_DAEMON_PATH:-}" ]; then printf '%s' "$VEDETTA_DAEMON_PATH"; return; fi
+  local bd; bd="$(brew_bin_dir)"
+  if [ "$OS" = "Darwin" ]; then
+    printf '%s' "${bd:+$bd:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  else
+    # systemd's compiled-in default PATH, plus any Homebrew-on-Linux prefix.
+    printf '%s' "${bd:+$bd:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  fi
+}
+
+# Is <cmd> resolvable from the DAEMON's PATH (not the installer's richer PATH)?
+require_daemon_dep() { PATH="$DAEMON_PATH" command -v "$1" >/dev/null 2>&1; }
+
 ensure_nmap() {
-  command -v nmap >/dev/null 2>&1 && return
+  require_daemon_dep nmap && return
   echo "==> installing nmap"
   pkg_install nmap nmap nmap nmap
+  require_daemon_dep nmap || die \
+"nmap is not resolvable from the service PATH:
+    ${DAEMON_PATH}
+The installer's shell sees: $(command -v nmap 2>/dev/null || echo '<none>').
+Install nmap into a service-visible dir (macOS: brew install nmap; Linux: sudo apt-get install -y nmap / dnf install -y nmap / pacman -S nmap) and re-run."
+}
+
+# The sensor is CGO-linked to libpcap (gopacket). macOS ships libpcap in the base OS,
+# but a Linux PREBUILT/caller-supplied binary needs the libpcap RUNTIME package or it
+# fails cryptically in ld.so before main() (build-from-source only pulls the -dev
+# headers). Install the runtime lib in EVERY Linux path, not just source builds.
+ensure_libpcap_runtime() {
+  [ "$OS" = "Linux" ] || return 0
+  ldconfig -p 2>/dev/null | grep -q 'libpcap\.so' && return 0
+  echo "==> installing libpcap runtime"
+  pkg_install libpcap0.8 libpcap libpcap libpcap
+}
+
+# Post-install health gate: confirm the daemon actually STAYS UP before reporting
+# success — the check the installer never had, which let an 18x crash-loop report
+# "Installation complete". launchd has no restart counter, so on macOS we watch the log
+# for the readiness marker ("Device scanner ready") and bail on the fatal marker
+# ("device scanner unavailable"); systemd exposes NRestarts, so on Linux we watch
+# is-active + a climbing restart count. Returns 0 healthy, 1 not. Tests that have no
+# real service manager set VEDETTA_SKIP_HEALTHCHECK=1.
+health_check() {
+  [ "${VEDETTA_SKIP_HEALTHCHECK:-0}" = "1" ] && return 0
+  local log="/var/log/vedetta-sensor.log" deadline=$((SECONDS + 25))
+  if [ "$OS" = "Darwin" ]; then
+    while [ "$SECONDS" -lt "$deadline" ]; do
+      $SUDO grep -q 'device scanner unavailable' "$log" 2>/dev/null && return 1
+      if $SUDO grep -q 'Device scanner ready' "$log" 2>/dev/null; then
+        # "Device scanner ready" is logged BEFORE client.New (which can still
+        # log.Fatalf), so it alone doesn't prove the daemon stays up. Settle, then
+        # confirm no crash marker appeared AND launchd still shows it running.
+        sleep 4
+        $SUDO grep -q 'device scanner unavailable' "$log" 2>/dev/null && return 1
+        $SUDO launchctl print system/com.vedetta.sensor 2>/dev/null | grep -qE 'state = running' && return 0
+        return 1
+      fi
+      sleep 2
+    done
+    $SUDO launchctl print system/com.vedetta.sensor 2>/dev/null | grep -qE 'state = running' && return 0
+    return 1
+  fi
+  local n0 n1 active
+  n0="$($SUDO systemctl show -p NRestarts --value vedetta-sensor 2>/dev/null)"
+  sleep 20
+  active="$($SUDO systemctl is-active vedetta-sensor 2>/dev/null)"
+  n1="$($SUDO systemctl show -p NRestarts --value vedetta-sensor 2>/dev/null)"
+  [ "$active" = "active" ] && [ "${n1:-0}" -le "${n0:-0}" ] && return 0
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -210,7 +290,11 @@ build_from_source() {
 # ---------------------------------------------------------------------------
 # Install.
 # ---------------------------------------------------------------------------
+# The PATH the service manager will hand the daemon; dependencies are verified against
+# THIS (not the installer's richer PATH) and baked into the plist/unit below.
+DAEMON_PATH="$(daemon_path)"
 ensure_nmap
+ensure_libpcap_runtime
 
 if [ -n "${VEDETTA_SENSOR_BINARY:-}" ]; then
   # Escape hatch (also used by the installer test): use a caller-supplied binary
@@ -240,6 +324,12 @@ echo "==> installing to ${BIN_DEST}"
 $SUDO install -d "$BIN_DIR"
 $SUDO install -m 0755 "$BINARY" "$BIN_DEST"
 "$BIN_DEST" --version
+# The installed binary is CGO-linked to libpcap; verify the runtime object actually
+# resolves before building a service around it (Linux only; macOS ships libpcap).
+if [ "$OS" = "Linux" ] && command -v ldd >/dev/null 2>&1; then
+  ldd "$BIN_DEST" 2>/dev/null | grep -qi 'pcap.*not found' \
+    && die "libpcap runtime is missing (the sensor is dynamically linked to it). Install it — Debian/Ubuntu: sudo apt-get install -y libpcap0.8 ; RHEL/Fedora: sudo dnf install -y libpcap ; Arch: sudo pacman -S libpcap — then re-run."
+fi
 
 # Guards (before any destructive/enrollment step) so a reset or a code-less fresh
 # install can't strand the sensor — mirrors install.ps1.
@@ -276,6 +366,15 @@ if [ "$INSTALL_SERVICE" != true ]; then
   exit 0
 fi
 
+# Preflight: reproduce the SERVICE's exact environment (its PATH + the token file) and
+# run the binary's own --check, so a dependency the daemon can't see (e.g. Homebrew
+# nmap off launchd's minimal PATH) fails the install LOUDLY here instead of after a
+# false "installed" and a silent crash-loop.
+echo "==> preflight: verifying dependencies as the service will see them"
+if ! ${SUDO:+$SUDO }env -i PATH="$DAEMON_PATH" VEDETTA_SENSOR_TOKEN_FILE="$TOKEN_FILE" "$BIN_DEST" --check --core "$CORE_URL"; then
+  die "preflight failed — the service environment (PATH=$DAEMON_PATH) is missing a required dependency (see the FAIL line above). Fix it and re-run; refusing to write a service that would crash-loop."
+fi
+
 echo "==> configuring service"
 # The enrollment code is intentionally NOT placed in the service definition — it was
 # already spent in the one-shot enrollment step above and the token is persisted. The
@@ -297,6 +396,7 @@ if [ "$OS" = "Darwin" ]; then
     <string>--passive-discovery</string>
   </array>
   <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>${DAEMON_PATH}</string>
     <key>VEDETTA_SENSOR_TOKEN_FILE</key><string>${TOKEN_FILE}</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
@@ -305,6 +405,11 @@ if [ "$OS" = "Darwin" ]; then
 </dict></plist>
 EOF
   $SUDO launchctl unload "$PLIST" 2>/dev/null || true
+  # Start from a clean log so the post-install health check reads only THIS run's
+  # markers. launchd opens the log append-mode, so a stale 'ready'/'unavailable' from a
+  # prior run would otherwise decide the verdict — a false pass, or a false fail on the
+  # documented repair re-run. Safe: the old daemon was just unloaded (no writer holds it).
+  $SUDO sh -c ': > /var/log/vedetta-sensor.log' 2>/dev/null || true
   $SUDO launchctl load -w "$PLIST"
   echo "==> installed as a LaunchDaemon"
 else
@@ -317,7 +422,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=VEDETTA_SENSOR_TOKEN_FILE=${TOKEN_FILE}
+Environment=PATH=${DAEMON_PATH}
+Environment="VEDETTA_SENSOR_TOKEN_FILE=${TOKEN_FILE}"
+ExecStartPre=/usr/bin/env sh -c 'command -v nmap >/dev/null 2>&1 || { echo "nmap not on service PATH: \$PATH" >&2; exit 1; }'
 ExecStart=${BIN_DEST} --core ${CORE_URL} --cidr auto --dns --passive-discovery
 Restart=always
 RestartSec=10
@@ -333,6 +440,22 @@ EOF
 fi
 
 echo ""
-echo "==> ✅ Installation complete"
-echo "    Logs:   sudo tail -f /var/log/vedetta-sensor.log   (or: journalctl -u vedetta-sensor -f)"
-echo "    Reset:  sudo vedetta-sensor --reset"
+echo "==> waiting for the sensor to come up..."
+if health_check; then
+  echo "==> ✅ Installation complete — sensor is up and healthy"
+  echo "    Logs:   sudo tail -f /var/log/vedetta-sensor.log   (or: journalctl -u vedetta-sensor -f)"
+  echo "    Reset:  sudo vedetta-sensor --reset"
+else
+  echo "" >&2
+  echo "!! The sensor was installed but did NOT reach a healthy state (it may be crash-looping)." >&2
+  if [ "$OS" = "Darwin" ]; then
+    $SUDO tail -n 40 /var/log/vedetta-sensor.log 2>/dev/null >&2 || true
+    if $SUDO grep -q 'device scanner unavailable' /var/log/vedetta-sensor.log 2>/dev/null; then
+      echo "   Cause: nmap is not resolvable from the service PATH (${DAEMON_PATH})." >&2
+      echo "   Fix:   brew install nmap, then re-run this installer with --core $CORE_URL to repair it." >&2
+    fi
+  else
+    $SUDO journalctl -u vedetta-sensor -n 40 --no-pager 2>/dev/null >&2 || true
+  fi
+  die "post-install health check failed; the service is not running correctly (see the log above). Fix the dependency, then re-run this installer with --core $CORE_URL to repair the service (it rewrites the PATH and re-checks — no new enrollment code needed)."
+fi

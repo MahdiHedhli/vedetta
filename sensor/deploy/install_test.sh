@@ -98,12 +98,15 @@ run_installer() { # run_installer <plist-out> [extra install.sh args...]
   local plist="$1"; shift
   # Pin the token path (per-plist) so the installer's enroll step and the fake binary
   # agree, and give the binary a log to record how it was invoked.
+  # VEDETTA_SKIP_HEALTHCHECK: no real service manager in the mock, so skip the
+  # post-install daemon-liveness poll (the plist/preflight assertions are what matter).
   PATH="${MOCKBIN}:${PATH}" \
   VEDETTA_SENSOR_BINARY="${MOCKBIN}/fake-vedetta-sensor" \
   VEDETTA_BIN_DIR="${WORK}/prefix" \
   VEDETTA_PLIST_PATH="$plist" \
   VEDETTA_SENSOR_TOKEN_FILE="${plist}.token" \
   VEDETTA_SENSOR_LOG="${plist}.senslog" \
+  VEDETTA_SKIP_HEALTHCHECK=1 \
     bash "$INSTALL_SH" "$@" >"${plist}.log" 2>&1
 }
 
@@ -120,6 +123,9 @@ check  "plist keeps --cidr auto"           "--cidr"                      "$PLIST
 check  "plist enables --dns"               "--dns"                       "$PLIST1"
 check  "plist enables --passive-discovery" "--passive-discovery"         "$PLIST1"
 check  "plist carries the token-file env"  "VEDETTA_SENSOR_TOKEN_FILE"   "$PLIST1"
+# The daemon must be given a PATH that can resolve nmap (the launchd-minimal-PATH fix).
+check  "plist bakes a service PATH"        "<key>PATH</key>"             "$PLIST1"
+check  "service PATH keeps the system dirs" "/usr/bin:/bin:/usr/sbin:/sbin" "$PLIST1"
 # The one-shot enrollment must have run, with the code supplied via ENV — never argv.
 check  "sensor was enrolled out-of-band"   "argv=[--enroll-only"         "${PLIST1}.senslog"
 check  "code was passed via environment"   "enrollcode_env=ENROLL-TEST-123" "${PLIST1}.senslog"
@@ -175,6 +181,9 @@ case "${1:-}" in
 esac
 EOF
 printf '#!/usr/bin/env bash\nexit 0\n' >"${LINUXBIN}/systemctl"
+# ldconfig reports libpcap already present so ensure_libpcap_runtime short-circuits
+# (this host has no apt/dnf/pacman to actually install it).
+printf '#!/usr/bin/env bash\necho "\\tlibpcap.so.0.8 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libpcap.so.0.8"\n' >"${LINUXBIN}/ldconfig"
 chmod +x "${LINUXBIN}"/*
 
 UNIT4="${WORK}/vedetta-sensor.service"
@@ -185,12 +194,15 @@ VEDETTA_BIN_DIR="${WORK}/prefix4" \
 VEDETTA_SERVICE_PATH="$UNIT4" \
 VEDETTA_SENSOR_TOKEN_FILE="${UNIT4}.token" \
 VEDETTA_SENSOR_LOG="${UNIT4}.senslog" \
+VEDETTA_SKIP_HEALTHCHECK=1 \
   bash "$INSTALL_SH" --core http://198.51.100.10:8080 --enroll-code ENROLL-TEST-456 >"${UNIT4}.log" 2>&1
 
 check  "unit references --core"            "--core"                      "$UNIT4"
 check  "unit carries core URL"             "http://198.51.100.10:8080"   "$UNIT4"
 refute "unit omits the --enroll-code flag" "--enroll-code"               "$UNIT4"
 refute "unit omits the enrollment code"    "ENROLL-TEST-456"             "$UNIT4"
+check  "unit sets a service PATH"          "Environment=PATH="           "$UNIT4"
+check  "unit has an nmap ExecStartPre gate" "ExecStartPre"               "$UNIT4"
 check  "unit enables --passive-discovery"  "--passive-discovery"         "$UNIT4"
 check  "unit carries the token-file env"   "VEDETTA_SENSOR_TOKEN_FILE"   "$UNIT4"
 check  "sensor was enrolled out-of-band"   "argv=[--enroll-only"         "${UNIT4}.senslog"
@@ -248,7 +260,11 @@ PLIST3="${WORK}/brew-root.plist"
 # ${MOCKBIN} (its nmap stub would short-circuit ensure_nmap) and the host's real
 # nmap, so ensure_nmap must install it via brew. The fake sensor binary is passed
 # by absolute path via VEDETTA_SENSOR_BINARY, so it needs no PATH entry.
+# VEDETTA_DAEMON_PATH pins the daemon PATH to a set with NO nmap so ensure_nmap's
+# resolve-check misses (the default daemon PATH hardcodes /opt/homebrew/bin, where the
+# CI/dev host may already have a real nmap that would wrongly short-circuit the install).
 PATH="${BREWROOT}/bin:/usr/bin:/bin" \
+VEDETTA_DAEMON_PATH="${BREWROOT}/bin:/usr/bin:/bin" \
 SUDO_USER="operator" \
 VEDETTA_SENSOR_BINARY="${MOCKBIN}/fake-vedetta-sensor" \
 VEDETTA_BIN_DIR="${WORK}/prefix3" \

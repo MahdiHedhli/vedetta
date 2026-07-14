@@ -191,6 +191,24 @@ func (c *CoreClient) Heartbeat(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodPost, "/api/v1/sensor/heartbeat", nil, nil, false)
 }
 
+// Reachable performs a cheap unauthenticated GET against Core and returns nil if the
+// server answered at all — any HTTP status, including 401/404 — which proves the
+// TCP/TLS/HTTP round-trip works. It errors ONLY on a connect/DNS/timeout failure, so
+// the --check preflight can distinguish "Core down/unreachable" from "reachable but
+// not yet authorized". It sends no auth and reads no body.
+func (c *CoreClient) Reachable(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // PushDNS sends captured DNS queries to Core for ingestion. Callers that must flush
 // during shutdown pass a non-cancelled context so the final drain still completes.
 func (c *CoreClient) PushDNS(ctx context.Context, payload any) error {
