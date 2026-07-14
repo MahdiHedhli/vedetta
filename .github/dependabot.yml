@@ -1,0 +1,67 @@
+version: 2
+
+# Weekly, grouped updates keep all shipped dependency trees visible without
+# creating a separate PR for every transitive change.
+updates:
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule:
+      interval: weekly
+    groups:
+      backend-go:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gomod
+    directory: /sensor
+    schedule:
+      interval: weekly
+    groups:
+      sensor-go:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gomod
+    directory: /telemetry
+    schedule:
+      interval: weekly
+    groups:
+      telemetry-go:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gomod
+    directory: /threat-network
+    schedule:
+      interval: weekly
+    groups:
+      threat-network-go:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gomod
+    directory: /scripts/simulate
+    schedule:
+      interval: weekly
+    groups:
+      simulator-go:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend-npm:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
