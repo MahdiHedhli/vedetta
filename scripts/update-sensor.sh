@@ -18,17 +18,12 @@ PLIST_DEST="/Library/LaunchDaemons/com.vedetta.sensor.plist"
 SERVICE_ID="system/com.vedetta.sensor"
 SENSOR_BIN="/usr/local/bin/vedetta-sensor"
 
-# Read a pinned host port from .env (scripts/gen-env.sh may have shifted it off
-# the default when the default was already taken on this host); fall back to the
-# documented default. Grep the exact key rather than sourcing .env, which holds
-# secrets and arbitrary values.
-env_port() {
-  local key="$1" default="$2" val=""
-  [ -f "$PROJECT_DIR/.env" ] && val="$(grep -E "^${key}=" "$PROJECT_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
-  printf '%s' "${val:-$default}"
-}
-BACKEND_PORT="$(env_port VEDETTA_BACKEND_PORT 8080)"
-FRONTEND_PORT="$(env_port VEDETTA_FRONTEND_PORT 3107)"
+# Resolve ports without sourcing the secret-bearing .env. Exported shell values
+# win, matching Docker Compose interpolation precedence.
+# shellcheck source=scripts/lib/port-config.sh
+source "$SCRIPT_DIR/lib/port-config.sh"
+BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "$PROJECT_DIR/.env")"
+FRONTEND_PORT="$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 "$PROJECT_DIR/.env")"
 CORE_URL="${VEDETTA_CORE_URL:-http://localhost:${BACKEND_PORT}}"
 LOG_FILE="/usr/local/var/log/vedetta-sensor.log"
 MAX_RETRIES=3

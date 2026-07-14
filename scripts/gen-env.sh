@@ -32,6 +32,8 @@ set -euo pipefail
 # matter the caller's cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=scripts/lib/port-config.sh
+source "${SCRIPT_DIR}/lib/port-config.sh"
 
 EXAMPLE_FILE="${REPO_ROOT}/.env.example"
 ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
@@ -107,8 +109,8 @@ set_var "VEDETTA_SETUP_CODE" "${SETUP_CODE}" "${TMP_FILE}"
 # --------------------------------------------------------------------------
 # Host-port probing. docker-compose.yml publishes three host ports; if a
 # default is already bound on this host, `docker compose up` fails with
-# "address already in use" and the service never starts (the exact failure a
-# fresh Mac Studio deploy hit — Apache httpd owned 127.0.0.1:8080). Detect a
+# "address already in use" and the service never starts (for example, an
+# existing web server may own 127.0.0.1:8080). Detect a
 # conflict here and seed the next free port into .env instead of assuming the
 # defaults are free. Container-internal ports never change; only the host side.
 # --------------------------------------------------------------------------
@@ -120,50 +122,32 @@ set_var "VEDETTA_SETUP_CODE" "${SETUP_CODE}" "${TMP_FILE}"
 # clash). The match is port-scoped, not address-scoped: a listener on ANY
 # address counts as a conflict. That is deliberately conservative — at worst we
 # skip a port that might technically have been usable and pick the next one.
-PORT_PROBE_TOOL=""
-if command -v lsof >/dev/null 2>&1; then
-  PORT_PROBE_TOOL="lsof"
-elif command -v ss >/dev/null 2>&1; then
-  PORT_PROBE_TOOL="ss"
-elif command -v netstat >/dev/null 2>&1; then
-  PORT_PROBE_TOOL="netstat"
-fi
+PORT_PROBE_TOOL="$(vedetta_detect_port_probe_tool)"
+RESERVED_TCP_PORTS=""
 
 port_in_use() {
   local proto="$1" port="$2"
-  case "${PORT_PROBE_TOOL}" in
-    lsof)
-      if [ "${proto}" = udp ]; then
-        lsof -nP -iUDP:"${port}" >/dev/null 2>&1
-      else
-        lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
-      fi
-      ;;
-    ss)
-      # -H (no header) -l (listening) -n (numeric) -t/-u (proto). Match the port
-      # at the end of the local-address column (":8080" / ".8080" / "]:8080").
-      ss -Hln"${proto:0:1}" 2>/dev/null | grep -qE "[:.]${port}([^0-9]|$)"
-      ;;
-    netstat)
-      netstat -an 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
-      ;;
-    *)
-      return 1 # no probe tool — cannot determine; treat as free.
-      ;;
+  vedetta_port_in_use "${PORT_PROBE_TOOL}" "${proto}" "${port}"
+}
+
+tcp_port_reserved() {
+  local port="$1"
+  case " ${RESERVED_TCP_PORTS} " in
+    *" ${port} "*) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
 # pick_port <tcp|udp> <preferred-start> <human-label> — echoes the first free
-# port at or above <preferred-start>. Falls back to the start value (with a
-# warning) rather than looping forever if the whole range up to 65535 is busy.
+# port at or above <preferred-start>. Fails clearly rather than writing a known
+# conflicting value if the whole range through 65535 is unavailable.
 pick_port() {
   local proto="$1" port="$2" label="$3" start="$2"
-  while port_in_use "${proto}" "${port}"; do
+  while port_in_use "${proto}" "${port}" || { [ "${proto}" = tcp ] && tcp_port_reserved "${port}"; }; do
     if [ "${port}" -ge 65535 ]; then
-      echo "warn: no free ${label} ${proto} port found at/above ${start}; keeping ${start}" >&2
-      echo "      (free the port or set the matching VEDETTA_*_PORT before 'docker compose up')" >&2
-      port="${start}"
-      break
+      echo "error: no free ${label} ${proto} port found at or above ${start}" >&2
+      echo "       free a port or choose a lower matching VEDETTA_*_PORT" >&2
+      return 1
     fi
     port=$((port + 1))
   done
@@ -175,20 +159,32 @@ pick_port() {
 # *_START values are the ports we hoped to use, so we can tell the operator which
 # one had to move (compare final vs. start, NOT vs. the hardcoded default — the
 # operator may have preferred a non-default start).
-BACKEND_PORT="${VEDETTA_BACKEND_PORT:-8080}"; BACKEND_START="${BACKEND_PORT}"
-FRONTEND_PORT="${VEDETTA_FRONTEND_PORT:-3107}"; FRONTEND_START="${FRONTEND_PORT}"
-COLLECTOR_PORT="${VEDETTA_COLLECTOR_PORT:-5140}"; COLLECTOR_START="${COLLECTOR_PORT}"
+BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 /dev/null)"; BACKEND_START="${BACKEND_PORT}"
+FRONTEND_PORT="$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 /dev/null)"; FRONTEND_START="${FRONTEND_PORT}"
+COLLECTOR_PORT="$(vedetta_resolve_port VEDETTA_COLLECTOR_PORT 5140 /dev/null)"; COLLECTOR_START="${COLLECTOR_PORT}"
+PROBE_RAN=0
 
 if [ "${VEDETTA_SKIP_PORT_PROBE:-0}" = "1" ]; then
   echo "Port probing skipped (VEDETTA_SKIP_PORT_PROBE=1); using ${BACKEND_PORT}/${FRONTEND_PORT}/${COLLECTOR_PORT}."
 elif [ -z "${PORT_PROBE_TOOL}" ]; then
   echo "note: no port-probe tool (lsof/ss/netstat) found — cannot verify host ports;" >&2
-  echo "      using defaults ${BACKEND_PORT}/${FRONTEND_PORT}/${COLLECTOR_PORT}. If 'docker compose up'" >&2
+  echo "      using configured values ${BACKEND_PORT}/${FRONTEND_PORT}/${COLLECTOR_PORT}. If 'docker compose up'" >&2
   echo "      reports 'address already in use', set the matching VEDETTA_*_PORT in .env." >&2
 else
   BACKEND_PORT="$(pick_port tcp "${BACKEND_PORT}" "Core API")"
+  RESERVED_TCP_PORTS="${BACKEND_PORT}"
   FRONTEND_PORT="$(pick_port tcp "${FRONTEND_PORT}" "dashboard")"
   COLLECTOR_PORT="$(pick_port udp "${COLLECTOR_PORT}" "collector")"
+  PROBE_RAN=1
+fi
+
+# Core and the dashboard both bind 127.0.0.1/tcp. Even when external probing is
+# explicitly skipped or unavailable, never write a Compose configuration that
+# asks both services to claim the same socket.
+if [ "${BACKEND_PORT}" = "${FRONTEND_PORT}" ]; then
+  echo "error: VEDETTA_BACKEND_PORT and VEDETTA_FRONTEND_PORT both resolve to ${BACKEND_PORT}/tcp" >&2
+  echo "       choose distinct ports (or allow gen-env.sh to probe and select them)" >&2
+  exit 1
 fi
 
 set_var "VEDETTA_BACKEND_PORT" "${BACKEND_PORT}" "${TMP_FILE}"
@@ -204,7 +200,11 @@ echo "  VEDETTA_INGEST_TOKEN  (ingest scope)"
 echo "  VEDETTA_CORE_TOKEN    (read scope, distinct from ingest)"
 echo "  VEDETTA_SETUP_CODE    (single-use first-admin bootstrap)"
 echo
-echo "Host ports (probed for conflicts, pinned in ${ENV_FILE##*/}) — 'docker compose up' will use these:"
+if [ "${PROBE_RAN}" = "1" ]; then
+  echo "Host ports (probed for conflicts, pinned in ${ENV_FILE##*/}) — 'docker compose up' will use these:"
+else
+  echo "Host ports (NOT probed; pinned in ${ENV_FILE##*/} as configured) — 'docker compose up' will use these:"
+fi
 echo "  Dashboard:  http://localhost:${FRONTEND_PORT}"
 echo "  Core API:   http://localhost:${BACKEND_PORT}   (health: http://localhost:${BACKEND_PORT}/healthz)"
 echo "  Collector:  udp/${COLLECTOR_PORT}   (LAN-reachable syslog input — point firewall exports here)"

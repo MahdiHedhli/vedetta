@@ -79,10 +79,11 @@ Verify:
 
 ```sh
 VED_TOKEN='<read-or-admin-token>'
-curl -fsS http://localhost:8080/healthz
+VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}')"
+curl -fsS "http://localhost:${VED_BACKEND_PORT}/healthz"
 curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
-  http://localhost:8080/api/v1/status
-unset VED_TOKEN
+  "http://localhost:${VED_BACKEND_PORT}/api/v1/status"
+unset VED_TOKEN VED_BACKEND_PORT
 ```
 
 ---
@@ -102,10 +103,11 @@ git checkout <release-tag>          # e.g. v0.1.0-beta.1
 docker compose up -d --build
 # 4. Verify health + that your data is intact:
 VED_TOKEN='<read-or-admin-token>'
-curl -fsS http://localhost:8080/healthz
+VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}')"
+curl -fsS "http://localhost:${VED_BACKEND_PORT}/healthz"
 curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
-  http://localhost:8080/api/v1/status
-unset VED_TOKEN
+  "http://localhost:${VED_BACKEND_PORT}/api/v1/status"
+unset VED_TOKEN VED_BACKEND_PORT
 ```
 
 Watch `docker compose logs -f backend` on first start after an update — schema
@@ -132,10 +134,11 @@ git checkout <previous-release-tag>
 # 3. Rebuild/start the matching previous version and verify it:
 docker compose up -d --build
 VED_TOKEN='<read-or-admin-token>'
-curl -fsS http://localhost:8080/healthz
+VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}')"
+curl -fsS "http://localhost:${VED_BACKEND_PORT}/healthz"
 curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
-  http://localhost:8080/api/v1/status
-unset VED_TOKEN
+  "http://localhost:${VED_BACKEND_PORT}/api/v1/status"
+unset VED_TOKEN VED_BACKEND_PORT
 ```
 
 Because the pre-update backup predates the new migration, restoring it returns

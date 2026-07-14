@@ -782,7 +782,7 @@
 cd vedetta
 ./scripts/gen-env.sh
 docker compose up -d</code></pre>
-            <p>Open the dashboard at <code>http://localhost:3107</code>, run the onboarding wizard, and enter the setup code printed by <code>gen-env.sh</code> (or read it from <code>docker logs vedetta-backend</code>) to create your first admin token. Then use the wizard's "Connect a sensor" step to mint a one-time enrollment code.</p>
+            <p>Open the dashboard URL printed by <code>gen-env.sh</code> (<code>http://localhost:3107</code> when the default port is available), run the onboarding wizard, and enter the printed setup code (or read it from <code>docker logs vedetta-backend</code>) to create your first admin token. Then use the wizard's "Connect a sensor" step to mint a one-time enrollment code.</p>
           </article>
           <article class="code-card">
             <div class="eyebrow">2. Sensor</div>
@@ -794,7 +794,7 @@ docker compose up -d</code></pre>
 sudo bash /tmp/vedetta-sensor-install.sh \
   --core https://vedetta.example.com \
   --enroll-code &lt;ENROLL_CODE&gt;</code></pre>
-            <p>Core binds to <code>127.0.0.1</code> (loopback) only. For a sensor on the <strong>same host</strong> use <code>--core http://localhost:8080</code>; for a <strong>remote</strong> sensor, front Core with the <a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/reverse-proxy.md" target="_blank" rel="noreferrer">TLS reverse proxy</a> and point <code>--core</code> at that HTTPS hostname (e.g. <code>https://vedetta.example.com</code>). Don't send tokens over plaintext <code>http://&lt;CORE_IP&gt;:8080</code>.</p>
+            <p>Core binds to <code>127.0.0.1</code> (loopback) only. For a sensor on the <strong>same host</strong>, use the Core API URL printed by <code>gen-env.sh</code> (its port is <code>VEDETTA_BACKEND_PORT</code> in <code>.env</code>); for a <strong>remote</strong> sensor, front Core with the <a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/reverse-proxy.md" target="_blank" rel="noreferrer">TLS reverse proxy</a> and point <code>--core</code> at that HTTPS hostname (e.g. <code>https://vedetta.example.com</code>). Don't send tokens over plaintext <code>http://&lt;CORE_IP&gt;:&lt;PORT&gt;</code>.</p>
           </article>
         </div>
         <p class="note">If you want the longer operational details, the repo README and roadmap go deeper on what is available now, what is optional, and what is still next.</p>

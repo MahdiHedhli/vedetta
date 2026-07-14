@@ -129,14 +129,29 @@ logs on first start: `docker logs vedetta-backend`.)
 `5140`) and, if one is already in use on this machine (a common case — e.g. another
 web server owns `127.0.0.1:8080`), it picks the next free port and pins it in `.env`
 so `docker compose up` starts cleanly instead of failing with *"address already in
-use"*. It then prints the **actual** dashboard / Core / collector URLs — use those.
+use"*. It then prints the **actual** dashboard / Core / collector URLs — use those
+throughout onboarding. You can retrieve the same effective values later without
+sourcing the secret-bearing `.env`:
+
+```bash
+BACKEND_PORT="$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)"
+FRONTEND_PORT="$(./scripts/resolve-host-port.sh VEDETTA_FRONTEND_PORT 3107)"
+COLLECTOR_PORT="$(./scripts/resolve-host-port.sh VEDETTA_COLLECTOR_PORT 5140)"
+```
+
 With the defaults free you get:
 
 Dashboard: [http://localhost:3107](http://localhost:3107)
 API health: [http://localhost:8080/healthz](http://localhost:8080/healthz)
 
-The detailed `/api/v1/status` endpoint is authenticated. Query it with a read or
-admin token: `curl -H "Authorization: Bearer $VEDETTA_TOKEN" http://localhost:8080/api/v1/status`.
+The detailed `/api/v1/status` endpoint is authenticated. Query the selected Core
+port with a read or admin token:
+
+```bash
+BACKEND_PORT="$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)"
+curl -H "Authorization: Bearer $VEDETTA_TOKEN" \
+  "http://localhost:${BACKEND_PORT}/api/v1/status"
+```
 
 ### 2. Deploy A Sensor
 
@@ -150,17 +165,19 @@ dashboard onboarding wizard (the "Connect a sensor" step) and pass it as
 > transport note above), so the right value depends on where the sensor runs:
 >
 > - **Sensor on the SAME host as Core** (e.g. a dev box or single-node install):
->   use `http://localhost:8080` — the loopback port is reachable locally.
-> - **Sensor on ANOTHER machine** (the usual case): Core's `127.0.0.1:8080` is
->   *not* reachable across the network, and you should never send bearer tokens
+>   use the **Core API URL printed by `gen-env.sh`**. It is
+>   `http://localhost:8080` by default, but its port is the generated
+>   `VEDETTA_BACKEND_PORT` value when that default was occupied or overridden.
+> - **Sensor on ANOTHER machine** (the usual case): Core's loopback-bound host
+>   port is *not* reachable across the network, and you should never send bearer tokens
 >   over plaintext HTTP on your LAN. Stand up the [TLS reverse proxy](docs/reverse-proxy.md)
 >   and point `--core` at that HTTPS hostname, e.g. `https://vedetta.example.com`.
->   A plaintext `http://<CORE_IP>:8080` only works if you have *knowingly* rebound
+>   A plaintext `http://<CORE_IP>:<BACKEND_PORT>` only works if you have *knowingly* rebound
 >   the port to `0.0.0.0` in `docker-compose.yml`, accepting cleartext tokens.
 
 Review the installer, then run it against your Core instance. Replace
-`https://vedetta.example.com` with your reverse-proxy hostname (or
-`http://localhost:8080` for a same-host sensor):
+`https://vedetta.example.com` with your reverse-proxy hostname (or the Core API
+URL printed by `gen-env.sh` for a same-host sensor):
 
 **macOS / Linux:**
 
@@ -215,8 +232,8 @@ If you prefer to build manually:
 ```bash
 cd sensor
 go build -o vedetta-sensor ./cmd/vedetta-sensor
-# --core: https://<your-reverse-proxy-host> for a remote sensor, or
-# http://localhost:8080 when the sensor runs on the same host as Core.
+# --core: https://<your-reverse-proxy-host> for a remote sensor, or the Core API
+# URL printed by gen-env.sh when the sensor runs on the same host as Core.
 sudo ./vedetta-sensor --core https://vedetta.example.com --enroll-code <ENROLL_CODE>
 ```
 
@@ -281,7 +298,7 @@ Vedetta is not just a Pi-hole companion. DNS is the current wedge, but the produ
 
 Current state:
 
-- UniFi log ingestion is implemented: the collector normalizes UniFi CEF/legacy-syslog on UDP 5140 into `firewall_log` events through `POST /api/v1/ingest`, with firewall-aware scoring and seeded noise suppression; setup guide at [docs/connectors/unifi.md](docs/connectors/unifi.md)
+- UniFi log ingestion is implemented: the collector normalizes UniFi CEF/legacy-syslog on the configured `VEDETTA_COLLECTOR_PORT` (UDP 5140 by default) into `firewall_log` events through `POST /api/v1/ingest`, with firewall-aware scoring and seeded noise suppression; setup guide at [docs/connectors/unifi.md](docs/connectors/unifi.md)
 - an optional off-by-default REST connector (`backend/internal/firewall/`) adds UniFi client-inventory enrichment
 - syslog is the working path; a live ≥72h SNR validation on real UniFi hardware is pending before it is called fully "supported"
 
