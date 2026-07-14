@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
+	"golang.org/x/net/publicsuffix"
 )
 
 // Enricher wires all DNS threat detection algorithms into the event ingest
@@ -95,19 +97,38 @@ var knownGoodUpdateDomains = []string{
 // feed.mylab.example matches "feed.mylab.example" while "evilvedettas.com" does NOT
 // match "vedettas.com". Case/trailing-dot normalized to match the ingest pipeline.
 func (e *Enricher) isSelfDomain(domain string) bool {
-	d := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	d := normalizeDNSName(domain)
 	if d == "" {
 		return false
 	}
-	for _, self := range e.SelfDomains {
+	for _, configured := range e.SelfDomains {
+		self := normalizeDNSName(configured)
 		if self == "" {
 			continue
 		}
-		if d == self || strings.HasSuffix(d, "."+self) {
+		if d == self {
+			return true
+		}
+		// Subdomain matching is useful for a configured feed host, but a bare
+		// public suffix (for example "com") must never exempt every name below
+		// that suffix. IP and single-label LAN hosts are exact-match only.
+		if canMatchSelfSubdomains(self) && strings.HasSuffix(d, "."+self) {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeDNSName(value string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+}
+
+func canMatchSelfSubdomains(host string) bool {
+	if net.ParseIP(host) != nil || !strings.Contains(host, ".") {
+		return false
+	}
+	_, err := publicsuffix.EffectiveTLDPlusOne(host)
+	return err == nil
 }
 
 // SelfDomainsFromURLs extracts lowercased, deduped hostnames from the given URLs
@@ -123,10 +144,10 @@ func SelfDomainsFromURLs(raw ...string) []string {
 			continue
 		}
 		u, err := url.Parse(r)
-		if err != nil {
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 			continue
 		}
-		h := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+		h := normalizeDNSName(u.Hostname())
 		if h == "" {
 			continue
 		}
@@ -298,7 +319,13 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	if selfDomain {
 		event.Tags = appendUnique(event.Tags, "vedetta_self")
 	}
-	skipBehaviorHeuristics := operatorWhitelisted || knownGoodContext || selfDomain
+	// These exemptions are detector-specific. Known-good updater/Plex names can
+	// legitimately look random and periodic, while Vedetta's own feed polling is
+	// only a known beacon. Neither context is permission to suppress rebinding or
+	// DNS-bypass evidence. An explicit operator whitelist retains that behavior.
+	skipDGATunnel := operatorWhitelisted || knownGoodContext
+	skipBeaconing := skipDGATunnel || selfDomain
+	skipNetworkHeuristics := operatorWhitelisted
 
 	var scores []float64
 	var descriptions []string
@@ -311,7 +338,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	isPrivatePTR := isPrivateReverseDNS(event.Domain)
 
 	// 1. DGA detection on the domain
-	if event.Domain != "" && !isPrivatePTR && !skipBehaviorHeuristics {
+	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel {
 		dgaResult := ScoreDGA(event.Domain)
 		if dgaResult.IsDGA {
 			event.Tags = appendUnique(event.Tags, "dga_candidate")
@@ -332,7 +359,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 2. DNS tunnel detection
-	if event.Domain != "" && !isPrivatePTR && !skipBehaviorHeuristics {
+	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel {
 		tunnelResult := ScoreTunnel(event.Domain)
 		if tunnelResult.IsTunnel {
 			event.Tags = appendUnique(event.Tags, "dns_tunnel")
@@ -356,7 +383,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 3. Beaconing detection
-	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBehaviorHeuristics {
+	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBeaconing {
 		beaconResult := e.Beacon.RecordAndScore(event.SourceHash, event.Domain, event.Timestamp)
 		if beaconResult.IsBeaconing {
 			event.Tags = appendUnique(event.Tags, "beaconing")
@@ -377,7 +404,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 4. DNS rebinding detection
-	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipBehaviorHeuristics {
+	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipNetworkHeuristics {
 		rebindResult := e.Rebinding.Check(event.Domain, event.ResolvedIP)
 		if rebindResult != nil && rebindResult.IsRebinding {
 			event.Tags = appendUnique(event.Tags, "dns_rebinding")
@@ -416,7 +443,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	// bypassing the local network DNS (Pi-hole, router, etc.).
 	// This is a strong signal of IoT devices with hardcoded resolvers, or
 	// compromised devices trying to evade DNS-level security controls.
-	if event.Domain != "" && e.Bypass != nil && !skipBehaviorHeuristics {
+	if event.Domain != "" && e.Bypass != nil && !skipNetworkHeuristics {
 		// Check for hardcoded public DNS resolver IPs
 		if event.ResolvedIP != "" {
 			resolverIP, provider := e.Bypass.DetectPublicResolverBypass(event.ResolvedIP)

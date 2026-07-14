@@ -15,7 +15,7 @@ var coreOwnedTags = map[string]struct{}{
 	"dga": {}, "dga_candidate": {}, "dns_tunnel": {}, "dns_tunneling": {}, "tunneling_candidate": {},
 	"beaconing": {}, "beaconing_candidate": {}, "dns_rebinding": {}, "dns_bypass": {},
 	"ips": {}, "new_fw_block": {}, "risky_device_fw_block": {}, "newly_registered": {},
-	"whitelisted": {}, "known_good_context": {}, "wan_scan_noise": {},
+	"whitelisted": {}, "known_good_context": {}, "vedetta_self": {}, "wan_scan_noise": {},
 	"new_device": {}, "very_new_device": {}, "new_device_context": {}, "iot_context": {},
 	"eol_router": {}, "eol_device_context": {}, "high_risk_iot": {}, "known_exploited": {},
 	"source:unifi": {},

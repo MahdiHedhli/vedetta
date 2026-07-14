@@ -130,8 +130,8 @@ func TestEnrich_SelfDomain_NotFlaggedBeaconing(t *testing.T) {
 	}
 
 	self := NewEnricher(nil)
-	self.SelfDomains = []string{"vedettas.com"}
-	got := drive(self, "feed.vedettas.com")
+	self.SelfDomains = []string{" VEDETTAS.COM. "}
+	got := drive(self, "FEED.VEDETTAS.COM.")
 	if hasTag(got.Tags, "beaconing") {
 		t.Fatalf("feed.vedettas.com in SelfDomains must not be flagged beaconing, got %v", got.Tags)
 	}
@@ -145,13 +145,79 @@ func TestEnrich_SelfDomain_NotFlaggedBeaconing(t *testing.T) {
 	}
 }
 
+func TestEnrich_ContextExemptionsStillRunNetworkDetectors(t *testing.T) {
+	assertRebinding := func(t *testing.T, e *Enricher, domain string) {
+		t.Helper()
+		base := models.Event{
+			EventType: "dns_query", SourceHash: "source-rebind", Domain: domain,
+			QueryType: "A", Timestamp: time.Now().UTC(),
+		}
+		first := base
+		first.ResolvedIP = "8.8.8.8"
+		e.Enrich(&first)
+		second := base
+		second.Timestamp = second.Timestamp.Add(time.Second)
+		second.ResolvedIP = "192.168.1.10"
+		e.Enrich(&second)
+		if !hasTag(second.Tags, "dns_rebinding") {
+			t.Fatalf("%s context suppressed DNS rebinding: %v", domain, second.Tags)
+		}
+	}
+
+	self := NewEnricher(nil)
+	self.SelfDomains = []string{"feed.vedettas.com"}
+	assertRebinding(t, self, "feed.vedettas.com")
+
+	knownGood := NewEnricher(nil)
+	assertRebinding(t, knownGood, "plex.tv")
+
+	bypass := NewEnricher(nil)
+	bypass.SelfDomains = []string{"feed.vedettas.com"}
+	bypass.Bypass = NewBypassDetector(nil, nil, time.Hour)
+	event := models.Event{
+		EventType: "dns_query", SourceHash: "source-bypass", Domain: "feed.vedettas.com",
+		ResolvedIP: "8.8.8.8", QueryType: "A", Timestamp: time.Now().UTC(),
+	}
+	bypass.Enrich(&event)
+	if !hasTag(event.Tags, "dns_bypass") {
+		t.Fatalf("self-domain context suppressed DNS bypass: %v", event.Tags)
+	}
+}
+
+func TestSelfDomainMatchingNormalizesAndBoundsSuffixes(t *testing.T) {
+	e := NewEnricher(nil)
+	e.SelfDomains = []string{" FEED.VEDETTAS.COM. ", "router", "com"}
+	tests := []struct {
+		domain string
+		want   bool
+	}{
+		{"feed.vedettas.com", true},
+		{"SUB.FEED.VEDETTAS.COM.", true},
+		{"evilfeed.vedettas.com", false},
+		{"router", true},
+		{"child.router", false},
+		{"com", true},
+		{"example.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.domain, func(t *testing.T) {
+			if got := e.isSelfDomain(tt.domain); got != tt.want {
+				t.Fatalf("isSelfDomain(%q) = %t, want %t", tt.domain, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSelfDomainsFromURLs(t *testing.T) {
 	got := SelfDomainsFromURLs(
 		"https://feed.vedettas.com",
 		"  ",                         // blank -> skipped
 		"https://feed.vedettas.com/", // duplicate host -> deduped
 		"https://feed.mylab.example:8443/snapshot", // self-hosted mirror
-		"::not a url::", // unparseable -> skipped
+		"::not a url::",                                // unparseable -> skipped
+		"ssh://feed.invalid.example",                   // non-HTTP(S) -> skipped
+		"//scheme-relative.invalid.example",            // not absolute -> skipped
+		"https://user:pass@credential.invalid.example", // userinfo -> skipped
 	)
 	want := map[string]bool{"feed.vedettas.com": true, "feed.mylab.example": true}
 	if len(got) != len(want) {
