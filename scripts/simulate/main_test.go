@@ -48,3 +48,9 @@ func TestNewIngestRequestUsesConfiguredIngestCredential(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
 }
+
+func TestEnrichHTTPClientHasBoundedTimeout(t *testing.T) {
+	if enrichHTTPClient.Timeout <= 0 {
+		t.Fatal("enrich HTTP client must have a finite timeout")
+	}
+}

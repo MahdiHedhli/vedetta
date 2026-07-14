@@ -37,6 +37,8 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+var enrichHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 func main() {
 	dbPath := flag.String("db", "/data/vedetta.db", "Path to vedetta.db")
 	count := flag.Int("count", 50, "Number of events to generate")
@@ -108,7 +110,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("build enrich request: %v", err)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := enrichHTTPClient.Do(req)
 		if err != nil {
 			log.Fatalf("enrich POST error: %v", err)
 		}
