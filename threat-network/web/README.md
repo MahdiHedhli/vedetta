@@ -129,21 +129,22 @@ docker compose -f docker-compose.yml -f docker-compose.corpus-ops.yml \
   --profile community up -d --build threat-network
 ```
 
-In a second process, run the installed shim as the `vedetta` service account.
-That identity can traverse the private state directory and read the shared
-token; an ordinary login user cannot and should not be granted access:
+For a public, read-only local status check, run the installed shim without the
+admin token. This process does not receive a management capability and can run
+as the calling user:
 
 ```sh
-sudo -u vedetta env \
-  MON_PUBLIC_UPSTREAM=http://127.0.0.1:9090 \
-  MON_ADMIN_UPSTREAM=http://127.0.0.1:9091 \
-  MON_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token \
-  MON_ALLOW_LOCAL_ADMIN=true \
-    python3 /opt/vedetta/threat-network/web/serve.py
+MON_PUBLIC_UPSTREAM=http://127.0.0.1:9090 \
+  python3 /opt/vedetta/threat-network/web/serve.py
 ```
 
-Open `http://127.0.0.1:8787/`. The management portion reports `ADMIN_DISABLED`
-if `MON_ADMIN_TOKEN_FILE` is omitted; public monitoring continues to work.
+Open `http://127.0.0.1:8787/`. The management portion reports `ADMIN_DISABLED`;
+public monitoring continues to work. Do not add the token and enable
+`MON_ALLOW_LOCAL_ADMIN` on a multi-user or operational host: loopback proves
+only that the request came from the same machine, so that development bypass
+trusts every local process. Use the tailnet-only deployment below for curator
+access; it runs the shim as `vedetta` to read the token and requires an exact
+Tailscale user identity.
 
 Supported dashboard environment settings:
 
@@ -156,7 +157,7 @@ Supported dashboard environment settings:
 | `MON_ADMIN_TOKEN_FILE` | unset | private admin bearer-token file |
 | `MON_ALLOWED_ORIGINS` | local dashboard origins | exact comma-separated browser origins allowed to use management routes |
 | `MON_ALLOWED_TAILSCALE_USERS` | unset | exact comma-separated Tailscale login names authorized as curators |
-| `MON_ALLOW_LOCAL_ADMIN` | `false` | explicit localhost-only development bypass; never use as tailnet authorization |
+| `MON_ALLOW_LOCAL_ADMIN` | `false` | single-user development bypass that trusts every local process; never enable operationally or use as tailnet authorization |
 | `MON_DASHBOARD` | adjacent `dashboard.html` | explicit dashboard asset |
 | `MON_MAX_RESPONSE_BYTES` | `16777216` | maximum buffered JSON response; startup rejects values outside 1–33554432 |
 
