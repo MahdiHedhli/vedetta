@@ -232,6 +232,21 @@ compose_up_core() {
   docker compose up -d $svcs
 }
 
+# stop_volume_users — stop EVERY container that mounts the Core data volume,
+# regardless of service name. compose stop only knows the CURRENT checkout's
+# service names; a target ref that renamed or removed a service can leave an
+# old-name container running with vedetta-data still mounted — snapshotting
+# or restoring under a live writer is exactly what must never happen.
+stop_volume_users() {
+  local ids
+  ids="$(docker ps -q --filter "volume=${VOL_DATA}" 2>/dev/null)" || return 1
+  [ -z "$ids" ] && return 0
+  # shellcheck disable=SC2086 # container ids are whitespace-free
+  docker stop $ids >/dev/null
+}
+# volume_still_mounted — true if any running container still has the volume.
+volume_still_mounted() { [ -n "$(docker ps -q --filter "volume=${VOL_DATA}" 2>/dev/null)" ]; }
+
 # remove_temp_backup — delete the in-volume online-backup temp file. `exec`
 # needs a RUNNING backend; if it crashed/restarted between the copy and this
 # cleanup, fall back to a helper container mounting the volume — otherwise a
@@ -464,6 +479,14 @@ do_rollback() {
   fi
 
   if [ "$NEW_STACK_UP" = "1" ]; then
+    # compose stop above used the CURRENT checkout's service names; a target
+    # ref that renamed a service can leave an old-name container running with
+    # the volume mounted. Stop by VOLUME and verify before rewriting files.
+    stop_volume_users || true
+    if volume_still_mounted; then
+      halt_rollback "containers still have ${VOL_DATA} mounted after stopping — refusing to restore over live files"
+      return 1
+    fi
     if restore_main_volume; then ok "Restored Core DB from the pre-upgrade snapshot."
     else
       # The volume may still hold the migrated/corrupt DB. Booting ANY version
@@ -637,6 +660,12 @@ else
   # it anyway could produce a corrupt backup the rollback would then trust.
   compose_stop_core \
     || fail "stopping the Core services failed — refusing to snapshot a volume that may still be written to"
+  # Also stop any off-list container mounting the volume (renamed/removed
+  # services, one-offs) and prove the volume is quiet before tarring it.
+  stop_volume_users || true
+  if volume_still_mounted; then
+    fail "containers still have ${VOL_DATA} mounted — refusing to snapshot a volume that may still be written to"
+  fi
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-data-${TS}.tar.gz"
   # chown the tarball to the invoking host user — the helper container runs as
   # root, and a root-owned backup would need sudo to manage or prune later.
