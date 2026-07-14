@@ -36,6 +36,10 @@ assert_false() {
   pass_count=$((pass_count + 1))
   echo "ok ${pass_count} - ${label}"
 }
+skip() {
+  pass_count=$((pass_count + 1))
+  echo "ok ${pass_count} - $* # SKIP"
+}
 
 DOTENV="${TMP_DIR}/compose.env"
 printf '%s\n' \
@@ -69,7 +73,7 @@ unset VEDETTA_BACKEND_PORT
 export BASE_PORT=28091
 assert_eq 28091 "$(vedetta_resolve_port VEDETTA_REFERENCED_PORT 8080 "${DOTENV}")" "shell environment wins for dotenv reference"
 unset BASE_PORT
-assert_false "single-quoted dotenv reference stays literal" sh -c \
+assert_false "single-quoted dotenv reference stays literal" "${BASH}" -c \
   '. "$1"; vedetta_resolve_port VEDETTA_SINGLE_REF 8080 "$2" >/dev/null 2>&1' \
   sh "${REPO_ROOT}/scripts/lib/port-config.sh" "${DOTENV}"
 assert_eq 8080 "$(vedetta_resolve_port CYCLE_A 8080 "${DOTENV}")" "unresolved sequential cycle uses Compose default"
@@ -97,14 +101,21 @@ compose_port() {
   docker compose -f "${COMPOSE_FIXTURE}" --env-file "$1" config --format json 2>/dev/null |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["parity"]["ports"][0]["published"])'
 }
-assert_eq "$(compose_port "${SEQUENTIAL_ENV}")" "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${SEQUENTIAL_ENV}")" "sequential reference matches Docker Compose"
-assert_eq "$(compose_port "${FORWARD_ENV}")" "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${FORWARD_ENV}")" "forward reference matches Docker Compose"
+if command -v docker >/dev/null 2>&1 &&
+  docker compose version >/dev/null 2>&1 &&
+  command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(compose_port "${SEQUENTIAL_ENV}")" "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${SEQUENTIAL_ENV}")" "sequential reference matches Docker Compose"
+  assert_eq "$(compose_port "${FORWARD_ENV}")" "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${FORWARD_ENV}")" "forward reference matches Docker Compose"
+else
+  skip "sequential reference matches Docker Compose (docker compose/python3 unavailable)"
+  skip "forward reference matches Docker Compose (docker compose/python3 unavailable)"
+fi
 export VEDETTA_BACKEND_PORT=
 assert_eq 8080 "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${DOTENV}")" "empty shell value uses Compose default"
 unset VEDETTA_BACKEND_PORT
 
 export VEDETTA_BACKEND_PORT=70000
-assert_false "out-of-range shell port is rejected" sh -c \
+assert_false "out-of-range shell port is rejected" "${BASH}" -c \
   '. "$1"; vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "$2" >/dev/null 2>&1' \
   sh "${REPO_ROOT}/scripts/lib/port-config.sh" "${DOTENV}"
 unset VEDETTA_BACKEND_PORT
@@ -150,9 +161,13 @@ NO_MATCH_BIN="${TMP_DIR}/no-match-bin"
 mkdir "${NO_MATCH_BIN}"
 printf '%s\n' '#!/bin/sh' 'exit 1' >"${NO_MATCH_BIN}/lsof"
 chmod +x "${NO_MATCH_BIN}/lsof"
-assert_false "empty lsof status 1 is a confirmed no-match" \
-  env PATH="${NO_MATCH_BIN}:${PATH}" sh -c \
-  '. "$1"; vedetta_port_in_use lsof tcp 8080' sh "${REPO_ROOT}/scripts/lib/port-config.sh"
+if env PATH="${NO_MATCH_BIN}:${PATH}" "${BASH}" -c \
+  '. "$1"; vedetta_port_in_use lsof tcp 8080' bash "${REPO_ROOT}/scripts/lib/port-config.sh"; then
+  fail "empty lsof status 1 was treated as a positive match"
+else
+  probe_status=$?
+fi
+assert_eq 1 "${probe_status}" "empty lsof status 1 is a confirmed no-match"
 
 AMBIGUOUS_BIN="${TMP_DIR}/ambiguous-bin"
 mkdir "${AMBIGUOUS_BIN}"

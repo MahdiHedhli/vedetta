@@ -93,10 +93,12 @@ hostname is `vedetta.example.com` (replace with your own). If you followed §4 t
 keep Core unpublished, the frontend is republished at `127.0.0.1:8088` instead —
 use that port below.
 
-> Always use the effective `VEDETTA_FRONTEND_PORT` in place of `3107` below when
-> it differs from the default, whether it was selected automatically or configured
-> explicitly. Retrieve the value without sourcing `.env`:
-> `./scripts/resolve-host-port.sh VEDETTA_FRONTEND_PORT 3107`.
+> With the default Compose mapping, use the effective `VEDETTA_FRONTEND_PORT` in
+> place of `3107` below when it differs from the default, whether it was selected
+> automatically or configured explicitly. Retrieve the value without sourcing
+> `.env`: `./scripts/resolve-host-port.sh VEDETTA_FRONTEND_PORT 3107`. If you use
+> the §4 override, keep its fixed `8088` port instead; that override intentionally
+> replaces the normal `VEDETTA_FRONTEND_PORT` mapping.
 
 ### Option A — Caddy (automatic HTTPS)
 
