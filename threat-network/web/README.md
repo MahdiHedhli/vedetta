@@ -27,8 +27,17 @@ Same-origin is a CSRF control, not curator authentication. Management reads and
 writes also require a `Tailscale-User-Login` inserted by Tailscale Serve and
 listed in `MON_ALLOWED_TAILSCALE_USERS`. Serve removes caller-supplied identity
 headers before setting its own. Tagged devices do not receive a user identity
-and are denied. The shim listens only on localhost, which is required for these
-headers to be trustworthy; local processes are part of the host trust boundary.
+and are denied.
+
+This is explicitly a **dedicated, single-admin host** trust model, not local-user
+isolation. The shim must listen on localhost for Tailscale identity headers, but
+any other process that can connect to that loopback port can bypass Serve and
+forge the same header. Therefore an admin-enabled shim must not run on a
+multi-user host or beside untrusted workloads. Tailscale ACLs and the identity
+allowlist protect the remote boundary only; every local user and process is
+trusted at the host boundary. On a host that cannot meet that condition, run
+only the tokenless public/read-only mode and keep corpus administration off that
+machine.
 
 Both upstream URLs must explicitly name a loopback address. Publish only the
 dashboard listener (`127.0.0.1:8787`) with Tailscale Serve. Never publish the
@@ -138,8 +147,8 @@ MON_PUBLIC_UPSTREAM=http://127.0.0.1:9090 \
   python3 /opt/vedetta/threat-network/web/serve.py
 ```
 
-Open `http://127.0.0.1:8787/`. The management portion reports `ADMIN_DISABLED`;
-public monitoring continues to work. Do not add the token and enable
+Open `http://127.0.0.1:8787/`. Management is unavailable in this mode; public
+monitoring continues to work. Do not add the token and enable
 `MON_ALLOW_LOCAL_ADMIN` on a multi-user or operational host: loopback proves
 only that the request came from the same machine, so that development bypass
 trusts every local process. Use the tailnet-only deployment below for curator
@@ -174,6 +183,12 @@ non-symlink file, at least 32 bytes after
 trimming, and inaccessible to group/other users on POSIX systems.
 
 ## Tailnet-only deployment
+
+The admin-enabled service below is supported only on the dedicated,
+single-admin host described in the security boundary above. A local process can
+forge Tailscale's identity header by connecting directly to the loopback
+listener, so do not use this deployment on shared hosts or hosts that execute
+untrusted workloads.
 
 An illustrative systemd service (adjust the user and paths):
 

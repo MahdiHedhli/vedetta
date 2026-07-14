@@ -791,6 +791,11 @@ def main() -> None:
     server.admin_token = token
     server.dashboard_template = dashboard_template
     admin_state = "enabled" if token else "disabled"
+    if token:
+        sys.stderr.write(
+            "vedetta-operations: WARNING: admin mode trusts every local process; "
+            "run only on a dedicated single-admin host\n"
+        )
     sys.stderr.write(
         "vedetta-operations: http://127.0.0.1:%d -> public %s; admin %s (%s); "
         "publish with tailnet-only HTTPS\n"
