@@ -7,7 +7,7 @@ COPY backend/go.mod backend/go.sum* ./
 COPY backend/ .
 RUN go mod tidy && CGO_ENABLED=1 GOOS=linux go build -o /vedetta ./cmd/vedetta
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk --no-cache add ca-certificates sqlite
 
 COPY --from=builder /vedetta /usr/local/bin/vedetta
