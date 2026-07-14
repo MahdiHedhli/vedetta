@@ -157,6 +157,14 @@ func main() {
 		}
 		return db.IsDomainWhitelisted(domain)
 	})
+	// Vedetta polls its own community feed/telemetry host on a fixed timer, which would
+	// otherwise trip the beaconing/C2 detector on the Core host's own DNS. Exclude those
+	// hosts from the behavioral detectors, derived from config so a self-hosted feed
+	// mirror (VEDETTA_THREAT_NETWORK_URL) is covered alongside the canonical endpoint.
+	enricher.SelfDomains = dnsintel.SelfDomainsFromURLs(
+		threatintel.DefaultCommunityFeedURL,
+		os.Getenv("VEDETTA_THREAT_NETWORK_URL"),
+	)
 	// Firewall (spec 001) enrichment wiring: tag/source-IP whitelist for
 	// firewall_log events and device-inventory cross-ref for risk scoring.
 	enricher.FirewallWhitelisted = func(tags []string, sourceIP string) (string, bool) {

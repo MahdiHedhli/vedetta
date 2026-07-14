@@ -579,7 +579,7 @@ func TestProcessorRejectsForgedCoreDetectorAndContextTags(t *testing.T) {
 	owned := []string{
 		"known_bad", "c2", "dga", "dga_candidate", "dns_tunnel", "beaconing",
 		"dns_rebinding", "dns_bypass", "ips", "new_fw_block", "whitelisted",
-		"known_good_context", "new_device", "very_new_device", "iot_context",
+		"known_good_context", "vedetta_self", "new_device", "very_new_device", "iot_context",
 		"eol_router", "known_exploited", "risky_device_fw_block", "fw:block", "dir:out",
 	}
 	db := &captureStore{}

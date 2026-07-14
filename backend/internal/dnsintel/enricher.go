@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,12 @@ type Enricher struct {
 	Rebinding     *RebindingDetector
 	Bypass        *BypassDetector
 	IsWhitelisted func(domain string) bool // optional, for early noise suppression
+
+	// SelfDomains are Vedetta's own hosts (community feed + telemetry, plus any
+	// self-hosted mirror), derived from config in cmd/vedetta. Core polls its own feed
+	// on a fixed timer, which would otherwise trip the beaconing/C2 detector on the
+	// Core host's own DNS. Matched exactly; nil = no-op.
+	SelfDomains []string
 
 	// Firewall (spec 001) — used only for event_type == "firewall_log".
 	FirewallSeen        *FirewallFirstSeen                                  // first-seen (src,dst,rule) tracker
@@ -77,6 +84,65 @@ var knownGoodUpdateDomains = []string{
 	// or high-risk device context (EOL, new, IoT).
 	"github.com", "raw.githubusercontent.com",
 	"discordapp.com", "discord.com", "cdn.discordapp.com",
+	// Plex Media Server — plex.direct is Plex's dynamic DNS for direct secure
+	// connections; the subdomain encodes the server's local IP + a per-server hash
+	// (e.g. 10-37-129-2.<hash>.plex.direct), which trips DGA / tunneling / beacon FPs.
+	"plex.tv", "plex.direct",
+}
+
+// isSelfDomain reports whether domain is one of Vedetta's own configured hosts
+// (feed/telemetry or a self-hosted mirror). Only the exact hostname is exempt:
+// Vedetta never needs to query arbitrary descendants, and suffix matching would
+// let a feed at example.com hide beaconing to c2.example.com. Case/trailing-dot
+// are normalized to match the ingest pipeline.
+func (e *Enricher) isSelfDomain(domain string) bool {
+	d := normalizeDNSName(domain)
+	if d == "" {
+		return false
+	}
+	for _, configured := range e.SelfDomains {
+		self := normalizeDNSName(configured)
+		if self == "" {
+			continue
+		}
+		if d == self {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeDNSName(value string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+}
+
+// SelfDomainsFromURLs extracts lowercased, deduped hostnames from the given URLs
+// (Vedetta's community-feed / telemetry endpoints, including any operator override).
+// Used to seed Enricher.SelfDomains so Core's own feed poll isn't flagged as C2
+// beaconing. Blank/unparseable inputs are skipped.
+func SelfDomainsFromURLs(raw ...string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, r := range raw {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		u, err := url.Parse(r)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			continue
+		}
+		h := normalizeDNSName(u.Hostname())
+		if h == "" {
+			continue
+		}
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		out = append(out, h)
+	}
+	return out
 }
 
 // NewEnricher creates an Enricher with the default BeaconDetector,
@@ -234,7 +300,17 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	if knownGoodContext {
 		event.Tags = appendUnique(event.Tags, "known_good_context")
 	}
-	skipBehaviorHeuristics := operatorWhitelisted || knownGoodContext
+	selfDomain := e.isSelfDomain(event.Domain)
+	if selfDomain {
+		event.Tags = appendUnique(event.Tags, "vedetta_self")
+	}
+	// These exemptions are detector-specific. Known-good updater/Plex names can
+	// legitimately look random and periodic, while Vedetta's own feed polling is
+	// only a known beacon. Neither context is permission to suppress rebinding or
+	// DNS-bypass evidence. An explicit operator whitelist retains that behavior.
+	skipDGATunnel := operatorWhitelisted || knownGoodContext
+	skipBeaconing := skipDGATunnel || selfDomain
+	skipNetworkHeuristics := operatorWhitelisted
 
 	var scores []float64
 	var descriptions []string
@@ -247,7 +323,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	isPrivatePTR := isPrivateReverseDNS(event.Domain)
 
 	// 1. DGA detection on the domain
-	if event.Domain != "" && !isPrivatePTR && !skipBehaviorHeuristics {
+	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel {
 		dgaResult := ScoreDGA(event.Domain)
 		if dgaResult.IsDGA {
 			event.Tags = appendUnique(event.Tags, "dga_candidate")
@@ -268,7 +344,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 2. DNS tunnel detection
-	if event.Domain != "" && !isPrivatePTR && !skipBehaviorHeuristics {
+	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel {
 		tunnelResult := ScoreTunnel(event.Domain)
 		if tunnelResult.IsTunnel {
 			event.Tags = appendUnique(event.Tags, "dns_tunnel")
@@ -292,7 +368,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 3. Beaconing detection
-	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBehaviorHeuristics {
+	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBeaconing {
 		beaconResult := e.Beacon.RecordAndScore(event.SourceHash, event.Domain, event.Timestamp)
 		if beaconResult.IsBeaconing {
 			event.Tags = appendUnique(event.Tags, "beaconing")
@@ -313,7 +389,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 4. DNS rebinding detection
-	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipBehaviorHeuristics {
+	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipNetworkHeuristics {
 		rebindResult := e.Rebinding.Check(event.Domain, event.ResolvedIP)
 		if rebindResult != nil && rebindResult.IsRebinding {
 			event.Tags = appendUnique(event.Tags, "dns_rebinding")
@@ -352,7 +428,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	// bypassing the local network DNS (Pi-hole, router, etc.).
 	// This is a strong signal of IoT devices with hardcoded resolvers, or
 	// compromised devices trying to evade DNS-level security controls.
-	if event.Domain != "" && e.Bypass != nil && !skipBehaviorHeuristics {
+	if event.Domain != "" && e.Bypass != nil && !skipNetworkHeuristics {
 		// Check for hardcoded public DNS resolver IPs
 		if event.ResolvedIP != "" {
 			resolverIP, provider := e.Bypass.DetectPublicResolverBypass(event.ResolvedIP)
