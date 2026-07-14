@@ -43,18 +43,38 @@ printf '%s\n' \
   ' VEDETTA_BACKEND_PORT = "18080" # operator override' \
   "VEDETTA_FRONTEND_PORT='13107'   # quoted" \
   'VEDETTA_COLLECTOR_PORT=15140 # unquoted' \
+  'export VEDETTA_EXPORTED_PORT=18090' \
+  'BASE_PORT=18091' \
+  'VEDETTA_REFERENCED_PORT=${BASE_PORT}' \
+  'VEDETTA_DOUBLE_REF="${BASE_PORT}"' \
+  "VEDETTA_SINGLE_REF='\${BASE_PORT}'" \
+  'CYCLE_A=${CYCLE_B}' \
+  'CYCLE_B=${CYCLE_A}' \
   'VEDETTA_DUPLICATE_PORT=1111' \
   'VEDETTA_DUPLICATE_PORT = 2222' >"${DOTENV}"
 
 assert_eq 18080 "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${DOTENV}")" "double-quoted dotenv port"
 assert_eq 13107 "$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 "${DOTENV}")" "single-quoted dotenv port"
 assert_eq 15140 "$(vedetta_resolve_port VEDETTA_COLLECTOR_PORT 5140 "${DOTENV}")" "unquoted port with comment"
+assert_eq 18090 "$(vedetta_resolve_port VEDETTA_EXPORTED_PORT 8080 "${DOTENV}")" "Compose export assignment"
+assert_eq 18091 "$(vedetta_resolve_port VEDETTA_REFERENCED_PORT 8080 "${DOTENV}")" "Compose dotenv reference"
+assert_eq 18091 "$(vedetta_resolve_port VEDETTA_DOUBLE_REF 8080 "${DOTENV}")" "double-quoted dotenv reference"
 assert_eq 2222 "$(vedetta_resolve_port VEDETTA_DUPLICATE_PORT 1 "${DOTENV}")" "last dotenv assignment wins"
 assert_eq 9090 "$(vedetta_resolve_port VEDETTA_MISSING_PORT 9090 "${DOTENV}")" "missing key uses default"
 
 export VEDETTA_BACKEND_PORT=28080
 assert_eq 28080 "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${DOTENV}")" "shell environment wins over dotenv"
 unset VEDETTA_BACKEND_PORT
+
+export BASE_PORT=28091
+assert_eq 28091 "$(vedetta_resolve_port VEDETTA_REFERENCED_PORT 8080 "${DOTENV}")" "shell environment wins for dotenv reference"
+unset BASE_PORT
+assert_false "single-quoted dotenv reference stays literal" sh -c \
+  '. "$1"; vedetta_resolve_port VEDETTA_SINGLE_REF 8080 "$2" >/dev/null 2>&1' \
+  sh "${REPO_ROOT}/scripts/lib/port-config.sh" "${DOTENV}"
+assert_false "cyclic dotenv port reference is rejected" sh -c \
+  '. "$1"; vedetta_resolve_port CYCLE_A 8080 "$2" >/dev/null 2>&1' \
+  sh "${REPO_ROOT}/scripts/lib/port-config.sh" "${DOTENV}"
 export VEDETTA_BACKEND_PORT=
 assert_eq 8080 "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${DOTENV}")" "empty shell value uses Compose default"
 unset VEDETTA_BACKEND_PORT
@@ -118,5 +138,10 @@ SKIPPED_ENV="${TMP_DIR}/skipped.env"
 VEDETTA_SKIP_PORT_PROBE=1 ENV_FILE="${SKIPPED_ENV}" \
   "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/skipped.out"
 assert_true "generator labels skipped ports as not probed" grep -q 'Host ports (NOT probed' "${TMP_DIR}/skipped.out"
+
+assert_true "update-all checks the local Core after rebuild" grep -Fq \
+  'curl -sf "${LOCAL_CORE_URL}/healthz"' "${REPO_ROOT}/scripts/update-all.sh"
+assert_true "update-all preserves the remote sensor Core override" grep -Fq \
+  'SENSOR_CORE_URL="${VEDETTA_CORE_URL:-${LOCAL_CORE_URL}}"' "${REPO_ROOT}/scripts/update-all.sh"
 
 echo "1..${pass_count}"

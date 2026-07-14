@@ -3,9 +3,10 @@
 #
 # This file deliberately does not source .env: it contains secrets and is data,
 # not trusted shell code. The parser accepts the practical dotenv forms used by
-# Docker Compose for numeric port values (whitespace, single/double quotes, and
-# whitespace-delimited trailing comments). Exported shell variables take
-# precedence over .env, matching Compose interpolation precedence.
+# Docker Compose for numeric port values (optional export, whitespace,
+# single/double quotes, simple full-value references, and whitespace-delimited
+# trailing comments). Exported shell variables take precedence over .env,
+# matching Compose interpolation precedence.
 
 vedetta_normalize_port() {
   local value="${1-}"
@@ -26,9 +27,12 @@ vedetta_normalize_port() {
   printf '%s' "${value}"
 }
 
-# vedetta_dotenv_value <file> <key>
-# Prints the last active assignment for key. Returns 1 when the key is absent.
-vedetta_dotenv_value() {
+# vedetta_dotenv_entry <file> <key>
+# Prints quote-mode|value for the last active assignment. Keeping the quote mode
+# lets the port resolver honor Compose's rule that single-quoted values are
+# literal while unquoted and double-quoted values may reference another
+# variable. Returns 1 when the key is absent.
+vedetta_dotenv_entry() {
   local file="$1" key="$2"
   [ -f "${file}" ] || return 1
 
@@ -36,15 +40,18 @@ vedetta_dotenv_value() {
     {
       line = $0
       sub(/\r$/, "", line)
-      if (line !~ ("^[[:space:]]*" wanted "[[:space:]]*=")) {
+      prefix = "^[[:space:]]*(export[[:space:]]+)?"
+      if (line !~ (prefix wanted "[[:space:]]*=")) {
         next
       }
 
-      sub("^[[:space:]]*" wanted "[[:space:]]*=[[:space:]]*", "", line)
+      sub(prefix wanted "[[:space:]]*=[[:space:]]*", "", line)
       quote = substr(line, 1, 1)
       single_quote = sprintf("%c", 39)
+      mode = "unquoted"
 
       if (quote == "\"" || quote == single_quote) {
+        mode = (quote == single_quote ? "single" : "double")
         remainder = substr(line, 2)
         closing = index(remainder, quote)
         if (closing == 0) {
@@ -73,12 +80,60 @@ vedetta_dotenv_value() {
 
       found = 1
       last = value
+      last_mode = mode
     }
     END {
       if (!found) exit 1
-      print last
+      print last_mode "|" last
     }
   ' "${file}"
+}
+
+# vedetta_dotenv_value <file> <key>
+# Prints the parsed, but not interpolated, value for callers that only need
+# dotenv syntax handling.
+vedetta_dotenv_value() {
+  local entry
+  entry="$(vedetta_dotenv_entry "$1" "$2")" || return 1
+  printf '%s\n' "${entry#*|}"
+}
+
+# vedetta_dotenv_port_value <file> <key> [depth]
+# Resolves a full-value $NAME or ${NAME} reference without evaluating .env as
+# shell code. This is the useful Compose interpolation form for numeric ports.
+# More complex interpolation fails numeric validation instead of silently
+# selecting a port that differs from Docker Compose.
+vedetta_dotenv_port_value() {
+  local file="$1" key="$2" depth="${3:-0}" entry mode value ref
+  [ "${depth}" -lt 16 ] || {
+    printf '%s' '$'
+    return 0
+  }
+
+  entry="$(vedetta_dotenv_entry "${file}" "${key}")" || return 1
+  mode="${entry%%|*}"
+  value="${entry#*|}"
+
+  if [ "${mode}" != single ]; then
+    ref=""
+    if [[ "${value}" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then
+      ref="${BASH_REMATCH[1]}"
+    elif [[ "${value}" =~ ^\$([A-Za-z_][A-Za-z0-9_]*)$ ]]; then
+      ref="${BASH_REMATCH[1]}"
+    fi
+
+    if [ -n "${ref}" ]; then
+      if value="$(printenv "${ref}" 2>/dev/null)"; then
+        :
+      elif value="$(vedetta_dotenv_port_value "${file}" "${ref}" $((depth + 1)) 2>/dev/null)"; then
+        :
+      else
+        value=""
+      fi
+    fi
+  fi
+
+  printf '%s' "${value}"
 }
 
 # vedetta_resolve_port <key> <default> <dotenv-file>
@@ -96,7 +151,7 @@ vedetta_resolve_port() {
 
   if value="$(printenv "${key}" 2>/dev/null)"; then
     source="the shell environment"
-  elif value="$(vedetta_dotenv_value "${file}" "${key}" 2>/dev/null)"; then
+  elif value="$(vedetta_dotenv_port_value "${file}" "${key}" 2>/dev/null)"; then
     source="${file}"
   else
     value="${default}"
