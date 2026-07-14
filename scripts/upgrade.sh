@@ -310,6 +310,22 @@ TS="$(date +%Y%m%d-%H%M%S)"
 # would happily ship the DB + env-*.bak into the Docker build cache. A sibling
 # directory can never enter a build context or be touched by checkouts.
 BACKUP_ROOT="${VEDETTA_BACKUP_DIR:-$(dirname "$PROJECT_DIR")/vedetta-backups}"
+# Enforce the invariant even against an explicit override: resolve to an
+# absolute path and refuse anything inside the repository — a later
+# `git checkout <older-ref>` swaps .dockerignore away and the next build
+# would ship the snapshot's secrets into the BuildKit cache.
+mkdir -p "$BACKUP_ROOT" || { err "cannot create backup directory: ${BACKUP_ROOT}"; exit 2; }
+BACKUP_ROOT="$(cd "$BACKUP_ROOT" && pwd)"
+case "${BACKUP_ROOT}/" in
+  "${PROJECT_DIR}/"*)
+    err "VEDETTA_BACKUP_DIR resolves inside the repository (${BACKUP_ROOT})."
+    err "Snapshots hold your DB and API tokens; inside the repo they can enter"
+    err "Docker build contexts after a checkout to a ref whose .dockerignore"
+    err "predates the exclusion. Choose a location outside ${PROJECT_DIR}."
+    rmdir "$BACKUP_ROOT" 2>/dev/null || true
+    exit 2
+    ;;
+esac
 SNAP_DIR="${BACKUP_ROOT}/upgrade-${TS}"
 LOG="${SNAP_DIR}/upgrade-${TS}.log"
 # The snapshot holds the live DB, API tokens, and .env — owner-only from the
