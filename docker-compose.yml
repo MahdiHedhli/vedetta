@@ -1,6 +1,8 @@
 # Vedetta — Home Network Security Platform
 # Usage: docker compose up
-# All services communicate over the internal 'vedetta' network.
+# Product services communicate over the internal 'vedetta' network. The optional
+# off-node Threat Network service uses its own bridge so corpus administration is
+# not reachable from ordinary Core/frontend/collector/telemetry siblings.
 
 services:
   # --- Go API Backend ---
@@ -166,10 +168,16 @@ services:
       - "127.0.0.1:9090:9090"
     environment:
       THREAT_NETWORK_PORT: "9090"
+      # The corpus management listener is deliberately absent from the default
+      # compose exposure. Enable it only in an operator-owned override with a
+      # mode-0600 token-file mount and a host-loopback port mapping; see
+      # threat-network/web/README.md.
+      THREAT_NETWORK_ADMIN_ENABLED: "false"
+      THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK: "false"
     volumes:
       - threat-network-data:/data  # persist the service-local SQLite DB
     networks:
-      - vedetta
+      - threat-network-isolated
     restart: unless-stopped
 
 volumes:
@@ -184,4 +192,9 @@ volumes:
 
 networks:
   vedetta:
+    driver: bridge
+  # Defense in depth for the central/off-node service. Its public and management
+  # listeners are reached only through their host-loopback publications; no
+  # ordinary Vedetta application container shares this bridge.
+  threat-network-isolated:
     driver: bridge

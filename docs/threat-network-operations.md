@@ -249,25 +249,103 @@ A symlink or non-regular mount fails with `management token file must be a
 regular non-symlink file`. Do not weaken these checks to accommodate a platform
 default; fix the effective file type and permissions instead.
 
-Then give the public listener a hostname and TLS, point contributors'
-`VEDETTA_THREAT_NETWORK_URL` at it, and publish the feed URL for consumers. Keep
-the management listener out of every public tunnel and reverse proxy. The service
-rejects non-loopback management binds unless the second guard is also enabled;
-that exception is intended only for an isolated container with host-loopback
-publication or an authenticated TLS upstream. Never expose plaintext port 9091
-directly.
+Then: give the public listener a hostname + TLS, point contributors'
+`VEDETTA_THREAT_NETWORK_URL` at it, and publish the feed URL for consumers. Keep the
+management listener out of the Cloudflare Tunnel and public reverse proxy.
+The service refuses wildcard and non-loopback management addresses unless
+`THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK=true` is also set. That escape hatch is
+for an explicitly isolated container network only; the host mapping must still
+bind to loopback and the port must remain outside every public tunnel. If a
+management hop must cross a host or network boundary instead, put an
+authenticated TLS reverse proxy in front of it and restrict the plaintext
+upstream to that private path. Never expose port `9091` directly to a LAN,
+tailnet, or the public internet.
 
-The central database also contains the manually curated, immutable device corpus.
-Public manifest and snapshot reads remain credential-free on port 9090. Manual
-curation uses the separate management listener and a file-backed secret; reporter,
-Core, and telemetry credentials are not accepted. Product-class facts are permitted,
-while household IPs, full MACs, observed hostnames, serials, site/reporter/sensor IDs,
-timestamps, counts, and arbitrary observation blobs are structurally excluded.
+### Curated device corpus operations (standalone branch)
 
-The tailnet-only corpus dashboard is intentionally maintained and deployed from
-the separate `ops/threat-network-dashboard` branch. It is not part of product
-`main`; the public and management API contracts remain documented in
-[`specs/008-device-fingerprint-corpus/`](../specs/008-device-fingerprint-corpus/).
+The operations branch adds a centrally curated, versioned device-fingerprint corpus.
+Its contract permits product-class facts only; observed household devices, IPs, full
+MACs, hostnames, serial numbers, sensors, reporters, sites, and events are forbidden.
+The deterministic shape hash is a content address, **not** anonymization. Privacy rests
+on the fixed schema, leak-oriented validation, a trusted human curator, and review of
+the exact proposed release before publication. Since useful product tokens are still
+bounded human-authored strings, the validators prevent common accidental leaks but are
+not a proof against a malicious curator intentionally encoding private data.
+
+Public, credential-free reads remain on port 9090:
+
+- `GET /api/v1/device-corpus/manifest`
+- `GET /api/v1/device-corpus/snapshot`
+
+Manual curation uses a separate authenticated listener. Create the secret without
+placing it in an environment variable or command line:
+
+```sh
+# From the repository root, build and install the native service binary once.
+(cd threat-network && go build -o ./threat-network ./cmd/threat-network)
+sudo install -m 0755 threat-network/threat-network /usr/local/bin/threat-network
+
+id -u vedetta >/dev/null 2>&1 || \
+  sudo useradd --system --user-group --home-dir /var/lib/vedetta --shell /usr/sbin/nologin vedetta
+sudo install -d -m 0700 -o vedetta -g vedetta /var/lib/vedetta
+sudo -u vedetta sh -c \
+  'umask 077; openssl rand -hex 32 > /var/lib/vedetta/threat-network-admin.token'
+sudo chmod 600 /var/lib/vedetta/threat-network-admin.token
+
+sudo -u vedetta env \
+  THREAT_NETWORK_DB=/var/lib/vedetta/threat-network.db \
+  THREAT_NETWORK_ADMIN_ENABLED=true \
+  THREAT_NETWORK_ADMIN_ADDR=127.0.0.1:9091 \
+  THREAT_NETWORK_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token \
+    /usr/local/bin/threat-network
+```
+
+For the repository's Compose deployment, use the tracked opt-in overlay. It
+handles the otherwise easy-to-miss Docker distinction: the listener binds all
+interfaces **inside** the container, while Docker publishes it only on host
+loopback. The second non-loopback guard remains explicit. The Threat Network
+container is attached to its own `threat-network-isolated` bridge rather than
+the ordinary Vedetta application bridge, so Core, telemetry, collector, and
+frontend siblings cannot connect directly to the management port.
+
+```sh
+export THREAT_NETWORK_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token
+docker compose -f docker-compose.yml -f docker-compose.corpus-ops.yml \
+  --profile community up -d --build threat-network
+curl -fsS http://127.0.0.1:9090/api/v1/device-corpus/manifest
+```
+
+Do not substitute an untracked local override for this deployment contract.
+
+The tailnet-only dashboard shim holds that token server-side and exposes only an exact
+corpus route allowlist. The browser never receives it. Deployment, Tailscale identity
+authorization, and proxy-hardening instructions live in
+[`threat-network/web/README.md`](../threat-network/web/README.md). The dashboard and
+corpus implementation remain on their standalone operations branch and are not part of
+the product's `main` release.
+
+Profile labels, fingerprint variants, curator corrections, real firmware evolution,
+audit events, and complete public releases are versioned independently. Drafts never
+appear publicly. Old release bytes remain immutable and can be inspected through the
+management API; recovery to an older release is an explicit SQLite backup/manual
+operation rather than a one-click browser mutation.
+
+Every publish, profile retirement, and full variant withdrawal is authorized against
+both the target profile ETag and the public corpus revision displayed to the curator.
+An intervening release anywhere in the corpus rejects the action atomically with
+`CORPUS_ADVANCED`; the dashboard reloads the current snapshot before a retry. Discarding
+only an unpublished draft does not create a release and retains its ETag-only contract.
+
+Evidence entered as an `import` must include a curator-reviewed redistributable
+`license_code`; imports without it are rejected. This prevents an unresolved
+third-party corpus from being admitted merely because it fits the technical schema.
+
+The corpus tables and releases live in the same persisted
+`/data/threat-network.db`. Back up that file with SQLite's online `.backup` command
+before deploying schema or curator-workflow changes. Corpus migrations 004–007 are
+forward-only and additive, so a pre-corpus threat-network binary ignores the new
+tables; restoring the matching binary and pre-change database remains the clean
+rollback path.
 
 ---
 
