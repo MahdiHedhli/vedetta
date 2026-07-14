@@ -287,6 +287,7 @@ func NewRouter(srv *Server) http.Handler {
 				r.Use(auth.RequireStrictAdmin(srv.DB))
 				r.Get("/list", srv.handleSensorList)
 				r.Put("/{sensorID}/primary", srv.handleSetPrimarySensor)
+				r.Delete("/{sensorID}", srv.handleDeleteSensor)
 			})
 		})
 
@@ -1704,6 +1705,39 @@ func (s *Server) handleSetPrimarySensor(w http.ResponseWriter, r *http.Request) 
 
 	log.Printf("Primary sensor changed to: %s", sensorID)
 	writeJSON(w, http.StatusOK, map[string]any{"primary": sensorID})
+}
+
+// handleDeleteSensor removes a sensor (and its auth tokens) from the fleet. Admin
+// scope, same as Make Primary. The last remaining primary can't be removed — the
+// store refuses it, and the caller must promote another sensor first (409).
+func (s *Server) handleDeleteSensor(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+
+	sensorID := chi.URLParam(r, "sensorID")
+	if sensorID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "sensor_id required"})
+		return
+	}
+
+	if err := s.DB.DeleteSensor(sensorID); err != nil {
+		switch {
+		case errors.Is(err, store.ErrSensorNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "sensor not found"})
+		case errors.Is(err, store.ErrLastPrimarySensor):
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "cannot remove the primary sensor; make another sensor primary first"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		}
+		return
+	}
+
+	log.Printf("Sensor removed: %s", sensorID)
+	s.logInfo("sensor", fmt.Sprintf("Sensor removed: %s", sensorID))
+	writeJSON(w, http.StatusOK, map[string]any{"removed": sensorID})
 }
 
 // deduplicateGatewayEchoes pairs the query and response packets emitted for one

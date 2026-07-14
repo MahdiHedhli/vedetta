@@ -2706,6 +2706,22 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
       .catch(() => {});
   };
 
+  const removeSensor = (sensorId, hostname) => {
+    if (!window.confirm(`Remove sensor "${hostname || sensorId}"? This deletes it and its auth token; it would need to re-enroll to return.`)) {
+      return;
+    }
+    authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}`, { method: 'DELETE' })
+      .then(async (r) => {
+        if (r.ok) {
+          onRefreshSensors && onRefreshSensors();
+        } else {
+          const body = await r.json().catch(() => ({}));
+          alert(body.error || 'Failed to remove sensor.');
+        }
+      })
+      .catch(() => {});
+  };
+
   return (
     <>
       <div className="flex items-center justify-between mb-6">
@@ -2732,20 +2748,20 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
         <div className="space-y-3">
           {sensors.map((s) => (
             <div key={s.sensor_id} className={`bg-gray-900 border rounded-lg p-4 ${s.is_primary ? 'border-amber-500/40' : 'border-gray-800'}`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
-                  <div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium">{s.hostname}</p>
+                      <p className="text-sm font-medium truncate">{s.hostname}</p>
                       {s.is_primary && (
-                        <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded">primary</span>
+                        <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded flex-shrink-0">primary</span>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500">{s.sensor_id}</p>
+                    <p className="text-xs text-gray-500 truncate">{s.sensor_id}</p>
                   </div>
                 </div>
-                <div className="text-right">
+                <div className="text-right flex-shrink-0">
                   <p className="text-sm font-mono text-gray-300">{s.cidr}</p>
                   <p className="text-xs text-gray-500">{s.os}/{s.arch} &middot; v{s.version}</p>
                 </div>
@@ -2756,12 +2772,20 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
                   <span>Last report: {timeAgo(s.last_seen)}</span>
                 </div>
                 {!s.is_primary && (
-                  <button
-                    onClick={() => setPrimary(s.sensor_id)}
-                    className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
-                  >
-                    Make Primary
-                  </button>
+                  <div className="flex items-center gap-4 flex-shrink-0">
+                    <button
+                      onClick={() => setPrimary(s.sensor_id)}
+                      className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      Make Primary
+                    </button>
+                    <button
+                      onClick={() => removeSensor(s.sensor_id, s.hostname)}
+                      className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                    >
+                      Remove
+                    </button>
+                  </div>
                 )}
               </div>
             </div>

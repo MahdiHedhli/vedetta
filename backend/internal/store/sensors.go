@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -151,5 +152,46 @@ func (db *DB) SetPrimarySensor(sensorID string) error {
 		return fmt.Errorf("sensor %s not found", sensorID)
 	}
 
+	return tx.Commit()
+}
+
+// ErrLastPrimarySensor is returned by DeleteSensor when the target is the only
+// remaining primary — removing it would leave the fleet with no primary.
+var ErrLastPrimarySensor = errors.New("cannot remove the last primary sensor")
+
+// DeleteSensor removes a sensor and its auth tokens. A non-primary sensor may be
+// removed freely; the last remaining primary may not (that would leave zero
+// primaries). Token rows are HARD-deleted (not just revoked): api_tokens.sensor_id
+// has a NO-ACTION foreign key to sensors and FK enforcement is on, so a lingering
+// row — even a revoked one — would block the parent delete.
+func (db *DB) DeleteSensor(sensorID string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var isPrimary bool
+	if err := tx.QueryRow(`SELECT is_primary FROM sensors WHERE sensor_id = ?`, sensorID).Scan(&isPrimary); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrSensorNotFound
+		}
+		return err
+	}
+	if isPrimary {
+		var primaries int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM sensors WHERE is_primary = TRUE`).Scan(&primaries); err != nil {
+			return err
+		}
+		if primaries <= 1 {
+			return ErrLastPrimarySensor
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM api_tokens WHERE sensor_id = ?`, sensorID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM sensors WHERE sensor_id = ?`, sensorID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
