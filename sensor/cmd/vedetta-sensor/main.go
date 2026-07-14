@@ -236,16 +236,17 @@ type sensorRun struct {
 	arpSweepInterval time.Duration
 
 	// runtime state populated by prepare() + startCaptures()
-	scanCIDR        string
-	interfaces      []netinfo.NetworkInterface
-	capturer        *dnscap.Capturer
-	passiveCapturer *passive.Capturer
-	arpSource       *netscan.Source
-	dnsQueries      chan dnscap.Query
-	passiveHosts    chan netscan.DiscoveredHost
-	wg              sync.WaitGroup
-	droppedDNS      atomic.Int64
-	droppedHosts    atomic.Int64
+	scanCIDR           string
+	interfaces         []netinfo.NetworkInterface
+	capturer           *dnscap.Capturer
+	passiveCapturer    *passive.Capturer
+	arpSource          *netscan.Source
+	dnsQueries         chan dnscap.Query
+	passiveHosts       chan netscan.DiscoveredHost
+	passiveSinkStarted bool
+	wg                 sync.WaitGroup
+	droppedDNS         atomic.Int64
+	droppedHosts       atomic.Int64
 }
 
 // serve runs the full operational lifecycle: resolve the scan target + interfaces
@@ -393,11 +394,7 @@ func (r *sensorRun) startCaptures() {
 		} else {
 			r.passiveCapturer = pc
 			log.Printf("Passive discovery active on interface %s (arp=%v dhcp=%v mdns=%v ssdp=%v)", pc.Interface(), r.passiveARP, r.passiveDHCP, r.passiveMDNS, r.passiveSSDP)
-			r.wg.Add(1)
-			go func() {
-				defer r.wg.Done()
-				pushPassiveHosts(r.core, r.scanCIDR, r.passiveHosts)
-			}()
+			r.ensurePassiveSink()
 		}
 	}
 
@@ -405,14 +402,10 @@ func (r *sensorRun) startCaptures() {
 	// --arp-sweep is set, warms it first. It shares the passive host sink/drain — if
 	// passive discovery is disabled those don't exist yet, so create them here.
 	if r.arpEnabled {
-		if r.passiveHosts == nil {
-			r.passiveHosts = make(chan netscan.DiscoveredHost, 200)
-			r.wg.Add(1)
-			go func() {
-				defer r.wg.Done()
-				pushPassiveHosts(r.core, r.scanCIDR, r.passiveHosts)
-			}()
-		}
+		// Ensure the shared host sink + drain exist even when passive discovery is off
+		// or failed to start (in which case r.passiveHosts was allocated but never
+		// drained — the ARP source would otherwise fill the buffer and drop forever).
+		r.ensurePassiveSink()
 		src := netscan.NewSource(netscan.SourceConfig{
 			CIDR:          r.scanCIDR,
 			Sweep:         r.arpSweep,
@@ -433,6 +426,27 @@ func (r *sensorRun) startCaptures() {
 			log.Printf("ARP-cache discovery active (sweep=%v poll=%s)", r.arpSweep, r.arpPollInterval)
 		}
 	}
+}
+
+// ensurePassiveSink lazily creates the shared discovered-host channel and its single
+// drain goroutine (pushPassiveHosts). Both passive discovery and the ARP source push
+// here; whichever needs it first starts the drain. This is called only from the
+// single-threaded startCaptures, so the started flag needs no synchronization. It fixes
+// the case where passive discovery allocated the channel but failed to start its drain,
+// leaving a sink that fills and drops.
+func (r *sensorRun) ensurePassiveSink() {
+	if r.passiveHosts == nil {
+		r.passiveHosts = make(chan netscan.DiscoveredHost, 200)
+	}
+	if r.passiveSinkStarted {
+		return
+	}
+	r.passiveSinkStarted = true
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		pushPassiveHosts(r.core, r.scanCIDR, r.passiveHosts)
+	}()
 }
 
 // shutdown stops the capturers and drains their push goroutines within the bounded

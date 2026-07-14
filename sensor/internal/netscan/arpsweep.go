@@ -39,27 +39,40 @@ func sweepTargets(cidr, ownIP string) ([]string, error) {
 // few common TCP/UDP ports so the kernel resolves the target's MAC into the neighbor
 // cache. It opens NO raw sockets and needs no privilege; every dial error is expected
 // and ignored (even a RST / ICMP-unreachable still triggers ARP resolution).
-// Concurrency and per-dial time are bounded for the Pi 4 budget.
-func warmARPCache(targets []string) {
+// Concurrency and per-dial time are bounded for the Pi 4 budget. It stops promptly when
+// stopCh is closed, so shutdown is not blocked by an in-progress sweep.
+func warmARPCache(stopCh <-chan struct{}, targets []string) {
 	sem := make(chan struct{}, arpSweepConcurrency)
 	var wg sync.WaitGroup
 	for _, ip := range targets {
+		select {
+		case <-stopCh:
+			wg.Wait()
+			return
+		default:
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(ip string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			warmHost(ip)
+			warmHost(stopCh, ip)
 		}(ip)
 	}
 	wg.Wait()
 }
 
 // warmHost touches a small fixed set of TCP/UDP ports on one host to elicit an ARP
-// resolution. All errors are intentionally ignored — no response is needed.
-func warmHost(ip string) {
+// resolution. All errors are intentionally ignored — no response is needed. It bails
+// early if stopCh is closed (shutdown).
+func warmHost(stopCh <-chan struct{}, ip string) {
 	// TCP 80/443: a connect attempt (even one that RSTs) resolves the next-hop MAC.
 	for _, p := range []string{"80", "443"} {
+		select {
+		case <-stopCh:
+			return
+		default:
+		}
 		if c, err := net.DialTimeout("tcp", net.JoinHostPort(ip, p), arpSweepDialTimeout); err == nil {
 			_ = c.Close()
 		}
@@ -67,6 +80,11 @@ func warmHost(ip string) {
 	// UDP discard (9) + traceroute (33434): a single-byte write makes the kernel
 	// resolve the destination MAC; no reply is expected or required.
 	for _, p := range []string{"9", "33434"} {
+		select {
+		case <-stopCh:
+			return
+		default:
+		}
 		c, err := net.DialTimeout("udp", net.JoinHostPort(ip, p), arpSweepDialTimeout)
 		if err != nil {
 			continue

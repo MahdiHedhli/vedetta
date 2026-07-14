@@ -31,11 +31,12 @@ type SourceConfig struct {
 // mirrors passive.Capturer: Start launches a background loop, Stop signals it and
 // blocks until it has drained.
 type Source struct {
-	cfg    SourceConfig
-	mu     sync.Mutex
-	stopCh chan struct{}
-	doneCh chan struct{}
-	run    bool
+	cfg      SourceConfig
+	mu       sync.Mutex
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	stopOnce sync.Once
+	run      bool
 }
 
 // NewSource builds a Source. A missing CIDR is auto-detected and a non-positive poll
@@ -63,15 +64,17 @@ func (s *Source) Start() error {
 }
 
 // Stop signals the loop and blocks until it has fully returned (mirrors
-// passive.Capturer.Stop, so callers get a clean shutdown before the sink closes).
+// passive.Capturer.Stop, so callers get a clean shutdown before the sink closes). It is
+// safe to call concurrently and more than once: stopOnce guards the channel close, and
+// every caller waits on doneCh.
 func (s *Source) Stop() {
 	s.mu.Lock()
-	if !s.run {
-		s.mu.Unlock()
+	running := s.run
+	s.mu.Unlock()
+	if !running {
 		return
 	}
-	close(s.stopCh)
-	s.mu.Unlock()
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	<-s.doneCh
 	s.mu.Lock()
 	s.run = false
@@ -142,7 +145,7 @@ func (s *Source) sweepOnce() {
 		log.Printf("[arp] sweep skipped: %v", err)
 		return
 	}
-	warmARPCache(targets)
+	warmARPCache(s.stopCh, targets)
 }
 
 // outboundIPv4 returns the local IPv4 the OS would use to reach the default route. A

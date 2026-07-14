@@ -3,7 +3,25 @@ package netscan
 import (
 	"reflect"
 	"testing"
+	"time"
 )
+
+func TestWarmARPCacheHonorsStop(t *testing.T) {
+	// A pre-closed stopCh must make the sweep return promptly without dialing anything,
+	// so shutdown is never blocked by an in-progress sweep.
+	stop := make(chan struct{})
+	close(stop)
+	done := make(chan struct{})
+	go func() {
+		warmARPCache(stop, []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("warmARPCache did not honor a closed stopCh promptly")
+	}
+}
 
 func TestSweepTargets(t *testing.T) {
 	// /29 -> usable .1..6 (network .0 and broadcast .7 excluded by enumerateHosts);
