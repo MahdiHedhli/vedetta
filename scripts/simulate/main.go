@@ -29,6 +29,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -97,25 +98,17 @@ func main() {
 		// Build minimal payloads that the ingest will accept and enrich (it calls Enricher.Enrich)
 		var payloads []map[string]any
 		for _, e := range eventsToPersist {
-			p := map[string]any{
-				"event_type":      e.EventType,
-				"domain":          e.Domain,
-				"source_ip":       e.SourceIP,
-				"device_vendor":   e.DeviceVendor,
-				"network_segment": e.NetworkSegment,
-				"dns_source":      e.DNSSource,
-				"query_type":      e.QueryType,
-			}
-			if e.ResolvedIP != "" {
-				p["resolved_ip"] = e.ResolvedIP
-			}
-			payloads = append(payloads, p)
+			payloads = append(payloads, ingestPayload(e))
 		}
 		body, err := json.Marshal(payloads)
 		if err != nil {
 			log.Fatalf("encode enrich payload: %v", err)
 		}
-		resp, err := http.Post(ingestURL, "application/json", bytes.NewReader(body))
+		req, err := newIngestRequest(ingestURL, body, os.Getenv("VEDETTA_INGEST_TOKEN"))
+		if err != nil {
+			log.Fatalf("build enrich request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			log.Fatalf("enrich POST error: %v", err)
 		}
@@ -173,6 +166,36 @@ type SimEvent struct {
 	DNSSource      string
 	ThreatDesc     string
 	Metadata       string
+}
+
+func ingestPayload(e SimEvent) map[string]any {
+	p := map[string]any{
+		"event_id":        e.EventID,
+		"timestamp":       e.Timestamp,
+		"event_type":      e.EventType,
+		"domain":          e.Domain,
+		"source_ip":       e.SourceIP,
+		"device_vendor":   e.DeviceVendor,
+		"network_segment": e.NetworkSegment,
+		"dns_source":      e.DNSSource,
+		"query_type":      e.QueryType,
+	}
+	if e.ResolvedIP != "" {
+		p["resolved_ip"] = e.ResolvedIP
+	}
+	return p
+}
+
+func newIngestRequest(ingestURL string, body []byte, token string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodPost, ingestURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token = strings.TrimSpace(token); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
 }
 
 func generateEvent(scenario string, ts time.Time) SimEvent {
