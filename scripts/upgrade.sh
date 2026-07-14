@@ -727,6 +727,16 @@ if [ "$WARM" = "1" ]; then
     || warn "could not remove the temp snapshot — free the space manually: /data/pre-${TS}.db in ${VOL_DATA}"
   SNAP_MODE="online"
   finalize_snapshot
+
+  # The swap below recreates the Core containers anyway, so explicitly stopping
+  # ALL volume users first costs no extra downtime — and it closes the rename
+  # gap: `up` with the TARGET ref's service names would leave an old-name
+  # container running as a second writer while the new service migrates the DB.
+  STACK_WAS_STOPPED=1   # from here, rollback must not treat the stack as untouched
+  stop_volume_users || true
+  if volume_still_mounted; then
+    fail "containers still have ${VOL_DATA} mounted after stopping — refusing to start the upgraded stack alongside a live writer"
+  fi
 fi
 
 # ─── 4. Bring the stack up ────────────────────────────────────────────────────
