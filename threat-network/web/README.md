@@ -93,6 +93,9 @@ environment variable or command line.
 # From the repository root, build and install the native service binary once.
 (cd threat-network && go build -o ./threat-network ./cmd/threat-network)
 sudo install -m 0755 threat-network/threat-network /usr/local/bin/threat-network
+sudo install -d -m 0755 /opt/vedetta/threat-network/web
+sudo install -m 0755 threat-network/web/serve.py /opt/vedetta/threat-network/web/serve.py
+sudo install -m 0644 threat-network/web/dashboard.html /opt/vedetta/threat-network/web/dashboard.html
 
 id -u vedetta >/dev/null 2>&1 || \
   sudo useradd --system --user-group --home-dir /var/lib/vedetta --shell /usr/sbin/nologin vedetta
@@ -126,15 +129,17 @@ docker compose -f docker-compose.yml -f docker-compose.corpus-ops.yml \
   --profile community up -d --build threat-network
 ```
 
-In a second process, under the same local account (or with an independently
-provisioned private copy of the same token):
+In a second process, run the installed shim as the `vedetta` service account.
+That identity can traverse the private state directory and read the shared
+token; an ordinary login user cannot and should not be granted access:
 
 ```sh
-MON_PUBLIC_UPSTREAM=http://127.0.0.1:9090 \
-MON_ADMIN_UPSTREAM=http://127.0.0.1:9091 \
-MON_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token \
-MON_ALLOW_LOCAL_ADMIN=true \
-  python3 threat-network/web/serve.py
+sudo -u vedetta env \
+  MON_PUBLIC_UPSTREAM=http://127.0.0.1:9090 \
+  MON_ADMIN_UPSTREAM=http://127.0.0.1:9091 \
+  MON_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token \
+  MON_ALLOW_LOCAL_ADMIN=true \
+    python3 /opt/vedetta/threat-network/web/serve.py
 ```
 
 Open `http://127.0.0.1:8787/`. The management portion reports `ADMIN_DISABLED`
