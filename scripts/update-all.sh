@@ -963,23 +963,23 @@ verify_expected_checkout
 if ! run_compose build --no-cache "${DEFAULT_SERVICES[@]}"; then
     verify_expected_checkout
     echo ""
-    if [[ -n "$EXPECTED_HEAD" ]]; then
-        echo "  ERROR: Reviewed Docker build failed; refusing to start stale images." >&2
-        echo "  The pinned deployment is incomplete and no sensor update will run." >&2
-        exit 1
-    fi
-    echo "  ✗ Docker build FAILED. Attempting to start with previous images..."
-    echo "    Check build output above for errors."
-    run_compose up -d --no-build "${DEFAULT_SERVICES[@]}"
+    echo "  ✗ Docker build FAILED — NOT starting the previous images."
     echo ""
-    echo "  WARNING: Running on stale images. The backend may be missing new features."
-    echo "  Fix the build error and run: docker compose build --no-cache && docker compose up -d"
+    echo "    Starting the old images now would run old code against whatever"
+    echo "    image tags a partial multi-service build may already have replaced."
+    echo "    The stack is left stopped and your database is untouched."
     echo ""
-else
-    verify_expected_checkout
-    echo "  ✓ Docker build succeeded."
-    run_compose up -d --no-build "${DEFAULT_SERVICES[@]}"
+    echo "    Fix the build error, then upgrade the trustworthy way — it snapshots"
+    echo "    the DB first, verifies integrity, and auto-rolls-back on failure:"
+    echo "        ./scripts/upgrade.sh"
+    echo ""
+    echo "    (Or, once the build is fixed: docker compose build --no-cache && docker compose up -d)"
+    echo ""
+    exit 1
 fi
+verify_expected_checkout
+echo "  ✓ Docker build succeeded."
+run_compose up -d --no-build "${DEFAULT_SERVICES[@]}"
 echo ""
 
 # Wait for backend READINESS, not mere liveness. /readyz returns 200 only once

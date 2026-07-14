@@ -172,9 +172,41 @@ curl -fsS http://127.0.0.1:9090/api/v1/device-corpus/manifest
 
 ## 3. Update safely
 
-The `scripts/update-*.sh` helpers pull the latest code and rebuild. For a
-predictable upgrade, prefer a **tagged release** over mutable `main` and always
-back up first:
+### Recommended: `scripts/upgrade.sh` (backup → migrate → verify → auto-rollback)
+
+This is the one-command safe path and it does everything below for you. It
+**snapshots the DB before touching anything**, checks out the target release,
+rebuilds, restarts, then verifies the result with `PRAGMA foreign_key_check`
+and `PRAGMA integrity_check`. On **any** failure — a migration that crash-loops
+the backend, a corrupt graph, a build error — it restores the pre-upgrade
+snapshot, returns to the previous version, and exits non-zero with the captured
+backend log. The stack ends up running the prior version with your data intact.
+
+```sh
+git fetch --tags
+./scripts/upgrade.sh v0.1.0-beta.1      # upgrade to a pinned tag/commit
+# ./scripts/upgrade.sh                   # rebuild the current checkout in place
+# ./scripts/upgrade.sh -y v0.1.0-beta.1  # non-interactive (e.g. over SSH)
+```
+
+It snapshots the Core DB, a copy of `.env`, and the `telemetry-state` /
+`threat-network-data` volumes into `backups/upgrade-<timestamp>/` (git-ignored;
+it holds your DB and API tokens — keep it private). Keep that snapshot until the
+new version has proven itself in daily use.
+
+> **Crash-looping-backend caveat.** Migrations run on boot and are fail-closed:
+> a failure aborts startup (`log.Fatalf`). When the backend is already down or
+> crash-looping, the online `sqlite3 .backup` (Option A below) is **not**
+> available — nothing is listening to `exec` into. In that state `upgrade.sh`
+> automatically falls back to the **cold volume tarball** (Option B): it stops
+> the stack and tars the `vedetta-data` volume directly. This is the path that
+> works mid-incident, so reach for the cold tarball (not the online backup) when
+> recovering a Core that will not start.
+
+### Manual alternative
+
+If you upgrade by hand, prefer a **tagged release** over mutable `main` and
+always back up first:
 
 ```sh
 # 1. Back up (section 1).
@@ -201,9 +233,18 @@ unset VED_TOKEN VED_BACKEND_PORT
 Watch `docker compose logs -f backend` on first start after an update — schema
 migrations run there.
 
+> `scripts/update-core.sh` / `scripts/update-all.sh` rebuild in place and do
+> **not** snapshot the DB. On a build failure they now stop rather than start
+> stale images against a possibly-migrated schema; for a populated Core, prefer
+> `scripts/upgrade.sh`.
+
 ---
 
 ## 4. Roll back
+
+> `scripts/upgrade.sh` performs this rollback automatically when an upgrade it
+> ran fails verification. The steps below are for a **manual** recovery — when
+> you upgraded some other way, or want to roll back later.
 
 If an update misbehaves, stop the upgraded Core before restoring. For any release
 that ran a database migration, including migration 025 (asset identity and
