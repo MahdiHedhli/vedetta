@@ -735,8 +735,9 @@ func (db *DB) GetCorpusRelease(ctx context.Context, revision int) ([]byte, Corpu
 		GeneratedAt:    summary.CreatedAt,
 		SnapshotPath:   corpusSnapshotPath,
 	}
-	if _, err = validateStoredCorpusReleaseSnapshot([]byte(raw.String), manifest); err != nil {
+	data := []byte(raw.String)
+	if _, err = validateStoredCorpusReleaseSnapshot(data, manifest); err != nil {
 		return nil, summary, err
 	}
-	return []byte(raw.String), summary, nil
+	return data, summary, nil
 }
