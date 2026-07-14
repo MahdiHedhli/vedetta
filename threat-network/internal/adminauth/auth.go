@@ -83,22 +83,25 @@ func LoadFile(path string) (*Authenticator, error) {
 		return nil, ErrTokenPermissions
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(f, maxTokenFileBytes+1))
-	if err != nil {
+	// Read into one fixed-size allocation so slice growth cannot leave earlier
+	// secret-bearing buffers for the garbage collector. The extra byte is a
+	// sentinel that distinguishes an exact-limit file from an oversized one.
+	raw := make([]byte, maxTokenFileBytes+1)
+	// The Authenticator intentionally retains only a digest. Clear the bounded
+	// read buffer on every return path, including a partial non-EOF read error.
+	defer func() {
+		clear(raw)
+		runtime.KeepAlive(raw)
+	}()
+	n, err := io.ReadFull(f, raw)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return nil, fmt.Errorf("read management token file: %w", err)
 	}
-	// The Authenticator intentionally retains only a digest. Clear the bounded
-	// read buffer on every return path after validation/hashing completes.
-	defer func() {
-		for i := range raw {
-			raw[i] = 0
-		}
-	}()
-	if len(raw) > maxTokenFileBytes {
+	if n > maxTokenFileBytes {
 		return nil, ErrTokenTooLarge
 	}
 
-	token := bytes.TrimSpace(raw)
+	token := bytes.TrimSpace(raw[:n])
 	if len(token) < MinTokenBytes {
 		return nil, ErrTokenTooShort
 	}

@@ -104,6 +104,20 @@ func TestLoadFileAcceptsLengthBoundaries(t *testing.T) {
 			}
 		})
 	}
+	t.Run("maximum file bytes with surrounding whitespace", func(t *testing.T) {
+		token := strings.Repeat("a", MaxTokenBytes)
+		contents := strings.Repeat(" ", 32) + token + strings.Repeat("\n", 32)
+		if len(contents) != maxTokenFileBytes {
+			t.Fatalf("fixture length = %d, want %d", len(contents), maxTokenFileBytes)
+		}
+		a, err := LoadFile(writeTokenFile(t, contents))
+		if err != nil {
+			t.Fatalf("LoadFile(exact file limit): %v", err)
+		}
+		if !a.Authenticate(requestWithBearer(token)) {
+			t.Fatal("exact-limit padded token should authenticate")
+		}
+	})
 }
 
 func TestAuthenticateRequiresExactBearerCredential(t *testing.T) {

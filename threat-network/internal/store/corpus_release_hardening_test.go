@@ -71,6 +71,49 @@ func TestCurrentCorpusSnapshotReturnsCallerOwnedBytes(t *testing.T) {
 	}
 }
 
+func TestCurrentCorpusSnapshotDoesNotRegressNewerCache(t *testing.T) {
+	olderDB := newTestDB(t)
+	olderData, olderManifest, err := olderDB.CurrentCorpusSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newerDB := newTestDB(t)
+	createPublishedCorpusTestProfile(t, newerDB, "Newer Cache Release", 0)
+	newerData, newerManifest, err := newerDB.CurrentCorpusSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newerManifest.CorpusRevision <= olderManifest.CorpusRevision {
+		t.Fatalf("fixture revisions older=%d newer=%d", olderManifest.CorpusRevision, newerManifest.CorpusRevision)
+	}
+
+	// Model an older reader that captured olderManifest before waiting for the
+	// load gate, after a newer reader has already populated the shared cache.
+	olderDB.corpusCacheMu.Lock()
+	olderDB.corpusCache = &corpusSnapshotCache{
+		data: bytes.Clone(newerData), manifest: newerManifest,
+	}
+	olderDB.corpusCacheMu.Unlock()
+
+	gotData, gotManifest, err := olderDB.CurrentCorpusSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotManifest != olderManifest || !bytes.Equal(gotData, olderData) {
+		t.Fatalf("stale reader returned mismatched pair: manifest=%+v data=%q", gotManifest, gotData)
+	}
+	gotData[0] ^= 0xff
+
+	olderDB.corpusCacheMu.RLock()
+	cached := olderDB.corpusCache
+	if cached == nil || cached.manifest != newerManifest || !bytes.Equal(cached.data, newerData) {
+		olderDB.corpusCacheMu.RUnlock()
+		t.Fatalf("older completion regressed newer cache: %+v", cached)
+	}
+	olderDB.corpusCacheMu.RUnlock()
+}
+
 func installSyntheticCorpusRelease(t *testing.T, db *DB, raw string, profileCount, variantCount int, createdAt string) {
 	t.Helper()
 	digest := sha256.Sum256([]byte(raw))

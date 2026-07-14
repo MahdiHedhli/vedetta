@@ -38,6 +38,7 @@ class UpstreamHandler(BaseHTTPRequestHandler):
                 "path": self.path,
                 "authorization": self.headers.get("Authorization"),
                 "if_match": self.headers.get("If-Match"),
+                "if_none_match": self.headers.get("If-None-Match"),
                 "action": self.headers.get("X-Vedetta-Admin-Action"),
                 "tailscale_login": self.headers.get("Tailscale-User-Login"),
                 "body": self.rfile.read(length),
@@ -49,6 +50,15 @@ class UpstreamHandler(BaseHTTPRequestHandler):
                 "Location",
                 "http://127.0.0.1:%d/redirect-target" % self.server.server_address[1],
             )
+            self.end_headers()
+            return
+        if (
+            self.path == "/api/v1/device-corpus/manifest"
+            and self.headers.get("If-None-Match") == '"cached-public"'
+        ):
+            self.send_response(304)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("ETag", '"cached-public"')
             self.end_headers()
             return
         body = json.dumps({"ok": True}).encode()
@@ -127,6 +137,7 @@ class ProxyTests(unittest.TestCase):
         serve.ADMIN_UPSTREAM = base
         cls.proxy = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
         cls.proxy.admin_token = b"a" * 32
+        cls.proxy.dashboard_template = serve._load_dashboard_template(serve.DASHBOARD)
         cls.proxy_thread = start_server(cls.proxy)
         cls.base = "http://127.0.0.1:%d" % cls.proxy.server_address[1]
         serve.ALLOWED_ORIGINS = (cls.base,)
@@ -271,6 +282,63 @@ class ProxyTests(unittest.TestCase):
         for value in invalid:
             with self.subTest(value=repr(value)), self.assertRaises(ValueError):
                 serve._validated_if_match({"If-Match": value})
+
+    def test_if_none_match_accepts_standard_validators_and_rejects_unsafe_values(self):
+        valid = (
+            "*",
+            '"opaque"',
+            'W/"weak"',
+            '"first", W/"second"',
+            '  "surrounding-ows"\t',
+        )
+        for value in valid:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    serve._validated_if_none_match({"If-None-Match": value}),
+                    value.strip(" \t"),
+                )
+        self.assertIsNone(serve._validated_if_none_match({}))
+        invalid = (
+            "W/ *",
+            '"one", *',
+            '"contains space"',
+            '"unterminated',
+            '"folded"\r\n X-Injected: yes',
+            '"contains\x00control"',
+            '"contains\x7fdelete"',
+            '"contains-☃"',
+            '"' + "a" * 511 + '"',
+        )
+        for value in invalid:
+            with self.subTest(value=repr(value)), self.assertRaises(ValueError):
+                serve._validated_if_none_match({"If-None-Match": value})
+
+    def test_if_none_match_rejects_folded_and_duplicate_request_headers(self):
+        host = self.base.removeprefix("http://")
+        base_headers = (
+            "GET /api/v1/device-corpus/manifest HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+        )
+        cases = (
+            'If-None-Match: "first"\r\n X-Injected: yes\r\n',
+            'If-None-Match: "first"\r\nIf-None-Match: "second"\r\n',
+        )
+        for injected_headers in cases:
+            with self.subTest(headers=repr(injected_headers)):
+                request = (
+                    base_headers + injected_headers + "Connection: close\r\n\r\n"
+                ).encode("ascii")
+                with socket.create_connection(
+                    self.proxy.server_address, timeout=3
+                ) as client:
+                    client.sendall(request)
+                    client.shutdown(socket.SHUT_WR)
+                    response = bytearray()
+                    while chunk := client.recv(4096):
+                        response.extend(chunk)
+                self.assertIn(b"HTTP/1.0 400 Bad Request", response)
+                self.assertIn(b'"error":"INVALID_IF_NONE_MATCH"', response)
+                self.assertEqual(self.upstream.calls, [])
 
     def test_request_log_never_contains_query_values(self):
         canary = "QUERY_CANARY_NEVER_LOG"
@@ -531,6 +599,30 @@ class ProxyTests(unittest.TestCase):
                 self.assertNotIn(b"\r\nContent-Length:", b"\r\n" + header_block)
                 self.assertEqual(body, b"")
                 self.assertTrue(upstream.closed)
+
+    def test_public_conditional_get_forwards_validator_and_real_304(self):
+        with socket.create_connection(self.proxy.server_address, timeout=3) as client:
+            client.sendall(
+                b"GET /api/v1/device-corpus/manifest HTTP/1.0\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b'If-None-Match: "cached-public"\r\n'
+                b"Connection: close\r\n\r\n"
+            )
+            response = bytearray()
+            while chunk := client.recv(4096):
+                response.extend(chunk)
+
+        header_block, body = bytes(response).split(b"\r\n\r\n", 1)
+        self.assertIn(b"HTTP/1.0 304 Not Modified", header_block)
+        self.assertNotIn(b"502 Bad Gateway", header_block)
+        self.assertIn(b'ETag: "cached-public"', header_block)
+        self.assertNotIn(b"\r\nContent-Length:", b"\r\n" + header_block)
+        self.assertEqual(body, b"")
+        self.assertEqual(len(self.upstream.calls), 1)
+        self.assertEqual(
+            self.upstream.calls[0]["if_none_match"], '"cached-public"'
+        )
+        self.assertIsNone(self.upstream.calls[0]["authorization"])
 
     def test_upstream_response_header_injection_is_rejected(self):
         cases = (
@@ -891,14 +983,23 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(self.upstream.calls, [])
 
     def test_dashboard_uses_nonce_and_does_not_contain_admin_token(self):
-        with self.open("/") as response:
-            body = response.read().decode()
-            csp = response.headers["Content-Security-Policy"]
+        # Startup loaded the immutable template. Serving it must perform no
+        # further file I/O, while nonce substitution remains request-specific.
+        with mock.patch("builtins.open", side_effect=AssertionError("dashboard reopened")):
+            with self.open("/") as response:
+                body = response.read().decode()
+                csp = response.headers["Content-Security-Policy"]
+                cors = response.headers.get("Access-Control-Allow-Origin")
+            with self.open("/") as response:
+                second_body = response.read().decode()
+                second_csp = response.headers["Content-Security-Policy"]
         self.assertNotIn("__CSP_NONCE__", body)
         self.assertNotIn("a" * 32, body)
         self.assertIn("script-src 'nonce-", csp)
         self.assertIn("connect-src 'self'", csp)
-        self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
+        self.assertIsNone(cors)
+        self.assertNotEqual(body, second_body)
+        self.assertNotEqual(csp, second_csp)
 
 
 class ConfigurationTests(unittest.TestCase):

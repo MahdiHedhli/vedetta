@@ -182,6 +182,15 @@ def _read_limited(response, limit: int) -> bytes:
     return data
 
 
+def _load_dashboard_template(path: str) -> bytes:
+    """Load and bound the immutable dashboard asset once at process startup."""
+    with open(path, "rb") as handle:
+        template = handle.read(MAX_RESPONSE_BYTES + 1)
+    if len(template) > MAX_RESPONSE_BYTES:
+        raise ValueError("dashboard asset exceeds configured response limit")
+    return template
+
+
 def _status_allows_content(status: int) -> bool:
     """Return whether an HTTP response status permits message content."""
     return not (100 <= status < 200 or status in (204, 205, 304))
@@ -222,6 +231,31 @@ def _validated_if_match(headers) -> str | None:
     ):
         raise ValueError("invalid If-Match header")
     return values[0]
+
+
+def _validated_if_none_match(headers) -> str | None:
+    """Return one bounded RFC-style validator or reject ambiguous input."""
+    get_all = getattr(headers, "get_all", None)
+    if callable(get_all):
+        values = get_all("If-None-Match", [])
+    else:
+        value = headers.get("If-None-Match")
+        values = [] if value is None else [value]
+    if not values:
+        return None
+    if len(values) != 1 or not isinstance(values[0], str) or len(values[0]) > 512:
+        raise ValueError("invalid If-None-Match header")
+
+    value = values[0].strip(" \t")
+    if value == "*":
+        return value
+    # Preserve standard weak validators and comma-separated entity-tag lists,
+    # but reject folds, controls, non-ASCII bytes, and malformed list syntax
+    # before urllib serializes the value into a new upstream request.
+    entity_tag = r'(?:W/)?"[\x21\x23-\x7e]*"'
+    if not re.fullmatch(rf"{entity_tag}(?:[ \t]*,[ \t]*{entity_tag})*", value):
+        raise ValueError("invalid If-None-Match header")
+    return value
 
 
 def _forwarded_allow_value(headers) -> str:
@@ -344,14 +378,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _send_dashboard(self) -> None:
-        try:
-            with open(DASHBOARD, "rb") as handle:
-                template = handle.read(MAX_RESPONSE_BYTES + 1)
-        except OSError:
+        template = getattr(self.server, "dashboard_template", None)
+        if not isinstance(template, bytes):
             self._json_error(500, "DASHBOARD_UNAVAILABLE", "dashboard asset unavailable")
-            return
-        if len(template) > MAX_RESPONSE_BYTES:
-            self._json_error(500, "DASHBOARD_TOO_LARGE", "dashboard asset exceeds limit")
             return
         nonce = base64.b64encode(secrets.token_bytes(18)).decode("ascii")
         body = template.replace(b"__CSP_NONCE__", nonce.encode("ascii"))
@@ -514,14 +543,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if_match = _validated_if_match(self.headers) if is_admin else None
+            if_none_match = (
+                _validated_if_none_match(self.headers) if is_public else None
+            )
         except ValueError:
-            self._json_error(400, "INVALID_IF_MATCH", "invalid If-Match header")
+            code = "INVALID_IF_MATCH" if is_admin else "INVALID_IF_NONE_MATCH"
+            name = "If-Match" if is_admin else "If-None-Match"
+            self._json_error(400, code, f"invalid {name} header")
             return
         target = upstream + path + (("?" + query) if query else "")
         request = urllib.request.Request(target, data=body, method=self.command)
         request.add_header("Accept", "application/json")
         if body is not None:
             request.add_header("Content-Type", "application/json")
+        if if_none_match:
+            request.add_header("If-None-Match", if_none_match)
         if is_admin:
             request.add_header("Authorization", "Bearer " + token.decode("ascii"))
             if if_match:
@@ -537,7 +573,11 @@ class Handler(BaseHTTPRequestHandler):
                 response = error
                 is_http_error = True
             with response:
-                if is_http_error and 300 <= response.code < 400:
+                if (
+                    is_http_error
+                    and 300 <= response.code < 400
+                    and response.code != 304
+                ):
                     proxy_error = (
                         502,
                         "UPSTREAM_REDIRECT",
@@ -679,6 +719,7 @@ def main() -> None:
                 or parsed.fragment
             ):
                 raise ValueError("MON_ALLOWED_ORIGINS contains an invalid origin")
+        dashboard_template = _load_dashboard_template(DASHBOARD)
         token = _load_admin_token(ADMIN_TOKEN_FILE)
         if token and not ALLOWED_TAILSCALE_USERS and not ALLOW_LOCAL_ADMIN:
             raise ValueError(
@@ -689,6 +730,7 @@ def main() -> None:
         raise SystemExit(2)
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     server.admin_token = token
+    server.dashboard_template = dashboard_template
     admin_state = "enabled" if token else "disabled"
     sys.stderr.write(
         "vedetta-operations: http://127.0.0.1:%d -> public %s; admin %s (%s); "

@@ -310,15 +310,21 @@ func (db *DB) CurrentCorpusSnapshot(ctx context.Context) ([]byte, corpus.Manifes
 	}
 
 	db.corpusCacheMu.Lock()
-	// A concurrent reader may have filled the same immutable release. Either
-	// validated value is equivalent; keeping the existing slice avoids churn.
-	if db.corpusCache != nil && db.corpusCache.manifest.CorpusRevision == manifest.CorpusRevision &&
-		db.corpusCache.manifest.SnapshotSHA256 == manifest.SnapshotSHA256 {
-		manifest = db.corpusCache.manifest
+	// The manifest was read before the load gate was acquired. A reader with a
+	// newer manifest can therefore finish first and cache the next release.
+	// Reuse an exact immutable key, advance the cache monotonically, and return
+	// the locally validated pair without evicting a newer cached release.
+	if cached := db.corpusCache; cached != nil &&
+		cached.manifest.CorpusRevision == manifest.CorpusRevision &&
+		cached.manifest.SnapshotSHA256 == manifest.SnapshotSHA256 {
+		manifest = cached.manifest
+		data = bytes.Clone(cached.data)
 	} else {
-		db.corpusCache = &corpusSnapshotCache{data: data, manifest: manifest}
+		if cached == nil || manifest.CorpusRevision > cached.manifest.CorpusRevision {
+			db.corpusCache = &corpusSnapshotCache{data: data, manifest: manifest}
+		}
+		data = bytes.Clone(data)
 	}
-	data = bytes.Clone(db.corpusCache.data)
 	db.corpusCacheMu.Unlock()
 	return data, manifest, nil
 }
