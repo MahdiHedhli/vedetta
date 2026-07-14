@@ -64,7 +64,9 @@ if [ -z "${VEDETTA_UPGRADE_SELF:-}" ]; then
   cat "${BASH_SOURCE[0]}" >"$_tmp"
   export VEDETTA_UPGRADE_SELF="$_tmp"
   export VEDETTA_UPGRADE_HOME="$_home"
-  exec bash "$_tmp" "$@"
+  # "$BASH": re-exec with the SAME interpreter (macOS system bash 3.2 vs a
+  # Homebrew bash on PATH can differ in behavior).
+  exec "$BASH" "$_tmp" "$@"
 fi
 
 PROJECT_DIR="${VEDETTA_UPGRADE_HOME}"
@@ -207,7 +209,9 @@ backend_running() { [ -n "$(docker compose ps -q backend 2>/dev/null)" ]; }
 # NB: no mapfile/arrays-from-stream here — macOS ships bash 3.2 and this
 # script must run there. Compose service names cannot contain whitespace, so
 # plain word-splitting of the newline-separated list is safe.
-core_services() { COMPOSE_PROFILES="" docker compose config --services 2>/dev/null; }
+# (stderr NOT silenced: a broken docker-compose.yml should show its parse
+# error, not surface as a generic "no services" failure.)
+core_services() { COMPOSE_PROFILES="" docker compose config --services; }
 
 compose_stop_core() {
   local svcs
