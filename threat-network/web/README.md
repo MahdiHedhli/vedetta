@@ -94,9 +94,10 @@ source type.
 
 ## Run locally
 
-Create a 256-bit-or-stronger token in a private file. The threat-network admin
-listener and dashboard shim must read the same file; do not put the token in an
-environment variable or command line.
+Create a 256-bit-or-stronger token in a private file. In admin-enabled tailnet
+mode, the threat-network listener and dashboard shim must read the same file;
+do not put the token in an environment variable or command line. The tokenless
+local status command below intentionally does not read it.
 
 ```sh
 # From the repository root, build and install the native service binary once.
