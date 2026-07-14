@@ -16,7 +16,7 @@ Examples:
   go run main.go -count 30  -scenario high_threat
   go run main.go -count 100 -scenario mixed
 
-  # Use real 151-device baseline from the 10h collection for authentic context:
+  # Use the current local inventory as context for otherwise synthetic events:
   go run main.go -count 50 -scenario mixed -real-context
 */
 
@@ -29,19 +29,22 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/google/uuid"
+	_ "github.com/mattn/go-sqlite3"
 )
+
+var enrichHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func main() {
 	dbPath := flag.String("db", "/data/vedetta.db", "Path to vedetta.db")
 	count := flag.Int("count", 50, "Number of events to generate")
 	scenario := flag.String("scenario", "mixed", "Scenario: false_positive | mid_warning | high_threat | mixed")
-	realContext := flag.Bool("real-context", false, "Use real devices from the DB (151-device 10h baseline) for authentic vendor/segment/new_device context. Enables realistic SNR testing of device boosts and UI filters/suppression.")
-	enrich := flag.Bool("enrich", false, "POST generated events to /api/v1/ingest so they go through the full Enricher pipeline (real anomaly scoring, context boosts, tags, threat descriptions based on the frozen 151-device baseline). Produces high-quality scored test data for FP/power validation.")
+	realContext := flag.Bool("real-context", false, "Use the current local device inventory for vendor, segment, and first-seen context on synthetic events. Enables realistic SNR testing without embedding inventory data.")
+	enrich := flag.Bool("enrich", false, "POST generated events to /api/v1/ingest so they go through the full Enricher pipeline for computed scores, context boosts, tags, and threat descriptions.")
 	flag.Parse()
 
 	db, err := sql.Open("sqlite3", *dbPath)
@@ -57,7 +60,7 @@ func main() {
 	var realDevices []realDevice
 	if *realContext {
 		realDevices = loadRealDevices(db)
-		fmt.Printf("  real-context: loaded %d devices from baseline for authentic vendor/segment context\n", len(realDevices))
+		fmt.Printf("  real-context: loaded %d devices from the current local inventory for authentic vendor/segment context\n", len(realDevices))
 	}
 
 	now := time.Now().UTC()
@@ -75,9 +78,9 @@ func main() {
 			if dev.Segment != "" {
 				event.NetworkSegment = dev.Segment
 			}
-			// For authentic FP testing: if this real device from the 10h baseline is "established"
-			// at the event time, strip spurious new_device/very_new tags so benign traffic from
-			// real old IoT (Sonos, Luba, etc.) does not get fake context boosts in the test data.
+			// If this inventory device is established at the event time, strip spurious
+			// new_device/very_new tags so established IoT devices do not receive fake
+			// context boosts in the synthetic test data.
 			if !dev.FirstSeen.IsZero() && event.Timestamp.Sub(dev.FirstSeen) > 48*time.Hour {
 				event.TagsJSON = strings.ReplaceAll(event.TagsJSON, `"new_device",`, "")
 				event.TagsJSON = strings.ReplaceAll(event.TagsJSON, `"very_new_device",`, "")
@@ -91,37 +94,36 @@ func main() {
 	}
 
 	if *enrich {
-		// Send through the public ingest so Enricher runs: real scoring, device context lookup
-		// against the 151-device baseline, boosts, threat descriptions, etc.
+		// Send through public ingest so Enricher runs scoring, current-inventory
+		// context lookup, boosts, and threat descriptions.
 		ingestURL := "http://localhost:8080/api/v1/ingest"
 		// Build minimal payloads that the ingest will accept and enrich (it calls Enricher.Enrich)
 		var payloads []map[string]any
 		for _, e := range eventsToPersist {
-			p := map[string]any{
-				"event_type":      e.EventType,
-				"domain":          e.Domain,
-				"source_ip":       e.SourceIP,
-				"device_vendor":   e.DeviceVendor,
-				"network_segment": e.NetworkSegment,
-				"dns_source":      e.DNSSource,
-				"query_type":      e.QueryType,
-			}
-			if e.ResolvedIP != "" {
-				p["resolved_ip"] = e.ResolvedIP
-			}
-			payloads = append(payloads, p)
+			payloads = append(payloads, ingestPayload(e))
 		}
-		body, _ := json.Marshal(payloads)
-		resp, err := http.Post(ingestURL, "application/json", bytes.NewReader(body))
+		body, err := json.Marshal(payloads)
 		if err != nil {
-			log.Printf("enrich POST error: %v", err)
-		} else {
-			defer resp.Body.Close()
-			var result map[string]any
-			json.NewDecoder(resp.Body).Decode(&result)
-			log.Printf("Enriched via pipeline: %v", result)
+			log.Fatalf("encode enrich payload: %v", err)
 		}
-		fmt.Printf("Sent %d events through Enricher (real scores/tags from 151-device baseline).\n", len(eventsToPersist))
+		req, err := newIngestRequest(ingestURL, body, os.Getenv("VEDETTA_INGEST_TOKEN"))
+		if err != nil {
+			log.Fatalf("build enrich request: %v", err)
+		}
+		resp, err := enrichHTTPClient.Do(req)
+		if err != nil {
+			log.Fatalf("enrich POST error: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			log.Fatalf("enrich POST returned %s", resp.Status)
+		}
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			log.Fatalf("decode enrich response: %v", err)
+		}
+		log.Printf("Enriched via pipeline: %v", result)
+		fmt.Printf("Sent %d synthetic events through Enricher with current-inventory context.\n", len(eventsToPersist))
 	} else {
 		// Legacy direct insert path (for existing targets that expect pre-scored or 0-score test data)
 		inserted := 0
@@ -166,6 +168,36 @@ type SimEvent struct {
 	DNSSource      string
 	ThreatDesc     string
 	Metadata       string
+}
+
+func ingestPayload(e SimEvent) map[string]any {
+	p := map[string]any{
+		"event_id":        e.EventID,
+		"timestamp":       e.Timestamp,
+		"event_type":      e.EventType,
+		"domain":          e.Domain,
+		"source_ip":       e.SourceIP,
+		"device_vendor":   e.DeviceVendor,
+		"network_segment": e.NetworkSegment,
+		"dns_source":      e.DNSSource,
+		"query_type":      e.QueryType,
+	}
+	if e.ResolvedIP != "" {
+		p["resolved_ip"] = e.ResolvedIP
+	}
+	return p
+}
+
+func newIngestRequest(ingestURL string, body []byte, token string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodPost, ingestURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token = strings.TrimSpace(token); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
 }
 
 func generateEvent(scenario string, ts time.Time) SimEvent {
@@ -330,7 +362,7 @@ func randomString(n int) string {
 	return string(b)
 }
 
-// === Real device context support for authentic SNR validation ===
+// === Current local device context support for SNR validation ===
 
 type realDevice struct {
 	IP        string

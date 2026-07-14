@@ -22,8 +22,8 @@ help:
 	@echo "  make simulate-high     - Insert ~30 high-threat events (DGA/tunnel/rebind from new IoT)"
 	@echo "  make simulate-mixed    - Balanced mix of all three"
 	@echo "  make simulate-all      - Run all three scenarios"
-	@echo "  make simulate-real     - Mixed scenario using the real 151-device 10h baseline for authentic context (vendor/segment from actual IoT etc.)"
-	@echo "  make simulate-real-enrich - Same + send through live Enricher for real anomaly scores, boosts, tags (best for full pipeline FP/power testing)"
+	@echo "  make simulate-real     - Mixed scenario using the current local inventory for device context"
+	@echo "  make simulate-real-enrich - Same + send through live Enricher for computed scores, boosts, and tags"
 	@echo ""
 	@echo "Sensor (native):"
 	@echo "  make build-sensor      - Build fresh vedetta-sensor binary to /tmp/vedetta-sensor"
@@ -67,8 +67,8 @@ SIM := scripts/simulate/simulate
 
 # Build the simulator for the linux/arm64 (or amd64) backend container with CGO_ENABLED=1
 # (required for go-sqlite3). Uses the same golang:1.22-alpine + gcc/musl env as the backend builder
-# so that -real-context works and produces a fully functional binary that can query the real 151-device
-# baseline and insert test events. Matches the running container platform (linux/arm64 on Apple Silicon).
+# so that -real-context works and produces a fully functional binary that can query the current
+# local inventory and insert synthetic test events. Matches the running container platform.
 $(SIM): scripts/simulate/main.go
 	docker run --rm \
 		-v $(CURDIR)/scripts/simulate:/src \
@@ -99,23 +99,24 @@ simulate-mixed: $(SIM)
 simulate-all: simulate-fp simulate-mid simulate-high
 	@echo "All SNR test tiers loaded."
 
-# Real-context simulation: uses the frozen 151-device baseline (71 IoT etc) for realistic device context in test events.
-# This lets us exercise the full device-context boost logic, quick suppression ("Suppress all [Vendor] on [Segment]"), and UI filters with actual data from the 10h run.
+# Inventory-context simulation: uses the operator's current local inventory to add
+# realistic device context to synthetic events. No inventory data is embedded here.
+# This exercises context boosts, quick suppression, and UI filters.
 simulate-real: $(SIM)
 	docker cp $(SIM) vedetta-backend:/tmp/simulate
 	docker compose exec backend /tmp/simulate -db /data/vedetta.db -count 50 -scenario mixed -real-context
-	@echo "Real-context mixed events inserted using the actual 151-device (71 IoT) baseline."
-	@echo "Excellent for validating device context display, SNR filters, and suppression UX with real vendors/segments."
+	@echo "Synthetic mixed events inserted using the current local inventory for context."
+	@echo "Useful for validating device context display, SNR filters, and suppression UX."
 
 # Real-context + full Enricher pipeline: sends events through /api/v1/ingest so the live Enricher computes
-# real anomaly scores, tags, boosts, and threat descriptions using the exact 151-device frozen baseline.
+# anomaly scores, tags, boosts, and threat descriptions using the current local inventory.
 # This produces high-quality scored test data that exercises the entire detection stack (DGA/Beacon/Tunnel/etc + context).
 simulate-real-enrich: $(SIM)
 	docker cp $(SIM) vedetta-backend:/tmp/simulate
 	@echo "Cleaning old simulation test events to keep DB lean for validation..."
 	@docker compose exec -T backend sqlite3 /data/vedetta.db "DELETE FROM events WHERE dns_source = 'simulation' AND timestamp < datetime('now', '-2 hours');" 2>/dev/null || true
 	docker compose exec backend /tmp/simulate -db /data/vedetta.db -count 30 -scenario mixed -real-context -enrich
-	@echo "Real-context events sent through the live Enricher (real scores/boosts from the 151-device baseline)."
+	@echo "Inventory-context events sent through the live Enricher for computed scores and boosts."
 	@echo "Old test events cleaned; check Threats view and the enriched SNR summary in 'make collection-health' for FP/power validation."
 
 # Robust SQL-based seeding (avoids cgo cross-compile issues with the Go simulator)
@@ -151,8 +152,8 @@ sensor-reset:
 		echo "No installed binary found. Run 'make install-sensor' first."; \
 	fi
 
-# Real network capture for SNR validation (requires sudo for packet capture)
-# Recommended on this machine: en0 for both DNS and passive discovery (LAN 10.0.0.0/24)
+# Live network capture for local SNR validation (requires sudo for packet capture).
+# Use --print-capture-plan to select interfaces for the current host.
 sensor-recommend:
 	@backend_port="$$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)" && \
 		/tmp/vedetta-sensor --print-capture-plan --core "http://localhost:$${backend_port}"

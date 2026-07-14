@@ -244,9 +244,8 @@ var knownBenignHighEntropyDomains = []string{
 	"cdn.cloudflare.net",
 	"cdn.jsdelivr.net",
 	"unpkg.com",
-	// Live-observed during VALIDATE-REAL on real home LAN (high-entropy Azure / edge / WAF / storage subdomains
-	// that legitimately produce random-looking labels but are benign Microsoft/Cloud infra, CDNs, and telemetry).
-	// Added based on real 0.65 DGA FPs from primary client (github, discord, OneDrive, Azure Front Door, etc.).
+	// High-entropy Azure, edge, WAF, storage, collaboration, and telemetry
+	// subdomains that legitimately produce random-looking labels.
 	"blob.core.windows.net",
 	"azureedge.net",
 	"azureedge.us",
