@@ -36,11 +36,10 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: stable
-          cache-dependency-path: |
-            backend/go.sum
-            sensor/go.sum
-            threat-network/go.sum
-            scripts/simulate/go.sum
+          # CodeQL manual mode must observe compiler executions after init.
+          # Restoring setup-go's build cache can make go build reuse compiled
+          # packages and leave the CodeQL database incomplete.
+          cache: false
 
       # setup-go must run before CodeQL initialization. In manual build mode,
       # init prepends CodeQL's tracing wrapper to PATH; running setup-go later
