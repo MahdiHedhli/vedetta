@@ -57,7 +57,11 @@ for i in $(seq 1 60); do
         break
     fi
     if [ "$i" -eq 60 ]; then
-        echo "  WARNING: Backend did not become ready within 60s — check 'docker logs vedetta-backend' and 'curl http://localhost:${BACKEND_PORT}/readyz'."
+        # A timed-out readiness wait is a FAILED update (mid-migration or broken DB),
+        # not a cosmetic warning — exit non-zero so callers/automation see it.
+        echo "  ERROR: Backend did not become ready within 60s."
+        echo "  Diagnose: docker logs vedetta-backend  and  curl http://localhost:${BACKEND_PORT}/readyz"
+        exit 1
     fi
     sleep 1
 done

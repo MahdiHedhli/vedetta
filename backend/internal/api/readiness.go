@@ -46,11 +46,15 @@ type ReadinessMonitor struct {
 	mu         sync.Mutex
 	deep       deepCheckResult
 	refreshing bool
+	// firstDone is closed once the FIRST deep check has stored a result. Probes that
+	// arrive before then wait on it (bounded by the probe context) instead of ever
+	// reporting ready ahead of the initial integrity scan — see deepStatus.
+	firstDone chan struct{}
 }
 
 // NewReadinessMonitor builds a readiness monitor over the given store.
 func NewReadinessMonitor(db *store.DB) *ReadinessMonitor {
-	return &ReadinessMonitor{db: db}
+	return &ReadinessMonitor{db: db, firstDone: make(chan struct{})}
 }
 
 // handleReadyz is the HTTP handler for GET /readyz. It returns 200 only when every
@@ -86,7 +90,7 @@ func (m *ReadinessMonitor) handleReadyz(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Cached deep check (integrity + foreign keys), refreshed off the hot path.
-	deep := m.deepStatus()
+	deep := m.deepStatus(ctx)
 	if !deep.healthy {
 		writeReadyz(w, http.StatusServiceUnavailable, deep.reason,
 			map[string]any{"check": "integrity"})
@@ -100,13 +104,17 @@ func (m *ReadinessMonitor) handleReadyz(w http.ResponseWriter, r *http.Request) 
 }
 
 // deepStatus returns the cached deep-check result, kicking off a single background
-// refresh when the cache is empty or older than deepCheckTTL. The probe never blocks
-// on the expensive scan; it returns whatever was last known. Until the first refresh
-// completes the result is a healthy "warming up" so a probe during the container's
-// start_period is not failed by a not-yet-computed deep check. A corrupt DB is still
-// caught quickly on the cheap path (VerifyReadable / SchemaHead) or by the very next
-// probe once the first refresh lands.
-func (m *ReadinessMonitor) deepStatus() deepCheckResult {
+// refresh when the cache is empty or older than deepCheckTTL. Once a result exists the
+// probe never blocks on the expensive scan — it returns whatever was last known.
+//
+// Before the FIRST result exists, however, the probe MUST NOT report ready: a
+// corrupt-but-readable DB (schema head fine, integrity broken) would otherwise
+// false-green exactly once at startup, and once is enough for compose to mark the
+// container healthy and start dependents. So the first probe(s) wait — bounded by the
+// probe context — for the initial scan. On a fresh/small DB the scan completes in
+// milliseconds and the very first probe still answers 200; on a huge DB the probe
+// times out NOT ready, which the compose start_period absorbs until the scan lands.
+func (m *ReadinessMonitor) deepStatus(ctx context.Context) deepCheckResult {
 	now := time.Now().UTC()
 
 	m.mu.Lock()
@@ -118,14 +126,25 @@ func (m *ReadinessMonitor) deepStatus() deepCheckResult {
 	}
 	m.mu.Unlock()
 
-	if cached.at.IsZero() {
-		return deepCheckResult{healthy: true, reason: "warming up"}
+	if !cached.at.IsZero() {
+		return cached
 	}
-	return cached
+
+	// No result yet — wait for the initial scan rather than guessing healthy.
+	select {
+	case <-m.firstDone:
+		m.mu.Lock()
+		cached = m.deep
+		m.mu.Unlock()
+		return cached
+	case <-ctx.Done():
+		return deepCheckResult{healthy: false, reason: "initial integrity check still running"}
+	}
 }
 
 // refreshDeep runs the expensive deep check once and stores the result. It clears the
-// refreshing flag on exit so a later staleness can trigger another refresh.
+// refreshing flag on exit so a later staleness can trigger another refresh, and closes
+// firstDone after the first result so startup probes waiting in deepStatus unblock.
 func (m *ReadinessMonitor) refreshDeep() {
 	ctx, cancel := context.WithTimeout(context.Background(), deepCheckMaxDuration)
 	defer cancel()
@@ -134,9 +153,16 @@ func (m *ReadinessMonitor) refreshDeep() {
 	res.at = time.Now().UTC()
 
 	m.mu.Lock()
+	first := m.deep.at.IsZero()
 	m.deep = res
 	m.refreshing = false
 	m.mu.Unlock()
+
+	// Only one refresh runs at a time (refreshing flag), and `first` is true exactly
+	// once because every stored result carries a non-zero at — so no double close.
+	if first && m.firstDone != nil {
+		close(m.firstDone)
+	}
 }
 
 // runDeepCheck performs the referential-integrity (foreign_key_check) and structural

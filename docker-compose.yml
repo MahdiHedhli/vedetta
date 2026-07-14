@@ -111,7 +111,9 @@ services:
       # so a behind, half-migrated, or corrupt DB reports 503 (unhealthy) instead of a
       # bare "HTTP is up" 200. Dependents gated on `condition: service_healthy` below
       # therefore never start against a broken/mid-migration Core.
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/readyz"]
+      # Plain GET with the body discarded (not --spider): BusyBox wget happens to GET,
+      # but GNU wget --spider sends HEAD — the explicit form works under either binary.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/readyz"]
       interval: 30s
       timeout: 5s
       retries: 3

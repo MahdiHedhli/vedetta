@@ -1002,8 +1002,11 @@ for i in $(seq 1 60); do
         break
     fi
     if [ "$i" -eq 60 ]; then
-        echo "  WARNING: Backend did not become ready within 60s."
-        echo "  Check logs: docker logs vedetta-backend"
+        # A timed-out readiness wait is a FAILED update — do NOT proceed to rebuild and
+        # restart the sensor against a Core that is mid-migration or serving a broken DB.
+        echo "  ERROR: Backend did not become ready within 60s."
+        echo "  Diagnose: docker logs vedetta-backend  and  curl ${LOCAL_CORE_URL}/readyz"
+        exit 1
     fi
     sleep 1
 done

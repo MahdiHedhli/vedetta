@@ -138,9 +138,19 @@ func NewRouter(srv *Server) http.Handler {
 	// so a behind/half-migrated/corrupt DB reads NOT ready. Public and unauthenticated
 	// like /healthz and /version — it exposes only readiness state and the schema
 	// version, no network or inventory data. The compose healthcheck targets this.
-	if srv.Readiness != nil {
-		r.Get("/readyz", srv.Readiness.handleReadyz)
+	// Registered UNCONDITIONALLY: with no DB there is no monitor, and a probe must see
+	// 503 "not ready", never 404. Both GET and HEAD are served — chi does not fall back
+	// HEAD→GET on its own, and HEAD-based probers (GNU wget --spider, curl -I) would
+	// otherwise get 405. (BusyBox wget --spider issues GET, but don't depend on that.)
+	readyz := func(w http.ResponseWriter, r *http.Request) {
+		if srv.Readiness == nil {
+			writeReadyz(w, http.StatusServiceUnavailable, "database not configured", nil)
+			return
+		}
+		srv.Readiness.handleReadyz(w, r)
 	}
+	r.Get("/readyz", readyz)
+	r.Head("/readyz", readyz)
 
 	frontendDir := os.Getenv("VEDETTA_FRONTEND_DIR")
 	if frontendDir == "" {

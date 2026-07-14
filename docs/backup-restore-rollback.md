@@ -110,7 +110,13 @@ Verify:
 ```sh
 VED_TOKEN='<read-or-admin-token>'
 VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}')"
-curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz"   # 200 only when the restored DB is migrated + intact (503 otherwise)
+# Poll readiness — /readyz answers 200 only once migrations applied + DB intact
+# (503 otherwise); a single-shot curl right after `up -d` races cold startup.
+for i in $(seq 1 60); do
+  curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz" && break
+  [ "$i" -eq 60 ] && { echo "backend never became ready — check docker logs vedetta-backend"; exit 1; }
+  sleep 1
+done
 curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
   "http://localhost:${VED_BACKEND_PORT}/api/v1/status"
 unset VED_TOKEN VED_BACKEND_PORT
@@ -180,7 +186,13 @@ docker compose up -d --build
 # 4. Verify health + that your data is intact:
 VED_TOKEN='<read-or-admin-token>'
 VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}')"
-curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz"   # 200 only when the restored DB is migrated + intact (503 otherwise)
+# Poll readiness — /readyz answers 200 only once migrations applied + DB intact
+# (503 otherwise); a single-shot curl right after `up -d` races cold startup.
+for i in $(seq 1 60); do
+  curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz" && break
+  [ "$i" -eq 60 ] && { echo "backend never became ready — check docker logs vedetta-backend"; exit 1; }
+  sleep 1
+done
 curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
   "http://localhost:${VED_BACKEND_PORT}/api/v1/status"
 unset VED_TOKEN VED_BACKEND_PORT
@@ -212,7 +224,13 @@ git checkout <previous-release-tag>
 docker compose up -d --build
 VED_TOKEN='<read-or-admin-token>'
 VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}')"
-curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz"   # 200 only when the restored DB is migrated + intact (503 otherwise)
+# Poll readiness — /readyz answers 200 only once migrations applied + DB intact
+# (503 otherwise); a single-shot curl right after `up -d` races cold startup.
+for i in $(seq 1 60); do
+  curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz" && break
+  [ "$i" -eq 60 ] && { echo "backend never became ready — check docker logs vedetta-backend"; exit 1; }
+  sleep 1
+done
 curl -fsS -H "Authorization: Bearer ${VED_TOKEN}" \
   "http://localhost:${VED_BACKEND_PORT}/api/v1/status"
 unset VED_TOKEN VED_BACKEND_PORT
