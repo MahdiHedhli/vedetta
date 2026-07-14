@@ -45,6 +45,11 @@ const SEGMENT_COLORS = {
   guest: 'bg-green-400/20 text-green-400',
 };
 
+export function sensorListFailureWatermark(currentSequence, failedSequence, surfaceError) {
+  if (!surfaceError || failedSequence <= currentSequence) return currentSequence;
+  return failedSequence;
+}
+
 // Brand: Geometric Rook mark (amber on dark)
 function RookMark({ size = 32 }) {
   return (
@@ -236,7 +241,18 @@ export default function App() {
         return data;
       })
       .catch((error) => {
-        if (surfaceError) throw error;
+        if (surfaceError) {
+          // A post-mutation refresh that fails is still newer than every poll
+          // already in flight. Advance the invalidation watermark before
+          // surfacing the error so an older pre-action response cannot restore
+          // the sensor that was just removed (or the prior primary state).
+          sensorListAppliedSequence.current = sensorListFailureWatermark(
+            sensorListAppliedSequence.current,
+            requestSequence,
+            surfaceError,
+          );
+          throw error;
+        }
         return undefined;
       });
   }, [canAdmin]);
