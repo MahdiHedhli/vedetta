@@ -175,15 +175,19 @@ curl -fsS http://127.0.0.1:9090/api/v1/device-corpus/manifest
 ### Recommended: `scripts/upgrade.sh` (backup → migrate → verify → auto-rollback)
 
 This is the one-command safe path and it does everything below for you. It
-**snapshots the DB before touching anything**, checks out the target release,
-rebuilds, restarts, then verifies the result with `PRAGMA foreign_key_check`
-and `PRAGMA integrity_check`. On **any** failure it returns to the previous
+**snapshots the DB before the database can change**: with a healthy backend
+the old stack keeps serving through checkout and build, and the online
+`sqlite3 .backup` is taken **seconds before the container swap** — so a
+rollback discards almost no ingested data; with a down/crash-looping backend
+the stack is stopped and a cold tarball is taken **first**. It then restarts
+and verifies the result with `PRAGMA foreign_key_check` and
+`PRAGMA integrity_check`. On **any** failure it returns to the previous
 version and exits non-zero with the captured backend log: if the upgraded
 stack already ran (a migration that crash-loops the backend, a corrupt graph),
 it first restores the pre-upgrade snapshot into the volume; if the failure
-came earlier (e.g. a build error), the database was never touched, so the
-snapshot is kept but nothing needs restoring. Either way the stack ends up
-running the prior version with your data intact.
+came earlier (e.g. a build error), the database was never touched — the old
+stack just keeps running. Either way you end up on the prior version with
+your data intact.
 
 ```sh
 git fetch --tags

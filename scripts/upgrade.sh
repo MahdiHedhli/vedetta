@@ -8,12 +8,15 @@
 #
 # This script makes every Core upgrade recoverable:
 #
-#   1. Snapshot FIRST — the Core DB (+ .env + telemetry/threat-network volumes)
-#      before anything is touched. Online `.backup` when the backend is healthy;
-#      a cold volume tarball when it is down or crash-looping (the fail-closed
-#      backend makes the online path unavailable during an incident).
+#   1. Snapshot the Core DB (+ .env + telemetry/threat-network volumes) BEFORE
+#      the database can change. Healthy backend: the old stack keeps serving
+#      through checkout+build and an online `.backup` is taken seconds before
+#      the container swap, so a rollback discards almost nothing. Backend down
+#      or crash-looping: the stack is stopped and a cold volume tarball is
+#      taken FIRST (the fail-closed backend makes the online path unavailable
+#      during an incident).
 #   2. Check out a pinned tag/commit and rebuild.
-#   3. Bring the stack up.
+#   3. Bring the upgraded stack up.
 #   4. Verify: backend health, then `PRAGMA foreign_key_check` (expect 0 rows)
 #      and `PRAGMA integrity_check` (expect "ok").
 #   5. On ANY failure: stop the backend, restore the pre-upgrade snapshot into
@@ -78,7 +81,7 @@ ok()   { printf '  ✓ %s\n' "$*"; }
 warn() { printf '  ⚠ %s\n' "$*" >&2; }
 err()  { printf '  ✗ %s\n' "$*" >&2; }
 
-usage() { sed -n '2,43p' "$VEDETTA_UPGRADE_SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,46p' "$VEDETTA_UPGRADE_SELF" | sed 's/^# \{0,1\}//'; }
 
 # ─── Args ─────────────────────────────────────────────────────────────────────
 ASSUME_YES=0
@@ -251,9 +254,11 @@ mkdir -p "$SNAP_DIR"
 chmod 700 "$SNAP_DIR"
 # Tee everything (stdout + stderr) into the snapshot dir so a failed upgrade
 # leaves a complete transcript next to the backup it can be restored from.
+# Keep the original fds on 3/4: restoring them at the end lets the background
+# tee flush and exit before we prune the directory it is writing into.
+exec 3>&1 4>&2
 exec > >(tee -a "$LOG") 2>&1
 
-SNAPSHOT_DONE=0
 NEW_STACK_UP=0        # the upgraded stack was started (DB may be migrated)
 STACK_WAS_STOPPED=0   # we took the previously-running stack down ourselves
 CODE_CHANGED=0        # we moved the working tree to TARGET_REF
@@ -299,7 +304,7 @@ halt_rollback() {
 do_rollback() {
   local fail_head
   fail_head="$(git rev-parse HEAD)"
-  warn "Rolling back to ${PREV_DESC} and restoring the pre-upgrade snapshot…"
+  warn "Upgrade failed — recovering to ${PREV_DESC}…"
 
   { echo "----- backend logs at failure ($(date +%H:%M:%S)) -----"
     docker compose logs --no-color --tail=200 backend 2>&1 || true
@@ -333,7 +338,13 @@ do_rollback() {
     return 0
   fi
 
-  docker compose down || warn "docker compose down reported an error; continuing."
+  # A failed `down` means containers may still be running with the data volume
+  # mounted — rewriting SQLite files underneath a live process would corrupt
+  # the one copy rollback exists to protect. Halt rather than restore blind.
+  if ! docker compose down; then
+    halt_rollback "docker compose down failed — containers may still have the data volume mounted; restoring over live files would corrupt them"
+    return 1
+  fi
 
   if [ "$NEW_STACK_UP" = "1" ]; then
     if restore_main_volume; then ok "Restored Core DB from the pre-upgrade snapshot."
@@ -382,17 +393,10 @@ fail() {
   trap - ERR
   set +e
   err "UPGRADE FAILED: $msg"
-  if [ "$SNAPSHOT_DONE" = "1" ]; then
-    do_rollback
-  elif [ "$STACK_WAS_STOPPED" = "1" ]; then
-    # The stack was stopped for a cold snapshot that then failed. Nothing else
-    # changed (tree and images untouched), so restart it as it was rather than
-    # leaving the installation down after a pre-snapshot failure.
-    warn "No snapshot was taken; restarting the stack as it was before the attempt…"
-    docker compose up -d || err "could not restart the stack — run: docker compose up -d"
-  else
-    err "No snapshot was taken yet; the stack was not modified — nothing to roll back."
-  fi
+  # do_rollback handles every state: stack untouched → restore tree + retag and
+  # leave it serving; stack stopped pre-snapshot → restart it as it was; new
+  # stack ran → restore the snapshot and relaunch the previous version.
+  do_rollback
   echo ""
   err "Details, snapshot, and full transcript: ${SNAP_DIR}"
   exit 1
@@ -411,10 +415,11 @@ cat <<EOF
   Snapshot dir:      ${SNAP_DIR}
   Health URL:        http://127.0.0.1:${BACKEND_PORT}/healthz
 ───────────────────────────────────────────────────────────
-  Steps: snapshot (DB + .env + aux volumes) → checkout → build →
-  up → verify (health, foreign_key_check, integrity_check).
-  On ANY failure the pre-upgrade snapshot is restored and the
-  stack returns to ${PREV_DESC}.
+  Steps: checkout → build → snapshot (DB + .env + aux volumes;
+  online seconds before the swap — or FIRST, cold, if the backend
+  is already down) → up → verify (health, foreign_key_check,
+  integrity_check). On ANY failure the pre-upgrade snapshot is
+  restored and the stack returns to ${PREV_DESC}.
 ═══════════════════════════════════════════════════════════
 EOF
 
@@ -428,28 +433,65 @@ if [ "$ASSUME_YES" != "1" ]; then
   case "$_reply" in y|Y|yes|YES) ;; *) echo "  Aborted — nothing was changed."; exit 0 ;; esac
 fi
 
-# ─── 1. Snapshot FIRST ────────────────────────────────────────────────────────
-step "Snapshotting before any change…"
+# finalize_snapshot — .env + aux volumes + permissions + arm the ERR trap.
+# Runs once, right after the Core DB artifact lands (cold: step 1; warm: step 3).
+finalize_snapshot() {
+  ok "Core DB snapshot: $(basename "$SNAP_ARTIFACT") (${SNAP_MODE})"
 
-if backend_running && wait_health 5; then
-  ok "Backend is healthy — taking an online .backup (no downtime)."
-  SNAP_ARTIFACT="${SNAP_DIR}/vedetta-db-pre-${TS}.db"
-  docker compose exec -T backend sqlite3 /data/vedetta.db ".backup '/data/pre-${TS}.db'" \
-    || fail "online .backup failed"
-  # Plain `docker cp` (not `docker compose cp`, which needs Compose >= 2.20),
-  # and clean the in-container temp file up on BOTH exits so a failed copy
-  # doesn't leave a full DB copy eating the data volume.
-  if ! docker cp "$(docker compose ps -q backend | head -n1):/data/pre-${TS}.db" "$SNAP_ARTIFACT"; then
-    docker compose exec -T backend rm -f "/data/pre-${TS}.db" 2>/dev/null || true
-    fail "copying the snapshot out of the container failed"
+  # .env sits outside the volume; capture it too (it holds deployment secrets).
+  # Explicit fail: a bare `cp && ok` under set -e would die silently here (the
+  # ERR trap is not registered until the snapshot section completes).
+  if [ -f "${PROJECT_DIR}/.env" ]; then
+    cp -p "${PROJECT_DIR}/.env" "${SNAP_DIR}/env-${TS}.bak" \
+      || fail "could not copy .env into the snapshot directory"
+    ok "Copied .env → env-${TS}.bak"
+  else
+    warn "No .env next to docker-compose.yml — skipping .env backup."
   fi
-  docker compose exec -T backend rm -f "/data/pre-${TS}.db" \
-    || warn "could not remove the in-container temp snapshot (harmless)."
-  SNAP_MODE="online"
+
+  # Auxiliary volumes (cold tarball; best-effort — the Core DB is what matters).
+  if [ "$SKIP_AUX" != "1" ]; then
+    local key vol out
+    for key in telemetry-state threat-network-data; do
+      vol="$(resolve_volume "$key" || true)"
+      if [ -n "$vol" ] && volume_exists "$vol"; then
+        out="${key}-${TS}.tar.gz"
+        if docker run --rm -v "${vol}:/data:ro" -v "${SNAP_DIR}:/backup" "$HELPER_IMAGE" \
+             sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
+             _ "${out}" "$(id -u):$(id -g)"; then
+          ok "Snapshotted ${key} → ${out}"
+        else
+          warn "Could not snapshot ${key} (continuing; auxiliary volume)."
+        fi
+      else
+        warn "No ${key} volume present — skipping."
+      fi
+    done
+  fi
+
+  chmod -R go-rwx "$SNAP_DIR" 2>/dev/null || true   # snapshots hold DB + tokens + .env
+  # From here on, any unexpected command failure triggers rollback.
+  trap 'fail "unexpected error near line ${LINENO}"' ERR
+}
+
+# ─── 1. Snapshot strategy ─────────────────────────────────────────────────────
+# Cold (backend down/crash-looping): stop the stack and snapshot NOW — the data
+# cannot change and the online path has nothing to exec into.
+# Warm (backend healthy): keep the stack SERVING through checkout+build and take
+# the online snapshot in step 3, seconds before the container swap — so a
+# rollback discards at most the swap window's writes, not the whole build's.
+step "Choosing snapshot strategy…"
+WARM=0
+if backend_running && wait_health 5; then
+  WARM=1
+  ok "Backend is healthy — online snapshot will be taken right before the swap."
 else
   warn "Backend is not healthy — stopping the stack for a cold volume snapshot."
   STACK_WAS_STOPPED=1
-  docker compose down || warn "docker compose down reported an error; continuing."
+  # A failed down means something may still be writing to the volume; tarring
+  # it anyway could produce a corrupt backup the rollback would then trust.
+  docker compose down \
+    || fail "docker compose down failed — refusing to snapshot a volume that may still be written to"
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-data-${TS}.tar.gz"
   # chown the tarball to the invoking host user — the helper container runs as
   # root, and a root-owned backup would need sudo to manage or prune later.
@@ -458,43 +500,8 @@ else
     _ "$(basename "$SNAP_ARTIFACT")" "$(id -u):$(id -g)" \
     || fail "cold volume snapshot failed"
   SNAP_MODE="cold"
+  finalize_snapshot
 fi
-ok "Core DB snapshot: $(basename "$SNAP_ARTIFACT") (${SNAP_MODE})"
-
-# .env sits outside the volume; capture it too (it holds deployment secrets).
-# Explicit fail: a bare `cp && ok` under set -e would die silently here (the
-# ERR trap is not registered until the snapshot section completes).
-if [ -f "${PROJECT_DIR}/.env" ]; then
-  cp -p "${PROJECT_DIR}/.env" "${SNAP_DIR}/env-${TS}.bak" \
-    || fail "could not copy .env into the snapshot directory"
-  ok "Copied .env → env-${TS}.bak"
-else
-  warn "No .env next to docker-compose.yml — skipping .env backup."
-fi
-
-# Auxiliary volumes (cold tarball; best-effort — the Core DB is what matters).
-if [ "$SKIP_AUX" != "1" ]; then
-  for key in telemetry-state threat-network-data; do
-    vol="$(resolve_volume "$key" || true)"
-    if [ -n "$vol" ] && volume_exists "$vol"; then
-      out="${key}-${TS}.tar.gz"
-      if docker run --rm -v "${vol}:/data:ro" -v "${SNAP_DIR}:/backup" "$HELPER_IMAGE" \
-           sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
-           _ "${out}" "$(id -u):$(id -g)"; then
-        ok "Snapshotted ${key} → ${out}"
-      else
-        warn "Could not snapshot ${key} (continuing; auxiliary volume)."
-      fi
-    else
-      warn "No ${key} volume present — skipping."
-    fi
-  done
-fi
-
-SNAPSHOT_DONE=1
-chmod -R go-rwx "$SNAP_DIR" 2>/dev/null || true   # snapshots hold DB + tokens + .env
-# From here on, any unexpected command failure triggers rollback.
-trap 'fail "unexpected error near line ${LINENO}"' ERR
 
 # ─── 2. Check out target + build ──────────────────────────────────────────────
 if [ -n "$TARGET_REF" ]; then
@@ -508,7 +515,26 @@ fi
 step "Building images${NO_CACHE:+ (--no-cache)}…"
 docker compose build ${NO_CACHE:+--no-cache} || fail "docker compose build failed"
 
-# ─── 3. Bring the stack up ────────────────────────────────────────────────────
+# ─── 3. Warm snapshot (immediately before the swap) ──────────────────────────
+if [ "$WARM" = "1" ]; then
+  step "Snapshotting (online, no downtime) before the swap…"
+  SNAP_ARTIFACT="${SNAP_DIR}/vedetta-db-pre-${TS}.db"
+  docker compose exec -T backend sqlite3 /data/vedetta.db ".backup '/data/pre-${TS}.db'" \
+    || fail "online .backup failed"
+  # Plain `docker cp` (not `docker compose cp`, which needs Compose >= 2.20),
+  # and clean the in-container temp file up on BOTH exits so a failed copy
+  # doesn't leave a full DB copy eating the data volume.
+  if ! docker cp "$(docker compose ps -q backend | head -n1):/data/pre-${TS}.db" "$SNAP_ARTIFACT"; then
+    docker compose exec -T backend rm -f "/data/pre-${TS}.db" 2>/dev/null || true
+    fail "copying the snapshot out of the container failed"
+  fi
+  docker compose exec -T backend rm -f "/data/pre-${TS}.db" \
+    || warn "could not remove the in-container temp snapshot (harmless)."
+  SNAP_MODE="online"
+  finalize_snapshot
+fi
+
+# ─── 4. Bring the stack up ────────────────────────────────────────────────────
 step "Starting the upgraded stack…"
 NEW_STACK_UP=1
 docker compose up -d || fail "docker compose up -d failed"
@@ -554,10 +580,14 @@ EOF
 
 if [ "$PRUNE_ON_SUCCESS" = "1" ]; then
   cd "$PROJECT_DIR"
+  # Detach from the log's tee first so it flushes, closes the file inside
+  # SNAP_DIR, and exits — otherwise the rm can hit file-busy on some mounts.
+  exec 1>&3 2>&4 3>&- 4>&-
   if rm -rf "$SNAP_DIR"; then echo "  ✓ Pruned snapshot (--prune-on-success)."
   else warn "Could not prune the snapshot directory — remove it manually: ${SNAP_DIR}"; fi
 else
   ok "Pre-upgrade snapshot kept at: ${SNAP_DIR}"
   ok "It contains your DB, .env, and API tokens — treat it as sensitive and keep"
   ok "it until you have confirmed the new version in daily use."
+  exec 1>&3 2>&4 3>&- 4>&-
 fi
