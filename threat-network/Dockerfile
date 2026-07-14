@@ -8,7 +8,7 @@ COPY go.mod go.sum* ./
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -o /threat-network ./cmd/threat-network
 
-FROM alpine:3.22
+FROM alpine:3.24
 # sqlite supplies the online .backup command used by the documented corpus/feed
 # recovery procedure; it is not used on the HTTP request path.
 RUN apk --no-cache add ca-certificates sqlite
