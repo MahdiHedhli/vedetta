@@ -72,9 +72,33 @@ unset BASE_PORT
 assert_false "single-quoted dotenv reference stays literal" sh -c \
   '. "$1"; vedetta_resolve_port VEDETTA_SINGLE_REF 8080 "$2" >/dev/null 2>&1' \
   sh "${REPO_ROOT}/scripts/lib/port-config.sh" "${DOTENV}"
-assert_false "cyclic dotenv port reference is rejected" sh -c \
-  '. "$1"; vedetta_resolve_port CYCLE_A 8080 "$2" >/dev/null 2>&1' \
-  sh "${REPO_ROOT}/scripts/lib/port-config.sh" "${DOTENV}"
+assert_eq 8080 "$(vedetta_resolve_port CYCLE_A 8080 "${DOTENV}")" "unresolved sequential cycle uses Compose default"
+
+SEQUENTIAL_ENV="${TMP_DIR}/sequential.env"
+printf '%s\n' \
+  'BASE_PORT=18085' \
+  'VEDETTA_BACKEND_PORT=${BASE_PORT}' \
+  'BASE_PORT=18086' >"${SEQUENTIAL_ENV}"
+FORWARD_ENV="${TMP_DIR}/forward.env"
+printf '%s\n' \
+  'VEDETTA_BACKEND_PORT=${BASE_PORT}' \
+  'BASE_PORT=18084' >"${FORWARD_ENV}"
+assert_eq 18085 "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${SEQUENTIAL_ENV}")" "dotenv references freeze at assignment time"
+assert_eq 8080 "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${FORWARD_ENV}")" "forward dotenv reference uses Compose default"
+
+COMPOSE_FIXTURE="${TMP_DIR}/compose.yml"
+printf '%s\n' \
+  'services:' \
+  '  parity:' \
+  '    image: scratch' \
+  '    ports:' \
+  '      - "${VEDETTA_BACKEND_PORT:-8080}:80"' >"${COMPOSE_FIXTURE}"
+compose_port() {
+  docker compose -f "${COMPOSE_FIXTURE}" --env-file "$1" config --format json 2>/dev/null |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["parity"]["ports"][0]["published"])'
+}
+assert_eq "$(compose_port "${SEQUENTIAL_ENV}")" "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${SEQUENTIAL_ENV}")" "sequential reference matches Docker Compose"
+assert_eq "$(compose_port "${FORWARD_ENV}")" "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${FORWARD_ENV}")" "forward reference matches Docker Compose"
 export VEDETTA_BACKEND_PORT=
 assert_eq 8080 "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${DOTENV}")" "empty shell value uses Compose default"
 unset VEDETTA_BACKEND_PORT
@@ -110,6 +134,25 @@ assert_false "lsof ignores remote endpoint" vedetta_port_in_use lsof tcp 8080
 assert_true "lsof detects exact local endpoint" vedetta_port_in_use lsof tcp 3107
 assert_false "lsof UDP ignores remote endpoint" vedetta_port_in_use lsof udp 8080
 assert_true "lsof UDP detects exact local endpoint" vedetta_port_in_use lsof udp 3107
+
+BROKEN_BIN="${TMP_DIR}/broken-bin"
+mkdir "${BROKEN_BIN}"
+printf '%s\n' '#!/bin/sh' 'exit 2' >"${BROKEN_BIN}/lsof"
+chmod +x "${BROKEN_BIN}/lsof"
+if PATH="${BROKEN_BIN}:${PATH}" vedetta_port_in_use lsof tcp 8080; then
+  fail "failing lsof was treated as a successful probe"
+else
+  probe_status=$?
+fi
+assert_eq 2 "${probe_status}" "probe command failure has a distinct status"
+
+BROKEN_ENV="${TMP_DIR}/broken-probe.env"
+if PATH="${BROKEN_BIN}:${PATH}" ENV_FILE="${BROKEN_ENV}" \
+  "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/broken.out" 2>"${TMP_DIR}/broken.err"; then
+  fail "generator accepted a failed probe command"
+fi
+[ ! -e "${BROKEN_ENV}" ] || fail "failed probe left an env file"
+assert_true "generator explains failed probe" grep -q 'failed while checking' "${TMP_DIR}/broken.err"
 
 GENERATED_ENV="${TMP_DIR}/generated.env"
 VEDETTA_BACKEND_PORT=41000 VEDETTA_FRONTEND_PORT=41000 \

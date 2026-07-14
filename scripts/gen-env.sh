@@ -142,8 +142,23 @@ tcp_port_reserved() {
 # port at or above <preferred-start>. Fails clearly rather than writing a known
 # conflicting value if the whole range through 65535 is unavailable.
 pick_port() {
-  local proto="$1" port="$2" label="$3" start="$2"
-  while port_in_use "${proto}" "${port}" || { [ "${proto}" = tcp ] && tcp_port_reserved "${port}"; }; do
+  local proto="$1" port="$2" label="$3" start="$2" probe_status occupied
+  while :; do
+    occupied=0
+    if port_in_use "${proto}" "${port}"; then
+      occupied=1
+    else
+      probe_status=$?
+      if [ "${probe_status}" -ne 1 ]; then
+        echo "error: ${PORT_PROBE_TOOL} failed while checking ${label} ${proto} port ${port}" >&2
+        echo "       repair the probe tool, or explicitly set VEDETTA_SKIP_PORT_PROBE=1" >&2
+        return 1
+      fi
+    fi
+    if [ "${proto}" = tcp ] && tcp_port_reserved "${port}"; then
+      occupied=1
+    fi
+    [ "${occupied}" -eq 1 ] || break
     if [ "${port}" -ge 65535 ]; then
       echo "error: no free ${label} ${proto} port found at or above ${start}" >&2
       echo "       free a port or choose a lower matching VEDETTA_*_PORT" >&2

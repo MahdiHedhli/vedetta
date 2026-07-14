@@ -98,42 +98,83 @@ vedetta_dotenv_value() {
   printf '%s\n' "${entry#*|}"
 }
 
-# vedetta_dotenv_port_value <file> <key> [depth]
-# Resolves a full-value $NAME or ${NAME} reference without evaluating .env as
-# shell code. This is the useful Compose interpolation form for numeric ports.
-# More complex interpolation fails numeric validation instead of silently
-# selecting a port that differs from Docker Compose.
+# vedetta_dotenv_port_value <file> <key>
+# Resolves full-value $NAME or ${NAME} references without evaluating .env as
+# shell code. Compose interpolates each assignment when it is parsed, so this
+# deliberately walks the file once and freezes references against earlier
+# assignments rather than resolving them from the file's final state. More
+# complex interpolation fails numeric validation instead of silently selecting
+# a port that differs from Docker Compose.
 vedetta_dotenv_port_value() {
-  local file="$1" key="$2" depth="${3:-0}" entry mode value ref
-  [ "${depth}" -lt 16 ] || {
-    printf '%s' '$'
-    return 0
-  }
+  local file="$1" key="$2"
+  [ -f "${file}" ] || return 1
 
-  entry="$(vedetta_dotenv_entry "${file}" "${key}")" || return 1
-  mode="${entry%%|*}"
-  value="${entry#*|}"
+  awk -v wanted="${key}" '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      sub(/^[[:space:]]*/, "", line)
+      if (line ~ /^export[[:space:]]+/) {
+        sub(/^export[[:space:]]+/, "", line)
+      }
+      equals = index(line, "=")
+      if (!equals) next
 
-  if [ "${mode}" != single ]; then
-    ref=""
-    if [[ "${value}" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then
-      ref="${BASH_REMATCH[1]}"
-    elif [[ "${value}" =~ ^\$([A-Za-z_][A-Za-z0-9_]*)$ ]]; then
-      ref="${BASH_REMATCH[1]}"
-    fi
+      name = substr(line, 1, equals - 1)
+      sub(/[[:space:]]*$/, "", name)
+      if (name !~ /^[A-Za-z_][A-Za-z0-9_]*$/) next
 
-    if [ -n "${ref}" ]; then
-      if value="$(printenv "${ref}" 2>/dev/null)"; then
-        :
-      elif value="$(vedetta_dotenv_port_value "${file}" "${ref}" $((depth + 1)) 2>/dev/null)"; then
-        :
-      else
-        value=""
-      fi
-    fi
-  fi
+      line = substr(line, equals + 1)
+      sub(/^[[:space:]]*/, "", line)
+      quote = substr(line, 1, 1)
+      single_quote = sprintf("%c", 39)
+      mode = "unquoted"
 
-  printf '%s' "${value}"
+      if (quote == "\"" || quote == single_quote) {
+        mode = (quote == single_quote ? "single" : "double")
+        remainder = substr(line, 2)
+        closing = index(remainder, quote)
+        if (closing == 0) {
+          value = line
+        } else {
+          value = substr(remainder, 1, closing - 1)
+          trailer = substr(remainder, closing + 1)
+          sub(/^[[:space:]]*/, "", trailer)
+          if (trailer != "" && substr(trailer, 1, 1) != "#") value = line
+        }
+      } else if (line ~ /^[[:space:]]*#/) {
+        value = ""
+      } else {
+        sub(/[[:space:]]+#.*/, "", line)
+        sub(/^[[:space:]]*/, "", line)
+        sub(/[[:space:]]*$/, "", line)
+        value = line
+      }
+
+      ref = ""
+      if (mode != "single" && value ~ /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/) {
+        ref = substr(value, 3, length(value) - 3)
+      } else if (mode != "single" && value ~ /^\$[A-Za-z_][A-Za-z0-9_]*$/) {
+        ref = substr(value, 2)
+      }
+      if (ref != "") {
+        if (ref in ENVIRON) value = ENVIRON[ref]
+        else if (ref in assigned) value = resolved[ref]
+        else value = ""
+      }
+
+      assigned[name] = 1
+      resolved[name] = value
+      if (name == wanted) {
+        found = 1
+        selected = value
+      }
+    }
+    END {
+      if (!found) exit 1
+      print selected
+    }
+  ' "${file}"
 }
 
 # vedetta_resolve_port <key> <default> <dotenv-file>
@@ -181,8 +222,9 @@ vedetta_detect_port_probe_tool() {
 # vedetta_port_in_use <tool> <tcp|udp> <port>
 # Checks only the local endpoint column. Each awk program consumes its full
 # input, avoiding grep -q/pipefail SIGPIPE false negatives on large listings.
+# Returns 0 when occupied, 1 when confirmed free, and 2 when probing failed.
 vedetta_port_in_use() {
-  local tool="$1" proto="$2" port="$3"
+  local tool="$1" proto="$2" port="$3" output="" status=0 ss_proto
 
   case "${proto}" in
     tcp|udp) ;;
@@ -192,10 +234,22 @@ vedetta_port_in_use() {
   case "${tool}" in
     lsof)
       if [ "${proto}" = udp ]; then
-        lsof -nP -iUDP -Fn 2>/dev/null
+        if output="$(lsof -nP -iUDP:"${port}" -Fn 2>/dev/null)"; then
+          status=0
+        else
+          status=$?
+        fi
       else
-        lsof -nP -a -iTCP -sTCP:LISTEN -Fn 2>/dev/null
-      fi | awk -v port="${port}" '
+        if output="$(lsof -nP -a -iTCP:"${port}" -sTCP:LISTEN -Fn 2>/dev/null)"; then
+          status=0
+        else
+          status=$?
+        fi
+      fi
+      # lsof uses status 1 for the normal no-match case; larger statuses are
+      # execution failures and must not be interpreted as port availability.
+      [ "${status}" -le 1 ] || return 2
+      printf '%s\n' "${output}" | awk -v port="${port}" '
         /^n/ {
           local_endpoint = substr($0, 2)
           sub(/->.*/, "", local_endpoint)
@@ -205,22 +259,34 @@ vedetta_port_in_use() {
       '
       ;;
     ss)
-      local ss_proto=u
+      ss_proto=u
       [ "${proto}" = tcp ] && ss_proto=t
-      ss -Hln"${ss_proto}" 2>/dev/null | awk -v port="${port}" '
+      if output="$(ss -Hln"${ss_proto}" 2>/dev/null)"; then
+        status=0
+      else
+        status=$?
+      fi
+      [ "${status}" -eq 0 ] || return 2
+      printf '%s\n' "${output}" | awk -v port="${port}" '
         $4 ~ ("[:.]" port "$") { found = 1 }
         END { exit !found }
       '
       ;;
     netstat)
-      netstat -an 2>/dev/null | awk -v proto="${proto}" -v port="${port}" '
+      if output="$(netstat -an 2>/dev/null)"; then
+        status=0
+      else
+        status=$?
+      fi
+      [ "${status}" -eq 0 ] || return 2
+      printf '%s\n' "${output}" | awk -v proto="${proto}" -v port="${port}" '
         $1 ~ ("^" proto) && $4 ~ ("[:.]" port "$") &&
           (proto == "udp" || $NF == "LISTEN") { found = 1 }
         END { exit !found }
       '
       ;;
     *)
-      return 1
+      return 2
       ;;
   esac
 }

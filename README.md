@@ -126,12 +126,14 @@ admin token. (If you ever lose it, Core also prints the active setup code to its
 logs on first start: `docker logs vedetta-backend`.)
 
 **`gen-env.sh` also probes the host ports** the stack publishes (`8080`, `3107`,
-`5140`) and, if one is already in use on this machine (a common case — e.g. another
-web server owns `127.0.0.1:8080`), it picks the next free port and pins it in `.env`
-so `docker compose up` starts cleanly instead of failing with *"address already in
-use"*. It then prints the **actual** dashboard / Core / collector URLs — use those
-throughout onboarding. You can retrieve the same effective values later without
-sourcing the secret-bearing `.env`:
+`5140`). When a supported probe tool succeeds, an occupied port (a common case —
+e.g. another web server owns `127.0.0.1:8080`) is replaced by the next confirmed
+free port and pinned in `.env`. If no probe tool is installed, the script labels
+the values as unverified; if a detected tool fails, setup stops unless you
+explicitly choose `VEDETTA_SKIP_PORT_PROBE=1`. It then prints the **actual**
+dashboard / Core / collector URLs — use those throughout onboarding. You can
+retrieve the same effective values later without sourcing the secret-bearing
+`.env`:
 
 ```bash
 BACKEND_PORT="$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)"
@@ -149,8 +151,10 @@ port with a read or admin token:
 
 ```bash
 BACKEND_PORT="$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)"
+export VEDETTA_TOKEN='<read-or-admin-token-from-the-dashboard>'
 curl -H "Authorization: Bearer $VEDETTA_TOKEN" \
   "http://localhost:${BACKEND_PORT}/api/v1/status"
+unset VEDETTA_TOKEN
 ```
 
 ### 2. Deploy A Sensor
@@ -272,10 +276,11 @@ This split is deliberate. The local network is the strongest source of truth Ved
 
 ## Services
 
-Ports below are the **defaults**. `scripts/gen-env.sh` probes them at setup and, if
-a default is already taken, pins the next free host port in `.env` (via the listed
-env var) — so the actual port may differ; the generated `.env` and the script's
-output are the source of truth.
+Ports below are the **defaults**. When host-port probing is available and
+successful, `scripts/gen-env.sh` pins the next confirmed free port in `.env` if a
+default is taken. Otherwise it clearly labels the values as unverified or stops
+on probe failure. The generated `.env` and the script's output are the source of
+truth.
 
 | Service | Default port | `.env` override | Purpose |
 | --- | --- | --- | --- |
