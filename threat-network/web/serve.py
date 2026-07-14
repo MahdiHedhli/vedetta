@@ -403,7 +403,10 @@ class Handler(BaseHTTPRequestHandler):
         if not ALLOW_LOCAL_ADMIN or host not in LOCAL_ADMIN_HOSTS:
             return False
         try:
-            return ipaddress.ip_address(self.client_address[0]).is_loopback
+            address = ipaddress.ip_address(self.client_address[0])
+            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            return address.is_loopback
         except ValueError:
             return False
 

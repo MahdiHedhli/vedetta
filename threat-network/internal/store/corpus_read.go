@@ -194,10 +194,18 @@ func loadCorpusVariantRevisions(ctx context.Context, q corpusQuerier, variant *c
 	if err = rows.Close(); err != nil {
 		return err
 	}
+	revisionIDs := make([]string, 0, len(variant.History))
 	for i := range variant.History {
-		if err = loadCorpusEvidence(ctx, q, variant.History[i].VariantRevisionID, &variant.History[i]); err != nil {
-			return err
-		}
+		revisionIDs = append(revisionIDs, variant.History[i].VariantRevisionID)
+	}
+	evidence, err := loadCorpusEvidenceBatch(ctx, q, revisionIDs)
+	if err != nil {
+		return err
+	}
+	for i := range variant.History {
+		loaded := evidence[variant.History[i].VariantRevisionID]
+		variant.History[i].Sources = loaded.Sources
+		variant.History[i].VersionFacts = loaded.VersionFacts
 		if variant.History[i].Status == "draft" {
 			variant.Draft = &variant.History[i]
 		}
@@ -208,53 +216,100 @@ func loadCorpusVariantRevisions(ctx context.Context, q corpusQuerier, variant *c
 	return nil
 }
 
-func loadCorpusEvidence(ctx context.Context, q corpusQuerier, revisionID string, rev *corpus.VariantRevision) error {
-	rev.Sources = []corpus.Source{}
-	rev.VersionFacts = []corpus.VersionFact{}
-	sourceRows, err := q.QueryContext(ctx, `SELECT source_id, kind, title, public_url,
-        COALESCE(retrieved_at, ''), license_code FROM device_corpus_sources
-        WHERE variant_revision_id = ? ORDER BY kind, title, source_id`, revisionID)
-	if err != nil {
-		return err
+const corpusEvidenceBatchSize = 400
+
+type corpusRevisionEvidence struct {
+	Sources      []corpus.Source
+	VersionFacts []corpus.VersionFact
+}
+
+// loadCorpusEvidenceBatch bounds SQLite placeholders for portability while
+// loading evidence in a fixed number of queries per batch rather than two
+// queries per revision.
+func loadCorpusEvidenceBatch(ctx context.Context, q corpusQuerier, revisionIDs []string) (map[string]corpusRevisionEvidence, error) {
+	result := make(map[string]corpusRevisionEvidence, len(revisionIDs))
+	uniqueIDs := make([]string, 0, len(revisionIDs))
+	for _, revisionID := range revisionIDs {
+		if _, exists := result[revisionID]; exists {
+			continue
+		}
+		result[revisionID] = corpusRevisionEvidence{
+			Sources: []corpus.Source{}, VersionFacts: []corpus.VersionFact{},
+		}
+		uniqueIDs = append(uniqueIDs, revisionID)
 	}
-	defer sourceRows.Close()
-	for sourceRows.Next() {
-		var source corpus.Source
-		if err = sourceRows.Scan(&source.SourceID, &source.Kind, &source.Title, &source.PublicURL,
-			&source.RetrievedAt, &source.LicenseCode); err != nil {
+	for start := 0; start < len(uniqueIDs); start += corpusEvidenceBatchSize {
+		end := min(start+corpusEvidenceBatchSize, len(uniqueIDs))
+		batch := uniqueIDs[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, len(batch))
+		for i := range batch {
+			args[i] = batch[i]
+		}
+
+		sourceRows, err := q.QueryContext(ctx, `SELECT variant_revision_id, source_id, kind, title, public_url,
+			COALESCE(retrieved_at, ''), license_code FROM device_corpus_sources
+			WHERE variant_revision_id IN (`+placeholders+`)
+			ORDER BY variant_revision_id, kind, title, source_id`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for sourceRows.Next() {
+			var revisionID string
+			var source corpus.Source
+			if err = sourceRows.Scan(&revisionID, &source.SourceID, &source.Kind, &source.Title,
+				&source.PublicURL, &source.RetrievedAt, &source.LicenseCode); err != nil {
+				sourceRows.Close()
+				return nil, err
+			}
+			loaded, requested := result[revisionID]
+			if !requested {
+				sourceRows.Close()
+				return nil, fmt.Errorf("source references an unrequested corpus revision")
+			}
+			loaded.Sources = append(loaded.Sources, source)
+			result[revisionID] = loaded
+		}
+		if err = sourceRows.Err(); err != nil {
 			sourceRows.Close()
-			return err
+			return nil, err
 		}
-		rev.Sources = append(rev.Sources, source)
-	}
-	if err = sourceRows.Err(); err != nil {
-		sourceRows.Close()
-		return err
-	}
-	if err = sourceRows.Close(); err != nil {
-		return err
-	}
-	factRows, err := q.QueryContext(ctx, `SELECT fact_id, attribute, relation, value, value_end,
-        confidence_bp, COALESCE(source_id, '') FROM device_corpus_version_facts
-        WHERE variant_revision_id = ? ORDER BY attribute, value, fact_id`, revisionID)
-	if err != nil {
-		return err
-	}
-	defer factRows.Close()
-	for factRows.Next() {
-		var fact corpus.VersionFact
-		if err = factRows.Scan(&fact.FactID, &fact.Attribute, &fact.Relation, &fact.Value,
-			&fact.ValueEnd, &fact.ConfidenceBP, &fact.SourceID); err != nil {
+		if err = sourceRows.Close(); err != nil {
+			return nil, err
+		}
+
+		factRows, err := q.QueryContext(ctx, `SELECT variant_revision_id, fact_id, attribute, relation,
+			value, value_end, confidence_bp, COALESCE(source_id, '')
+			FROM device_corpus_version_facts WHERE variant_revision_id IN (`+placeholders+`)
+			ORDER BY variant_revision_id, attribute, value, fact_id`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for factRows.Next() {
+			var revisionID string
+			var fact corpus.VersionFact
+			if err = factRows.Scan(&revisionID, &fact.FactID, &fact.Attribute, &fact.Relation,
+				&fact.Value, &fact.ValueEnd, &fact.ConfidenceBP, &fact.SourceID); err != nil {
+				factRows.Close()
+				return nil, err
+			}
+			loaded, requested := result[revisionID]
+			if !requested {
+				factRows.Close()
+				return nil, fmt.Errorf("version fact references an unrequested corpus revision")
+			}
+			loaded.VersionFacts = append(loaded.VersionFacts, fact)
+			result[revisionID] = loaded
+		}
+		if err = factRows.Err(); err != nil {
 			factRows.Close()
-			return err
+			return nil, err
 		}
-		rev.VersionFacts = append(rev.VersionFacts, fact)
+		if err = factRows.Close(); err != nil {
+			return nil, err
+		}
 	}
-	if err = factRows.Err(); err != nil {
-		factRows.Close()
-		return err
-	}
-	return factRows.Close()
+	return result, nil
 }
 
 func corpusProfileETag(ctx context.Context, q corpusQuerier, profileID string) (string, error) {
@@ -383,12 +438,13 @@ func (db *DB) PageCorpusProfiles(ctx context.Context, search string, limit, offs
 		FROM active_profile_revision apr
 		LEFT JOIN device_corpus_variants v ON v.profile_id = apr.profile_id
 		LEFT JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
+			AND (vr.status = 'published' OR vr.status = 'draft')
 		LEFT JOIN latest_variant_revision latest_vr ON latest_vr.variant_id = v.variant_id
 		WHERE `+filter+`
 		GROUP BY apr.profile_id, apr.manufacturer, apr.model, apr.product_family,
 			apr.device_type, apr.os_family, apr.status, apr.created_at
 		ORDER BY CASE
-			WHEN COALESCE(MAX(vr.created_at), '') > apr.created_at THEN MAX(vr.created_at)
+			WHEN COALESCE(MAX(latest_vr.created_at), '') > apr.created_at THEN MAX(latest_vr.created_at)
 			ELSE apr.created_at
 		END DESC, apr.profile_id ASC
 		LIMIT ? OFFSET ?`, search, limit, offset)

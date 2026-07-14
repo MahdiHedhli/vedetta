@@ -84,7 +84,7 @@
           <label>Product family<input id="p-family" maxlength="96"></label>
           <label>Device type<select id="p-type" required></select></label>
           <label>OS family<select id="p-os"></select></label>
-          <label>Reason<select id="p-reason"></select></label>
+          <label>Reason<select id="p-reason" disabled></select></label>
         </div><div class="form-actions"><button type="button" data-close-editor="profile">Cancel</button><button id="profile-submit" class="primary" type="submit">Save draft</button></div></form>
       </section>
 
@@ -138,7 +138,7 @@
   var state={profiles:[],selectedId:"",selected:null,etag:"",snapshot:null,timer:null,editor:null,publishPreview:null,searchTimer:null,profilePage:{limit:50,offset:0,total:0,search:""},auditPage:{limit:50,offset:0,total:0},releasePage:{limit:50,offset:0,total:0}};
   var deviceTypes=["access_point","camera","computer","desktop","doorbell","firewall","game_console","gateway","iot_generic","laptop","media_player","nas","phone","printer","router","server","smart_light","smart_speaker","smart_tv","switch","tablet","thermostat","wearable"];
   var osFamilies=["","android","chromeos","cisco_ios","cisco_ios_xe","embedded","fireos","ios","ipados","linux","macos","nx_os","routeros","tizen","tvos","unknown","webos","windows"];
-  var profileReasons=["new_profile","label_correction","source_update"];
+  var profileReasons=["new_profile","label_correction"];
   var sourceKinds=["vendor_doc","standards","security_advisory","lab_observation","manual_curation","import"];
   var factAttrs=["firmware_version","os_version","hardware_revision","model_number","software_version"];
   var factRelations=["exact","range","family"];

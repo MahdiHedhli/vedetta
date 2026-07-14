@@ -2,13 +2,112 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/vedetta-network/vedetta/threat-network/internal/corpus"
 )
+
+type countingCorpusQuerier struct {
+	corpusQuerier
+	queryCount int
+}
+
+func (q *countingCorpusQuerier) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	q.queryCount++
+	return q.corpusQuerier.QueryContext(ctx, query, args...)
+}
+
+func TestCorpusSnapshotEvidenceLoadsAreBatched(t *testing.T) {
+	db := newTestDB(t)
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEvidence := map[string]struct{ title, version string }{}
+	for i, key := range []string{"batch-a", "batch-b", "batch-c"} {
+		req := corpusVariantRequest(key)
+		req.Sources[0].Title = "Evidence " + key
+		req.VersionFacts[0].Value = fmt.Sprintf("3.0.%d", i)
+		wantEvidence[key] = struct{ title, version string }{req.Sources[0].Title, req.VersionFacts[0].Value}
+		profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, req,
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	assertEvidence := func(variants []corpus.PublicVariant) {
+		t.Helper()
+		if len(variants) != len(wantEvidence) {
+			t.Fatalf("variant count = %d, want %d", len(variants), len(wantEvidence))
+		}
+		for _, variant := range variants {
+			want, ok := wantEvidence[variant.VariantKey]
+			if !ok || len(variant.Sources) != 1 || len(variant.VersionFacts) != 1 ||
+				variant.Sources[0].Title != want.title || variant.VersionFacts[0].Value != want.version {
+				t.Fatalf("evidence attached to wrong variant: %+v", variant)
+			}
+		}
+	}
+
+	previewProfile := corpus.PublicProfile{ProfileID: profile.ProfileID, Variants: []corpus.PublicVariant{}}
+	previewQueries := &countingCorpusQuerier{corpusQuerier: db}
+	if err = loadCorpusPreviewVariants(context.Background(), previewQueries, &previewProfile, true); err != nil {
+		t.Fatal(err)
+	}
+	if previewQueries.queryCount != 3 {
+		t.Fatalf("preview variant/evidence queries = %d, want 3", previewQueries.queryCount)
+	}
+	assertEvidence(previewProfile.Variants)
+
+	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicProfile := corpus.PublicProfile{ProfileID: profile.ProfileID, Variants: []corpus.PublicVariant{}}
+	publicQueries := &countingCorpusQuerier{corpusQuerier: db}
+	if err = loadPublicCorpusVariants(context.Background(), publicQueries, &publicProfile); err != nil {
+		t.Fatal(err)
+	}
+	if publicQueries.queryCount != 3 {
+		t.Fatalf("public variant/evidence queries = %d, want 3", publicQueries.queryCount)
+	}
+	assertEvidence(publicProfile.Variants)
+	if !reflect.DeepEqual(publicProfile.Variants, previewProfile.Variants) {
+		t.Fatal("batched preview and published evidence differ")
+	}
+}
+
+func TestCorpusEvidenceBatchBoundsSQLiteParameters(t *testing.T) {
+	db := newTestDB(t)
+	revisionIDs := make([]string, corpusEvidenceBatchSize+1)
+	for i := range revisionIDs {
+		revisionIDs[i] = fmt.Sprintf("missing-revision-%04d", i)
+	}
+	queries := &countingCorpusQuerier{corpusQuerier: db}
+	evidence, err := loadCorpusEvidenceBatch(context.Background(), queries, revisionIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queries.queryCount != 4 {
+		t.Fatalf("chunked evidence queries = %d, want 4", queries.queryCount)
+	}
+	if len(evidence) != len(revisionIDs) {
+		t.Fatalf("evidence entries = %d, want %d", len(evidence), len(revisionIDs))
+	}
+	for _, revisionID := range revisionIDs {
+		loaded := evidence[revisionID]
+		if loaded.Sources == nil || loaded.VersionFacts == nil {
+			t.Fatalf("missing revision %q did not retain non-nil empty evidence", revisionID)
+		}
+	}
+}
 
 func TestCorpusProfilePagingSearchesBeforeOffset(t *testing.T) {
 	db := newTestDB(t)
@@ -48,6 +147,91 @@ func TestCorpusProfilePagingSearchesBeforeOffset(t *testing.T) {
 	}
 	if releases.Total != 0 || releases.Items == nil {
 		t.Fatalf("unexpected empty release page: %+v", releases)
+	}
+}
+
+func TestCorpusProfilePagingCountsActiveVariantsButOrdersByLatestHistory(t *testing.T) {
+	db := newTestDB(t)
+	requestA := corpusProfileRequest()
+	requestA.Labels.Model = "Ordering Camera A"
+	profileA, err := db.CreateCorpusProfile(context.Background(), requestA, CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, err = db.CreateCorpusVariant(context.Background(), profileA.ProfileID,
+		corpusVariantRequest("ordering-a"), CorpusMutation{ExpectedETag: profileA.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, err = db.PublishCorpusProfile(context.Background(), profileA.ProfileID,
+		corpusPublishRequest(0), CorpusMutation{ExpectedETag: profileA.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant := profileA.Variants[0]
+	clean := corpusVariantRequest("unused")
+	profileA, err = db.ReviseCorpusVariant(context.Background(), variant.VariantID, corpus.ReviseVariantRequest{
+		ConfidenceBP: variant.Published.ConfidenceBP,
+		Shape:        variant.Published.Shape,
+		Sources:      clean.Sources,
+		VersionFacts: clean.VersionFacts,
+		ReasonCode:   "signal_correction",
+	}, CorpusMutation{ExpectedETag: profileA.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, err = db.DiscardCorpusVariantDraft(context.Background(), variant.VariantID,
+		corpus.LifecycleRequest{ReasonCode: "signal_correction"},
+		CorpusMutation{ExpectedETag: profileA.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestB := corpusProfileRequest()
+	requestB.Labels.Model = "Ordering Camera B"
+	profileB, err := db.CreateCorpusProfile(context.Background(), requestB, CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the lifecycle chronology deterministic: B's active profile revision
+	// is newer than A's active content, while A's discarded correction is the
+	// newest historical change. List counts must ignore the withdrawn revision,
+	// but UpdatedAt and ordering must retain it for curator/audit visibility.
+	if _, err = db.Exec(`DROP TRIGGER trg_device_corpus_profile_content_immutable`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`DROP TRIGGER trg_device_corpus_variant_content_immutable`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE device_corpus_profile_revisions SET created_at = ? WHERE profile_id = ?`,
+		"2000-01-01T00:00:00Z", profileA.ProfileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE device_corpus_profile_revisions SET created_at = ? WHERE profile_id = ?`,
+		"2050-01-01T00:00:00Z", profileB.ProfileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE device_corpus_variant_revisions
+		SET created_at = CASE WHEN status = 'withdrawn' THEN ? ELSE ? END WHERE variant_id = ?`,
+		"2099-01-01T00:00:00Z", "2001-01-01T00:00:00Z", variant.VariantID); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := db.PageCorpusProfiles(context.Background(), "ordering camera", 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("unexpected page: %+v", page)
+	}
+	first := page.Items[0]
+	if first.ProfileID != profileA.ProfileID || first.PublishedVariants != 1 || first.DraftVariants != 0 ||
+		first.UpdatedAt.Format("2006-01-02T15:04:05Z") != "2099-01-01T00:00:00Z" {
+		t.Fatalf("latest historical change did not drive ordering without affecting active counts: %+v", first)
+	}
+	if page.Items[1].ProfileID != profileB.ProfileID {
+		t.Fatalf("profile ordered ahead of newer historical change: %+v", page.Items)
 	}
 }
 

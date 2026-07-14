@@ -182,6 +182,9 @@ func (db *DB) CreateCorpusProfile(ctx context.Context, req corpus.CreateProfileR
 	if err != nil {
 		return nil, corpusValidationError(err)
 	}
+	if reason != "new_profile" {
+		return nil, corpusValidationf("reason_code must be new_profile for profile creation")
+	}
 	profileID, err := newCorpusID()
 	if err != nil {
 		return nil, err
@@ -237,6 +240,9 @@ func (db *DB) ReviseCorpusProfile(ctx context.Context, profileID string, req cor
 	reason, err := corpus.ValidateReasonCode(req.ReasonCode)
 	if err != nil {
 		return nil, corpusValidationError(err)
+	}
+	if reason != "label_correction" {
+		return nil, corpusValidationf("reason_code must be label_correction for profile revision")
 	}
 	meta = normalizeMutation(meta)
 	tx, err := db.BeginTx(ctx, nil)

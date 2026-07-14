@@ -66,6 +66,9 @@ new variant series with `predecessor_variant_id`; it does not revise an old seri
 New root variants use `new_variant`, successor series use `firmware_evolution`, and a
 discarded never-published series uses `restore_reviewed` when restarted. Revisions of
 an existing series accept only `signal_correction` or `source_update`.
+Profile creation accepts only `new_profile`; profile-label revision accepts only
+`label_correction`; discarding a pending variant draft accepts only
+`signal_correction`.
 Withdrawal of published content and retirement of a published profile are soft state
 transitions that create a new release. Retiring a draft-only profile creates no public
 release because it was never present in the public corpus. Prior

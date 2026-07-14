@@ -74,9 +74,11 @@ Management listener:
 - `GET /api/v1/admin/device-corpus/releases`
 - `GET /api/v1/admin/device-corpus/releases/{corpus_revision}`
 
-Mutations require `If-Match` once an entity exists and a fixed `reason_code`. There are
-no DELETE endpoints. The dashboard displays a preview of the exact public shape and
-uses text-only DOM rendering for corpus-provided values.
+Mutations require `If-Match` once an entity exists and an operation-scoped
+`reason_code`: profile creation uses `new_profile`, while profile-label revision uses
+`label_correction`; discarding a pending variant correction uses `signal_correction`.
+There are no DELETE endpoints. The dashboard displays a preview of the exact public
+shape and uses text-only DOM rendering for corpus-provided values.
 
 ## Deployment
 

@@ -133,6 +133,54 @@ func TestCorpusAdminMethodNotAllowedAdvertisesAllowedMethods(t *testing.T) {
 	}
 }
 
+func TestCorpusProfileReasonScopeRejectsMisleadingAPIRequests(t *testing.T) {
+	s, _, admin := newCorpusAPIServers(t)
+	badCreate := `{"labels":{"manufacturer":"Example Devices","model":"Misleading Camera","device_type":"camera"},"reason_code":"source_update"}`
+	resp := adminRequest(t, http.DefaultClient, http.MethodPost,
+		admin.URL+"/api/v1/admin/device-corpus/profiles", badCreate, "")
+	body := readResponse(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity ||
+		!bytes.Contains(body, []byte(`"code":"VALIDATION_FAILED"`)) {
+		t.Fatalf("misleading create reason status=%d body=%s", resp.StatusCode, body)
+	}
+	page, err := s.DB.PageCorpusProfiles(context.Background(), "", 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 0 {
+		t.Fatalf("misleading create reason persisted a profile: %+v", page)
+	}
+
+	goodCreate := `{"labels":{"manufacturer":"Example Devices","model":"Scoped Camera","device_type":"camera"},"reason_code":"new_profile"}`
+	resp = adminRequest(t, http.DefaultClient, http.MethodPost,
+		admin.URL+"/api/v1/admin/device-corpus/profiles", goodCreate, "")
+	body = readResponse(t, resp)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("valid create status=%d body=%s", resp.StatusCode, body)
+	}
+	var profile corpus.Profile
+	if err = json.Unmarshal(body, &profile); err != nil {
+		t.Fatal(err)
+	}
+	etag := resp.Header.Get("ETag")
+	badRevise := `{"labels":{"manufacturer":"Example Devices","model":"Wrong Audit Camera","device_type":"camera"},"reason_code":"publish_reviewed"}`
+	resp = adminRequest(t, http.DefaultClient, http.MethodPut,
+		admin.URL+"/api/v1/admin/device-corpus/profiles/"+profile.ProfileID, badRevise, etag)
+	body = readResponse(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity ||
+		!bytes.Contains(body, []byte(`"code":"VALIDATION_FAILED"`)) {
+		t.Fatalf("misleading revise reason status=%d body=%s", resp.StatusCode, body)
+	}
+	unchanged, err := s.DB.GetCorpusProfile(context.Background(), profile.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.ETag != profile.ETag || unchanged.Draft == nil || unchanged.Draft.Labels.Model != "Scoped Camera" ||
+		len(unchanged.History) != 1 {
+		t.Fatalf("misleading revise reason mutated profile: %+v", unchanged)
+	}
+}
+
 func TestCorpusAdminEndToEndAndPublicETag(t *testing.T) {
 	_, public, admin := newCorpusAPIServers(t)
 	createBody := `{"labels":{"manufacturer":"Example Devices","model":"Camera Two","device_type":"camera","os_family":"embedded"},"reason_code":"new_profile"}`
@@ -164,14 +212,15 @@ func TestCorpusAdminEndToEndAndPublicETag(t *testing.T) {
 	variantETag := resp.Header.Get("ETag")
 
 	// A missing/stale profile precondition cannot overwrite the newer draft.
+	reviseBody := `{"labels":{"manufacturer":"Example Devices","model":"Camera Two","device_type":"camera","os_family":"embedded"},"reason_code":"label_correction"}`
 	resp = adminRequest(t, http.DefaultClient, http.MethodPut,
-		admin.URL+"/api/v1/admin/device-corpus/profiles/"+profile.ProfileID, createBody, "")
+		admin.URL+"/api/v1/admin/device-corpus/profiles/"+profile.ProfileID, reviseBody, "")
 	readResponse(t, resp)
 	if resp.StatusCode != http.StatusPreconditionRequired {
 		t.Fatalf("missing If-Match status=%d", resp.StatusCode)
 	}
 	resp = adminRequest(t, http.DefaultClient, http.MethodPut,
-		admin.URL+"/api/v1/admin/device-corpus/profiles/"+profile.ProfileID, createBody, etag)
+		admin.URL+"/api/v1/admin/device-corpus/profiles/"+profile.ProfileID, reviseBody, etag)
 	readResponse(t, resp)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("stale If-Match status=%d", resp.StatusCode)

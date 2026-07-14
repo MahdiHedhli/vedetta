@@ -233,6 +233,106 @@ func TestCorpusActiveRevisionPointersReferenceHistory(t *testing.T) {
 	assertVariantRevisionPointer("published", variant.Published)
 }
 
+func TestCorpusProfileReasonsAreOperationScopedWithoutMutation(t *testing.T) {
+	reasons := []string{
+		"new_profile", "new_variant", "label_correction", "signal_correction", "firmware_evolution",
+		"source_update", "publish_reviewed", "privacy_withdrawal", "obsolete_product", "restore_reviewed",
+	}
+
+	t.Run("create", func(t *testing.T) {
+		db := newTestDB(t)
+		request := corpusProfileRequest()
+		for _, reason := range reasons {
+			if reason == "new_profile" {
+				continue
+			}
+			request.ReasonCode = reason
+			if _, err := db.CreateCorpusProfile(context.Background(), request, CorpusMutation{}); !errors.Is(err, ErrCorpusValidation) {
+				t.Fatalf("create reason %q error = %v, want ErrCorpusValidation", reason, err)
+			}
+		}
+		for _, table := range []string{
+			"device_corpus_profiles", "device_corpus_profile_revisions", "device_corpus_audit",
+		} {
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 {
+				t.Fatalf("rejected create reasons wrote %d rows to %s", count, table)
+			}
+		}
+
+		request.ReasonCode = "new_profile"
+		if _, err := db.CreateCorpusProfile(context.Background(), request, CorpusMutation{}); err != nil {
+			t.Fatalf("new_profile create reason rejected: %v", err)
+		}
+		var action, reason string
+		if err := db.QueryRow(`SELECT action, reason_code FROM device_corpus_audit`).Scan(&action, &reason); err != nil {
+			t.Fatal(err)
+		}
+		if action != "create" || reason != "new_profile" {
+			t.Fatalf("create audit action/reason = %q/%q", action, reason)
+		}
+	})
+
+	t.Run("revise", func(t *testing.T) {
+		db := newTestDB(t)
+		profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := json.Marshal(profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		auditBefore, releasesBefore := corpusMutationCounts(t, db)
+		labels := profile.Draft.Labels
+		labels.Model = "Scoped Revision Camera"
+		for _, reason := range reasons {
+			if reason == "label_correction" {
+				continue
+			}
+			_, reviseErr := db.ReviseCorpusProfile(context.Background(), profile.ProfileID,
+				corpus.ReviseProfileRequest{Labels: labels, ReasonCode: reason},
+				CorpusMutation{ExpectedETag: profile.ETag})
+			if !errors.Is(reviseErr, ErrCorpusValidation) {
+				t.Fatalf("revise reason %q error = %v, want ErrCorpusValidation", reason, reviseErr)
+			}
+		}
+		unchanged, err := db.GetCorpusProfile(context.Background(), profile.ProfileID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, err := json.Marshal(unchanged)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(before) {
+			t.Fatalf("rejected profile revision reasons mutated profile:\nbefore=%s\nafter=%s", before, after)
+		}
+		assertCorpusReleaseState(t, db, 0, auditBefore, releasesBefore)
+
+		revised, err := db.ReviseCorpusProfile(context.Background(), profile.ProfileID,
+			corpus.ReviseProfileRequest{Labels: labels, ReasonCode: "label_correction"},
+			CorpusMutation{ExpectedETag: profile.ETag})
+		if err != nil {
+			t.Fatalf("label_correction revision reason rejected: %v", err)
+		}
+		if revised.Draft == nil || revised.Draft.Labels.Model != labels.Model {
+			t.Fatalf("accepted profile revision was not retained: %+v", revised)
+		}
+		var action, reason string
+		if err = db.QueryRow(`SELECT action, reason_code FROM device_corpus_audit
+			WHERE entity_id = ? AND action = 'revise'`, profile.ProfileID).Scan(&action, &reason); err != nil {
+			t.Fatal(err)
+		}
+		if action != "revise" || reason != "label_correction" {
+			t.Fatalf("revision audit action/reason = %q/%q", action, reason)
+		}
+	})
+}
+
 func TestCorpusVariantReasonsDistinguishEvolutionFromCorrection(t *testing.T) {
 	db := newTestDB(t)
 	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
@@ -619,6 +719,65 @@ func TestCorpusPublishRequiresReviewedReasonWithoutMutation(t *testing.T) {
 		t.Fatalf("rejected publish reason mutated profile: %+v", unchanged)
 	}
 	assertCorpusReleaseState(t, db, 0, auditBefore, releasesBefore)
+}
+
+func TestCorpusDiscardDraftReasonIsOperationScopedWithoutMutation(t *testing.T) {
+	db := newTestDB(t)
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID, corpusVariantRequest("discard-reason"),
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	variantID := profile.Variants[0].VariantID
+	before, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditBefore, releasesBefore := corpusMutationCounts(t, db)
+	for _, reason := range []string{
+		"new_profile", "new_variant", "label_correction", "firmware_evolution", "source_update",
+		"publish_reviewed", "privacy_withdrawal", "obsolete_product", "restore_reviewed",
+	} {
+		_, discardErr := db.DiscardCorpusVariantDraft(context.Background(), variantID,
+			corpus.LifecycleRequest{ReasonCode: reason}, CorpusMutation{ExpectedETag: profile.ETag})
+		if !errors.Is(discardErr, ErrCorpusValidation) {
+			t.Fatalf("discard reason %q error = %v, want ErrCorpusValidation", reason, discardErr)
+		}
+	}
+	unchanged, err := db.GetCorpusProfile(context.Background(), profile.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := json.Marshal(unchanged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("rejected discard reasons mutated profile:\nbefore=%s\nafter=%s", before, after)
+	}
+	assertCorpusReleaseState(t, db, 0, auditBefore, releasesBefore)
+
+	discarded, err := db.DiscardCorpusVariantDraft(context.Background(), variantID,
+		corpus.LifecycleRequest{ReasonCode: "signal_correction"},
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatalf("signal_correction discard reason rejected: %v", err)
+	}
+	if discarded.Variants[0].Draft != nil || discarded.Variants[0].History[0].Status != "withdrawn" {
+		t.Fatalf("accepted draft discard did not withdraw draft: %+v", discarded.Variants[0])
+	}
+	var action, reason string
+	if err = db.QueryRow(`SELECT action, reason_code FROM device_corpus_audit
+		WHERE entity_id = ? AND action = 'withdraw'`, variantID).Scan(&action, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if action != "withdraw" || reason != "signal_correction" {
+		t.Fatalf("discard audit action/reason = %q/%q", action, reason)
+	}
 }
 
 func TestCorpusRemovalReasonsAreOperationScopedWithoutMutation(t *testing.T) {

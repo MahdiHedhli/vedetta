@@ -164,13 +164,18 @@ func loadPublicCorpusVariants(ctx context.Context, q corpusQuerier, profile *cor
 	if err = rows.Close(); err != nil {
 		return err
 	}
+	revisionIDs := make([]string, 0, len(variants))
 	for _, item := range variants {
-		managementRevision := corpus.VariantRevision{}
-		if err = loadCorpusEvidence(ctx, q, item.revisionID, &managementRevision); err != nil {
-			return err
-		}
-		item.value.Sources = managementRevision.Sources
-		item.value.VersionFacts = managementRevision.VersionFacts
+		revisionIDs = append(revisionIDs, item.revisionID)
+	}
+	evidence, err := loadCorpusEvidenceBatch(ctx, q, revisionIDs)
+	if err != nil {
+		return err
+	}
+	for _, item := range variants {
+		loaded := evidence[item.revisionID]
+		item.value.Sources = loaded.Sources
+		item.value.VersionFacts = loaded.VersionFacts
 		profile.Variants = append(profile.Variants, item.value)
 	}
 	return nil

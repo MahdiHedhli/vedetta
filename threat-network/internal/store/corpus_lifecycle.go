@@ -451,6 +451,9 @@ func (db *DB) DiscardCorpusVariantDraft(ctx context.Context, variantID string, r
 	if err != nil {
 		return nil, corpusValidationError(err)
 	}
+	if reason != "signal_correction" {
+		return nil, corpusValidationf("reason_code must be signal_correction for variant draft discard")
+	}
 	meta = normalizeMutation(meta)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

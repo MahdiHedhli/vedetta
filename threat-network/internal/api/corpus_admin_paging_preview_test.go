@@ -160,6 +160,20 @@ func TestCorpusAdminPreviewRequiresCurrentETag(t *testing.T) {
 
 	discardTarget := admin.URL + "/api/v1/admin/device-corpus/variants/" + variantID + "/discard-draft"
 	resp = adminRequest(t, http.DefaultClient, http.MethodPost, discardTarget,
+		`{"reason_code":"new_profile"}`, profile.ETag)
+	body = readResponse(t, resp)
+	if resp.StatusCode != http.StatusUnprocessableEntity ||
+		!bytes.Contains(body, []byte(`"code":"VALIDATION_FAILED"`)) {
+		t.Fatalf("discard-draft misleading reason status=%d body=%s", resp.StatusCode, body)
+	}
+	unchanged, err := s.DB.GetCorpusProfile(context.Background(), profile.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.ETag != profile.ETag || unchanged.Variants[0].Draft == nil {
+		t.Fatalf("discard-draft misleading reason mutated profile: %+v", unchanged)
+	}
+	resp = adminRequest(t, http.DefaultClient, http.MethodPost, discardTarget,
 		`{"reason_code":"signal_correction"}`, profile.ETag)
 	body = readResponse(t, resp)
 	if resp.StatusCode != http.StatusOK {

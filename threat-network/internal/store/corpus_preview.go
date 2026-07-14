@@ -217,13 +217,18 @@ func loadCorpusPreviewVariants(ctx context.Context, q corpusQuerier, profile *co
 		}
 		return variants[i].value.VariantID < variants[j].value.VariantID
 	})
+	revisionIDs := make([]string, 0, len(variants))
 	for _, candidate := range variants {
-		managementRevision := corpus.VariantRevision{}
-		if err = loadCorpusEvidence(ctx, q, candidate.revisionID, &managementRevision); err != nil {
-			return err
-		}
-		candidate.value.Sources = managementRevision.Sources
-		candidate.value.VersionFacts = managementRevision.VersionFacts
+		revisionIDs = append(revisionIDs, candidate.revisionID)
+	}
+	evidence, err := loadCorpusEvidenceBatch(ctx, q, revisionIDs)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range variants {
+		loaded := evidence[candidate.revisionID]
+		candidate.value.Sources = loaded.Sources
+		candidate.value.VersionFacts = loaded.VersionFacts
 		profile.Variants = append(profile.Variants, candidate.value)
 	}
 	return nil

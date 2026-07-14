@@ -334,7 +334,25 @@ class ProxyTests(unittest.TestCase):
             handler.client_address = ("127.0.0.1", 49152)
             self.assertTrue(handler._authorized_admin_client())
 
+            handler.client_address = ("::ffff:127.0.0.1", 49152)
+            self.assertTrue(handler._authorized_admin_client())
+
+            handler.client_address = ("::ffff:7f00:1", 49152)
+            self.assertTrue(handler._authorized_admin_client())
+
+            handler.client_address = ("::1", 49152)
+            self.assertTrue(handler._authorized_admin_client())
+
             handler.client_address = ("192.0.2.25", 49152)
+            self.assertFalse(handler._authorized_admin_client())
+
+            handler.client_address = ("::ffff:192.0.2.25", 49152)
+            self.assertFalse(handler._authorized_admin_client())
+
+            handler.client_address = ("2001:db8::25", 49152)
+            self.assertFalse(handler._authorized_admin_client())
+
+            handler.client_address = ("not-an-address", 49152)
             self.assertFalse(handler._authorized_admin_client())
 
     def test_admin_bearer_never_follows_upstream_redirect(self):
@@ -780,6 +798,10 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn(
             'body:{reason_code:"signal_correction"}', dashboard
         )
+        self.assertIn(
+            'var profileReasons=["new_profile","label_correction"];', dashboard
+        )
+        self.assertIn('<select id="p-reason" disabled>', dashboard)
         self.assertFalse(
             serve._is_admin_route(
                 "POST", "/api/v1/admin/device-corpus/releases/12"
