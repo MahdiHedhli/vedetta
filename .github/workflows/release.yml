@@ -7,8 +7,9 @@ name: Release
 # target is built NATIVELY on its own runner (amd64 + arm64). The Windows sensor is
 # driver-free (DNS via ETW, discovery via native ICMP/ARP), so it builds cgo-free and
 # is cross-compiled from an ubuntu runner (no MinGW). We then assemble a single DRAFT
-# release + checksums. The release is always a draft — a human reviews and publishes
-# it. Nothing here runs until a `v*` tag is pushed.
+# release + checksums. The workflow refuses to modify an already-published release;
+# a human reviews and publishes the draft. No build runs unless a `v*` tag exists and
+# is either pushed or selected by a manual dispatch.
 
 on:
   push:
@@ -89,6 +90,24 @@ jobs:
           printf 'tag_object_sha=%s\n' "$tag_object_sha" >> "$GITHUB_OUTPUT"
           printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Refuse to rebuild an already-published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          # action-gh-release preserves an existing release's published state;
+          # `draft: true` does not turn a published release back into a draft.
+          # Reject it before any matrix build or artifact upload can start.
+          release_rows="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.id, .tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r release_id release_tag is_draft; do
+            if [ "$release_tag" = "$RELEASE_TAG" ] && [ "$is_draft" != "true" ]; then
+              echo "::error::Release '${RELEASE_TAG}' (id ${release_id}) is already published; refusing to replace live assets"
+              exit 1
+            fi
+          done <<< "$release_rows"
+
   build-sensor:
     name: build sensor (${{ matrix.goos }}/${{ matrix.goarch }})
     needs: validate-tag
@@ -164,7 +183,7 @@ jobs:
     needs: [validate-tag, build-sensor]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # create or refresh the draft release only in this job
+      contents: write # create or refresh a draft release only in this job
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -187,6 +206,7 @@ jobs:
             exit 1
           fi
       - name: Create/refresh DRAFT release
+        id: draft-release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ needs.validate-tag.outputs.tag }}
@@ -197,6 +217,27 @@ jobs:
             dist/vedetta-sensor_*.tar.gz
             dist/vedetta-sensor_*.zip
             dist/checksums.txt
+      - name: Require the assembled release to remain a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ needs.validate-tag.outputs.tag }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.id }}
+        run: |
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Release action returned an invalid release id"
+            exit 1
+          fi
+          release_state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            --jq '[.tag_name, .draft] | @tsv')"
+          IFS=$'\t' read -r actual_tag is_draft <<< "$release_state"
+          if [ "$actual_tag" != "$EXPECTED_TAG" ]; then
+            echo "::error::Release action returned tag '${actual_tag}', expected '${EXPECTED_TAG}'"
+            exit 1
+          fi
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::Release '${EXPECTED_TAG}' is published; refusing a successful asset-refresh run"
+            exit 1
+          fi
       - name: Verify release tag remained fixed through assembly
         env:
           GH_TOKEN: ${{ github.token }}
