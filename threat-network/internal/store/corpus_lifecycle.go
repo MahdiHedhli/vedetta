@@ -345,7 +345,11 @@ func (db *DB) RetireCorpusProfile(ctx context.Context, profileID string, req cor
 			return nil, releaseErr
 		}
 		revisionPtr = &revision
-		after = snapshotHash
+		after, err = corpusProfileETag(ctx, tx, profileID)
+		if err != nil {
+			return nil, err
+		}
+		after = snapshotHash + ":" + after
 	} else {
 		after, err = corpusProfileETag(ctx, tx, profileID)
 		if err != nil {

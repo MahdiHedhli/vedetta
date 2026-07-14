@@ -632,6 +632,9 @@ func normalizeCitationURL(raw string) (string, error) {
 	if err = ensurePrintableASCII("source.public_url path", decodedPath); err != nil {
 		return "", err
 	}
+	if strings.ContainsAny(decodedPath, "<>@?#\\") {
+		return "", privacyFailure("source.public_url.path", "prohibited_syntax")
+	}
 	if containsNetworkIdentifier(decodedPath) || containsMAC(decodedPath) ||
 		uuidPattern.MatchString(decodedPath) || containsPrivateName(decodedPath) ||
 		containsDynamicIdentifier(decodedPath) ||
