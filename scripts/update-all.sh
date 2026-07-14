@@ -17,7 +17,16 @@ PLIST_SRC="$PROJECT_DIR/sensor/deploy/com.vedetta.sensor.plist"
 PLIST_DEST="/Library/LaunchDaemons/com.vedetta.sensor.plist"
 SERVICE_ID="system/com.vedetta.sensor"
 SENSOR_BIN="/usr/local/bin/vedetta-sensor"
-CORE_URL="${VEDETTA_CORE_URL:-http://localhost:8080}"
+
+# Read ports as Docker Compose will: exported shell values first, then practical
+# dotenv syntax, then the `:-` defaults in docker-compose.yml. Never source .env;
+# it contains secrets and is configuration data, not shell code.
+# shellcheck source=scripts/lib/port-config.sh
+source "$SCRIPT_DIR/lib/port-config.sh"
+BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "$PROJECT_DIR/.env")"
+FRONTEND_PORT="$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 "$PROJECT_DIR/.env")"
+LOCAL_CORE_URL="http://localhost:${BACKEND_PORT}"
+SENSOR_CORE_URL="${VEDETTA_CORE_URL:-${LOCAL_CORE_URL}}"
 LOG_FILE="/usr/local/var/log/vedetta-sensor.log"
 MAX_RETRIES=3
 VERIFY_WAIT=5
@@ -55,7 +64,7 @@ install_sensor_service() {
         mkdir -p "$(dirname "$LOG_FILE")"
 
         # Generate plist from template with correct core URL
-        sed "s|http://CORE_IP:8080|${CORE_URL}|g" "$PLIST_SRC" > "$PLIST_DEST"
+        sed "s|http://CORE_IP:8080|${SENSOR_CORE_URL}|g" "$PLIST_SRC" > "$PLIST_DEST"
         chown root:wheel "$PLIST_DEST"
         chmod 644 "$PLIST_DEST"
 
@@ -89,7 +98,7 @@ install_sensor_service() {
 start_sensor_once() {
     echo "  Launching sensor (this session only)..."
     mkdir -p "$(dirname "$LOG_FILE")"
-    nohup "$SENSOR_BIN" --core "$CORE_URL" >> "$LOG_FILE" 2>&1 &
+    nohup "$SENSOR_BIN" --core "$SENSOR_CORE_URL" >> "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "  ✓ Sensor launched (PID $pid)"
     echo "  Logs: $LOG_FILE"
@@ -127,7 +136,7 @@ prompt_sensor_start() {
                 ;;
             3)
                 echo "  Skipped. To start manually:"
-                echo "    sudo $SENSOR_BIN --core $CORE_URL"
+                echo "    sudo $SENSOR_BIN --core $SENSOR_CORE_URL"
                 return
                 ;;
             *)
@@ -219,7 +228,7 @@ verify_sensor() {
         echo ""
         echo "  This can happen if the sensor exited immediately on startup."
         echo "  Check logs: $LOG_FILE"
-        echo "  Manual start: sudo $SENSOR_BIN --core $CORE_URL"
+        echo "  Manual start: sudo $SENSOR_BIN --core $SENSOR_CORE_URL"
     fi
 }
 
@@ -258,10 +267,10 @@ echo ""
 # Wait for backend health check
 echo "▸ Waiting for backend to become healthy..."
 for i in $(seq 1 30); do
-    if curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
+    if curl -sf "${LOCAL_CORE_URL}/healthz" > /dev/null 2>&1; then
         echo "  Backend healthy."
         # Verify new routes are present
-        ROUTE_CHECK=$(curl -sf http://localhost:8080/api/v1/version 2>/dev/null)
+        ROUTE_CHECK=$(curl -sf "${LOCAL_CORE_URL}/api/v1/version" 2>/dev/null)
         if echo "$ROUTE_CHECK" | grep -q "suppression" 2>/dev/null; then
             echo "  ✓ New API routes verified."
         else
@@ -293,6 +302,6 @@ restart_sensor
 echo ""
 echo "═══════════════════════════════════════════"
 echo "  Update complete."
-echo "  Dashboard: http://localhost:3107"
-echo "  API:       http://localhost:8080/api/v1/status (read/admin bearer required)"
+echo "  Dashboard: http://localhost:${FRONTEND_PORT}"
+echo "  API:       http://localhost:${BACKEND_PORT}/api/v1/status (read/admin bearer required)"
 echo "═══════════════════════════════════════════"

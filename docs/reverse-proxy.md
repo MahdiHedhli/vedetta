@@ -93,6 +93,13 @@ hostname is `vedetta.example.com` (replace with your own). If you followed §4 t
 keep Core unpublished, the frontend is republished at `127.0.0.1:8088` instead —
 use that port below.
 
+> With the default Compose mapping, use the effective `VEDETTA_FRONTEND_PORT` in
+> place of `3107` below when it differs from the default, whether it was selected
+> automatically or configured explicitly. Retrieve the value without sourcing
+> `.env`: `./scripts/resolve-host-port.sh VEDETTA_FRONTEND_PORT 3107`. If you use
+> the §4 override, keep its fixed `8088` port instead; that override intentionally
+> replaces the normal `VEDETTA_FRONTEND_PORT` mapping.
+
 ### Option A — Caddy (automatic HTTPS)
 
 ```caddy
@@ -220,16 +227,20 @@ CA bundle from the command line; trust is managed at the OS level.
 
 ## 7. Verify it (smoke test)
 
-Before trusting a deployment, confirm end-to-end. `scripts/proxy-smoke.sh` (or by
-hand) should check:
+Before trusting a deployment, confirm these checks end-to-end:
 
 1. `https://vedetta.example.com` loads the dashboard (TLS valid).
 2. An authenticated `GET /api/v1/status` through the proxy returns 200 **with** a
    bearer token and 401 **without** one (bearer preserved through the proxy).
 3. An authenticated write (e.g. create a read token) succeeds through the proxy.
 4. A sensor registers through the proxy endpoint over HTTPS.
-5. **No direct plaintext Core port is reachable** from the LAN — e.g.
-   `curl http://<host>:8080/api/v1/status` from another machine must fail/refuse.
+5. **No direct plaintext Core port is reachable** from the LAN:
+   - With the default Compose mapping, obtain the actual host port on the Docker
+     host with `./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080`. From a
+     different LAN machine, `curl http://<host>:<resolved-port>/api/v1/status`
+     must fail or be refused.
+   - With the §4 override, `docker compose port backend 8080` on the Docker host
+     must print no mapping; Core is intentionally unpublished in that topology.
 
 ---
 

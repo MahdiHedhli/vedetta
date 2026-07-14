@@ -2391,7 +2391,8 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
   // Core URL to bake into the copy-paste installer command that runs on ANOTHER
   // host (issue #39). The dashboard's own origin is almost always wrong for a
   // remote sensor: Core is loopback-only by default, so the operator is usually
-  // viewing this page at http://localhost:3107 (or a 127.0.0.1 / *.local origin)
+  // viewing this page at the loopback dashboard URL printed by gen-env.sh (or a
+  // 127.0.0.1 / *.local origin)
   // that no other machine can reach. Only reuse the page origin when it is a real
   // routable address (e.g. the TLS reverse-proxy hostname the operator browses
   // to); otherwise fall back to a clear placeholder the operator must edit —
@@ -2531,7 +2532,7 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
                 {coreUrlIsPlaceholder && (
                   <p className="text-[10px] text-amber-400/80">
                     Replace <span className="font-mono">{CORE_HOST_PLACEHOLDER}</span> with the address the sensor host can actually reach.
-                    If the sensor runs on <span className="text-gray-300">this same machine</span>, use <span className="font-mono">http://localhost:8080</span>.
+                    If the sensor runs on <span className="text-gray-300">this same machine</span>, use the Core API URL printed by <span className="font-mono">gen-env.sh</span> (the port is <span className="font-mono">VEDETTA_BACKEND_PORT</span> in <span className="font-mono">.env</span>).
                     For a sensor on <span className="text-gray-300">another machine</span>, Core is loopback-only by default — point it at your TLS reverse-proxy hostname (see the Reverse Proxy &amp; TLS guide).
                   </p>
                 )}
@@ -2553,7 +2554,7 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
 sudo ./vedetta-sensor --core ${coreUrl}${enrollCode ? ` --enroll-code ${enrollCode}` : ''}`}
             </code>
             <p className="text-[10px] text-gray-500 mt-2">
-              Same host as Core? Use <span className="font-mono">http://localhost:8080</span>. A sensor on another machine can't reach Core's loopback port — point <span className="font-mono">--core</span> at your TLS reverse-proxy hostname instead.
+              Same host as Core? Use the Core API URL printed by <span className="font-mono">gen-env.sh</span>, including its selected <span className="font-mono">VEDETTA_BACKEND_PORT</span>. A sensor on another machine can't reach Core's loopback port — point <span className="font-mono">--core</span> at your TLS reverse-proxy hostname instead.
             </p>
           </div>
           <div className="bg-gray-800 rounded-lg p-4">

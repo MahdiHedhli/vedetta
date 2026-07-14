@@ -9,6 +9,15 @@
 #   VEDETTA_CORE_TOKEN    — telemetry read auth   (read scope)   [!= ingest token]
 #   VEDETTA_SETUP_CODE    — single-use first-admin bootstrap code
 #
+# It also PROBES the host ports docker-compose.yml publishes and seeds the chosen
+# values into .env, so a fresh `docker compose up` starts cleanly even when the
+# defaults are already taken (e.g. another httpd owns 127.0.0.1:8080):
+#   VEDETTA_BACKEND_PORT    — Core API host port   (default 8080/tcp, loopback)
+#   VEDETTA_FRONTEND_PORT   — dashboard host port  (default 3107/tcp, loopback)
+#   VEDETTA_COLLECTOR_PORT  — syslog host port      (default 5140/udp, LAN)
+# The final dashboard/Core/collector URLs are printed at the end. Skip probing
+# with VEDETTA_SKIP_PORT_PROBE=1 (keeps the defaults / any preset env values).
+#
 # Usage:
 #   ./scripts/gen-env.sh            # writes ./.env at the repo root
 #   ENV_FILE=/path/to.env ./scripts/gen-env.sh
@@ -23,6 +32,8 @@ set -euo pipefail
 # matter the caller's cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=scripts/lib/port-config.sh
+source "${SCRIPT_DIR}/lib/port-config.sh"
 
 EXAMPLE_FILE="${REPO_ROOT}/.env.example"
 ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
@@ -32,7 +43,7 @@ if [[ ! -f "${EXAMPLE_FILE}" ]]; then
   exit 1
 fi
 
-if [[ -e "${ENV_FILE}" ]]; then
+if [[ -e "${ENV_FILE}" || -L "${ENV_FILE}" ]]; then
   echo "error: ${ENV_FILE} already exists — refusing to overwrite." >&2
   echo "       Delete it first if you really want to regenerate credentials." >&2
   exit 1
@@ -40,6 +51,10 @@ fi
 
 if ! command -v openssl >/dev/null 2>&1; then
   echo "error: openssl is required to generate secrets but was not found in PATH" >&2
+  exit 1
+fi
+if ! command -v link >/dev/null 2>&1; then
+  echo "error: the link utility is required for atomic credential installation but was not found in PATH" >&2
   exit 1
 fi
 
@@ -57,13 +72,14 @@ done
 # shell/URL-safe by using hex.
 SETUP_CODE="$(openssl rand -hex 16)"
 
-# Write atomically: build into a temp file, then move into place so a failure
-# never leaves a half-written .env behind.
-UMASK_OLD="$(umask)"
-umask 077 # secrets — owner-only from the moment the file exists
+# Write atomically: build into a private temp file, then install it with
+# create-if-absent semantics so failures never leave a partial .env behind.
+umask 077 # this script cannot change its parent shell's umask
 TMP_FILE="$(mktemp "${ENV_FILE}.XXXXXX")"
-umask "${UMASK_OLD}"
-trap 'rm -f "${TMP_FILE}"' EXIT
+cleanup_temp_files() {
+  rm -f "${TMP_FILE}" "${TMP_FILE}.tmp"
+}
+trap cleanup_temp_files EXIT
 
 # Start from the documented template so every non-secret default and comment is
 # preserved, then substitute the secret values.
@@ -95,14 +111,184 @@ if ! grep -qE '^VEDETTA_SETUP_CODE=' "${TMP_FILE}"; then
 fi
 set_var "VEDETTA_SETUP_CODE" "${SETUP_CODE}" "${TMP_FILE}"
 
-mv "${TMP_FILE}" "${ENV_FILE}"
-chmod 600 "${ENV_FILE}" # secrets — owner read/write only
+# --------------------------------------------------------------------------
+# Host-port probing. docker-compose.yml publishes three host ports; if a
+# default is already bound on this host, `docker compose up` fails with
+# "address already in use" and the service never starts (for example, an
+# existing web server may own 127.0.0.1:8080). Detect a
+# conflict here and seed the next free port into .env instead of assuming the
+# defaults are free. Container-internal ports never change; only the host side.
+# --------------------------------------------------------------------------
+
+# port_in_use <tcp|udp> <port> — 0 (true) if something already uses <port>.
+# Prefers lsof (present in the macOS base system and on most Linux), then falls
+# back to ss / netstat. If none is available we cannot tell, so we treat the
+# port as free and note it (a later `docker compose up` still surfaces a real
+# clash). The match is port-scoped, not address-scoped: a listener on ANY
+# address counts as a conflict. That is deliberately conservative — at worst we
+# skip a port that might technically have been usable and pick the next one.
+PORT_PROBE_TOOL="$(vedetta_detect_port_probe_tool)"
+RESERVED_TCP_PORTS=""
+
+port_in_use() {
+  local proto="$1" port="$2"
+  vedetta_port_in_use "${PORT_PROBE_TOOL}" "${proto}" "${port}"
+}
+
+tcp_port_reserved() {
+  local port="$1"
+  case " ${RESERVED_TCP_PORTS} " in
+    *" ${port} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# pick_port <tcp|udp> <preferred-start> <human-label> — echoes the first free
+# port at or above <preferred-start>. Fails clearly rather than writing a known
+# conflicting value if the whole range through 65535 is unavailable.
+pick_port() {
+  local proto="$1" port="$2" label="$3" start="$2" probe_status occupied
+  while :; do
+    occupied=0
+    if port_in_use "${proto}" "${port}"; then
+      occupied=1
+    else
+      probe_status=$?
+      if [ "${probe_status}" -ne 1 ]; then
+        echo "error: ${PORT_PROBE_TOOL} failed while checking ${label} ${proto} port ${port}" >&2
+        echo "       repair the probe tool, or explicitly set VEDETTA_SKIP_PORT_PROBE=1" >&2
+        return 1
+      fi
+    fi
+    if [ "${proto}" = tcp ] && tcp_port_reserved "${port}"; then
+      occupied=1
+    fi
+    [ "${occupied}" -eq 1 ] || break
+    if [ "${port}" -ge 65535 ]; then
+      echo "error: no free ${label} ${proto} port found at or above ${start}" >&2
+      echo "       free a port or choose a lower matching VEDETTA_*_PORT" >&2
+      return 1
+    fi
+    port=$((port + 1))
+  done
+  printf '%s' "${port}"
+}
+
+# Respect any value already exported in the environment as the PREFERRED start;
+# otherwise fall back to the shipped defaults. Probing walks up from there. The
+# *_START values are the ports we hoped to use, so we can tell the operator which
+# one had to move (compare final vs. start, NOT vs. the hardcoded default — the
+# operator may have preferred a non-default start).
+BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 /dev/null)"; BACKEND_START="${BACKEND_PORT}"
+FRONTEND_PORT="$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 /dev/null)"; FRONTEND_START="${FRONTEND_PORT}"
+COLLECTOR_PORT="$(vedetta_resolve_port VEDETTA_COLLECTOR_PORT 5140 /dev/null)"; COLLECTOR_START="${COLLECTOR_PORT}"
+BACKEND_EXPORTED=0; printenv VEDETTA_BACKEND_PORT >/dev/null 2>&1 && BACKEND_EXPORTED=1
+FRONTEND_EXPORTED=0; printenv VEDETTA_FRONTEND_PORT >/dev/null 2>&1 && FRONTEND_EXPORTED=1
+COLLECTOR_EXPORTED=0; printenv VEDETTA_COLLECTOR_PORT >/dev/null 2>&1 && COLLECTOR_EXPORTED=1
+PROBE_RAN=0
+
+if [ "${VEDETTA_SKIP_PORT_PROBE:-0}" = "1" ]; then
+  echo "Port probing skipped (VEDETTA_SKIP_PORT_PROBE=1); using ${BACKEND_PORT}/${FRONTEND_PORT}/${COLLECTOR_PORT}."
+elif [ -z "${PORT_PROBE_TOOL}" ]; then
+  echo "note: no port-probe tool (lsof/ss/netstat) found — cannot verify host ports;" >&2
+  echo "      using configured values ${BACKEND_PORT}/${FRONTEND_PORT}/${COLLECTOR_PORT}. If 'docker compose up'" >&2
+  echo "      reports 'address already in use', set the matching VEDETTA_*_PORT in .env." >&2
+else
+  BACKEND_PORT="$(pick_port tcp "${BACKEND_PORT}" "Core API")"
+  RESERVED_TCP_PORTS="${BACKEND_PORT}"
+  FRONTEND_PORT="$(pick_port tcp "${FRONTEND_PORT}" "dashboard")"
+  COLLECTOR_PORT="$(pick_port udp "${COLLECTOR_PORT}" "collector")"
+  PROBE_RAN=1
+fi
+
+# Core and the dashboard both bind 127.0.0.1/tcp. Even when external probing is
+# explicitly skipped or unavailable, never write a Compose configuration that
+# asks both services to claim the same socket.
+if [ "${BACKEND_PORT}" = "${FRONTEND_PORT}" ]; then
+  echo "error: VEDETTA_BACKEND_PORT and VEDETTA_FRONTEND_PORT both resolve to ${BACKEND_PORT}/tcp" >&2
+  echo "       choose distinct ports (or allow gen-env.sh to probe and select them)" >&2
+  exit 1
+fi
+
+# Docker Compose gives exported shell variables precedence over .env. A child
+# setup script cannot change or unset its parent's export, so persisting a
+# shifted port would misleadingly claim success while Compose continued using
+# the occupied value. Abort without installing .env and tell the operator how
+# to make the selected value authoritative.
+reject_shifted_export() {
+  local key="$1" exported="$2" start="$3" selected="$4"
+  [ "${exported}" -eq 1 ] || return 0
+  [ "${start}" = "${selected}" ] && return 0
+
+  echo "error: ${key} is exported as ${start}, but port probing selected ${selected}" >&2
+  echo "       an exported value would override the corrected value in ${ENV_FILE}" >&2
+  echo "       unset ${key} (or export a free port) and rerun; no .env was written" >&2
+  return 1
+}
+
+reject_shifted_export VEDETTA_BACKEND_PORT "${BACKEND_EXPORTED}" "${BACKEND_START}" "${BACKEND_PORT}"
+reject_shifted_export VEDETTA_FRONTEND_PORT "${FRONTEND_EXPORTED}" "${FRONTEND_START}" "${FRONTEND_PORT}"
+reject_shifted_export VEDETTA_COLLECTOR_PORT "${COLLECTOR_EXPORTED}" "${COLLECTOR_START}" "${COLLECTOR_PORT}"
+
+set_var "VEDETTA_BACKEND_PORT" "${BACKEND_PORT}" "${TMP_FILE}"
+set_var "VEDETTA_FRONTEND_PORT" "${FRONTEND_PORT}" "${TMP_FILE}"
+set_var "VEDETTA_COLLECTOR_PORT" "${COLLECTOR_PORT}" "${TMP_FILE}"
+
+# Install with create-if-absent semantics. TMP_FILE is in ENV_FILE's directory,
+# so link(2) is a same-filesystem atomic operation: concurrent setup runs cannot
+# both succeed, and an existing path (including a directory or symlink) is never
+# replaced. The strict two-operand link utility does not have ln's
+# target-directory behavior. The inode is mode 0600 before its public name
+# appears.
+chmod 600 "${TMP_FILE}"
+INSTALL_ERROR=""
+if ! INSTALL_ERROR="$(link "${TMP_FILE}" "${ENV_FILE}" 2>&1)"; then
+  if [[ -e "${ENV_FILE}" || -L "${ENV_FILE}" ]]; then
+    echo "error: ${ENV_FILE} was created by another setup process — refusing to overwrite." >&2
+    echo "       Use the credentials printed by the successful process." >&2
+  else
+    echo "error: could not install ${ENV_FILE} atomically; no credentials were written there." >&2
+    if [[ -n "${INSTALL_ERROR}" ]]; then
+      printf '       %s\n' "${INSTALL_ERROR}" >&2
+    fi
+  fi
+  exit 1
+fi
+rm -f "${TMP_FILE}"
 trap - EXIT
 
 echo "Wrote ${ENV_FILE} with fresh, distinct machine credentials:"
 echo "  VEDETTA_INGEST_TOKEN  (ingest scope)"
 echo "  VEDETTA_CORE_TOKEN    (read scope, distinct from ingest)"
 echo "  VEDETTA_SETUP_CODE    (single-use first-admin bootstrap)"
+echo
+if [ "${PROBE_RAN}" = "1" ]; then
+  echo "Host ports (probed for conflicts, pinned in ${ENV_FILE##*/}) — 'docker compose up' will use these:"
+else
+  echo "Host ports (NOT probed; pinned in ${ENV_FILE##*/} as configured) — 'docker compose up' will use these:"
+fi
+echo "  Dashboard:  http://localhost:${FRONTEND_PORT}"
+echo "  Core API:   http://localhost:${BACKEND_PORT}   (health: http://localhost:${BACKEND_PORT}/healthz)"
+echo "  Collector:  udp/${COLLECTOR_PORT}   (LAN-reachable syslog input — point firewall exports here)"
+
+# Call out any port that had to move off its default so the operator updates
+# bookmarks, the sensor --core URL, and firewall syslog targets accordingly.
+shifted=""
+if [ "${BACKEND_PORT}" != "${BACKEND_START}" ]; then
+  shifted="${shifted}\n  - Core API is on ${BACKEND_PORT} (${BACKEND_START} was taken). Same-host sensors: --core http://localhost:${BACKEND_PORT}"
+fi
+if [ "${FRONTEND_PORT}" != "${FRONTEND_START}" ]; then
+  shifted="${shifted}\n  - Dashboard is on ${FRONTEND_PORT} (${FRONTEND_START} was taken). Update your bookmark."
+fi
+if [ "${COLLECTOR_PORT}" != "${COLLECTOR_START}" ]; then
+  shifted="${shifted}\n  - Collector is on ${COLLECTOR_PORT} (${COLLECTOR_START} was taken). Point firewall syslog export at this port."
+fi
+if [ -n "${shifted}" ]; then
+  echo
+  echo "One or more defaults were already in use, so free ports were selected:"
+  printf '%b\n' "${shifted}"
+fi
+
 echo
 echo "Keep this file private (it is gitignored). First admin bootstrap code:"
 echo "  ${SETUP_CODE}"

@@ -13,6 +13,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Resolve ports without sourcing the secret-bearing .env. Exported shell values
+# win, matching Docker Compose interpolation precedence.
+# shellcheck source=scripts/lib/port-config.sh
+source "$SCRIPT_DIR/lib/port-config.sh"
+BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "$PROJECT_DIR/.env")"
+FRONTEND_PORT="$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 "$PROJECT_DIR/.env")"
+
 echo "═══════════════════════════════════════════"
 echo "  Vedetta — Core Update"
 echo "═══════════════════════════════════════════"
@@ -41,7 +48,7 @@ echo ""
 # Wait for backend health check
 echo "▸ Waiting for backend to become healthy..."
 for i in $(seq 1 30); do
-    if curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
+    if curl -sf "http://localhost:${BACKEND_PORT}/healthz" > /dev/null 2>&1; then
         echo "  Backend healthy."
         break
     fi
@@ -54,6 +61,6 @@ done
 echo ""
 echo "═══════════════════════════════════════════"
 echo "  Core update complete."
-echo "  Dashboard: http://localhost:3107"
-echo "  API:       http://localhost:8080/api/v1/status (read/admin bearer required)"
+echo "  Dashboard: http://localhost:${FRONTEND_PORT}"
+echo "  API:       http://localhost:${BACKEND_PORT}/api/v1/status (read/admin bearer required)"
 echo "═══════════════════════════════════════════"

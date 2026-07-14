@@ -122,14 +122,16 @@ simulate-real-enrich: $(SIM)
 seed-snr:
 	docker cp scripts/seed-snr-validation.sql vedetta-backend:/tmp/seed-snr.sql
 	docker compose exec -T backend sh -c 'sqlite3 /data/vedetta.db < /tmp/seed-snr.sql'
-	@echo "SNR validation tiers (false_positive / mid_warning / high_threat) seeded. Open http://localhost:3107 and filter by context or severity."
+	@frontend_port="$$(./scripts/resolve-host-port.sh VEDETTA_FRONTEND_PORT 3107)" && \
+		echo "SNR validation tiers (false_positive / mid_warning / high_threat) seeded. Open http://localhost:$${frontend_port} and filter by context or severity."
 
 # Show current SNR validation data (run after make seed-snr)
 # Usage: make show-snr
 show-snr:
 	@echo "=== SNR Validation Data (run 'make seed-snr' first if empty) ==="
 	docker compose exec -T backend sqlite3 /data/vedetta.db < scripts/seed-snr-validation.sql 2>/dev/null | tail -20 || echo "Run: docker compose exec -T backend sqlite3 /data/vedetta.db 'SELECT COUNT(*), ROUND(AVG(anomaly_score),2) FROM events WHERE source_hash LIKE \"sim-%\";'"
-	@echo "Then open http://localhost:3107 and explore the Threats view with the seeded data."
+	@frontend_port="$$(./scripts/resolve-host-port.sh VEDETTA_FRONTEND_PORT 3107)" && \
+		echo "Then open http://localhost:$${frontend_port} and explore the Threats view with the seeded data."
 
 # --- Native Sensor ---
 
@@ -152,23 +154,27 @@ sensor-reset:
 # Real network capture for SNR validation (requires sudo for packet capture)
 # Recommended on this machine: en0 for both DNS and passive discovery (LAN 10.0.0.0/24)
 sensor-recommend:
-	/tmp/vedetta-sensor --print-capture-plan --core http://localhost:8080
+	@backend_port="$$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)" && \
+		/tmp/vedetta-sensor --print-capture-plan --core "http://localhost:$${backend_port}"
 
 start-real-capture:
-	@echo "=== Starting real sensor capture for SNR validation ==="
-	@echo "Using /tmp/vedetta-sensor (run 'make build-sensor' first if needed)"
-	@echo "This will capture passive DNS + device discovery on your LAN and push to Core."
-	@echo "It requires sudo for packet capture."
-	@echo ""
-	@echo "Recommended command (copy-paste in another terminal):"
-	@echo "  sudo /tmp/vedetta-sensor --core http://localhost:8080"
-	@echo ""
-	@echo "Or with explicit interfaces (from --print-capture-plan):"
-	@echo "  sudo /tmp/vedetta-sensor --core http://localhost:8080 --dns-iface en0 --passive-iface en0"
-	@echo ""
-	@echo "Use --reset first if auth token is stale: sudo /tmp/vedetta-sensor --reset"
-	@echo "Then monitor with: make show-snr  (or watch the Threats view at http://localhost:3107)"
-	@echo "To stop: Ctrl-C or pkill vedetta-sensor"
+	@set -e; \
+		backend_port="$$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)"; \
+		frontend_port="$$(./scripts/resolve-host-port.sh VEDETTA_FRONTEND_PORT 3107)"; \
+		echo "=== Starting real sensor capture for SNR validation ==="; \
+		echo "Using /tmp/vedetta-sensor (run 'make build-sensor' first if needed)"; \
+		echo "This will capture passive DNS + device discovery on your LAN and push to Core."; \
+		echo "It requires sudo for packet capture."; \
+		echo ""; \
+		echo "Recommended command (copy-paste in another terminal):"; \
+		echo "  sudo /tmp/vedetta-sensor --core http://localhost:$${backend_port}"; \
+		echo ""; \
+		echo "Or with explicit interfaces (from --print-capture-plan):"; \
+		echo "  sudo /tmp/vedetta-sensor --core http://localhost:$${backend_port} --dns-iface en0 --passive-iface en0"; \
+		echo ""; \
+		echo "Use --reset first if auth token is stale: sudo /tmp/vedetta-sensor --reset"; \
+		echo "Then monitor with: make show-snr  (or watch the Threats view at http://localhost:$${frontend_port})"; \
+		echo "To stop: Ctrl-C or pkill vedetta-sensor"
 
 # Quick status for collection health (after sensor is running)
 collection-health:
@@ -178,7 +184,8 @@ collection-health:
 	@docker compose exec -T backend sqlite3 /data/vedetta.db "SELECT 'Device baseline last update: ' || MAX(last_seen) FROM devices;" 2>/dev/null || echo "Device baseline last update: (could not query)"
 	@echo "    (use API for exact age in hours + live/frozen status; see /status collection_health)"
 	@echo ""
-	@echo "=== For live beacon_tracked_pairs + device stats + baseline age use: curl -s http://localhost:8080/api/v1/status | jq '.collection_health' (or python one-liner)"
+	@backend_port="$$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)" && \
+		echo "=== For live beacon_tracked_pairs + device stats + baseline age use: curl -s http://localhost:$${backend_port}/api/v1/status | jq '.collection_health' (or python one-liner)"
 	@echo "    (includes last_device_update + device_baseline_age_hours to confirm current live vs historical device baseline context)"
 
 # --- Tests ---
@@ -191,8 +198,11 @@ test-sensor:
 
 # Quick health check
 status:
-	@echo "Dashboard: http://localhost:3107"
-	@echo "Core API:  http://localhost:8080"
+	@set -e; \
+		backend_port="$$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)"; \
+		frontend_port="$$(./scripts/resolve-host-port.sh VEDETTA_FRONTEND_PORT 3107)"; \
+		echo "Dashboard: http://localhost:$${frontend_port}"; \
+		echo "Core API:  http://localhost:$${backend_port}"
 	@docker compose ps
 
 # Install sensor as privileged macOS LaunchDaemon (recommended for persistent real capture)
@@ -200,7 +210,8 @@ status:
 install-macos-service:
 	@echo "==> Installing Vedetta Sensor as macOS LaunchDaemon for real data collection"
 	@if [ -z "$(CORE_URL)" ]; then \
-		echo "Usage: make install-macos-service CORE_URL=http://YOUR-CORE-IP:8080"; \
+		echo "Usage: make install-macos-service CORE_URL=https://vedetta.example.com"; \
+		echo "Same-host install: use the Core API URL printed by scripts/gen-env.sh."; \
 		exit 1; \
 	fi
 	@sudo sensor/deploy/install.sh --core "$(CORE_URL)"
@@ -246,7 +257,8 @@ start-real-sensor:
 	@echo "Stopping any existing sensor process..."
 	@pkill -f vedetta-sensor || true
 	@echo "Starting privileged sensor (full passive DNS + device discovery) with logging..."
-	@nohup /tmp/vedetta-sensor --core http://localhost:8080 > /tmp/vedetta-sensor.log 2>&1 &
+	@set -e; backend_port="$$(./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080)"; \
+		nohup /tmp/vedetta-sensor --core "http://localhost:$${backend_port}" > /tmp/vedetta-sensor.log 2>&1 &
 	@echo "Sensor started in background."
 	@echo ""
 	@echo "Quick device context snapshot:"

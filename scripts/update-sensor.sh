@@ -17,7 +17,14 @@ PLIST_SRC="$PROJECT_DIR/sensor/deploy/com.vedetta.sensor.plist"
 PLIST_DEST="/Library/LaunchDaemons/com.vedetta.sensor.plist"
 SERVICE_ID="system/com.vedetta.sensor"
 SENSOR_BIN="/usr/local/bin/vedetta-sensor"
-CORE_URL="${VEDETTA_CORE_URL:-http://localhost:8080}"
+
+# Resolve ports without sourcing the secret-bearing .env. Exported shell values
+# win, matching Docker Compose interpolation precedence.
+# shellcheck source=scripts/lib/port-config.sh
+source "$SCRIPT_DIR/lib/port-config.sh"
+BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "$PROJECT_DIR/.env")"
+FRONTEND_PORT="$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 "$PROJECT_DIR/.env")"
+CORE_URL="${VEDETTA_CORE_URL:-http://localhost:${BACKEND_PORT}}"
 LOG_FILE="/usr/local/var/log/vedetta-sensor.log"
 MAX_RETRIES=3
 VERIFY_WAIT=5
@@ -245,5 +252,5 @@ restart_sensor
 echo ""
 echo "═══════════════════════════════════════════"
 echo "  Sensor update complete."
-echo "  Dashboard: http://localhost:3107"
+echo "  Dashboard: http://localhost:${FRONTEND_PORT}"
 echo "═══════════════════════════════════════════"

@@ -27,9 +27,13 @@ off by default.
 ## 1. Prerequisites
 
 - A running Vedetta Core + collector deployment (`docker compose up -d`).
-- The collector's syslog input is already listening on **UDP port 5140** (see
-  `collector/config/fluent-bit.conf` and the `5140:5140/udp` mapping in
-  `docker-compose.yml`).
+- The collector's syslog input is listening on **UDP port 5140** by default (see
+  `collector/config/fluent-bit.conf` and the `${VEDETTA_COLLECTOR_PORT:-5140}:5140/udp`
+  mapping in `docker-compose.yml`). Always use the effective
+  `VEDETTA_COLLECTOR_PORT` value in `.env`, whether it was selected automatically
+  or configured explicitly. Retrieve it safely with
+  `./scripts/resolve-host-port.sh VEDETTA_COLLECTOR_PORT 5140`; use that host port
+  everywhere this guide refers to the collector port.
 - The IP or hostname of the machine running the Vedetta collector. In the examples
   below this is `198.51.100.10` — replace it with your collector's address.
 - A UniFi gateway/console running UniFi Network. Modern UniFi OS consoles
@@ -50,7 +54,7 @@ CEF is preferred where available.
    Advanced → Activity/Syslog**, or a dedicated **SIEM Server** panel).
 3. Enable the remote syslog / SIEM export and set:
    - **Host:** your collector IP, e.g. `198.51.100.10`
-   - **Port:** `5140`
+   - **Port:** your effective `VEDETTA_COLLECTOR_PORT` value (`5140` by default)
    - **Protocol:** UDP
    - **Format:** CEF (where the version offers a format choice)
 4. Enable the **firewall / security** log categories. Leave debug and verbose
@@ -68,7 +72,8 @@ A CEF firewall line looks like this (synthetic):
 
 1. Go to **Settings → System → Logging → Remote Syslog Server** (naming varies by
    version).
-2. Set **Host** = your collector IP (`198.51.100.10`), **Port** = `5140`.
+2. Set **Host** = your collector IP (`198.51.100.10`), **Port** = your effective
+   `VEDETTA_COLLECTOR_PORT` value (`5140` by default).
 3. Enable firewall logging on your firewall rules (the "Log" toggle per rule / ruleset)
    so the kernel emits `[RULESET-N-A]` lines.
 
@@ -145,7 +150,8 @@ tuple is tagged `new_fw_block` and scored higher.
    ```
 
 If nothing arrives: UDP syslog is fire-and-forget, so a wrong host/port fails silently.
-Re-check the export host/port on the UniFi side, confirm UDP 5140 is reachable from the
+Re-check the export host/port on the UniFi side, confirm the configured
+`VEDETTA_COLLECTOR_PORT`/UDP is reachable from the
 gateway to the collector, and confirm firewall logging is enabled on the rules.
 
 ---
@@ -208,7 +214,7 @@ the signal-to-noise discipline that re-opens with every new data source:
 
 | Capability | Status | Meaning |
 | --- | --- | --- |
-| Syslog/CEF firewall event ingestion (UDP 5140) | **Supported** | Complete, tuned workflow: ingest → normalize → suppress → document. Default SNR suppression ships with the feature. |
+| Syslog/CEF firewall event ingestion (`VEDETTA_COLLECTOR_PORT`/UDP; 5140 default) | **Supported** | Complete, tuned workflow: ingest → normalize → suppress → document. Default SNR suppression ships with the feature. |
 | WAN-scan rollup + default whitelist tuning | **Supported** | Seeded via migration 018; user-disableable. |
 | Optional ingest bearer-token auth | **Supported** | Off by default for backward compatibility. |
 | REST connector — client inventory enrichment | **Experimental** | Off by default; API surface may change. |
