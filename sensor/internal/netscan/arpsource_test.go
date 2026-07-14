@@ -38,3 +38,17 @@ func TestSourceLifecycle(t *testing.T) {
 
 	s.Stop() // idempotent after stopped
 }
+
+func TestSourceNoRestartAfterStop(t *testing.T) {
+	// A Source is single-use: the lifecycle channels are closed once, so a Start after
+	// Stop must return an error rather than re-running loop() and panicking on a
+	// double close(doneCh).
+	s := NewSource(SourceConfig{PollInterval: 10 * time.Millisecond, OnHost: func(DiscoveredHost) {}})
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.Stop()
+	if err := s.Start(); err == nil {
+		t.Fatal("Start after Stop should error (single-use), got nil")
+	}
+}

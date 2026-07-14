@@ -11,9 +11,9 @@ import (
 )
 
 // readNeighbors reads the macOS/BSD kernel routing table and returns the resolved
-// IP↔MAC neighbor (ARP/NDP) entries. It is fully unprivileged: route.FetchRIB reads
-// the routing information base with no root, raw sockets, CAP_NET_RAW, libpcap, or
-// external binary.
+// IPv4 ARP entries (AF_INET only; IPv6 NDP is not parsed). It is fully unprivileged:
+// route.FetchRIB reads the routing information base with no root, raw sockets,
+// CAP_NET_RAW, libpcap, or external binary.
 func readNeighbors() ([]neighbor, error) {
 	rib, err := route.FetchRIB(unix.AF_INET, route.RIBTypeRoute, 0)
 	if err != nil {

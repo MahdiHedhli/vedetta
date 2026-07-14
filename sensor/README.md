@@ -22,11 +22,16 @@ through the same pipeline as passive discovery.
 
 ### Privilege story
 
-This removes the need for **root, raw sockets, `CAP_NET_RAW`, libpcap, or nmap** to learn
-device MAC addresses on Linux and macOS — the sensor just reads a kernel-maintained file
-or table. **Native-host execution is still required** (a container cannot see the host's
-L2 neighbor cache), and the separate passive **DNS/pcap** capture path still needs
-elevated privileges where enabled — that is unchanged by this source.
+The ARP-cache reader itself needs **no root, raw sockets, `CAP_NET_RAW`, libpcap, or
+nmap** to learn device MAC addresses on Linux and macOS — it just reads a
+kernel-maintained file or table. **Native-host execution is still required** (a container
+cannot see the host's L2 neighbor cache), and the separate passive **DNS/pcap** capture
+path still needs elevated privileges where enabled — that is unchanged by this source.
+
+> **Current limitation:** the sensor binary still initializes its active nmap scanner at
+> startup and exits if `nmap` is absent, so *running the sensor* today still requires
+> nmap on Unix even though this discovery source does not. Making the active scanner
+> optional, so ARP-cache discovery can run standalone, is a follow-up.
 
 ### Passive read vs. optional sweep
 

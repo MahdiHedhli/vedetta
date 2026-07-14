@@ -12,8 +12,13 @@ import (
 // (time.Ticker requires a positive duration).
 const defaultARPPollInterval = 30 * time.Second
 
-// errAlreadyRunning is returned by Source.Start when the source is already running.
-var errAlreadyRunning = errors.New("arp source already running")
+var (
+	// errAlreadyRunning is returned by Source.Start when the source is already running.
+	errAlreadyRunning = errors.New("arp source already running")
+	// errStopped is returned by Source.Start after Stop. A Source is single-use: its
+	// lifecycle channels are closed exactly once, so it cannot be restarted.
+	errStopped = errors.New("arp source has been stopped and cannot be restarted")
+)
 
 // SourceConfig configures the unprivileged ARP-cache discovery source.
 type SourceConfig struct {
@@ -37,6 +42,7 @@ type Source struct {
 	doneCh   chan struct{}
 	stopOnce sync.Once
 	run      bool
+	stopped  bool
 }
 
 // NewSource builds a Source. A missing CIDR is auto-detected and a non-positive poll
@@ -51,10 +57,15 @@ func NewSource(cfg SourceConfig) *Source {
 	return &Source{cfg: cfg, stopCh: make(chan struct{}), doneCh: make(chan struct{})}
 }
 
-// Start launches the background poll loop. It errors if already running.
+// Start launches the background poll loop. It errors if the source is already running
+// or has already been stopped (a Source is single-use — restarting would reuse the
+// closed lifecycle channels and panic in loop()).
 func (s *Source) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopped {
+		return errStopped
+	}
 	if s.run {
 		return errAlreadyRunning
 	}
@@ -78,6 +89,7 @@ func (s *Source) Stop() {
 	<-s.doneCh
 	s.mu.Lock()
 	s.run = false
+	s.stopped = true
 	s.mu.Unlock()
 }
 
