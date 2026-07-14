@@ -95,7 +95,9 @@ jobs:
           # (the amd64 Linux job's --version check is the authoritative proof the
           # -X path works); here we assert the tag string is embedded in the binary.
           if [ "$GOOS" = "windows" ]; then
-            strings -a "$bin" | grep -qF "${VERSION}" \
+            # Consume the complete strings output. With pipefail, grep -q can
+            # close early and make strings exit on SIGPIPE even on a match.
+            strings -a "$bin" | grep -F "${VERSION}" >/dev/null \
               || { echo "::error::version stamp '${VERSION}' not embedded in ${bin}"; exit 1; }
             zip -q "vedetta-sensor_${GOOS}_${GOARCH}.zip" "$bin"
           else
