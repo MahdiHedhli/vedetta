@@ -726,6 +726,12 @@ func TestNormalizeSourcesRejectsIdentifiersInDecodedURLPaths(t *testing.T) {
 		"https://docs.example.com/device?",
 		"https://docs.example.com/device#serial-SN123",
 		"https://docs.example.com/device#",
+		"https://docs.example.com/device/%3Fsecret",
+		"https://docs.example.com/device/%253Fsecret",
+		"https://docs.example.com/device/%23fragment",
+		"https://docs.example.com/device/%40identity",
+		"https://docs.example.com/device/%3Ctag%3E",
+		"https://docs.example.com/device/%5Cshare",
 	}
 	for _, rawURL := range badURLs {
 		rawURL := rawURL

@@ -44,16 +44,22 @@ type httpShutdowner interface {
 	Shutdown(context.Context) error
 }
 
-func shutdownHTTPServers(ctx context.Context, servers ...httpShutdowner) {
+const httpWriteTimeout = 150 * time.Second
+
+func shutdownHTTPServers(ctx context.Context, servers ...httpShutdowner) error {
+	errs := make([]error, len(servers))
 	var wg sync.WaitGroup
-	for _, server := range servers {
+	for index, server := range servers {
 		wg.Add(1)
-		go func(server httpShutdowner) {
+		go func(index int, server httpShutdowner) {
 			defer wg.Done()
-			_ = server.Shutdown(ctx)
-		}(server)
+			if err := server.Shutdown(ctx); err != nil {
+				errs[index] = fmt.Errorf("server %d: %w", index+1, err)
+			}
+		}(index, server)
 	}
 	wg.Wait()
+	return errors.Join(errs...)
 }
 
 func run() error {
@@ -109,7 +115,10 @@ func run() error {
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		// The public corpus snapshot is bounded at 16 MiB. Keep slow-reader
+		// protection while allowing that maximum response to finish at typical
+		// constrained-LAN and tunnel throughput.
+		WriteTimeout: httpWriteTimeout,
 	}
 
 	var adminHTTP *http.Server
@@ -136,7 +145,7 @@ func run() error {
 			Handler:           srv.AdminHandler(authenticator),
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       15 * time.Second,
-			WriteTimeout:      15 * time.Second,
+			WriteTimeout:      httpWriteTimeout,
 		}
 	}
 
@@ -189,7 +198,9 @@ func run() error {
 	if adminHTTP != nil {
 		shutdowners = append(shutdowners, adminHTTP)
 	}
-	shutdownHTTPServers(shutdownCtx, shutdowners...)
+	if shutdownErr := shutdownHTTPServers(shutdownCtx, shutdowners...); shutdownErr != nil {
+		return errors.Join(serveErr, fmt.Errorf("shutdown HTTP servers: %w", shutdownErr))
+	}
 	logger.Printf("threat-network backend stopped")
 	return serveErr
 }

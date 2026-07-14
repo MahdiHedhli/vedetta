@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,6 +17,14 @@ type blockingShutdowner struct {
 	started   chan struct{}
 	release   <-chan struct{}
 	completed chan struct{}
+}
+
+type errorShutdowner struct {
+	err error
+}
+
+func (s errorShutdowner) Shutdown(context.Context) error {
+	return s.err
 }
 
 func (s *blockingShutdowner) Shutdown(ctx context.Context) error {
@@ -197,10 +206,9 @@ func TestShutdownHTTPServersStartsAllServersConcurrently(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		shutdownHTTPServers(ctx, first, second)
-		close(done)
+		done <- shutdownHTTPServers(ctx, first, second)
 	}()
 
 	for index, started := range []<-chan struct{}{first.started, second.started} {
@@ -217,5 +225,34 @@ func TestShutdownHTTPServersStartsAllServersConcurrently(t *testing.T) {
 
 	close(secondRelease)
 	waitForShutdownSignal(t, ctx, second.completed, "second shutdown to complete")
-	waitForShutdownSignal(t, ctx, done, "shutdownHTTPServers to return after both shutdowns completed")
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shutdownHTTPServers returned an unexpected error: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for shutdownHTTPServers to return: %v", ctx.Err())
+	}
+}
+
+func TestShutdownHTTPServersReturnsEveryFailure(t *testing.T) {
+	firstErr := errors.New("public shutdown failed")
+	secondErr := errors.New("admin shutdown failed")
+	err := shutdownHTTPServers(context.Background(),
+		errorShutdowner{err: firstErr}, errorShutdowner{err: secondErr})
+	if !errors.Is(err, firstErr) || !errors.Is(err, secondErr) {
+		t.Fatalf("shutdown error = %v, want both server failures", err)
+	}
+}
+
+func TestHTTPWriteTimeoutAccommodatesMaximumCorpusSnapshot(t *testing.T) {
+	const (
+		maximumSnapshotBytes  = 16 << 20
+		minimumBytesPerSecond = 128 << 10
+	)
+	minimumDuration := time.Duration(maximumSnapshotBytes/minimumBytesPerSecond) * time.Second
+	if httpWriteTimeout < minimumDuration {
+		t.Fatalf("write timeout %s cannot deliver a 16 MiB snapshot at 128 KiB/s; need at least %s",
+			httpWriteTimeout, minimumDuration)
+	}
 }
