@@ -29,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.validate.outputs.tag }}
+      commit_sha: ${{ steps.validate.outputs.commit_sha }}
     steps:
       - name: Require an existing v* tag
         id: validate
@@ -44,7 +45,13 @@ jobs:
             echo "::error::Tag '${REQUESTED_TAG}' does not exist in ${GITHUB_REPOSITORY}"
             exit 1
           fi
+          commit_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REQUESTED_TAG}" --jq .sha)"
+          if [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Tag '${REQUESTED_TAG}' did not resolve to a commit SHA"
+            exit 1
+          fi
           printf 'tag=%s\n' "$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+          printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_OUTPUT"
 
   build-sensor:
     name: build sensor (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -61,9 +68,9 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          # Force the validated name into the tag namespace. A same-named branch
-          # can never substitute for the release tag.
-          ref: refs/tags/${{ needs.validate-tag.outputs.tag }}
+          # Build the immutable commit resolved by validate-tag. Matrix jobs must
+          # never resolve a mutable tag independently.
+          ref: ${{ needs.validate-tag.outputs.commit_sha }}
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
@@ -132,10 +139,22 @@ jobs:
         run: |
           sha256sum vedetta-sensor_*.tar.gz vedetta-sensor_*.zip > checksums.txt
           cat checksums.txt
+      - name: Verify release tag has not moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.validate-tag.outputs.commit_sha }}
+        run: |
+          current_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)"
+          if [ "$current_commit" != "$EXPECTED_COMMIT" ]; then
+            echo "::error::Tag '${RELEASE_TAG}' moved during the build: expected ${EXPECTED_COMMIT}, got ${current_commit}"
+            exit 1
+          fi
       - name: Create/refresh DRAFT release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ needs.validate-tag.outputs.tag }}
+          target_commitish: ${{ needs.validate-tag.outputs.commit_sha }}
           draft: true # never auto-publish — review and publish by hand
           fail_on_unmatched_files: true
           files: |
