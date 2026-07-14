@@ -146,6 +146,25 @@ else
 fi
 assert_eq 2 "${probe_status}" "probe command failure has a distinct status"
 
+NO_MATCH_BIN="${TMP_DIR}/no-match-bin"
+mkdir "${NO_MATCH_BIN}"
+printf '%s\n' '#!/bin/sh' 'exit 1' >"${NO_MATCH_BIN}/lsof"
+chmod +x "${NO_MATCH_BIN}/lsof"
+assert_false "empty lsof status 1 is a confirmed no-match" \
+  env PATH="${NO_MATCH_BIN}:${PATH}" sh -c \
+  '. "$1"; vedetta_port_in_use lsof tcp 8080' sh "${REPO_ROOT}/scripts/lib/port-config.sh"
+
+AMBIGUOUS_BIN="${TMP_DIR}/ambiguous-bin"
+mkdir "${AMBIGUOUS_BIN}"
+printf '%s\n' '#!/bin/sh' 'echo "lsof: permission denied" >&2' 'exit 1' >"${AMBIGUOUS_BIN}/lsof"
+chmod +x "${AMBIGUOUS_BIN}/lsof"
+if PATH="${AMBIGUOUS_BIN}:${PATH}" vedetta_port_in_use lsof tcp 8080; then
+  fail "lsof status 1 with diagnostics was treated as a successful probe"
+else
+  probe_status=$?
+fi
+assert_eq 2 "${probe_status}" "ambiguous lsof status 1 fails closed"
+
 BROKEN_ENV="${TMP_DIR}/broken-probe.env"
 if PATH="${BROKEN_BIN}:${PATH}" ENV_FILE="${BROKEN_ENV}" \
   "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/broken.out" 2>"${TMP_DIR}/broken.err"; then
@@ -154,11 +173,41 @@ fi
 [ ! -e "${BROKEN_ENV}" ] || fail "failed probe left an env file"
 assert_true "generator explains failed probe" grep -q 'failed while checking' "${TMP_DIR}/broken.err"
 
+AMBIGUOUS_ENV="${TMP_DIR}/ambiguous-probe.env"
+if PATH="${AMBIGUOUS_BIN}:${PATH}" ENV_FILE="${AMBIGUOUS_ENV}" \
+  "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/ambiguous.out" 2>"${TMP_DIR}/ambiguous.err"; then
+  fail "generator accepted an ambiguous lsof status 1"
+fi
+[ ! -e "${AMBIGUOUS_ENV}" ] || fail "ambiguous probe left an env file"
+assert_true "generator reports ambiguous lsof failure" grep -q 'failed while checking' "${TMP_DIR}/ambiguous.err"
+
+OCCUPIED_BIN="${TMP_DIR}/occupied-bin"
+mkdir "${OCCUPIED_BIN}"
+printf '%s\n' '#!/bin/sh' \
+  'case "$*" in' \
+  '  *-iTCP:45000*) printf "%s\n" p123 n127.0.0.1:45000; exit 0 ;;' \
+  '  *) exit 1 ;;' \
+  'esac' >"${OCCUPIED_BIN}/lsof"
+chmod +x "${OCCUPIED_BIN}/lsof"
+OCCUPIED_ENV="${TMP_DIR}/occupied-export.env"
+if PATH="${OCCUPIED_BIN}:${PATH}" VEDETTA_BACKEND_PORT=45000 \
+  ENV_FILE="${OCCUPIED_ENV}" "${REPO_ROOT}/scripts/gen-env.sh" \
+  >"${TMP_DIR}/occupied.out" 2>"${TMP_DIR}/occupied.err"; then
+  fail "generator persisted a shifted occupied port beneath an exported override"
+fi
+[ ! -e "${OCCUPIED_ENV}" ] || fail "shifted occupied export left an env file"
+assert_true "generator rejects an occupied exported preference" grep -q \
+  'exported as 45000, but port probing selected 45001' "${TMP_DIR}/occupied.err"
+
 GENERATED_ENV="${TMP_DIR}/generated.env"
-VEDETTA_BACKEND_PORT=41000 VEDETTA_FRONTEND_PORT=41000 \
-  ENV_FILE="${GENERATED_ENV}" "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/gen.out"
-assert_eq 41000 "$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${GENERATED_ENV}")" "generator keeps first selected TCP port"
-assert_eq 41001 "$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 "${GENERATED_ENV}")" "generator reserves backend port from frontend"
+if VEDETTA_BACKEND_PORT=41000 VEDETTA_FRONTEND_PORT=41000 \
+  ENV_FILE="${GENERATED_ENV}" "${REPO_ROOT}/scripts/gen-env.sh" \
+  >"${TMP_DIR}/gen.out" 2>"${TMP_DIR}/gen.err"; then
+  fail "generator persisted a shifted port beneath a stale exported override"
+fi
+[ ! -e "${GENERATED_ENV}" ] || fail "shifted exported port left an env file"
+assert_true "generator explains exported-port precedence" grep -q \
+  'exported as 41000, but port probing selected 41001' "${TMP_DIR}/gen.err"
 
 if VEDETTA_BACKEND_PORT=70000 ENV_FILE="${TMP_DIR}/invalid.env" \
   "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/invalid.out" 2>"${TMP_DIR}/invalid.err"; then

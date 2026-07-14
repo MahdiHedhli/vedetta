@@ -132,6 +132,10 @@ free port and pinned in `.env`. If no probe tool is installed, the script labels
 the values as unverified; if a detected tool fails, setup stops unless you
 explicitly choose `VEDETTA_SKIP_PORT_PROBE=1`. It then prints the **actual**
 dashboard / Core / collector URLs — use those throughout onboarding. You can
+export a preferred `VEDETTA_*_PORT`, but Docker Compose also gives that export
+precedence over `.env`; if probing has to shift it, setup stops and asks you to
+unset it or choose a free value instead of writing a configuration Compose would
+silently override. You can
 retrieve the same effective values later without sourcing the secret-bearing
 `.env`:
 

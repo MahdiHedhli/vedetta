@@ -225,6 +225,7 @@ vedetta_detect_port_probe_tool() {
 # Returns 0 when occupied, 1 when confirmed free, and 2 when probing failed.
 vedetta_port_in_use() {
   local tool="$1" proto="$2" port="$3" output="" status=0 ss_proto
+  local stderr_file="" stderr_output=""
 
   case "${proto}" in
     tcp|udp) ;;
@@ -233,22 +234,34 @@ vedetta_port_in_use() {
 
   case "${tool}" in
     lsof)
+      # lsof uses status 1 both for a clean no-match and for some execution
+      # errors (for example, an unreadable kernel/process table). Preserve its
+      # diagnostics so only an entirely empty status-1 result counts as free.
+      stderr_file="$(mktemp "${TMPDIR:-/tmp}/vedetta-lsof.XXXXXX")" || return 2
       if [ "${proto}" = udp ]; then
-        if output="$(lsof -nP -iUDP:"${port}" -Fn 2>/dev/null)"; then
+        if output="$(lsof -nP -iUDP:"${port}" -Fn 2>"${stderr_file}")"; then
           status=0
         else
           status=$?
         fi
       else
-        if output="$(lsof -nP -a -iTCP:"${port}" -sTCP:LISTEN -Fn 2>/dev/null)"; then
+        if output="$(lsof -nP -a -iTCP:"${port}" -sTCP:LISTEN -Fn 2>"${stderr_file}")"; then
           status=0
         else
           status=$?
         fi
       fi
-      # lsof uses status 1 for the normal no-match case; larger statuses are
-      # execution failures and must not be interpreted as port availability.
-      [ "${status}" -le 1 ] || return 2
+      stderr_output="$(cat "${stderr_file}" 2>/dev/null)" || {
+        rm -f "${stderr_file}"
+        return 2
+      }
+      rm -f "${stderr_file}"
+
+      if [ "${status}" -eq 1 ]; then
+        [ -z "${output}" ] && [ -z "${stderr_output}" ] || return 2
+        return 1
+      fi
+      [ "${status}" -eq 0 ] || return 2
       printf '%s\n' "${output}" | awk -v port="${port}" '
         /^n/ {
           local_endpoint = substr($0, 2)

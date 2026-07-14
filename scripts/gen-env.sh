@@ -177,6 +177,9 @@ pick_port() {
 BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 /dev/null)"; BACKEND_START="${BACKEND_PORT}"
 FRONTEND_PORT="$(vedetta_resolve_port VEDETTA_FRONTEND_PORT 3107 /dev/null)"; FRONTEND_START="${FRONTEND_PORT}"
 COLLECTOR_PORT="$(vedetta_resolve_port VEDETTA_COLLECTOR_PORT 5140 /dev/null)"; COLLECTOR_START="${COLLECTOR_PORT}"
+BACKEND_EXPORTED=0; printenv VEDETTA_BACKEND_PORT >/dev/null 2>&1 && BACKEND_EXPORTED=1
+FRONTEND_EXPORTED=0; printenv VEDETTA_FRONTEND_PORT >/dev/null 2>&1 && FRONTEND_EXPORTED=1
+COLLECTOR_EXPORTED=0; printenv VEDETTA_COLLECTOR_PORT >/dev/null 2>&1 && COLLECTOR_EXPORTED=1
 PROBE_RAN=0
 
 if [ "${VEDETTA_SKIP_PORT_PROBE:-0}" = "1" ]; then
@@ -201,6 +204,26 @@ if [ "${BACKEND_PORT}" = "${FRONTEND_PORT}" ]; then
   echo "       choose distinct ports (or allow gen-env.sh to probe and select them)" >&2
   exit 1
 fi
+
+# Docker Compose gives exported shell variables precedence over .env. A child
+# setup script cannot change or unset its parent's export, so persisting a
+# shifted port would misleadingly claim success while Compose continued using
+# the occupied value. Abort without installing .env and tell the operator how
+# to make the selected value authoritative.
+reject_shifted_export() {
+  local key="$1" exported="$2" start="$3" selected="$4"
+  [ "${exported}" -eq 1 ] || return 0
+  [ "${start}" = "${selected}" ] && return 0
+
+  echo "error: ${key} is exported as ${start}, but port probing selected ${selected}" >&2
+  echo "       an exported value would override the corrected value in ${ENV_FILE}" >&2
+  echo "       unset ${key} (or export a free port) and rerun; no .env was written" >&2
+  return 1
+}
+
+reject_shifted_export VEDETTA_BACKEND_PORT "${BACKEND_EXPORTED}" "${BACKEND_START}" "${BACKEND_PORT}"
+reject_shifted_export VEDETTA_FRONTEND_PORT "${FRONTEND_EXPORTED}" "${FRONTEND_START}" "${FRONTEND_PORT}"
+reject_shifted_export VEDETTA_COLLECTOR_PORT "${COLLECTOR_EXPORTED}" "${COLLECTOR_START}" "${COLLECTOR_PORT}"
 
 set_var "VEDETTA_BACKEND_PORT" "${BACKEND_PORT}" "${TMP_FILE}"
 set_var "VEDETTA_FRONTEND_PORT" "${FRONTEND_PORT}" "${TMP_FILE}"
