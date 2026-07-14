@@ -306,9 +306,11 @@ do_rollback() {
   fail_head="$(git rev-parse HEAD)"
   warn "Upgrade failed — recovering to ${PREV_DESC}…"
 
+  # Through stderr (not straight into $LOG): the tee redirection captures it in
+  # the log AND the operator sees the failing backend's output immediately.
   { echo "----- backend logs at failure ($(date +%H:%M:%S)) -----"
     docker compose logs --no-color --tail=200 backend 2>&1 || true
-  } >>"$LOG"
+  } >&2
 
   # Failure BEFORE the stack was modified (e.g. the target build failed while
   # the old stack kept serving): nothing was stopped and nothing ran, so don't
@@ -458,7 +460,7 @@ finalize_snapshot() {
         out="${key}-${TS}.tar.gz"
         if docker run --rm -v "${vol}:/data:ro" -v "${SNAP_DIR}:/backup" "$HELPER_IMAGE" \
              sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
-             _ "${out}" "$(id -u):$(id -g)"; then
+             _ "${out}" "${SUDO_UID:-$(id -u)}:${SUDO_GID:-$(id -g)}"; then
           ok "Snapshotted ${key} → ${out}"
         else
           warn "Could not snapshot ${key} (continuing; auxiliary volume)."
@@ -497,7 +499,7 @@ else
   # root, and a root-owned backup would need sudo to manage or prune later.
   docker run --rm -v "${VOL_DATA}:/data:ro" -v "${SNAP_DIR}:/backup" "$HELPER_IMAGE" \
     sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
-    _ "$(basename "$SNAP_ARTIFACT")" "$(id -u):$(id -g)" \
+    _ "$(basename "$SNAP_ARTIFACT")" "${SUDO_UID:-$(id -u)}:${SUDO_GID:-$(id -g)}" \
     || fail "cold volume snapshot failed"
   SNAP_MODE="cold"
   finalize_snapshot
@@ -583,6 +585,7 @@ if [ "$PRUNE_ON_SUCCESS" = "1" ]; then
   # Detach from the log's tee first so it flushes, closes the file inside
   # SNAP_DIR, and exits — otherwise the rm can hit file-busy on some mounts.
   exec 1>&3 2>&4 3>&- 4>&-
+  sleep 1   # give the background tee a moment to drain and release the log
   if rm -rf "$SNAP_DIR"; then echo "  ✓ Pruned snapshot (--prune-on-success)."
   else warn "Could not prune the snapshot directory — remove it manually: ${SNAP_DIR}"; fi
 else

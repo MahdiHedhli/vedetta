@@ -181,20 +181,35 @@ the old stack keeps serving through checkout and build, and the online
 rollback discards almost no ingested data; with a down/crash-looping backend
 the stack is stopped and a cold tarball is taken **first**. It then restarts
 and verifies the result with `PRAGMA foreign_key_check` and
-`PRAGMA integrity_check`. On **any** failure it returns to the previous
-version and exits non-zero with the captured backend log: if the upgraded
-stack already ran (a migration that crash-loops the backend, a corrupt graph),
-it first restores the pre-upgrade snapshot into the volume; if the failure
-came earlier (e.g. a build error), the database was never touched — the old
-stack just keeps running. Either way you end up on the prior version with
-your data intact.
+`PRAGMA integrity_check`. On **any** failure it exits non-zero with the
+captured backend log and *attempts* rollback: if the upgraded stack already
+ran (a migration that crash-loops the backend, a corrupt graph), it restores
+the pre-upgrade snapshot into the volume and relaunches the previous version;
+if the failure came earlier (e.g. a build error), the database was never
+touched — the old stack just keeps running.
+
+Rollback is attempted, **not unconditionally completed**: when finishing it
+would itself risk the data, the script **halts with the stack stopped**, the
+snapshot intact, and explicit instructions instead. That happens when
+`docker compose down` fails (containers may still hold the volume), when the
+snapshot cannot be restored into the volume, when the previous version cannot
+be checked out or rebuilt, and in in-place mode with no known-good ref (next
+paragraph). After a halt, recover manually with sections 2 and 4.
 
 ```sh
 git fetch --tags
 ./scripts/upgrade.sh v0.1.0-beta.1      # upgrade to a pinned tag/commit
-# ./scripts/upgrade.sh                   # rebuild the current checkout in place
+# ./scripts/upgrade.sh --from <good-ref> # rebuild current checkout in place
 # ./scripts/upgrade.sh -y v0.1.0-beta.1  # non-interactive (e.g. over SSH)
 ```
+
+> **In-place rebuilds need `--from` for full auto-rollback.** Bare
+> `./scripts/upgrade.sh` (no target ref) rebuilds the checkout you are on — if
+> that version fails *after startup*, the failing code **is** the current
+> checkout, so relaunching it would just re-run the failing migration.
+> The script restores the DB snapshot and then **halts with the stack
+> stopped**. Pass `--from <known-good-ref>` to give it somewhere safe to
+> return to.
 
 It snapshots the Core DB, a copy of `.env`, and the `telemetry-state` /
 `threat-network-data` volumes into `backups/upgrade-<timestamp>/` (git-ignored;
@@ -251,7 +266,10 @@ migrations run there.
 
 > `scripts/upgrade.sh` performs this rollback automatically when an upgrade it
 > ran fails verification. The steps below are for a **manual** recovery — when
-> you upgraded some other way, or want to roll back later.
+> you upgraded some other way, when you want to roll back later, or when an
+> automatic rollback **halted** (it deliberately stops, stack down and snapshot
+> intact, rather than restore over live containers, relaunch a failing
+> checkout, or continue past a failed restore — the script says exactly why).
 
 If an update misbehaves, stop the upgraded Core before restoring. For any release
 that ran a database migration, including migration 025 (asset identity and
