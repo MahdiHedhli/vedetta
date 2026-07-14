@@ -205,6 +205,22 @@ jobs:
             echo "::error::Tag '${RELEASE_TAG}' moved during the build: expected ref object ${EXPECTED_TAG_OBJECT}, got ${current_tag_object}"
             exit 1
           fi
+      - name: Re-verify release is still unpublished
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          # The draft could be published while the matrix is building. Check
+          # again immediately before the release action can mutate any assets.
+          release_rows="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.id, .tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r release_id release_tag is_draft; do
+            if [ "$release_tag" = "$RELEASE_TAG" ] && [ "$is_draft" != "true" ]; then
+              echo "::error::Release '${RELEASE_TAG}' (id ${release_id}) was published during the build; refusing to replace live assets"
+              exit 1
+            fi
+          done <<< "$release_rows"
       - name: Create/refresh DRAFT release
         id: draft-release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
