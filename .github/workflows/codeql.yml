@@ -1,0 +1,76 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        if: matrix.language == 'go'
+        # Go CodeQL extracts the requested package graph from each traced
+        # top-level go build, including when GOCACHE satisfies compilation.
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            backend/go.sum
+            sensor/go.sum
+            threat-network/go.sum
+            scripts/simulate/go.sum
+
+      # setup-go must run before CodeQL initialization. In manual build mode,
+      # init prepends CodeQL's tracing wrapper to PATH; running setup-go later
+      # replaces that wrapper and produces an empty Go database.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Install sensor build dependency
+        if: matrix.language == 'go'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap-dev
+
+      - name: Build Go modules for CodeQL
+        if: matrix.language == 'go'
+        run: |
+          for module in backend sensor telemetry threat-network scripts/simulate; do
+            (cd "$module" && go build ./...)
+          done
+          # The shipped Windows sensor has separate ETW, service, credential,
+          # and network-scan implementations hidden behind Windows build tags.
+          # Trace the release target as well as the default Linux build.
+          (cd sensor && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...)
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
