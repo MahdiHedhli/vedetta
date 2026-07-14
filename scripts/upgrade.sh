@@ -261,7 +261,6 @@ exec > >(tee -a "$LOG") 2>&1
 
 NEW_STACK_UP=0        # the upgraded stack was started (DB may be migrated)
 STACK_WAS_STOPPED=0   # we took the previously-running stack down ourselves
-CODE_CHANGED=0        # we moved the working tree to TARGET_REF
 SNAP_MODE=""
 SNAP_ARTIFACT=""
 FAILED=0
@@ -317,24 +316,31 @@ do_rollback() {
   # cause downtime by tearing down a healthy stack. Just restore the tree if
   # the script had moved it.
   if [ "$NEW_STACK_UP" != "1" ] && [ "$STACK_WAS_STOPPED" != "1" ]; then
-    if [ "$CODE_CHANGED" = "1" ]; then
-      if git checkout --quiet "$PREV_REF"; then ok "Restored working tree to ${PREV_DESC}."
+    # Repair whenever a DISTINCT known-good ref exists — the target-ref flow
+    # (tree moved) and in-place mode with --from (tree never moved, but a
+    # partial build may still have retagged some service images) both qualify.
+    if [ "$PREV_REF" != "$fail_head" ]; then
+      if git checkout --quiet "$PREV_REF"; then ok "Working tree now at ${PREV_DESC}."
       else
         err "ROLLBACK INCOMPLETE: git checkout ${PREV_DESC} failed — the tree still holds"
-        err "the target version. The stack is still RUNNING the previous build; fix the"
+        err "the failed version. The stack is still RUNNING the previous build; fix the"
         err "tree (git status) before any 'docker compose' build or up."
         return 1
       fi
-      # A partially-successful target build may have retagged SOME service
-      # images even though the running containers still use the old image IDs.
-      # Rebuild at the previous ref so the compose tags point back at known-good
-      # builds — otherwise a later plain `docker compose up -d` would recreate
-      # containers onto the failed target image. Containers are NOT restarted.
+      # A partially-successful build may have retagged SOME service images even
+      # though the running containers still use the old image IDs. Rebuild at
+      # the known-good ref so the compose tags point back at known-good builds —
+      # otherwise a later plain `docker compose up -d` would recreate containers
+      # onto the failed build. Containers are NOT restarted.
       if ! docker compose build ${NO_CACHE:+--no-cache}; then
         err "WARNING: rebuild at ${PREV_DESC} failed — compose image tags may still"
-        err "point at the failed target build. The running stack is unaffected, but do"
+        err "point at the failed build. The running stack is unaffected, but do"
         err "NOT run 'docker compose up -d' until 'docker compose build' succeeds here."
       fi
+    else
+      # In-place mode with no --from: no good ref exists to repair tags with.
+      warn "Note: a partial build may have retagged some service images. Do not run"
+      warn "'docker compose up -d' until 'docker compose build' succeeds on this checkout."
     fi
     ok "The running stack was never touched — it stays up as-is."
     return 0
@@ -509,7 +515,6 @@ fi
 if [ -n "$TARGET_REF" ]; then
   step "Checking out ${TARGET_REF}…"
   git checkout --quiet "$TARGET_REF" || fail "git checkout ${TARGET_REF} failed"
-  CODE_CHANGED=1
 else
   step "No target ref given — rebuilding the current checkout in place."
 fi
@@ -525,8 +530,12 @@ if [ "$WARM" = "1" ]; then
     || fail "online .backup failed"
   # Plain `docker cp` (not `docker compose cp`, which needs Compose >= 2.20),
   # and clean the in-container temp file up on BOTH exits so a failed copy
-  # doesn't leave a full DB copy eating the data volume.
-  if ! docker cp "$(docker compose ps -q backend | head -n1):/data/pre-${TS}.db" "$SNAP_ARTIFACT"; then
+  # doesn't leave a full DB copy eating the data volume. Guard the container id:
+  # the backend could crash between the health probe and this copy, and an
+  # empty id would make `docker cp` fail with a confusing usage error.
+  backend_cid="$(docker compose ps -q backend | head -n1)"
+  [ -n "$backend_cid" ] || fail "backend container disappeared before the snapshot could be copied out"
+  if ! docker cp "${backend_cid}:/data/pre-${TS}.db" "$SNAP_ARTIFACT"; then
     docker compose exec -T backend rm -f "/data/pre-${TS}.db" 2>/dev/null || true
     fail "copying the snapshot out of the container failed"
   fi
