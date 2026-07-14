@@ -70,6 +70,16 @@ fi
 PROJECT_DIR="${VEDETTA_UPGRADE_HOME}"
 SCRIPT_DIR="${PROJECT_DIR}/scripts"
 
+# Under sudo, run git as the invoking user (mirrors scripts/update-all.sh):
+# a root git in a user-owned repository fails with "dubious ownership".
+git() {
+  if [ -n "${SUDO_USER:-}" ] && [ "$(id -u)" = "0" ]; then
+    command sudo -u "$SUDO_USER" git "$@"
+  else
+    command git "$@"
+  fi
+}
+
 # Helper image for volume snapshot/restore one-off containers. Pinned to the
 # same Alpine the Dockerfiles use — an untagged `alpine` resolves to :latest
 # and `docker run` would PULL it mid-rollback on a host that only has the
@@ -111,7 +121,11 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-if [ $# -gt 0 ] && [ -z "$TARGET_REF" ]; then TARGET_REF="$1"; fi
+# Arguments after `--`: at most one (the target ref); reject silent extras.
+if [ $# -gt 0 ]; then
+  if [ -z "$TARGET_REF" ]; then TARGET_REF="$1"; shift; fi
+  if [ $# -gt 0 ]; then err "unexpected argument: $1"; exit 2; fi
+fi
 case "$HEALTH_TIMEOUT" in ''|*[!0-9]*) err "--health-timeout must be an integer"; exit 2 ;; esac
 
 # Resolve host ports the way Docker Compose does, WITHOUT sourcing secret-bearing
@@ -265,6 +279,7 @@ exec > >(tee -a "$LOG") 2>&1
 
 NEW_STACK_UP=0        # the upgraded stack was started (DB may be migrated)
 STACK_WAS_STOPPED=0   # we took the previously-running stack down ourselves
+BUILD_STARTED=0       # docker compose build ran (images may be partially retagged)
 SNAP_MODE=""
 SNAP_ARTIFACT=""
 FAILED=0
@@ -397,16 +412,24 @@ do_rollback() {
     # against the just-restored DB, undoing the rollback.
     halt_rollback "the failed version is the current checkout — restarting it would re-run the failing migration (re-run with --from <known-good-ref> to enable automatic rollback)"
     return 1
-  else
-    # PREV_REF == fail_head with NEW_STACK_UP=0: cold pre-start failure with
-    # no known-good ref. Compose builds and tags each service independently,
-    # so the failed build may ALREADY have retagged some services (e.g. the
-    # backend) with the new code before another service failed — `up -d` here
-    # could boot that new backend against the untouched DB and run the very
-    # migrations this "failed" upgrade was supposed to withhold. The stack was
-    # already down when the cold path began, so halting adds no new downtime.
+  elif [ "$BUILD_STARTED" = "1" ]; then
+    # PREV_REF == fail_head, NEW_STACK_UP=0, and a build RAN: Compose builds
+    # and tags each service independently, so the failed build may ALREADY
+    # have retagged some services (e.g. the backend) with the new code before
+    # another service failed — `up -d` here could boot that new backend
+    # against the untouched DB and run the very migrations this "failed"
+    # upgrade was supposed to withhold. The stack was already down when the
+    # cold path began, so halting adds no new downtime.
     halt_rollback "the failed build may have retagged some service images with the new code — starting now could migrate the untouched DB (fix the build, or re-run with --from <known-good-ref>)"
     return 1
+  else
+    # Cold-path failure BEFORE any build ran (snapshot/.env/checkout): nothing
+    # was retagged and the DB was untouched — restart the stack as it was.
+    warn "No build had started — restarting the stack as it was before the attempt…"
+    docker compose up -d || { halt_rollback "docker compose up -d failed"; return 1; }
+    if wait_health 60; then ok "Stack is back up (pre-upgrade state)."
+    else warn "Stack restarted but not healthy within 60s (the cold path implies it was already unhealthy before the attempt)."; fi
+    return 0
   fi
   docker compose up -d || { halt_rollback "docker compose up -d failed for the previous version"; return 1; }
 
@@ -547,6 +570,7 @@ else
 fi
 
 step "Building images${NO_CACHE:+ (--no-cache)}…"
+BUILD_STARTED=1
 docker compose build ${NO_CACHE:+--no-cache} || fail "docker compose build failed"
 
 # ─── 3. Warm snapshot (immediately before the swap) ──────────────────────────
@@ -586,8 +610,10 @@ step "Verifying database integrity…"
 # NB: set the busy timeout with the SILENT `.timeout` dot-command, not an inline
 # `PRAGMA busy_timeout=…;` — that PRAGMA echoes its value as an output row, which
 # would look like a foreign_key_check violation and roll back every upgrade.
+# (No stderr redirect: the global tee already logs it, and the operator should
+# see sqlite/exec errors on the console immediately.)
 fk="$(docker compose exec -T backend sqlite3 -batch -cmd '.timeout 5000' /data/vedetta.db \
-      'PRAGMA foreign_key_check;' 2>>"$LOG")" \
+      'PRAGMA foreign_key_check;')" \
   || fail "could not run PRAGMA foreign_key_check on the upgraded DB"
 if [ -n "$fk" ]; then
   err "foreign_key_check reported violations:"; printf '%s\n' "$fk" | sed 's/^/    /' >&2
@@ -596,7 +622,7 @@ fi
 ok "foreign_key_check: clean (0 rows)."
 
 integ="$(docker compose exec -T backend sqlite3 -batch -cmd '.timeout 5000' /data/vedetta.db \
-        'PRAGMA integrity_check;' 2>>"$LOG")" \
+        'PRAGMA integrity_check;')" \
   || fail "could not run PRAGMA integrity_check on the upgraded DB"
 if [ "$(printf '%s' "$integ" | tr -d '[:space:]')" != "ok" ]; then
   err "integrity_check reported problems:"; printf '%s\n' "$integ" | sed 's/^/    /' >&2
