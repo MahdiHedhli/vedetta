@@ -44,6 +44,9 @@ func TestMigration007GuardsRevisionEvidenceAndLifecycle(t *testing.T) {
 	revisionB := variantB.Draft.VariantRevisionID
 	sourceA := variantA.Draft.Sources[0].SourceID
 	factA := variantA.Draft.VersionFacts[0].FactID
+	requireCorpusSQLRejected(t, db, "invalid device corpus profile status transition",
+		`UPDATE device_corpus_profile_revisions SET status = 'published' WHERE profile_revision_id = ?`,
+		profileRevisionID)
 
 	for name, testCase := range map[string]struct {
 		query string
