@@ -209,10 +209,30 @@ Deploy the `threat-network` container off-node:
 | --- | --- | --- |
 | `THREAT_NETWORK_PORT` | `9090` | Listen port (put TLS/reverse proxy in front) |
 | `THREAT_NETWORK_DB` | `/data/threat-network.db` | SQLite file — **mount `/data` as a persistent volume** |
+| `THREAT_NETWORK_ADMIN_ENABLED` | `false` | Exact `true` starts the separate corpus-management listener |
+| `THREAT_NETWORK_ADMIN_ADDR` | `127.0.0.1:9091` | Management bind; keep it on loopback for native deployments |
+| `THREAT_NETWORK_ADMIN_TOKEN_FILE` | none | Mode-0600 regular file containing a random 32-byte-or-longer bearer secret |
+| `THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK` | `false` | Required second opt-in for an isolated container or authenticated TLS upstream |
 
-Then: give it a hostname + TLS, point contributors' `VEDETTA_THREAT_NETWORK_URL` at it, and
-publish the feed URL for consumers. There is no admin dashboard in the MVP (excluded by
-spec 003) — operations are the container + its DB + logs.
+Then give the public listener a hostname and TLS, point contributors'
+`VEDETTA_THREAT_NETWORK_URL` at it, and publish the feed URL for consumers. Keep
+the management listener out of every public tunnel and reverse proxy. The service
+rejects non-loopback management binds unless the second guard is also enabled;
+that exception is intended only for an isolated container with host-loopback
+publication or an authenticated TLS upstream. Never expose plaintext port 9091
+directly.
+
+The central database also contains the manually curated, immutable device corpus.
+Public manifest and snapshot reads remain credential-free on port 9090. Manual
+curation uses the separate management listener and a file-backed secret; reporter,
+Core, and telemetry credentials are not accepted. Product-class facts are permitted,
+while household IPs, full MACs, observed hostnames, serials, site/reporter/sensor IDs,
+timestamps, counts, and arbitrary observation blobs are structurally excluded.
+
+The tailnet-only corpus dashboard is intentionally maintained and deployed from
+the separate `ops/threat-network-dashboard` branch. It is not part of product
+`main`; the public and management API contracts remain documented in
+[`specs/008-device-fingerprint-corpus/`](../specs/008-device-fingerprint-corpus/).
 
 ---
 
@@ -237,4 +257,5 @@ spec 003) — operations are the container + its DB + logs.
    Cloudflare Tunnel).
 4. **Keep contributing, or just consume?** Contributing is on by default (opt-out via
    `VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle); a dry-run soak first is optional.
-   Consuming a feed still needs the Core feed-poller finished.
+   Feed consumption is independently enabled by default and can be disabled with
+   `VEDETTA_COMMUNITY_FEED_ENABLED=false`.

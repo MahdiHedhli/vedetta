@@ -16,6 +16,28 @@ func newTestDB(t *testing.T) *DB {
 	return db
 }
 
+func sqliteIndexColumns(t *testing.T, db *DB, name string) []string {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA index_info('` + name + `')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var sequence, columnID int
+		var column string
+		if err = rows.Scan(&sequence, &columnID, &column); err != nil {
+			t.Fatal(err)
+		}
+		columns = append(columns, column)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return columns
+}
+
 func TestMigrationsApplyAndIdempotent(t *testing.T) {
 	db := newTestDB(t)
 
@@ -49,6 +71,14 @@ func TestMigrationsApplyAndIdempotent(t *testing.T) {
 	}
 	if count != want {
 		t.Fatalf("expected %d migrations recorded, got %d", want, count)
+	}
+	indexColumns := sqliteIndexColumns(t, db, "idx_device_corpus_version_facts_source")
+	if len(indexColumns) != 1 || indexColumns[0] != "source_id" {
+		t.Fatalf("version-fact source index columns = %v, want [source_id]", indexColumns)
+	}
+	indexColumns = sqliteIndexColumns(t, db, "idx_device_corpus_variants_predecessor")
+	if len(indexColumns) != 1 || indexColumns[0] != "predecessor_variant_id" {
+		t.Fatalf("variant predecessor index columns = %v, want [predecessor_variant_id]", indexColumns)
 	}
 }
 

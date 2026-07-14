@@ -93,6 +93,41 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 }
 
+func TestPublicMethodNotAllowedAdvertisesAllowedMethods(t *testing.T) {
+	_, _, ts := newTestServer(t)
+	tests := []struct {
+		path   string
+		method string
+		allow  string
+	}{
+		{path: "/api/v1/status", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/reporters/register", method: http.MethodGet, allow: "POST"},
+		{path: "/api/v1/ingest", method: http.MethodGet, allow: "POST"},
+		{path: "/api/v1/feed/community", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/device-corpus/manifest", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/device-corpus/snapshot", method: http.MethodPost, allow: "GET"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, ts.URL+tt.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", resp.StatusCode)
+			}
+			if got := resp.Header.Get("Allow"); got != tt.allow {
+				t.Fatalf("Allow = %q, want %q", got, tt.allow)
+			}
+		})
+	}
+}
+
 func TestDeprecatedStubs(t *testing.T) {
 	_, _, ts := newTestServer(t)
 	for _, path := range []string{"/api/v1/feed/top-domains", "/api/v1/feed/anomalies"} {
