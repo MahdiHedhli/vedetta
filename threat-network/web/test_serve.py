@@ -16,6 +16,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -923,25 +924,56 @@ class ProxyTests(unittest.TestCase):
                 caught.exception.close()
         self.assertEqual(self.upstream.calls, [])
 
-    def test_validated_upstream_405_preserves_allow_header(self):
-        body = io.BytesIO(b'{"error":"method not allowed"}')
-        error = urllib.error.HTTPError(
-            "http://127.0.0.1/status",
-            405,
-            "Method Not Allowed",
-            {"Content-Type": "application/json", "Allow": "GET, POST"},
-            body,
+    def test_validated_upstream_405_accepts_allow_header_whitespace(self):
+        for allow in ("GET, POST", "GET,POST", "GET , POST", "GET,\t\tPOST"):
+            with self.subTest(allow=repr(allow)):
+                body = io.BytesIO(b'{"error":"method not allowed"}')
+                error = urllib.error.HTTPError(
+                    "http://127.0.0.1/status",
+                    405,
+                    "Method Not Allowed",
+                    {"Content-Type": "application/json", "Allow": allow},
+                    body,
+                )
+                with mock.patch.object(
+                    serve, "UPSTREAM_OPENER", RaisingOpener(error)
+                ):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        self.open("/api/v1/status")
+                    self.assertEqual(caught.exception.code, 405)
+                    self.assertEqual(caught.exception.headers.get("Allow"), allow)
+                    caught.exception.close()
+                self.assertTrue(body.closed)
+
+    def test_allow_header_accepts_token_methods_empty_members_and_field_lines(self):
+        accepted = (
+            "",
+            "GET,,POST,",
+            "M-SEARCH, x-custom",
+            "  GET\t,\tPOST  ",
         )
-        with mock.patch.object(serve, "UPSTREAM_OPENER", RaisingOpener(error)):
-            with self.assertRaises(urllib.error.HTTPError) as caught:
-                self.open("/api/v1/status")
-            self.assertEqual(caught.exception.code, 405)
-            self.assertEqual(caught.exception.headers.get("Allow"), "GET, POST")
-            caught.exception.close()
-        self.assertTrue(body.closed)
+        for allow in accepted:
+            with self.subTest(allow=repr(allow)):
+                self.assertEqual(serve._forwarded_allow_value({"Allow": allow}), allow)
+
+        headers = Message()
+        headers.add_header("Allow", "GET")
+        headers.add_header("Allow", "POST")
+        self.assertEqual(serve._forwarded_allow_value(headers), "GET, POST")
 
     def test_upstream_405_without_safe_allow_fails_closed(self):
-        for allow in (None, "GET\r\nX-Injected: yes", "get, post"):
+        invalid = (
+            None,
+            "GET\r\nX-Injected: yes",
+            "GET POST",
+            "GET;POST",
+            "GET\x00POST",
+            "GET\x7fPOST",
+            "GET-☃",
+            "G" * 513,
+            "," * 32,
+        )
+        for allow in invalid:
             with self.subTest(allow=allow):
                 body = io.BytesIO(b'{"error":"method not allowed"}')
                 headers = {"Content-Type": "application/json"}

@@ -259,8 +259,33 @@ def _validated_if_none_match(headers) -> str | None:
 
 
 def _forwarded_allow_value(headers) -> str:
-    value = _forwarded_header_value(headers, "Allow")
-    if value is None or not re.fullmatch(r"[A-Z]+(?:, [A-Z]+)*", value):
+    get_all = getattr(headers, "get_all", None)
+    if callable(get_all):
+        values = get_all("Allow", [])
+    else:
+        value = headers.get("Allow")
+        values = [] if value is None else [value]
+    if (
+        not values
+        or len(values) > 16
+        or any(not isinstance(value, str) for value in values)
+    ):
+        raise ValueError("invalid upstream Allow header")
+    value = ", ".join(values)
+    if len(value) > 512 or any(
+        ord(character) >= 0x7F or (ord(character) < 0x20 and character != "\t")
+        for character in value
+    ):
+        raise ValueError("invalid upstream Allow header")
+    members = value.split(",")
+    if len(members) > 32:
+        raise ValueError("invalid upstream Allow header")
+    method = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+    if any(
+        not re.fullmatch(method, candidate)
+        for member in members
+        if (candidate := member.strip(" \t"))
+    ):
         raise ValueError("invalid upstream Allow header")
     return value
 
