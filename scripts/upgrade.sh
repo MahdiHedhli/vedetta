@@ -28,8 +28,10 @@
 #   scripts/upgrade.sh [options] [<target-ref>]
 #
 #   <target-ref>   git tag or commit to upgrade to (e.g. v0.2.0). When omitted,
-#                  the CURRENTLY checked-out tree is rebuilt in place (no git
-#                  rollback available; the DB snapshot rollback still applies).
+#                  the CURRENT checkout is rebuilt in place — pair with --from,
+#                  or a post-start failure halts after the DB restore (there is
+#                  no known-good ref to relaunch; restarting the same checkout
+#                  would just re-run the failing migration).
 #
 # Options:
 #   -y, --yes                 Non-interactive; do not prompt before upgrading.
@@ -65,7 +67,7 @@ ok()   { printf '  ✓ %s\n' "$*"; }
 warn() { printf '  ⚠ %s\n' "$*" >&2; }
 err()  { printf '  ✗ %s\n' "$*" >&2; }
 
-usage() { sed -n '2,41p' "$VEDETTA_UPGRADE_SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,43p' "$VEDETTA_UPGRADE_SELF" | sed 's/^# \{0,1\}//'; }
 
 # ─── Args ─────────────────────────────────────────────────────────────────────
 ASSUME_YES=0
@@ -123,20 +125,24 @@ detect_project() {
 }
 
 # resolve_volume <compose-key> — print the real (project-prefixed) volume name.
-# Prefers the Compose label so it is correct regardless of project naming; falls
-# back to a uniquely-matching volume name. Returns 1 when it cannot decide.
+# Accepts ONLY an exact "${PROJECT}_<key>" match or a single unambiguous
+# candidate. Never guesses between multiple matches: on a host running more
+# than one Vedetta stack, picking "the first one" could snapshot — and later
+# RESTORE over — another installation's database. Returns 1 when it cannot
+# decide; the caller surfaces the candidates.
 resolve_volume() {
-  local key="$1" all name=""
-  all="$(docker volume ls --filter "label=com.docker.compose.volume=${key}" \
-         --format '{{.Name}}' 2>/dev/null || true)"
-  if [ -n "$all" ]; then
-    if [ -n "${PROJECT:-}" ]; then
-      name="$(printf '%s\n' "$all" | grep -Fx "${PROJECT}_${key}" | head -n1 || true)"
-      [ -z "$name" ] && name="$(printf '%s\n' "$all" | grep -F "$PROJECT" | head -n1 || true)"
-    fi
-    [ -z "$name" ] && name="$(printf '%s\n' "$all" | head -n1)"
-    printf '%s' "$name"; return 0
+  local key="$1" labeled name count
+  labeled="$(docker volume ls --filter "label=com.docker.compose.volume=${key}" \
+             --format '{{.Name}}' 2>/dev/null || true)"
+  # Exact project-prefixed match wins outright.
+  if [ -n "${PROJECT:-}" ] && printf '%s\n' "$labeled" | grep -Fxq "${PROJECT}_${key}"; then
+    printf '%s' "${PROJECT}_${key}"; return 0
   fi
+  count="$(printf '%s' "$labeled" | grep -c . || true)"
+  if [ "$count" = "1" ]; then printf '%s' "$labeled"; return 0; fi
+  [ "$count" != "0" ] && return 1   # several projects own a <key> volume — ambiguous
+  # No labeled candidates (e.g. volume created outside Compose): accept a
+  # uniquely-named fallback only.
   name="$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E "(^|_)${key}$" || true)"
   if [ "$(printf '%s' "$name" | grep -c . || true)" = "1" ]; then printf '%s' "$name"; return 0; fi
   return 1
@@ -190,8 +196,10 @@ fi
 PROJECT="$(detect_project)"
 VOL_DATA="$(resolve_volume vedetta-data || true)"
 if [ -z "$VOL_DATA" ]; then
-  err "Could not resolve the vedetta-data volume for this stack."
-  err "Volumes present:"; docker volume ls --format '    {{.Name}}' | grep -i vedetta >&2 || true
+  err "Could not resolve the vedetta-data volume for this stack (missing, or"
+  err "AMBIGUOUS — more than one Compose project on this host owns one; refusing"
+  err "to guess, since restoring into the wrong project would destroy its data)."
+  err "Candidates:"; docker volume ls --format '    {{.Name}}' | grep -i vedetta >&2 || true
   err "Bring the stack up once (docker compose up -d) or set COMPOSE_PROJECT_NAME, then retry."
   exit 2
 fi
@@ -211,7 +219,9 @@ chmod 700 "$SNAP_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 SNAPSHOT_DONE=0
-NEW_STACK_UP=0
+NEW_STACK_UP=0        # the upgraded stack was started (DB may be migrated)
+STACK_WAS_STOPPED=0   # we took the previously-running stack down ourselves
+CODE_CHANGED=0        # we moved the working tree to TARGET_REF
 SNAP_MODE=""
 SNAP_ARTIFACT=""
 FAILED=0
@@ -252,11 +262,29 @@ halt_rollback() {
 }
 
 do_rollback() {
+  local fail_head
+  fail_head="$(git rev-parse HEAD)"
   warn "Rolling back to ${PREV_DESC} and restoring the pre-upgrade snapshot…"
 
   { echo "----- backend logs at failure ($(date +%H:%M:%S)) -----"
     docker compose logs --no-color --tail=200 backend 2>&1 || true
   } >>"$LOG"
+
+  # Failure BEFORE the stack was modified (e.g. the target build failed while
+  # the old stack kept serving): nothing was stopped and nothing ran, so don't
+  # cause downtime by tearing down a healthy stack. Just restore the tree if
+  # the script had moved it.
+  if [ "$NEW_STACK_UP" != "1" ] && [ "$STACK_WAS_STOPPED" != "1" ]; then
+    if [ "$CODE_CHANGED" = "1" ]; then
+      if git checkout --quiet "$PREV_REF"; then ok "Restored working tree to ${PREV_DESC}."
+      else
+        halt_rollback "git checkout ${PREV_DESC} failed — the tree still holds the target version"
+        return 1
+      fi
+    fi
+    ok "The running stack was never touched — it stays up as-is."
+    return 0
+  fi
 
   docker compose down || warn "docker compose down reported an error; continuing."
 
@@ -273,14 +301,22 @@ do_rollback() {
   fi
 
   # From here the DB is pre-upgrade again, but the compose image is still the
-  # BAD upgraded build until the previous ref is checked out AND rebuilt. If
-  # either step fails, `up -d` would relaunch the bad image against the
-  # restored data and re-run the failing migrations — halt instead.
-  if [ -n "$TARGET_REF" ]; then
+  # BAD upgraded build until a KNOWN-GOOD ref is checked out AND rebuilt. If
+  # any step fails, `up -d` would relaunch the bad image against the restored
+  # data and re-run the failing migrations — halt instead.
+  if [ "$PREV_REF" != "$fail_head" ]; then
+    # Covers both the normal target-ref flow and --from in rebuild-in-place
+    # mode (where the tree never moved but the operator named a good ref).
     if ! git checkout --quiet "$PREV_REF"; then
-      halt_rollback "git checkout ${PREV_DESC} failed — the tree still holds the target version"
+      halt_rollback "git checkout ${PREV_DESC} failed — the tree still holds the failed version"
       return 1
     fi
+  elif [ "$NEW_STACK_UP" = "1" ]; then
+    # Rebuild-in-place with no --from: the failing version IS the current
+    # checkout. Restarting it would immediately re-run the failing migration
+    # against the just-restored DB, undoing the rollback.
+    halt_rollback "the failed version is the current checkout — restarting it would re-run the failing migration (re-run with --from <known-good-ref> to enable automatic rollback)"
+    return 1
   fi
   if ! docker compose build ${NO_CACHE:+--no-cache}; then
     halt_rollback "rebuild of the previous version failed — the compose image is still the upgraded build"
@@ -359,6 +395,7 @@ if backend_running && wait_health 5; then
   SNAP_MODE="online"
 else
   warn "Backend is not healthy — stopping the stack for a cold volume snapshot."
+  STACK_WAS_STOPPED=1
   docker compose down || warn "docker compose down reported an error; continuing."
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-data-${TS}.tar.gz"
   # chown the tarball to the invoking host user — the helper container runs as
@@ -406,6 +443,7 @@ trap 'fail "unexpected error near line ${LINENO}"' ERR
 if [ -n "$TARGET_REF" ]; then
   step "Checking out ${TARGET_REF}…"
   git checkout --quiet "$TARGET_REF" || fail "git checkout ${TARGET_REF} failed"
+  CODE_CHANGED=1
 else
   step "No target ref given — rebuilding the current checkout in place."
 fi
