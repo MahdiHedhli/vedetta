@@ -211,8 +211,43 @@ Deploy the `threat-network` container off-node:
 | `THREAT_NETWORK_DB` | `/data/threat-network.db` | SQLite file — **mount `/data` as a persistent volume** |
 | `THREAT_NETWORK_ADMIN_ENABLED` | `false` | Exact `true` starts the separate corpus-management listener |
 | `THREAT_NETWORK_ADMIN_ADDR` | `127.0.0.1:9091` | Management bind; keep it on loopback for native deployments |
-| `THREAT_NETWORK_ADMIN_TOKEN_FILE` | none | Mode-0600 regular file containing a random 32-byte-or-longer bearer secret |
+| `THREAT_NETWORK_ADMIN_TOKEN_FILE` | none | Owner-only (`0400`/`0600`) regular non-symlink file containing at least 32 random printable ASCII bytes (for example, hex or base64url; not raw binary) |
 | `THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK` | `false` | Required second opt-in for an isolated container or authenticated TLS upstream |
+
+The token-file check is deliberately strict: after trimming surrounding
+whitespace, the token must contain at least 32 printable ASCII bytes with no
+embedded whitespace or control characters. Generate an encoded value such as
+hex or base64url rather than writing raw random bytes. The configured path must
+be a readable **regular, non-symlink file** with no group or other permission
+bits. Use `0400` or `0600`, owned by the account that runs `threat-network`, and
+verify the path from inside the container or service namespace before startup.
+
+- For a native install or a Docker/Compose bind mount, create the source under
+  `umask 077`, `chmod 0600` it on the host, and mount it read-only. File-backed
+  Compose secrets use a bind mount and silently ignore service-level `uid`,
+  `gid`, and `mode`, so the host source mode is load-bearing; see Docker's
+  [Compose secrets reference](https://docs.docker.com/reference/compose-file/services/#secrets).
+- Docker/Swarm and environment-backed Compose secrets default to `0444`, which
+  Vedetta rejects. Use long syntax with `mode: 0400` (or copy the secret into a
+  private file before starting the service), then verify the effective mode.
+- Kubernetes Secret volumes default to `0644`; set `defaultMode: 0400` in YAML.
+  A projected Secret key path may be a symlink, which Vedetta also rejects, so
+  expose a single regular file with a `subPath` mount or copy it from the Secret
+  volume into a protected `emptyDir` in an init container. Ensure the service
+  user can read the result and verify both
+  `test -f "$THREAT_NETWORK_ADMIN_TOKEN_FILE"` and
+  `test ! -L "$THREAT_NETWORK_ADMIN_TOKEN_FILE"`. See Kubernetes' [Secret-volume permission
+  guidance](https://kubernetes.io/docs/tasks/inject-data-application/distribute-credentials-secure/#set-posix-permissions-for-secret-keys).
+
+Broad permissions fail closed with:
+
+```text
+threat-network stopped: management API enabled but token file is invalid: management token file must not be accessible by group or other users
+```
+
+A symlink or non-regular mount fails with `management token file must be a
+regular non-symlink file`. Do not weaken these checks to accommodate a platform
+default; fix the effective file type and permissions instead.
 
 Then give the public listener a hostname and TLS, point contributors'
 `VEDETTA_THREAT_NETWORK_URL` at it, and publish the feed URL for consumers. Keep

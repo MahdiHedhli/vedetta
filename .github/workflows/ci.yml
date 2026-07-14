@@ -1,14 +1,15 @@
 name: CI
 
-# VED-B1 — build, test, and security-scan every change to main.
+# VED-B1 — build, test, and security-scan every change to the protected
+# product and operations branches.
 # Gate: this workflow must be green before a PR can merge (enable the
 # "CI / *" checks in branch protection once this lands).
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, ops/threat-network-dashboard]
   push:
-    branches: [main]
+    branches: [main, ops/threat-network-dashboard]
 
 # Least-privilege by default; jobs opt into more only if they need it.
 permissions:

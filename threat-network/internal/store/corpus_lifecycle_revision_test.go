@@ -176,3 +176,29 @@ func TestConcurrentCorpusLifecycleActionsCreateOnlyOneReviewedRelease(t *testing
 	}
 	assertCorpusReleaseState(t, db, 3, auditBefore+1, releasesBefore+1)
 }
+
+func TestRetirePublishedCorpusProfileAuditBindsSnapshotAndProfileState(t *testing.T) {
+	db := newTestDB(t)
+	profile, _ := createPublishedCorpusTestProfile(t, db, "Retire Audit Binding", 0)
+
+	retired, err := db.RetireCorpusProfile(context.Background(), profile.ProfileID,
+		corpusLifecycleRequest("obsolete_product", 1),
+		CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := db.CorpusManifest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var afterHash string
+	if err = db.QueryRow(`SELECT after_hash FROM device_corpus_audit
+		WHERE entity_type = 'profile' AND entity_id = ? AND action = 'retire'
+		ORDER BY created_at DESC, audit_id DESC LIMIT 1`, profile.ProfileID).Scan(&afterHash); err != nil {
+		t.Fatal(err)
+	}
+	want := manifest.SnapshotSHA256 + ":" + retired.ETag
+	if afterHash != want {
+		t.Fatalf("retire audit after_hash = %q, want snapshot and profile state %q", afterHash, want)
+	}
+}
