@@ -130,7 +130,7 @@ func TestEnrich_SelfDomain_NotFlaggedBeaconing(t *testing.T) {
 	}
 
 	self := NewEnricher(nil)
-	self.SelfDomains = []string{" VEDETTAS.COM. "}
+	self.SelfDomains = []string{" FEED.VEDETTAS.COM. "}
 	got := drive(self, "FEED.VEDETTAS.COM.")
 	if hasTag(got.Tags, "beaconing") {
 		t.Fatalf("feed.vedettas.com in SelfDomains must not be flagged beaconing, got %v", got.Tags)
@@ -142,6 +142,13 @@ func TestEnrich_SelfDomain_NotFlaggedBeaconing(t *testing.T) {
 	ctrl := drive(NewEnricher(nil), "feed.vedettas.com")
 	if !hasTag(ctrl.Tags, "beaconing") {
 		t.Fatalf("control (no SelfDomains) should flag a perfect 900s cadence as beaconing, got %v", ctrl.Tags)
+	}
+
+	// A configured host exempts only that host. A descendant may be unrelated or
+	// attacker-controlled and must remain eligible for beacon detection.
+	subdomain := drive(self, "c2.feed.vedettas.com")
+	if hasTag(subdomain.Tags, "vedetta_self") || !hasTag(subdomain.Tags, "beaconing") {
+		t.Fatalf("subdomain of configured feed host must remain detectable, got %v", subdomain.Tags)
 	}
 }
 
@@ -184,7 +191,7 @@ func TestEnrich_ContextExemptionsStillRunNetworkDetectors(t *testing.T) {
 	}
 }
 
-func TestSelfDomainMatchingNormalizesAndBoundsSuffixes(t *testing.T) {
+func TestSelfDomainMatchingNormalizesAndMatchesExactly(t *testing.T) {
 	e := NewEnricher(nil)
 	e.SelfDomains = []string{" FEED.VEDETTAS.COM. ", "router", "com"}
 	tests := []struct {
@@ -192,7 +199,7 @@ func TestSelfDomainMatchingNormalizesAndBoundsSuffixes(t *testing.T) {
 		want   bool
 	}{
 		{"feed.vedettas.com", true},
-		{"SUB.FEED.VEDETTAS.COM.", true},
+		{"SUB.FEED.VEDETTAS.COM.", false},
 		{"evilfeed.vedettas.com", false},
 		{"router", true},
 		{"child.router", false},

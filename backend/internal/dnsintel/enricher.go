@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
-	"golang.org/x/net/publicsuffix"
 )
 
 // Enricher wires all DNS threat detection algorithms into the event ingest
@@ -30,7 +28,7 @@ type Enricher struct {
 	// SelfDomains are Vedetta's own hosts (community feed + telemetry, plus any
 	// self-hosted mirror), derived from config in cmd/vedetta. Core polls its own feed
 	// on a fixed timer, which would otherwise trip the beaconing/C2 detector on the
-	// Core host's own DNS. Matched exact-or-suffix; nil = no-op.
+	// Core host's own DNS. Matched exactly; nil = no-op.
 	SelfDomains []string
 
 	// Firewall (spec 001) — used only for event_type == "firewall_log".
@@ -92,10 +90,11 @@ var knownGoodUpdateDomains = []string{
 	"plex.tv", "plex.direct",
 }
 
-// isSelfDomain reports whether domain is one of Vedetta's own hosts (feed/telemetry
-// or a self-hosted mirror). Exact-or-suffix on the registrable host, so a mirror at
-// feed.mylab.example matches "feed.mylab.example" while "evilvedettas.com" does NOT
-// match "vedettas.com". Case/trailing-dot normalized to match the ingest pipeline.
+// isSelfDomain reports whether domain is one of Vedetta's own configured hosts
+// (feed/telemetry or a self-hosted mirror). Only the exact hostname is exempt:
+// Vedetta never needs to query arbitrary descendants, and suffix matching would
+// let a feed at example.com hide beaconing to c2.example.com. Case/trailing-dot
+// are normalized to match the ingest pipeline.
 func (e *Enricher) isSelfDomain(domain string) bool {
 	d := normalizeDNSName(domain)
 	if d == "" {
@@ -109,26 +108,12 @@ func (e *Enricher) isSelfDomain(domain string) bool {
 		if d == self {
 			return true
 		}
-		// Subdomain matching is useful for a configured feed host, but a bare
-		// public suffix (for example "com") must never exempt every name below
-		// that suffix. IP and single-label LAN hosts are exact-match only.
-		if canMatchSelfSubdomains(self) && strings.HasSuffix(d, "."+self) {
-			return true
-		}
 	}
 	return false
 }
 
 func normalizeDNSName(value string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
-}
-
-func canMatchSelfSubdomains(host string) bool {
-	if net.ParseIP(host) != nil || !strings.Contains(host, ".") {
-		return false
-	}
-	_, err := publicsuffix.EffectiveTLDPlusOne(host)
-	return err == nil
 }
 
 // SelfDomainsFromURLs extracts lowercased, deduped hostnames from the given URLs
