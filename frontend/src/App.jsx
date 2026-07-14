@@ -84,12 +84,13 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   // First-run telemetry disclosure (issue #37c): telemetry is ON by default
-  // (opt-out), so we must surface a visible notice on first dashboard load
-  // before relying on the silent default. Acknowledgement persists per browser.
+  // (opt-out), so on first dashboard load we present a blocking, one-time
+  // acknowledgement the user must accept before using the dashboard.
+  // Acknowledgement persists per browser.
   const [showTelemetryNotice, setShowTelemetryNotice] = useState(() => {
     try { return localStorage.getItem('vedetta_telemetry_notice_ack') !== '1'; } catch { return true; }
   });
-  const dismissTelemetryNotice = () => {
+  const acknowledgeTelemetry = () => {
     try { localStorage.setItem('vedetta_telemetry_notice_ack', '1'); } catch {}
     setShowTelemetryNotice(false);
   };
@@ -605,18 +606,68 @@ export default function App() {
           pseudonymous / privacy-reduced telemetry is ON by default before we rely
           on the silent default. */}
       {showTelemetryNotice && (
-        <div className="bg-amber-950/40 border-b border-amber-900/60 px-6 py-3">
-          <div className="max-w-7xl mx-auto flex items-start gap-3 text-sm">
-            <svg className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <div className="flex-1 text-amber-100/90">
-              <span className="font-medium text-amber-100">Pseudonymous telemetry is on by default.</span>{' '}
-              Vedetta contributes privacy-reduced, advisory-only signals — source IPs, MACs, and hostnames are stripped at the source, but a stable per-instance reporter pseudonym is retained server-side, so this is pseudonymous, not anonymous — to improve community threat detection. You can turn it off at any time.{' '}
-              <button onClick={() => { setView('settings'); }} className="underline hover:text-white">Manage in Settings</button>{' · '}
-              <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" className="underline hover:text-white">Read the privacy notice</a>
+        <div
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="telemetry-ack-title"
+        >
+          <div className="bg-gray-900 border border-amber-900/50 rounded-2xl max-w-lg w-full p-6 sm:p-8 space-y-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <svg className="w-6 h-6 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <h2 id="telemetry-ack-title" className="text-lg font-semibold text-white leading-snug">
+                Thank you for helping make Vedetta and the broader security community stronger.
+              </h2>
             </div>
-            <button onClick={dismissTelemetryNotice} className="text-amber-300 hover:text-white text-xs px-2 py-1 rounded flex-shrink-0">Dismiss</button>
+            <div className="space-y-3 text-sm text-gray-300 leading-relaxed">
+              <p>
+                Pseudonymous telemetry is enabled by default and contributes privacy-reduced,
+                advisory-only signals to improve community threat detection. Source IP addresses,
+                MAC addresses, and hostnames are removed before the data leaves your system.
+                Vedetta retains a stable, per-instance reporter ID, so the data is pseudonymous
+                rather than fully anonymous.
+              </p>
+              <p>
+                Prefer not to contribute? No problem. You can turn telemetry off at any time in{' '}
+                <button
+                  onClick={() => { acknowledgeTelemetry(); setView('settings'); }}
+                  className="text-amber-300 underline hover:text-amber-200"
+                >
+                  Settings
+                </button>.
+              </p>
+              <p>
+                While you will still get threat feed data from external providers, this may limit
+                threat intelligence and device identity updates from future Vedetta improvements.
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-1">
+              <div className="text-xs text-gray-500">
+                <button
+                  onClick={() => { acknowledgeTelemetry(); setView('settings'); }}
+                  className="underline hover:text-gray-300"
+                >
+                  Manage in Settings
+                </button>
+                {' · '}
+                <a
+                  href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline hover:text-gray-300"
+                >
+                  Read our Privacy Notice
+                </a>
+              </div>
+              <button
+                onClick={acknowledgeTelemetry}
+                className="bg-amber-600 hover:bg-amber-500 text-white font-medium text-sm px-6 py-2.5 rounded-lg transition-colors flex-shrink-0 tracking-wide"
+              >
+                ACKNOWLEDGED
+              </button>
+            </div>
           </div>
         </div>
       )}
