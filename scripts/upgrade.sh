@@ -160,8 +160,12 @@ command -v curl   >/dev/null 2>&1 || { err "curl not found on PATH."; exit 2; }
 docker compose version >/dev/null 2>&1 || { err "docker compose v2 is required."; exit 2; }
 git rev-parse --git-dir >/dev/null 2>&1 || { err "not a git repository: $PROJECT_DIR"; exit 2; }
 
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-  err "working tree is not clean — commit or stash changes first."
+# Only uncommitted changes to TRACKED files block checkout; untracked files
+# (operator notes, older checkouts without backups/ in .gitignore) must not
+# false-positive. Refresh the stat cache first so stale mtimes don't either.
+git update-index -q --refresh 2>/dev/null || true
+if ! git diff-index --quiet HEAD --; then
+  err "working tree has uncommitted changes — commit or stash them first."
   err "(the upgrade and its rollback both run 'git checkout', which needs a clean tree.)"
   exit 2
 fi
@@ -196,7 +200,12 @@ fi
 TS="$(date +%Y%m%d-%H%M%S)"
 SNAP_DIR="${PROJECT_DIR}/backups/upgrade-${TS}"
 LOG="${SNAP_DIR}/upgrade-${TS}.log"
+# The snapshot holds the live DB, API tokens, and .env — owner-only from the
+# very first byte, not only at the post-snapshot chmod (which an interrupted
+# run would never reach).
+umask 077
 mkdir -p "$SNAP_DIR"
+chmod 700 "$SNAP_DIR"
 # Tee everything (stdout + stderr) into the snapshot dir so a failed upgrade
 # leaves a complete transcript next to the backup it can be restored from.
 exec > >(tee -a "$LOG") 2>&1
@@ -213,9 +222,13 @@ restore_main_volume() {
     online)
       # Restore the single pre-upgrade DB file; delete any WAL/SHM left by the
       # failed new backend so SQLite cannot replay migrated frames onto it.
+      # Preserve the DB file's ownership (cp in the helper container runs as
+      # root; a non-root backend could no longer open a root-owned DB).
       docker run --rm -v "${VOL_DATA}:/data" -v "${SNAP_DIR}:/backup:ro" alpine \
-        sh -ec 'rm -f /data/vedetta.db /data/vedetta.db-wal /data/vedetta.db-shm
-                cp "/backup/$1" /data/vedetta.db' _ "$(basename "$SNAP_ARTIFACT")"
+        sh -ec 'owner="$(stat -c %u:%g /data/vedetta.db 2>/dev/null || stat -c %u:%g /data)"
+                rm -f /data/vedetta.db /data/vedetta.db-wal /data/vedetta.db-shm
+                cp "/backup/$1" /data/vedetta.db
+                chown "$owner" /data/vedetta.db' _ "$(basename "$SNAP_ARTIFACT")"
       ;;
     cold)
       docker run --rm -v "${VOL_DATA}:/data" -v "${SNAP_DIR}:/backup:ro" alpine \
@@ -224,6 +237,18 @@ restore_main_volume() {
       ;;
     *) return 1 ;;
   esac
+}
+
+# halt_rollback <why> — a rollback step failed in a way where STARTING ANYTHING
+# is the dangerous move (volume not restored, or the compose image is still the
+# bad upgraded build). Leave the stack DOWN with the snapshot intact and tell
+# the operator exactly where they stand. Never falls through to `up -d`.
+halt_rollback() {
+  err "ROLLBACK HALTED: $1"
+  err "The stack is left STOPPED on purpose — starting a container here could run"
+  err "the wrong code against the wrong schema and corrupt the remaining good copy."
+  err "Your pre-upgrade snapshot is intact at: ${SNAP_ARTIFACT}"
+  err "Recover manually with docs/backup-restore-rollback.md (sections 2 and 4)."
 }
 
 do_rollback() {
@@ -237,16 +262,31 @@ do_rollback() {
 
   if [ "$NEW_STACK_UP" = "1" ]; then
     if restore_main_volume; then ok "Restored Core DB from the pre-upgrade snapshot."
-    else err "Snapshot restore FAILED — the snapshot is intact at ${SNAP_ARTIFACT}."; fi
+    else
+      # The volume may still hold the migrated/corrupt DB. Booting ANY version
+      # against it is exactly what this script exists to prevent.
+      halt_rollback "could not restore the snapshot into the ${VOL_DATA} volume"
+      return 1
+    fi
   else
     warn "The new version never started; the DB was not migrated — leaving data as-is."
   fi
 
+  # From here the DB is pre-upgrade again, but the compose image is still the
+  # BAD upgraded build until the previous ref is checked out AND rebuilt. If
+  # either step fails, `up -d` would relaunch the bad image against the
+  # restored data and re-run the failing migrations — halt instead.
   if [ -n "$TARGET_REF" ]; then
-    git checkout --quiet "$PREV_REF" || warn "git checkout ${PREV_DESC} failed — check the tree manually."
+    if ! git checkout --quiet "$PREV_REF"; then
+      halt_rollback "git checkout ${PREV_DESC} failed — the tree still holds the target version"
+      return 1
+    fi
   fi
-  docker compose build ${NO_CACHE:+--no-cache} || warn "rebuild of the previous version failed."
-  docker compose up -d || warn "failed to start the previous version."
+  if ! docker compose build ${NO_CACHE:+--no-cache}; then
+    halt_rollback "rebuild of the previous version failed — the compose image is still the upgraded build"
+    return 1
+  fi
+  docker compose up -d || { halt_rollback "docker compose up -d failed for the previous version"; return 1; }
 
   if wait_health 60; then ok "Previous version is back up and healthy at ${PREV_DESC}."
   else err "Previous version did not become healthy within 60s — check: docker compose logs backend"; fi
@@ -307,8 +347,13 @@ if backend_running && wait_health 5; then
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-db-pre-${TS}.db"
   docker compose exec -T backend sqlite3 /data/vedetta.db ".backup '/data/pre-${TS}.db'" \
     || fail "online .backup failed"
-  docker compose cp "backend:/data/pre-${TS}.db" "$SNAP_ARTIFACT" \
-    || fail "copying the snapshot out of the container failed"
+  # Plain `docker cp` (not `docker compose cp`, which needs Compose >= 2.20),
+  # and clean the in-container temp file up on BOTH exits so a failed copy
+  # doesn't leave a full DB copy eating the data volume.
+  if ! docker cp "$(docker compose ps -q backend | head -n1):/data/pre-${TS}.db" "$SNAP_ARTIFACT"; then
+    docker compose exec -T backend rm -f "/data/pre-${TS}.db" 2>/dev/null || true
+    fail "copying the snapshot out of the container failed"
+  fi
   docker compose exec -T backend rm -f "/data/pre-${TS}.db" \
     || warn "could not remove the in-container temp snapshot (harmless)."
   SNAP_MODE="online"
@@ -316,8 +361,11 @@ else
   warn "Backend is not healthy — stopping the stack for a cold volume snapshot."
   docker compose down || warn "docker compose down reported an error; continuing."
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-data-${TS}.tar.gz"
+  # chown the tarball to the invoking host user — the helper container runs as
+  # root, and a root-owned backup would need sudo to manage or prune later.
   docker run --rm -v "${VOL_DATA}:/data:ro" -v "${SNAP_DIR}:/backup" alpine \
-    tar czf "/backup/$(basename "$SNAP_ARTIFACT")" -C /data . \
+    sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
+    _ "$(basename "$SNAP_ARTIFACT")" "$(id -u):$(id -g)" \
     || fail "cold volume snapshot failed"
   SNAP_MODE="cold"
 fi
@@ -337,7 +385,8 @@ if [ "$SKIP_AUX" != "1" ]; then
     if [ -n "$vol" ] && volume_exists "$vol"; then
       out="${key}-${TS}.tar.gz"
       if docker run --rm -v "${vol}:/data:ro" -v "${SNAP_DIR}:/backup" alpine \
-           tar czf "/backup/${out}" -C /data . ; then
+           sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
+           _ "${out}" "$(id -u):$(id -g)"; then
         ok "Snapshotted ${key} → ${out}"
       else
         warn "Could not snapshot ${key} (continuing; auxiliary volume)."
