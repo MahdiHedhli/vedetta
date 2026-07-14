@@ -45,9 +45,9 @@
 #       --health-timeout <s>  Seconds to wait for backend health (default 120).
 #   -h, --help                Show this help.
 #
+set -Eeuo pipefail
 # -E (errtrace): the ERR trap must be inherited by functions and subshells,
 # or a failure inside one would bypass fail()/rollback and die under plain -e.
-set -Eeuo pipefail
 
 # ─── Re-exec from a private copy ──────────────────────────────────────────────
 # This script runs `git checkout`, which rewrites tracked files — potentially
@@ -93,7 +93,9 @@ ok()   { printf '  ✓ %s\n' "$*"; }
 warn() { printf '  ⚠ %s\n' "$*" >&2; }
 err()  { printf '  ✗ %s\n' "$*" >&2; }
 
-usage() { sed -n '2,46p' "$VEDETTA_UPGRADE_SELF" | sed 's/^# \{0,1\}//'; }
+# Print the contiguous header comment block (everything until the first
+# non-comment line) — no hardcoded line numbers to fall out of date.
+usage() { awk 'NR < 2 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$VEDETTA_UPGRADE_SELF"; }
 
 # ─── Args ─────────────────────────────────────────────────────────────────────
 ASSUME_YES=0
@@ -175,7 +177,7 @@ resolve_volume() {
   # A sole labeled candidate still must belong to OUR project (covers volumes
   # with custom external names); a different project label means the compose
   # commands would not be operating on the stack that owns this data.
-  if [ "$(printf '%s' "$labeled" | grep -c . || true)" = "1" ]; then
+  if [ "$(printf '%s\n' "$labeled" | grep -c . || true)" = "1" ]; then
     vol_project="$(docker volume inspect \
       -f '{{ index .Labels "com.docker.compose.project" }}' "$labeled" 2>/dev/null || true)"
     if [ -n "${PROJECT:-}" ] && [ "$vol_project" = "$PROJECT" ]; then
@@ -230,11 +232,16 @@ if ! git diff-index --quiet HEAD --; then
 fi
 
 PREV_REF="$(git rev-parse HEAD)"
+# Prefer the symbolic name for the rollback checkout so an operator who was on
+# a branch is returned TO that branch, not to a detached HEAD at the same
+# commit. Falls back to the hash when already detached.
+PREV_BRANCH="$(git symbolic-ref -q --short HEAD || echo "$PREV_REF")"
 PREV_DESC="$(git describe --tags --always 2>/dev/null || echo "$PREV_REF")"
 if [ -n "$FROM_REF" ]; then
   PREV_REF="$(git rev-parse --verify --quiet "${FROM_REF}^{commit}" || true)"
   [ -n "$PREV_REF" ] || { err "--from ref not found: ${FROM_REF}"; exit 2; }
   PREV_DESC="$FROM_REF"
+  PREV_BRANCH="$FROM_REF"
 fi
 
 if [ -n "$TARGET_REF" ]; then
@@ -339,7 +346,7 @@ do_rollback() {
     # (tree moved) and in-place mode with --from (tree never moved, but a
     # partial build may still have retagged some service images) both qualify.
     if [ "$PREV_REF" != "$fail_head" ]; then
-      if git checkout --quiet "$PREV_REF"; then ok "Working tree now at ${PREV_DESC}."
+      if git checkout --quiet "$PREV_BRANCH"; then ok "Working tree now at ${PREV_DESC}."
       else
         err "ROLLBACK INCOMPLETE: git checkout ${PREV_DESC} failed — the tree still holds"
         err "the failed version. The stack is still RUNNING the previous build; fix the"
@@ -398,7 +405,7 @@ do_rollback() {
   if [ "$PREV_REF" != "$fail_head" ]; then
     # Covers both the normal target-ref flow and --from in rebuild-in-place
     # mode (where the tree never moved but the operator named a good ref).
-    if ! git checkout --quiet "$PREV_REF"; then
+    if ! git checkout --quiet "$PREV_BRANCH"; then
       halt_rollback "git checkout ${PREV_DESC} failed — the tree still holds the failed version"
       return 1
     fi
