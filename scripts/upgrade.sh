@@ -198,7 +198,7 @@ resolve_volume() {
 }
 
 volume_exists() { docker volume inspect "$1" >/dev/null 2>&1; }
-backend_running() { [ -n "$(docker compose ps -q backend 2>/dev/null)" ]; }
+backend_running() { [ -n "$(docker compose ps --filter status=running -q backend 2>/dev/null)" ]; }
 
 # This is a CORE upgrade: never touch profile-gated services (the community
 # threat-network keeps its own data, migrations, and runbook). core_services
@@ -648,9 +648,13 @@ if [ "$WARM" = "1" ]; then
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-db-pre-${TS}.db"
   # .timeout: ride out transient locks from the still-serving backend's writes
   # (same silent dot-command the verification PRAGMAs use).
+  # On failure, remove the (possibly partial) in-volume copy before failing —
+  # e.g. a disk-full .backup would otherwise leave the live volume full while
+  # the untouched old stack keeps serving.
   docker compose exec -T backend sqlite3 -batch -cmd '.timeout 5000' /data/vedetta.db \
     ".backup '/data/pre-${TS}.db'" \
-    || fail "online .backup failed"
+    || { docker compose exec -T backend rm -f "/data/pre-${TS}.db" 2>/dev/null || true
+         fail "online .backup failed"; }
   # Plain `docker cp` (not `docker compose cp`, which needs Compose >= 2.20),
   # and clean the in-container temp file up on BOTH exits so a failed copy
   # doesn't leave a full DB copy eating the data volume. Guard the container id:
