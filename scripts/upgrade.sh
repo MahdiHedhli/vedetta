@@ -70,6 +70,15 @@ fi
 PROJECT_DIR="${VEDETTA_UPGRADE_HOME}"
 SCRIPT_DIR="${PROJECT_DIR}/scripts"
 
+# Registered FIRST thing in the child: even an exit during argument parsing
+# (--help, a bad flag) must remove the re-exec temp copy.
+cleanup() {
+  local rc=$?
+  [ -n "${VEDETTA_UPGRADE_SELF:-}" ] && rm -f "$VEDETTA_UPGRADE_SELF" 2>/dev/null || true
+  exit "$rc"
+}
+trap cleanup EXIT
+
 # Under sudo, run git as the invoking user (mirrors scripts/update-all.sh):
 # a root git in a user-owned repository fails with "dubious ownership".
 git() {
@@ -138,14 +147,6 @@ BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${PROJECT_DIR}/.
 
 cd "$PROJECT_DIR"
 
-# ─── Cleanup ──────────────────────────────────────────────────────────────────
-cleanup() {
-  local rc=$?
-  [ -n "${VEDETTA_UPGRADE_SELF:-}" ] && rm -f "$VEDETTA_UPGRADE_SELF" 2>/dev/null || true
-  exit "$rc"
-}
-trap cleanup EXIT
-
 # ─── Docker / Compose helpers ────────────────────────────────────────────────
 detect_project() {
   if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then printf '%s' "$COMPOSE_PROJECT_NAME"; return; fi
@@ -196,6 +197,36 @@ resolve_volume() {
 
 volume_exists() { docker volume inspect "$1" >/dev/null 2>&1; }
 backend_running() { [ -n "$(docker compose ps -q backend 2>/dev/null)" ]; }
+
+# This is a CORE upgrade: never touch profile-gated services (the community
+# threat-network keeps its own data, migrations, and runbook). core_services
+# resolves the profile-less service set FRESH from the current checkout — the
+# set can legitimately differ between the target and previous refs. With
+# COMPOSE_PROFILES forced empty, `config --services` lists exactly the
+# services a bare `docker compose up` would manage for a default install.
+# NB: no mapfile/arrays-from-stream here — macOS ships bash 3.2 and this
+# script must run there. Compose service names cannot contain whitespace, so
+# plain word-splitting of the newline-separated list is safe.
+core_services() { COMPOSE_PROFILES="" docker compose config --services 2>/dev/null; }
+
+compose_stop_core() {
+  local svcs
+  svcs="$(core_services)" && [ -n "$svcs" ] || return 1
+  # shellcheck disable=SC2086 # intentional split on whitespace-free names
+  docker compose stop $svcs
+}
+compose_build_core() {
+  local svcs
+  svcs="$(core_services)" && [ -n "$svcs" ] || return 1
+  # shellcheck disable=SC2086 # NO_CACHE is one flag or nothing; names split intentionally
+  docker compose build ${NO_CACHE:+--no-cache} $svcs
+}
+compose_up_core() {
+  local svcs
+  svcs="$(core_services)" && [ -n "$svcs" ] || return 1
+  # shellcheck disable=SC2086 # intentional split on whitespace-free names
+  docker compose up -d $svcs
+}
 
 wait_health() {
   local timeout="$1" i
@@ -269,7 +300,13 @@ fi
 
 # ─── Snapshot workspace + full transcript ─────────────────────────────────────
 TS="$(date +%Y%m%d-%H%M%S)"
-SNAP_DIR="${PROJECT_DIR}/backups/upgrade-${TS}"
+# Snapshots default OUTSIDE the repository: the repo root is the backend build
+# context AND `git checkout <ref>` swaps .dockerignore with it, so an in-repo
+# location would rely on every target ref knowing to exclude it — an older ref
+# would happily ship the DB + env-*.bak into the Docker build cache. A sibling
+# directory can never enter a build context or be touched by checkouts.
+BACKUP_ROOT="${VEDETTA_BACKUP_DIR:-$(dirname "$PROJECT_DIR")/vedetta-backups}"
+SNAP_DIR="${BACKUP_ROOT}/upgrade-${TS}"
 LOG="${SNAP_DIR}/upgrade-${TS}.log"
 # The snapshot holds the live DB, API tokens, and .env — owner-only from the
 # very first byte, not only at the post-snapshot chmod (which an interrupted
@@ -358,7 +395,7 @@ do_rollback() {
       # the known-good ref so the compose tags point back at known-good builds —
       # otherwise a later plain `docker compose up -d` would recreate containers
       # onto the failed build. Containers are NOT restarted.
-      if ! docker compose build ${NO_CACHE:+--no-cache}; then
+      if ! compose_build_core; then
         err "WARNING: rebuild at ${PREV_DESC} failed — compose image tags may still"
         err "point at the failed build. The running stack is unaffected, but do"
         err "NOT run 'docker compose up -d' until 'docker compose build' succeeds here."
@@ -378,12 +415,12 @@ do_rollback() {
   # we started is running (cold path, pre-start failure), a down failure — e.g.
   # the failed target's broken compose file — must not turn a recoverable
   # pre-start failure into a halt: no restore follows in that state.
-  if ! docker compose down; then
+  if ! compose_stop_core; then
     if [ "$NEW_STACK_UP" = "1" ]; then
-      halt_rollback "docker compose down failed — containers may still have the data volume mounted; restoring over live files would corrupt them"
+      halt_rollback "stopping the Core services failed — containers may still have the data volume mounted; restoring over live files would corrupt them"
       return 1
     fi
-    warn "docker compose down reported an error (nothing we started is running); continuing."
+    warn "stopping the Core services reported an error (nothing we started is running); continuing."
   fi
 
   if [ "$NEW_STACK_UP" = "1" ]; then
@@ -409,7 +446,7 @@ do_rollback() {
       halt_rollback "git checkout ${PREV_DESC} failed — the tree still holds the failed version"
       return 1
     fi
-    if ! docker compose build ${NO_CACHE:+--no-cache}; then
+    if ! compose_build_core; then
       halt_rollback "rebuild of the previous version failed — the compose image is still the upgraded build"
       return 1
     fi
@@ -433,12 +470,12 @@ do_rollback() {
     # Cold-path failure BEFORE any build ran (snapshot/.env/checkout): nothing
     # was retagged and the DB was untouched — restart the stack as it was.
     warn "No build had started — restarting the stack as it was before the attempt…"
-    docker compose up -d || { halt_rollback "docker compose up -d failed"; return 1; }
+    compose_up_core || { halt_rollback "restarting the Core services failed"; return 1; }
     if wait_health 60; then ok "Stack is back up (pre-upgrade state)."
     else warn "Stack restarted but not healthy within 60s (the cold path implies it was already unhealthy before the attempt)."; fi
     return 0
   fi
-  docker compose up -d || { halt_rollback "docker compose up -d failed for the previous version"; return 1; }
+  compose_up_core || { halt_rollback "starting the previous version's Core services failed"; return 1; }
 
   if wait_health 60; then ok "Previous version is back up and healthy at ${PREV_DESC}."
   else err "Previous version did not become healthy within 60s — check: docker compose logs backend"; fi
@@ -555,8 +592,8 @@ else
   STACK_WAS_STOPPED=1
   # A failed down means something may still be writing to the volume; tarring
   # it anyway could produce a corrupt backup the rollback would then trust.
-  docker compose down \
-    || fail "docker compose down failed — refusing to snapshot a volume that may still be written to"
+  compose_stop_core \
+    || fail "stopping the Core services failed — refusing to snapshot a volume that may still be written to"
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-data-${TS}.tar.gz"
   # chown the tarball to the invoking host user — the helper container runs as
   # root, and a root-owned backup would need sudo to manage or prune later.
@@ -576,9 +613,9 @@ else
   step "No target ref given — rebuilding the current checkout in place."
 fi
 
-step "Building images${NO_CACHE:+ (--no-cache)}…"
+step "Building Core images${NO_CACHE:+ (--no-cache)}…"
 BUILD_STARTED=1
-docker compose build ${NO_CACHE:+--no-cache} || fail "docker compose build failed"
+compose_build_core || fail "docker compose build failed"
 
 # ─── 3. Warm snapshot (immediately before the swap) ──────────────────────────
 if [ "$WARM" = "1" ]; then
@@ -609,7 +646,7 @@ fi
 # ─── 4. Bring the stack up ────────────────────────────────────────────────────
 step "Starting the upgraded stack…"
 NEW_STACK_UP=1
-docker compose up -d || fail "docker compose up -d failed"
+compose_up_core || fail "starting the upgraded Core services failed"
 
 # ─── 4. Verify ────────────────────────────────────────────────────────────────
 step "Waiting up to ${HEALTH_TIMEOUT}s for the backend to become healthy…"

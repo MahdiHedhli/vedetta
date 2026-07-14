@@ -212,9 +212,16 @@ git fetch --tags
 > return to.
 
 It snapshots the Core DB, a copy of `.env`, and the `telemetry-state` /
-`threat-network-data` volumes into `backups/upgrade-<timestamp>/` (git-ignored;
-it holds your DB and API tokens — keep it private). Keep that snapshot until the
-new version has proven itself in daily use.
+`threat-network-data` volumes into `../vedetta-backups/upgrade-<timestamp>/` —
+a sibling of the repository, **deliberately outside it**, so snapshots can
+never enter a Docker build context or be affected by `git checkout` (override
+with `VEDETTA_BACKUP_DIR`). It holds your DB and API tokens — keep it private.
+Keep each snapshot until the new version has proven itself in daily use.
+
+The script upgrades **Core services only** (the profile-less set: backend,
+frontend, collector, telemetry). Community-profile services such as a locally
+run `threat-network` are never rebuilt, restarted, or rolled back by it — they
+keep their own data and runbook (docs/threat-network-operations.md).
 
 > **Crash-looping-backend caveat.** Migrations run on boot and are fail-closed:
 > a failure aborts startup (`log.Fatalf`). When the backend is already down or
