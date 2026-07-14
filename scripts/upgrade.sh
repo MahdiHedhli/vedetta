@@ -584,7 +584,10 @@ docker compose build ${NO_CACHE:+--no-cache} || fail "docker compose build faile
 if [ "$WARM" = "1" ]; then
   step "Snapshotting (online, no downtime) before the swap…"
   SNAP_ARTIFACT="${SNAP_DIR}/vedetta-db-pre-${TS}.db"
-  docker compose exec -T backend sqlite3 /data/vedetta.db ".backup '/data/pre-${TS}.db'" \
+  # .timeout: ride out transient locks from the still-serving backend's writes
+  # (same silent dot-command the verification PRAGMAs use).
+  docker compose exec -T backend sqlite3 -batch -cmd '.timeout 5000' /data/vedetta.db \
+    ".backup '/data/pre-${TS}.db'" \
     || fail "online .backup failed"
   # Plain `docker cp` (not `docker compose cp`, which needs Compose >= 2.20),
   # and clean the in-container temp file up on BOTH exits so a failed copy

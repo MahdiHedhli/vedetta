@@ -9,6 +9,11 @@
 .local
 *.env
 !.env.example
+# Pre-upgrade snapshots (scripts/upgrade.sh): DB tarballs + an .env copy with
+# API tokens. **/*.db above catches the online snapshot but NOT the cold/aux
+# *.tar.gz or env-*.bak — without this line every build after a snapshot ships
+# them to the Docker daemon/BuildKit cache (secret exposure + huge contexts).
+backups/
 **/node_modules
 **/dist
 **/*.test
