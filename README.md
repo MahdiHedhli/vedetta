@@ -156,7 +156,7 @@ COLLECTOR_PORT="$(./scripts/resolve-host-port.sh VEDETTA_COLLECTOR_PORT 5140)"
 With the defaults free you get:
 
 Dashboard: [http://localhost:3107](http://localhost:3107)
-API health: [http://localhost:8080/healthz](http://localhost:8080/healthz)
+API readiness: [http://localhost:8080/readyz](http://localhost:8080/readyz) — 200 only when migrations are applied and the DB is intact (`/healthz` is bare liveness)
 
 The detailed `/api/v1/status` endpoint is authenticated. Query the selected Core
 port with a read or admin token:

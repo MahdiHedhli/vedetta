@@ -268,7 +268,7 @@ else
   echo "Host ports (NOT probed; pinned in ${ENV_FILE##*/} as configured) — 'docker compose up' will use these:"
 fi
 echo "  Dashboard:  http://localhost:${FRONTEND_PORT}"
-echo "  Core API:   http://localhost:${BACKEND_PORT}   (health: http://localhost:${BACKEND_PORT}/healthz)"
+echo "  Core API:   http://localhost:${BACKEND_PORT}   (readiness: http://localhost:${BACKEND_PORT}/readyz)"
 echo "  Collector:  udp/${COLLECTOR_PORT}   (LAN-reachable syslog input — point firewall exports here)"
 
 # Call out any port that had to move off its default so the operator updates
