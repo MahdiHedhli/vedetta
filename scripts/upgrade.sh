@@ -45,7 +45,9 @@
 #       --health-timeout <s>  Seconds to wait for backend health (default 120).
 #   -h, --help                Show this help.
 #
-set -euo pipefail
+# -E (errtrace): the ERR trap must be inherited by functions and subshells,
+# or a failure inside one would bypass fail()/rollback and die under plain -e.
+set -Eeuo pipefail
 
 # ─── Re-exec from a private copy ──────────────────────────────────────────────
 # This script runs `git checkout`, which rewrites tracked files — potentially
@@ -346,12 +348,18 @@ do_rollback() {
     return 0
   fi
 
-  # A failed `down` means containers may still be running with the data volume
-  # mounted — rewriting SQLite files underneath a live process would corrupt
-  # the one copy rollback exists to protect. Halt rather than restore blind.
+  # A failed `down` is fatal ONLY when the upgraded stack ran: containers may
+  # still hold the data volume, and rewriting SQLite files underneath a live
+  # process would corrupt the one copy rollback exists to protect. When nothing
+  # we started is running (cold path, pre-start failure), a down failure — e.g.
+  # the failed target's broken compose file — must not turn a recoverable
+  # pre-start failure into a halt: no restore follows in that state.
   if ! docker compose down; then
-    halt_rollback "docker compose down failed — containers may still have the data volume mounted; restoring over live files would corrupt them"
-    return 1
+    if [ "$NEW_STACK_UP" = "1" ]; then
+      halt_rollback "docker compose down failed — containers may still have the data volume mounted; restoring over live files would corrupt them"
+      return 1
+    fi
+    warn "docker compose down reported an error (nothing we started is running); continuing."
   fi
 
   if [ "$NEW_STACK_UP" = "1" ]; then
@@ -377,6 +385,10 @@ do_rollback() {
       halt_rollback "git checkout ${PREV_DESC} failed — the tree still holds the failed version"
       return 1
     fi
+    if ! docker compose build ${NO_CACHE:+--no-cache}; then
+      halt_rollback "rebuild of the previous version failed — the compose image is still the upgraded build"
+      return 1
+    fi
   elif [ "$NEW_STACK_UP" = "1" ]; then
     # Rebuild-in-place with no --from: the failing version IS the current
     # checkout. Restarting it would immediately re-run the failing migration
@@ -384,10 +396,11 @@ do_rollback() {
     halt_rollback "the failed version is the current checkout — restarting it would re-run the failing migration (re-run with --from <known-good-ref> to enable automatic rollback)"
     return 1
   fi
-  if ! docker compose build ${NO_CACHE:+--no-cache}; then
-    halt_rollback "rebuild of the previous version failed — the compose image is still the upgraded build"
-    return 1
-  fi
+  # PREV_REF == fail_head with NEW_STACK_UP=0 (cold pre-start failure, no
+  # --from): skip the rebuild — it is the build that just failed and would
+  # fail again, turning a recoverable state into a halt. The image tags are
+  # unchanged for the failed service(s); `up -d` restores the pre-script
+  # status quo with the untouched DB.
   docker compose up -d || { halt_rollback "docker compose up -d failed for the previous version"; return 1; }
 
   if wait_health 60; then ok "Previous version is back up and healthy at ${PREV_DESC}."
@@ -441,6 +454,11 @@ if [ "$ASSUME_YES" != "1" ]; then
   case "$_reply" in y|Y|yes|YES) ;; *) echo "  Aborted — nothing was changed."; exit 0 ;; esac
 fi
 
+# From here on, ANY unexpected command failure routes through fail() and the
+# rollback machinery (do_rollback picks the correct branch for the current
+# state — including "nothing touched yet": restore the tree, keep serving).
+trap 'fail "unexpected error near line ${LINENO}"' ERR
+
 # finalize_snapshot — .env + aux volumes + permissions + arm the ERR trap.
 # Runs once, right after the Core DB artifact lands (cold: step 1; warm: step 3).
 finalize_snapshot() {
@@ -478,8 +496,8 @@ finalize_snapshot() {
   fi
 
   chmod -R go-rwx "$SNAP_DIR" 2>/dev/null || true   # snapshots hold DB + tokens + .env
-  # From here on, any unexpected command failure triggers rollback.
-  trap 'fail "unexpected error near line ${LINENO}"' ERR
+  # (The ERR trap is registered right after the confirmation prompt, so the
+  # checkout/build phases are covered too — not only the post-snapshot steps.)
 }
 
 # ─── 1. Snapshot strategy ─────────────────────────────────────────────────────
