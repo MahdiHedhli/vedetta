@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import http.client
 import ipaddress
 import json
 import os
@@ -170,10 +171,14 @@ def _allowed_methods(path: str) -> tuple[str, ...]:
     return tuple(method for method in ("GET", "POST", "PUT") if method in methods)
 
 
+class _UpstreamResponseTooLarge(Exception):
+    pass
+
+
 def _read_limited(response, limit: int) -> bytes:
     data = response.read(limit + 1)
     if len(data) > limit:
-        raise ValueError("upstream response exceeds configured limit")
+        raise _UpstreamResponseTooLarge("upstream response exceeds configured limit")
     return data
 
 
@@ -516,42 +521,41 @@ class Handler(BaseHTTPRequestHandler):
             request.add_header("Authorization", "Bearer " + token.decode("ascii"))
             if if_match:
                 request.add_header("If-Match", if_match)
+        proxy_error = None
+        is_http_error = False
         try:
-            with UPSTREAM_OPENER.open(request, timeout=15) as response:
-                data = _read_limited(response, MAX_RESPONSE_BYTES)
-                self._send_upstream(response.status, response.headers, data)
-        except urllib.error.HTTPError as error:
-            # HTTPError doubles as the response body. It owns a socket/file
-            # object just like a successful response, so close it on every
-            # branch, including body-limit and downstream-write failures. Close
-            # it before sending the downstream response so completion cannot be
-            # observed while the upstream resource is still live.
-            proxy_error = None
-            with error:
-                if 300 <= error.code < 400:
+            try:
+                response = UPSTREAM_OPENER.open(request, timeout=15)
+            except urllib.error.HTTPError as error:
+                # HTTPError doubles as the response body and is deliberately
+                # handled before the broader OSError transport boundary.
+                response = error
+                is_http_error = True
+            with response:
+                if is_http_error and 300 <= response.code < 400:
                     proxy_error = (
                         502,
                         "UPSTREAM_REDIRECT",
                         "upstream redirects are forbidden",
                     )
                 else:
-                    try:
-                        data = _read_limited(error, MAX_RESPONSE_BYTES)
-                    except ValueError:
-                        proxy_error = (
-                            502,
-                            "UPSTREAM_TOO_LARGE",
-                            "upstream response exceeded limit",
-                        )
-                    else:
-                        status = error.code
-                        headers = error.headers
-            if proxy_error is not None:
-                self._json_error(*proxy_error)
-                return
-            self._send_upstream(status, headers, data)
-        except (urllib.error.URLError, TimeoutError, ValueError):
+                    data = _read_limited(response, MAX_RESPONSE_BYTES)
+                    status = response.code if is_http_error else response.status
+                    headers = response.headers
+        except _UpstreamResponseTooLarge:
+            self._json_error(
+                502, "UPSTREAM_TOO_LARGE", "upstream response exceeded limit"
+            )
+            return
+        except (OSError, http.client.HTTPException):
             self._json_error(502, "UPSTREAM_UNAVAILABLE", "upstream service unavailable")
+            return
+        if proxy_error is not None:
+            self._json_error(*proxy_error)
+            return
+        # Downstream socket failures must not be mistaken for upstream
+        # unavailability or trigger an invalid second response attempt.
+        self._send_upstream(status, headers, data)
 
     def _send_upstream(self, status: int, headers, data: bytes) -> None:
         try:

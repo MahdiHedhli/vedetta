@@ -50,6 +50,30 @@ func TestMigrationsApplyAndIdempotent(t *testing.T) {
 	if count != want {
 		t.Fatalf("expected %d migrations recorded, got %d", want, count)
 	}
+	indexRows, err := db.Query(`PRAGMA index_info('idx_device_corpus_version_facts_source')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexColumns []string
+	for indexRows.Next() {
+		var sequence, columnID int
+		var column string
+		if err = indexRows.Scan(&sequence, &columnID, &column); err != nil {
+			indexRows.Close()
+			t.Fatal(err)
+		}
+		indexColumns = append(indexColumns, column)
+	}
+	if err = indexRows.Err(); err != nil {
+		indexRows.Close()
+		t.Fatal(err)
+	}
+	if err = indexRows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(indexColumns) != 1 || indexColumns[0] != "source_id" {
+		t.Fatalf("version-fact source index columns = %v, want [source_id]", indexColumns)
+	}
 }
 
 func TestReporterLifecycle(t *testing.T) {

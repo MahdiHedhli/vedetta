@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/vedetta-network/vedetta/threat-network/internal/corpus"
 )
@@ -106,6 +107,42 @@ func TestCorpusEvidenceBatchBoundsSQLiteParameters(t *testing.T) {
 		if loaded.Sources == nil || loaded.VersionFacts == nil {
 			t.Fatalf("missing revision %q did not retain non-nil empty evidence", revisionID)
 		}
+	}
+}
+
+func TestCorpusEvidenceBatchClosesRowsAfterScanError(t *testing.T) {
+	db := newTestDB(t)
+	profile, err := db.CreateCorpusProfile(context.Background(), corpusProfileRequest(), CorpusMutation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = db.CreateCorpusVariant(context.Background(), profile.ProfileID,
+		corpusVariantRequest("scan-error"), CorpusMutation{ExpectedETag: profile.ETag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionID := profile.Variants[0].Draft.VariantRevisionID
+	if _, err = db.Exec(`DROP TRIGGER trg_device_corpus_no_fact_update`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`PRAGMA ignore_check_constraints = ON`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE device_corpus_version_facts SET confidence_bp = 'not-an-integer'
+		WHERE variant_revision_id = ?`, revisionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = loadCorpusEvidenceBatch(context.Background(), db, []string{revisionID}); err == nil {
+		t.Fatal("corrupt version fact unexpectedly scanned")
+	}
+
+	// Open() deliberately gives SQLite one connection. If the failed fact scan
+	// retained its rows, this probe would block until the context expired.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var one int
+	if err = db.QueryRowContext(ctx, `SELECT 1`).Scan(&one); err != nil || one != 1 {
+		t.Fatalf("database connection remained pinned after scan error: one=%d err=%v", one, err)
 	}
 }
 

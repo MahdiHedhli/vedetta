@@ -1275,3 +1275,150 @@ func TestMigration004UpgradesExistingFeedDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMigration005UpgradesExistingCorpusDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "corpus-upgrade.db")
+	raw, err := sql.Open("sqlite3", path+"?_foreign_keys=on")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = raw.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"001_init.sql", "002_receipts_per_reporter.sql", "003_signals_first_received.sql", "004_device_corpus.sql",
+	} {
+		body, readErr := migrationsFS.ReadFile("migrations/" + name)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, err = raw.Exec(string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		version := int(name[2] - '0')
+		if _, err = raw.Exec(`INSERT INTO schema_migrations(version, applied_at)
+			VALUES (?, '2026-01-01T00:00:00Z')`, version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var indexes int
+	if err = raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_device_corpus_version_facts_source'`).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+	if indexes != 0 {
+		t.Fatal("migration-004 fixture unexpectedly contains migration-005 index")
+	}
+	const createdAt = "2026-01-01T00:00:00Z"
+	if _, err = raw.Exec(`
+		INSERT INTO device_corpus_profiles (profile_id, created_at) VALUES ('upgrade-profile', ?);
+		INSERT INTO device_corpus_profile_revisions
+			(profile_revision_id, profile_id, revision, label_key, manufacturer, model,
+			 product_family, device_type, os_family, status, created_at)
+		VALUES ('upgrade-profile-revision', 'upgrade-profile', 1, ?, 'Example Devices',
+			'Upgrade Camera', '', 'camera', 'embedded', 'draft', ?);
+		INSERT INTO device_corpus_shapes
+			(shape_hash, schema_version, canonical_json, signal_family_count, created_at)
+		VALUES (?, 1, '{"schema_version":1,"mdns_models":["Upgrade Camera"]}', 1, ?);
+		INSERT INTO device_corpus_variants
+			(variant_id, profile_id, variant_key, created_at)
+		VALUES ('upgrade-variant', 'upgrade-profile', 'firmware-1', ?);
+		INSERT INTO device_corpus_variant_revisions
+			(variant_revision_id, variant_id, revision, shape_hash, confidence_bp, status, created_at)
+		VALUES ('upgrade-variant-revision', 'upgrade-variant', 1, ?, 9000, 'draft', ?);
+		INSERT INTO device_corpus_sources
+			(source_id, variant_revision_id, kind, title, public_url, license_code, created_at)
+		VALUES ('upgrade-source', 'upgrade-variant-revision', 'vendor_doc', 'Upgrade Support',
+			'https://docs.example.com/upgrade-camera', '', ?);
+		INSERT INTO device_corpus_version_facts
+			(fact_id, variant_revision_id, attribute, relation, value, value_end,
+			 confidence_bp, source_id, created_at)
+		VALUES ('upgrade-fact', 'upgrade-variant-revision', 'firmware_version', 'exact',
+			'1.0.0', '', 9000, 'upgrade-source', ?);`,
+		createdAt, strings.Repeat("0", 64), createdAt, strings.Repeat("a", 64), createdAt,
+		createdAt, strings.Repeat("a", 64), createdAt, createdAt, createdAt); err != nil {
+		t.Fatalf("seed migration-004 corpus: %v", err)
+	}
+	if err = raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var name string
+	if err = db.QueryRow(`SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_device_corpus_version_facts_source'`).Scan(&name); err != nil {
+		t.Fatalf("migration 005 did not create source index: %v", err)
+	}
+	if name != "idx_device_corpus_version_facts_source" {
+		t.Fatalf("unexpected migration-005 index name: %q", name)
+	}
+	var applied int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = 5`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("migration 005 application count = %d, want 1", applied)
+	}
+	var factID, sourceID string
+	if err = db.QueryRow(`SELECT fact.fact_id, source.source_id
+		FROM device_corpus_version_facts fact
+		JOIN device_corpus_sources source ON source.source_id = fact.source_id
+		WHERE fact.fact_id = 'upgrade-fact'`).Scan(&factID, &sourceID); err != nil {
+		t.Fatalf("migration 005 lost existing fact/source relation: %v", err)
+	}
+	if factID != "upgrade-fact" || sourceID != "upgrade-source" {
+		t.Fatalf("unexpected retained fact/source = %q/%q", factID, sourceID)
+	}
+	indexRows, err := db.Query(`PRAGMA index_info('idx_device_corpus_version_facts_source')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var columns []string
+	for indexRows.Next() {
+		var sequence, columnID int
+		var column string
+		if err = indexRows.Scan(&sequence, &columnID, &column); err != nil {
+			indexRows.Close()
+			t.Fatal(err)
+		}
+		columns = append(columns, column)
+	}
+	if err = indexRows.Err(); err != nil {
+		indexRows.Close()
+		t.Fatal(err)
+	}
+	if err = indexRows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(columns) != 1 || columns[0] != "source_id" {
+		t.Fatalf("migration-005 index columns = %v, want [source_id]", columns)
+	}
+	foreignKeys, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeys.Next() {
+		foreignKeys.Close()
+		t.Fatal("foreign_key_check reported a violation after migration 005")
+	}
+	if err = foreignKeys.Err(); err != nil {
+		foreignKeys.Close()
+		t.Fatal(err)
+	}
+	if err = foreignKeys.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.migrate(); err != nil {
+		t.Fatalf("migration 005 was not idempotent: %v", err)
+	}
+	if err = db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = 5`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("idempotent migration-005 application count = %d, want 1", applied)
+	}
+}

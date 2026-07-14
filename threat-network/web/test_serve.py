@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import contextlib
+import http.client
 import io
 import json
 import os
@@ -78,6 +79,41 @@ class RaisingOpener:
 
     def open(self, *_args, **_kwargs):
         raise self.error
+
+
+class ReturningOpener:
+    def __init__(self, response):
+        self.response = response
+
+    def open(self, *_args, **_kwargs):
+        return self.response
+
+
+class StaticResponse(io.BytesIO):
+    def __init__(self, body, status=200, headers=None):
+        super().__init__(body)
+        self.status = status
+        self.headers = headers or {"Content-Type": "application/json"}
+
+
+class ReadErrorResponse:
+    def __init__(self, error):
+        self.error = error
+        self.status = 200
+        self.headers = {"Content-Type": "application/json"}
+        self.closed = False
+
+    def read(self, _limit):
+        raise self.error
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
 
 
 class ProxyTests(unittest.TestCase):
@@ -365,6 +401,82 @@ class ProxyTests(unittest.TestCase):
             self.upstream.calls[0]["authorization"], "Bearer " + "a" * 32
         )
         self.assertEqual(self.upstream.calls[0]["path"], "/api/v1/admin/device-corpus/audit")
+
+    def test_upstream_socket_errors_fail_closed(self):
+        for error in (ConnectionResetError("reset"), BrokenPipeError("closed")):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(serve, "UPSTREAM_OPENER", RaisingOpener(error)):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        self.open("/api/v1/status")
+                    self.assertEqual(caught.exception.code, 502)
+                    self.assertEqual(
+                        json.loads(caught.exception.read()),
+                        {
+                            "error": "UPSTREAM_UNAVAILABLE",
+                            "message": "upstream service unavailable",
+                        },
+                    )
+                    caught.exception.close()
+
+    def test_upstream_read_errors_fail_closed_and_close_response(self):
+        errors = (
+            ConnectionResetError("reset while reading"),
+            http.client.IncompleteRead(b"partial", 10),
+        )
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                response = ReadErrorResponse(error)
+                with mock.patch.object(
+                    serve, "UPSTREAM_OPENER", ReturningOpener(response)
+                ):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        self.open("/api/v1/status")
+                    self.assertEqual(caught.exception.code, 502)
+                    self.assertEqual(
+                        json.loads(caught.exception.read())["error"],
+                        "UPSTREAM_UNAVAILABLE",
+                    )
+                    caught.exception.close()
+                self.assertTrue(response.closed)
+
+    def test_http_error_body_socket_failure_is_closed_and_fail_closed(self):
+        body = ReadErrorResponse(ConnectionResetError("reset while reading error body"))
+        error = urllib.error.HTTPError(
+            "http://127.0.0.1/status",
+            503,
+            "Service Unavailable",
+            {"Content-Type": "application/json"},
+            body,
+        )
+        with mock.patch.object(serve, "UPSTREAM_OPENER", RaisingOpener(error)):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.open("/api/v1/status")
+            self.assertEqual(caught.exception.code, 502)
+            self.assertEqual(
+                json.loads(caught.exception.read())["error"],
+                "UPSTREAM_UNAVAILABLE",
+            )
+            caught.exception.close()
+        self.assertTrue(body.closed)
+
+    def test_oversized_success_response_is_closed_and_classified(self):
+        response = StaticResponse(b"x" * 9)
+        with (
+            mock.patch.object(serve, "UPSTREAM_OPENER", ReturningOpener(response)),
+            mock.patch.object(serve, "MAX_RESPONSE_BYTES", 8),
+        ):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.open("/api/v1/status")
+            self.assertEqual(caught.exception.code, 502)
+            self.assertEqual(
+                json.loads(caught.exception.read()),
+                {
+                    "error": "UPSTREAM_TOO_LARGE",
+                    "message": "upstream response exceeded limit",
+                },
+            )
+            caught.exception.close()
+        self.assertTrue(response.closed)
 
     def test_upstream_http_error_body_is_closed_after_forwarding(self):
         body = io.BytesIO(b'{"error":"rate limited"}')

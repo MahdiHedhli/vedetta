@@ -247,69 +247,76 @@ func loadCorpusEvidenceBatch(ctx context.Context, q corpusQuerier, revisionIDs [
 			args[i] = batch[i]
 		}
 
-		sourceRows, err := q.QueryContext(ctx, `SELECT variant_revision_id, source_id, kind, title, public_url,
-			COALESCE(retrieved_at, ''), license_code FROM device_corpus_sources
-			WHERE variant_revision_id IN (`+placeholders+`)
-			ORDER BY variant_revision_id, kind, title, source_id`, args...)
-		if err != nil {
+		if err := loadCorpusSourceEvidenceBatch(ctx, q, placeholders, args, result); err != nil {
 			return nil, err
 		}
-		for sourceRows.Next() {
-			var revisionID string
-			var source corpus.Source
-			if err = sourceRows.Scan(&revisionID, &source.SourceID, &source.Kind, &source.Title,
-				&source.PublicURL, &source.RetrievedAt, &source.LicenseCode); err != nil {
-				sourceRows.Close()
-				return nil, err
-			}
-			loaded, requested := result[revisionID]
-			if !requested {
-				sourceRows.Close()
-				return nil, fmt.Errorf("source references an unrequested corpus revision")
-			}
-			loaded.Sources = append(loaded.Sources, source)
-			result[revisionID] = loaded
-		}
-		if err = sourceRows.Err(); err != nil {
-			sourceRows.Close()
-			return nil, err
-		}
-		if err = sourceRows.Close(); err != nil {
-			return nil, err
-		}
-
-		factRows, err := q.QueryContext(ctx, `SELECT variant_revision_id, fact_id, attribute, relation,
-			value, value_end, confidence_bp, COALESCE(source_id, '')
-			FROM device_corpus_version_facts WHERE variant_revision_id IN (`+placeholders+`)
-			ORDER BY variant_revision_id, attribute, value, fact_id`, args...)
-		if err != nil {
-			return nil, err
-		}
-		for factRows.Next() {
-			var revisionID string
-			var fact corpus.VersionFact
-			if err = factRows.Scan(&revisionID, &fact.FactID, &fact.Attribute, &fact.Relation,
-				&fact.Value, &fact.ValueEnd, &fact.ConfidenceBP, &fact.SourceID); err != nil {
-				factRows.Close()
-				return nil, err
-			}
-			loaded, requested := result[revisionID]
-			if !requested {
-				factRows.Close()
-				return nil, fmt.Errorf("version fact references an unrequested corpus revision")
-			}
-			loaded.VersionFacts = append(loaded.VersionFacts, fact)
-			result[revisionID] = loaded
-		}
-		if err = factRows.Err(); err != nil {
-			factRows.Close()
-			return nil, err
-		}
-		if err = factRows.Close(); err != nil {
+		if err := loadCorpusVersionFactEvidenceBatch(ctx, q, placeholders, args, result); err != nil {
 			return nil, err
 		}
 	}
 	return result, nil
+}
+
+func loadCorpusSourceEvidenceBatch(ctx context.Context, q corpusQuerier, placeholders string,
+	args []any, result map[string]corpusRevisionEvidence) (err error) {
+	rows, err := q.QueryContext(ctx, `SELECT variant_revision_id, source_id, kind, title, public_url,
+		COALESCE(retrieved_at, ''), license_code FROM device_corpus_sources
+		WHERE variant_revision_id IN (`+placeholders+`)
+		ORDER BY variant_revision_id, kind, title, source_id`, args...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := rows.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	for rows.Next() {
+		var revisionID string
+		var source corpus.Source
+		if err = rows.Scan(&revisionID, &source.SourceID, &source.Kind, &source.Title,
+			&source.PublicURL, &source.RetrievedAt, &source.LicenseCode); err != nil {
+			return err
+		}
+		loaded, requested := result[revisionID]
+		if !requested {
+			return fmt.Errorf("source references an unrequested corpus revision")
+		}
+		loaded.Sources = append(loaded.Sources, source)
+		result[revisionID] = loaded
+	}
+	return rows.Err()
+}
+
+func loadCorpusVersionFactEvidenceBatch(ctx context.Context, q corpusQuerier, placeholders string,
+	args []any, result map[string]corpusRevisionEvidence) (err error) {
+	rows, err := q.QueryContext(ctx, `SELECT variant_revision_id, fact_id, attribute, relation,
+		value, value_end, confidence_bp, COALESCE(source_id, '')
+		FROM device_corpus_version_facts WHERE variant_revision_id IN (`+placeholders+`)
+		ORDER BY variant_revision_id, attribute, value, fact_id`, args...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := rows.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	for rows.Next() {
+		var revisionID string
+		var fact corpus.VersionFact
+		if err = rows.Scan(&revisionID, &fact.FactID, &fact.Attribute, &fact.Relation,
+			&fact.Value, &fact.ValueEnd, &fact.ConfidenceBP, &fact.SourceID); err != nil {
+			return err
+		}
+		loaded, requested := result[revisionID]
+		if !requested {
+			return fmt.Errorf("version fact references an unrequested corpus revision")
+		}
+		loaded.VersionFacts = append(loaded.VersionFacts, fact)
+		result[revisionID] = loaded
+	}
+	return rows.Err()
 }
 
 func corpusProfileETag(ctx context.Context, q corpusQuerier, profileID string) (string, error) {
