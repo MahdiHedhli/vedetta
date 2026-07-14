@@ -235,6 +235,60 @@ func TestQueryEvents_SortOrder(t *testing.T) {
 	}
 }
 
+func TestEventOrderClauseAllowlist(t *testing.T) {
+	tests := []struct {
+		sort  string
+		order string
+		want  string
+	}{
+		{"timestamp", "asc", "e.timestamp ASC, e.event_id ASC"},
+		{"event_type", "desc", "e.event_type DESC, e.event_id DESC"},
+		{"anomaly_score", "asc", "e.anomaly_score ASC, e.event_id ASC"},
+		{"source_hash", "desc", "e.source_hash DESC, e.event_id DESC"},
+		{"domain", "asc", "e.domain ASC, e.event_id ASC"},
+		{"timestamp; DROP TABLE events;--", "asc", "e.timestamp ASC, e.event_id ASC"},
+		{"domain", "asc; DROP TABLE events;--", "e.domain DESC, e.event_id DESC"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sort+"/"+tt.order, func(t *testing.T) {
+			if got := eventOrderClause(tt.sort, tt.order); got != tt.want {
+				t.Fatalf("eventOrderClause(%q, %q) = %q, want %q", tt.sort, tt.order, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQueryEvents_RejectsSortAndOrderInjection(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	if _, err := db.InsertEvents([]models.Event{
+		{EventID: "safe-old", Timestamp: now.Add(-time.Hour), EventType: "dns_query", SourceHash: "h"},
+		{EventID: "safe-new", Timestamp: now, EventType: "dns_query", SourceHash: "h"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := db.QueryEvents(EventQueryParams{
+		Sort:  "timestamp DESC; DROP TABLE events;--",
+		Order: "asc; DROP TABLE events;--",
+	})
+	if err != nil {
+		t.Fatalf("malicious sort controls must fall back safely: %v", err)
+	}
+	if len(result.Events) != 2 || result.Events[0].EventID != "safe-new" {
+		t.Fatalf("invalid sort controls must use timestamp descending: %+v", result.Events)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
+		t.Fatalf("events table must remain queryable: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("events table changed after malicious sort controls: got %d rows", count)
+	}
+}
+
 func TestQueryEvents_LimitCap(t *testing.T) {
 	db := testDB(t)
 
