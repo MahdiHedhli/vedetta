@@ -94,6 +94,29 @@ export default function App() {
     try { localStorage.setItem('vedetta_telemetry_notice_ack', '1'); } catch {}
     setShowTelemetryNotice(false);
   };
+  const telemetryModalRef = useRef(null);
+  // While the blocking telemetry modal is open, move focus into it and trap Tab /
+  // Shift+Tab so keyboard and assistive-tech users can't reach the dashboard behind it
+  // before acknowledging. The listener is on document (capture) so focus can't escape.
+  useEffect(() => {
+    if (!showTelemetryNotice) return;
+    const node = telemetryModalRef.current;
+    if (!node) return;
+    const focusable = () => Array.from(node.querySelectorAll('a[href], button:not([disabled])'));
+    const initial = focusable();
+    (initial[initial.length - 1] || node).focus(); // land on ACKNOWLEDGED
+    const onKeyDown = (e) => {
+      if (e.key !== 'Tab') return;
+      const f = focusable();
+      if (f.length === 0) { e.preventDefault(); return; }
+      const first = f[0], last = f[f.length - 1], active = document.activeElement;
+      if (!node.contains(active)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
+      if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [showTelemetryNotice]);
   const [defaultCIDR, setDefaultCIDR] = useState('');
   const [threatEvents, setThreatEvents] = useState([]);
   const [threatStats, setThreatStats] = useState(null);
@@ -607,12 +630,13 @@ export default function App() {
           on the silent default. */}
       {showTelemetryNotice && (
         <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
+          ref={telemetryModalRef}
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4 overflow-y-auto"
           role="dialog"
           aria-modal="true"
           aria-labelledby="telemetry-ack-title"
         >
-          <div className="bg-gray-900 border border-amber-900/50 rounded-2xl max-w-lg w-full p-6 sm:p-8 space-y-5 shadow-2xl">
+          <div className="bg-gray-900 border border-amber-900/50 rounded-2xl max-w-lg w-full p-6 sm:p-8 space-y-5 shadow-2xl max-h-[90dvh] overflow-y-auto my-auto">
             <div className="flex items-start gap-3">
               <svg className="w-6 h-6 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -632,7 +656,7 @@ export default function App() {
               <p>
                 Prefer not to contribute? No problem. You can turn telemetry off at any time in{' '}
                 <button
-                  onClick={() => { acknowledgeTelemetry(); setView('settings'); }}
+                  onClick={() => { acknowledgeTelemetry(); if (canAdmin) { setView('settings'); } else { setShowTokenPrompt(true); } }}
                   className="text-amber-300 underline hover:text-amber-200"
                 >
                   Settings
@@ -646,7 +670,7 @@ export default function App() {
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-1">
               <div className="text-xs text-gray-500">
                 <button
-                  onClick={() => { acknowledgeTelemetry(); setView('settings'); }}
+                  onClick={() => { acknowledgeTelemetry(); if (canAdmin) { setView('settings'); } else { setShowTokenPrompt(true); } }}
                   className="underline hover:text-gray-300"
                 >
                   Manage in Settings
