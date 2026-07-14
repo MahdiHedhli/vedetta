@@ -315,6 +315,13 @@ else
 fi
 
 PROJECT="$(detect_project)"
+# Pin EVERY subsequent compose command to this project. Without the export, a
+# target ref that sets a top-level `name:` in docker-compose.yml would flip
+# the project mid-run after checkout — compose would then boot a fresh, EMPTY
+# vedetta-data under the new project name, pass health and integrity checks,
+# and report success while the real data sat stranded in the old project.
+# COMPOSE_PROJECT_NAME takes precedence over the file's `name:` key.
+export COMPOSE_PROJECT_NAME="$PROJECT"
 VOL_DATA="$(resolve_volume vedetta-data || true)"
 if [ -z "$VOL_DATA" ]; then
   err "Could not resolve the vedetta-data volume for Compose project '${PROJECT}'"
@@ -708,7 +715,10 @@ if [ "$WARM" = "1" ]; then
   # the backend could crash between the health probe and this copy, and an
   # empty id would make `docker cp` fail with a confusing usage error.
   backend_cid="$(docker compose ps -q backend | head -n1)"
-  [ -n "$backend_cid" ] || fail "backend container disappeared before the snapshot could be copied out"
+  if [ -z "$backend_cid" ]; then
+    remove_temp_backup || true   # don't leave a full DB copy in the live volume
+    fail "backend container disappeared before the snapshot could be copied out"
+  fi
   if ! docker cp "${backend_cid}:/data/pre-${TS}.db" "$SNAP_ARTIFACT"; then
     remove_temp_backup || true
     fail "copying the snapshot out of the container failed"
