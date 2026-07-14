@@ -34,7 +34,10 @@ func Open(dbPath string) (*DB, error) {
 	if dbPath == "" {
 		dbPath = ":memory:"
 	}
-	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on"
+	// Recursive triggers make SQLite's implicit DELETE for INSERT OR REPLACE
+	// honor the corpus append-only guards. Without this connection setting a
+	// replacement can tunnel around every BEFORE DELETE integrity trigger.
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on&_recursive_triggers=on"
 	sqldb, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
