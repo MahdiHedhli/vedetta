@@ -227,16 +227,20 @@ CA bundle from the command line; trust is managed at the OS level.
 
 ## 7. Verify it (smoke test)
 
-Before trusting a deployment, confirm end-to-end. `scripts/proxy-smoke.sh` (or by
-hand) should check:
+Before trusting a deployment, confirm these checks end-to-end:
 
 1. `https://vedetta.example.com` loads the dashboard (TLS valid).
 2. An authenticated `GET /api/v1/status` through the proxy returns 200 **with** a
    bearer token and 401 **without** one (bearer preserved through the proxy).
 3. An authenticated write (e.g. create a read token) succeeds through the proxy.
 4. A sensor registers through the proxy endpoint over HTTPS.
-5. **No direct plaintext Core port is reachable** from the LAN — e.g.
-   `curl http://<host>:8080/api/v1/status` from another machine must fail/refuse.
+5. **No direct plaintext Core port is reachable** from the LAN:
+   - With the default Compose mapping, obtain the actual host port on the Docker
+     host with `./scripts/resolve-host-port.sh VEDETTA_BACKEND_PORT 8080`. From a
+     different LAN machine, `curl http://<host>:<resolved-port>/api/v1/status`
+     must fail or be refused.
+   - With the §4 override, `docker compose port backend 8080` on the Docker host
+     must print no mapping; Core is intentionally unpublished in that topology.
 
 ---
 
