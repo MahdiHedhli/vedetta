@@ -283,6 +283,43 @@ assert_eq "${race_final_code}" "${race_printed_code}" "winning setup code matche
 assert_true "concurrent loser reports create-if-absent refusal" grep -q \
   'created by another setup process.*refusing to overwrite' "${race_loser_err}"
 
+# A plain `ln source destination` follows a destination symlink to a directory
+# and reports success after putting the secret inside it. Race that path into
+# existence after gen-env's initial check and prove the strict link(2) wrapper
+# rejects it without leaving a credential link behind.
+SYMLINK_RACE_BIN="${TMP_DIR}/symlink-race-bin"
+SYMLINK_RACE_STATE="${TMP_DIR}/symlink-race-state"
+SYMLINK_RACE_TARGET="${TMP_DIR}/symlink-race-target"
+SYMLINK_RACE_ENV="${TMP_DIR}/symlink-race.env"
+mkdir "${SYMLINK_RACE_BIN}" "${SYMLINK_RACE_STATE}" "${SYMLINK_RACE_TARGET}"
+cat >"${SYMLINK_RACE_BIN}/openssl" <<'EOF'
+#!/bin/sh
+: >"${SYMLINK_RACE_STATE}/ready"
+while [ ! -e "${SYMLINK_RACE_STATE}/release" ]; do
+  sleep 0.01
+done
+exec "${REAL_OPENSSL}" "$@"
+EOF
+chmod +x "${SYMLINK_RACE_BIN}/openssl"
+
+SYMLINK_RACE_STATE="${SYMLINK_RACE_STATE}" REAL_OPENSSL="${REAL_OPENSSL}" \
+  PATH="${SYMLINK_RACE_BIN}:${PATH}" VEDETTA_SKIP_PORT_PROBE=1 ENV_FILE="${SYMLINK_RACE_ENV}" \
+  "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/symlink-race.out" 2>"${TMP_DIR}/symlink-race.err" &
+symlink_race_pid=$!
+while [ ! -e "${SYMLINK_RACE_STATE}/ready" ]; do
+  sleep 0.01
+done
+ln -s "${SYMLINK_RACE_TARGET}" "${SYMLINK_RACE_ENV}"
+: >"${SYMLINK_RACE_STATE}/release"
+symlink_race_status=0
+wait "${symlink_race_pid}" || symlink_race_status=$?
+
+assert_eq 1 "${symlink_race_status}" "raced symlink destination is rejected"
+assert_true "raced destination symlink remains unchanged" test -L "${SYMLINK_RACE_ENV}"
+assert_false "raced symlink target receives no credential link" sh -c \
+  'find "$1" -mindepth 1 -maxdepth 1 -print -quit | grep -q .' sh "${SYMLINK_RACE_TARGET}"
+assert_false "raced symlink install reports no success" grep -q '^Wrote ' "${TMP_DIR}/symlink-race.out"
+
 assert_true "update-all checks the local Core after rebuild" grep -Fq \
   'curl -sf "${LOCAL_CORE_URL}/healthz"' "${REPO_ROOT}/scripts/update-all.sh"
 assert_true "update-all preserves the remote sensor Core override" grep -Fq \

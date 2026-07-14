@@ -53,6 +53,10 @@ if ! command -v openssl >/dev/null 2>&1; then
   echo "error: openssl is required to generate secrets but was not found in PATH" >&2
   exit 1
 fi
+if ! command -v link >/dev/null 2>&1; then
+  echo "error: the link utility is required for atomic credential installation but was not found in PATH" >&2
+  exit 1
+fi
 
 # Generate two DISTINCT ingest/read secrets. They are matched by scope on the
 # Core side, and setting them equal collapses to a single scope (the other
@@ -231,12 +235,14 @@ set_var "VEDETTA_FRONTEND_PORT" "${FRONTEND_PORT}" "${TMP_FILE}"
 set_var "VEDETTA_COLLECTOR_PORT" "${COLLECTOR_PORT}" "${TMP_FILE}"
 
 # Install with create-if-absent semantics. TMP_FILE is in ENV_FILE's directory,
-# so a hard link is a same-filesystem atomic operation: concurrent setup runs
-# cannot both succeed, and an existing path (including a symlink) is never
-# replaced. The inode is already mode 0600 before its public name appears.
+# so link(2) is a same-filesystem atomic operation: concurrent setup runs cannot
+# both succeed, and an existing path (including a directory or symlink) is never
+# replaced. The strict two-operand link utility does not have ln's
+# target-directory behavior. The inode is mode 0600 before its public name
+# appears.
 chmod 600 "${TMP_FILE}"
 INSTALL_ERROR=""
-if ! INSTALL_ERROR="$(ln "${TMP_FILE}" "${ENV_FILE}" 2>&1)"; then
+if ! INSTALL_ERROR="$(link "${TMP_FILE}" "${ENV_FILE}" 2>&1)"; then
   if [[ -e "${ENV_FILE}" || -L "${ENV_FILE}" ]]; then
     echo "error: ${ENV_FILE} was created by another setup process — refusing to overwrite." >&2
     echo "       Use the credentials printed by the successful process." >&2
