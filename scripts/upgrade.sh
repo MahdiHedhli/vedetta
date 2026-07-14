@@ -246,6 +246,8 @@ wait_health() {
 # ─── Preflight (nothing changed yet — plain exits, no rollback) ───────────────
 command -v docker >/dev/null 2>&1 || { err "docker not found on PATH."; exit 2; }
 command -v curl   >/dev/null 2>&1 || { err "curl not found on PATH."; exit 2; }
+# type -P: find the git BINARY — command -v would match our git() sudo wrapper.
+type -P git       >/dev/null 2>&1 || { err "git not found on PATH."; exit 2; }
 docker compose version >/dev/null 2>&1 || { err "docker compose v2 is required."; exit 2; }
 git rev-parse --git-dir >/dev/null 2>&1 || { err "not a git repository: $PROJECT_DIR"; exit 2; }
 
@@ -315,9 +317,12 @@ BACKUP_ROOT="${VEDETTA_BACKUP_DIR:-$(dirname "$PROJECT_DIR")/vedetta-backups}"
 # `git checkout <older-ref>` swaps .dockerignore away and the next build
 # would ship the snapshot's secrets into the BuildKit cache.
 mkdir -p "$BACKUP_ROOT" || { err "cannot create backup directory: ${BACKUP_ROOT}"; exit 2; }
-BACKUP_ROOT="$(cd "$BACKUP_ROOT" && pwd)"
+# pwd -P on BOTH sides: compare PHYSICAL paths — a symlinked backup dir that
+# points into the repo would pass a logical-path comparison.
+BACKUP_ROOT="$(cd "$BACKUP_ROOT" && pwd -P)"
+PROJECT_DIR_PHYS="$(cd "$PROJECT_DIR" && pwd -P)"
 case "${BACKUP_ROOT}/" in
-  "${PROJECT_DIR}/"*)
+  "${PROJECT_DIR_PHYS}/"*)
     err "VEDETTA_BACKUP_DIR resolves inside the repository (${BACKUP_ROOT})."
     err "Snapshots hold your DB and API tokens; inside the repo they can enter"
     err "Docker build contexts after a checkout to a ref whose .dockerignore"
