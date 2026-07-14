@@ -989,7 +989,7 @@ echo ""
 # the compose start_period; /readyz 503s until Core is genuinely ready.)
 echo "▸ Waiting for backend to become ready (/readyz)..."
 for i in $(seq 1 60); do
-    if curl -sf "${LOCAL_CORE_URL}/readyz" > /dev/null 2>&1; then
+    if curl -sf --connect-timeout 1 --max-time 5 "${LOCAL_CORE_URL}/readyz" > /dev/null 2>&1; then
         echo "  Backend ready."
         # Verify new routes are present
         ROUTE_CHECK=$(curl -sf "${LOCAL_CORE_URL}/api/v1/version" 2>/dev/null)

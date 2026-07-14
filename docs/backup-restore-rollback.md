@@ -113,7 +113,7 @@ VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}'
 # Poll readiness — /readyz answers 200 only once migrations applied + DB intact
 # (503 otherwise); a single-shot curl right after `up -d` races cold startup.
 for i in $(seq 1 60); do
-  curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz" && break
+  curl -fsS --connect-timeout 1 --max-time 5 "http://localhost:${VED_BACKEND_PORT}/readyz" && break
   [ "$i" -eq 60 ] && { echo "backend never became ready — check docker logs vedetta-backend"; exit 1; }
   sleep 1
 done
@@ -189,7 +189,7 @@ VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}'
 # Poll readiness — /readyz answers 200 only once migrations applied + DB intact
 # (503 otherwise); a single-shot curl right after `up -d` races cold startup.
 for i in $(seq 1 60); do
-  curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz" && break
+  curl -fsS --connect-timeout 1 --max-time 5 "http://localhost:${VED_BACKEND_PORT}/readyz" && break
   [ "$i" -eq 60 ] && { echo "backend never became ready — check docker logs vedetta-backend"; exit 1; }
   sleep 1
 done
@@ -227,7 +227,7 @@ VED_BACKEND_PORT="$(docker compose port backend 8080 | awk -F: 'END {print $NF}'
 # Poll readiness — /readyz answers 200 only once migrations applied + DB intact
 # (503 otherwise); a single-shot curl right after `up -d` races cold startup.
 for i in $(seq 1 60); do
-  curl -fsS "http://localhost:${VED_BACKEND_PORT}/readyz" && break
+  curl -fsS --connect-timeout 1 --max-time 5 "http://localhost:${VED_BACKEND_PORT}/readyz" && break
   [ "$i" -eq 60 ] && { echo "backend never became ready — check docker logs vedetta-backend"; exit 1; }
   sleep 1
 done

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -50,11 +51,17 @@ type ReadinessMonitor struct {
 	// arrive before then wait on it (bounded by the probe context) instead of ever
 	// reporting ready ahead of the initial integrity scan — see deepStatus.
 	firstDone chan struct{}
+
+	// deepCheck is runDeepCheck in production; a test seam for exercising
+	// refreshDeep's panic recovery without a corrupt driver.
+	deepCheck func(context.Context) deepCheckResult
 }
 
 // NewReadinessMonitor builds a readiness monitor over the given store.
 func NewReadinessMonitor(db *store.DB) *ReadinessMonitor {
-	return &ReadinessMonitor{db: db, firstDone: make(chan struct{})}
+	m := &ReadinessMonitor{db: db, firstDone: make(chan struct{})}
+	m.deepCheck = m.runDeepCheck
+	return m
 }
 
 // handleReadyz is the HTTP handler for GET /readyz. It returns 200 only when every
@@ -146,23 +153,37 @@ func (m *ReadinessMonitor) deepStatus(ctx context.Context) deepCheckResult {
 // refreshing flag on exit so a later staleness can trigger another refresh, and closes
 // firstDone after the first result so startup probes waiting in deepStatus unblock.
 func (m *ReadinessMonitor) refreshDeep() {
+	// This goroutine is detached from any request, so middleware.Recoverer cannot
+	// catch a panic here — unrecovered it would kill the whole process, and even a
+	// caught-too-late one would strand refreshing=true (no refresh could ever run
+	// again) and leave firstDone unclosed (startup probes timing out forever). Since
+	// this path exists precisely to inspect potentially-corrupt DB state, convert a
+	// panic into a concrete NOT-ready result instead.
+	res := deepCheckResult{reason: "deep check did not complete"}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("readiness deep check panicked: %v", rec)
+			res = deepCheckResult{healthy: false, reason: fmt.Sprintf("deep check panicked: %v", rec)}
+		}
+		res.at = time.Now().UTC()
+
+		m.mu.Lock()
+		first := m.deep.at.IsZero()
+		m.deep = res
+		m.refreshing = false
+		m.mu.Unlock()
+
+		// Only one refresh runs at a time (refreshing flag), and `first` is true
+		// exactly once because every stored result carries a non-zero at — no double
+		// close.
+		if first && m.firstDone != nil {
+			close(m.firstDone)
+		}
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), deepCheckMaxDuration)
 	defer cancel()
-
-	res := m.runDeepCheck(ctx)
-	res.at = time.Now().UTC()
-
-	m.mu.Lock()
-	first := m.deep.at.IsZero()
-	m.deep = res
-	m.refreshing = false
-	m.mu.Unlock()
-
-	// Only one refresh runs at a time (refreshing flag), and `first` is true exactly
-	// once because every stored result carries a non-zero at — so no double close.
-	if first && m.firstDone != nil {
-		close(m.firstDone)
-	}
+	res = m.deepCheck(ctx)
 }
 
 // runDeepCheck performs the referential-integrity (foreign_key_check) and structural

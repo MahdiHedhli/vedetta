@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,6 +211,48 @@ func TestReadyz_InitialDeepCheckPendingReturns503(t *testing.T) {
 	}
 	if body["reason"] != "initial integrity check still running" {
 		t.Errorf("reason = %v, want pending-scan reason", body["reason"])
+	}
+}
+
+// TestRefreshDeep_RecoversPanic verifies that a panic inside the detached deep-check
+// goroutine neither crashes the process nor wedges the monitor: it must store a
+// concrete NOT-ready result, clear refreshing, and close firstDone so startup probes
+// unblock with a real status instead of timing out forever.
+func TestRefreshDeep_RecoversPanic(t *testing.T) {
+	db := readyTestDB(t)
+	m := NewReadinessMonitor(db)
+	// A real corrupt driver errors rather than panics, so inject the panic through
+	// the deepCheck seam and run refreshDeep exactly as the trigger would.
+	m.deepCheck = func(context.Context) deepCheckResult { panic("synthetic corruption panic") }
+	m.refreshing = true
+
+	func() {
+		defer func() {
+			// refreshDeep's own recover must consume the panic before this fires.
+			if rec := recover(); rec != nil {
+				t.Fatalf("panic escaped refreshDeep: %v", rec)
+			}
+		}()
+		m.refreshDeep()
+	}()
+
+	m.mu.Lock()
+	res, refreshing := m.deep, m.refreshing
+	m.mu.Unlock()
+	if refreshing {
+		t.Error("refreshing still true after panic — monitor wedged")
+	}
+	if res.at.IsZero() || res.healthy {
+		t.Errorf("panic result = %+v, want stored NOT-ready result", res)
+	}
+	if !strings.Contains(res.reason, "panicked") {
+		t.Errorf("reason = %q, want panic reason", res.reason)
+	}
+	select {
+	case <-m.firstDone:
+		// unblocked — good
+	default:
+		t.Error("firstDone not closed after first (panicking) refresh — startup probes would wait forever")
 	}
 }
 
