@@ -57,7 +57,7 @@ func main() {
 	var realDevices []realDevice
 	if *realContext {
 		realDevices = loadRealDevices(db)
-		fmt.Printf("  real-context: loaded %d devices from baseline for authentic vendor/segment context\n", len(realDevices))
+		fmt.Printf("  real-context: loaded %d devices from the current local inventory for authentic vendor/segment context\n", len(realDevices))
 	}
 
 	now := time.Now().UTC()
@@ -111,16 +111,23 @@ func main() {
 			}
 			payloads = append(payloads, p)
 		}
-		body, _ := json.Marshal(payloads)
+		body, err := json.Marshal(payloads)
+		if err != nil {
+			log.Fatalf("encode enrich payload: %v", err)
+		}
 		resp, err := http.Post(ingestURL, "application/json", bytes.NewReader(body))
 		if err != nil {
-			log.Printf("enrich POST error: %v", err)
-		} else {
-			defer resp.Body.Close()
-			var result map[string]any
-			json.NewDecoder(resp.Body).Decode(&result)
-			log.Printf("Enriched via pipeline: %v", result)
+			log.Fatalf("enrich POST error: %v", err)
 		}
+		defer resp.Body.Close()
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			log.Fatalf("enrich POST returned %s", resp.Status)
+		}
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			log.Fatalf("decode enrich response: %v", err)
+		}
+		log.Printf("Enriched via pipeline: %v", result)
 		fmt.Printf("Sent %d synthetic events through Enricher with current-inventory context.\n", len(eventsToPersist))
 	} else {
 		// Legacy direct insert path (for existing targets that expect pre-scored or 0-score test data)
