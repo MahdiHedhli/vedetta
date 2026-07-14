@@ -43,7 +43,19 @@ func parseOptionalCorpusTime(value sql.NullString) (*time.Time, error) {
 }
 
 func (db *DB) GetCorpusProfile(ctx context.Context, profileID string) (*corpus.Profile, error) {
-	return getCorpusProfile(ctx, db, profileID)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	profile, err := getCorpusProfile(ctx, tx, profileID)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return profile, nil
 }
 
 func getCorpusProfile(ctx context.Context, q corpusQuerier, profileID string) (*corpus.Profile, error) {
@@ -321,33 +333,33 @@ func loadCorpusVersionFactEvidenceBatch(ctx context.Context, q corpusQuerier, pl
 
 func corpusProfileETag(ctx context.Context, q corpusQuerier, profileID string) (string, error) {
 	parts := []string{"profile:" + profileID}
-	rows, err := q.QueryContext(ctx, `SELECT profile_revision_id, status FROM device_corpus_profile_revisions
+	profileRows, err := q.QueryContext(ctx, `SELECT profile_revision_id, status FROM device_corpus_profile_revisions
         WHERE profile_id = ? ORDER BY revision`, profileID)
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer profileRows.Close()
 	seen := false
-	for rows.Next() {
+	for profileRows.Next() {
 		seen = true
 		var id, status string
-		if err = rows.Scan(&id, &status); err != nil {
-			rows.Close()
+		if err = profileRows.Scan(&id, &status); err != nil {
+			profileRows.Close()
 			return "", err
 		}
 		parts = append(parts, "p:"+id+":"+status)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
+	if err = profileRows.Err(); err != nil {
+		profileRows.Close()
 		return "", err
 	}
-	if err = rows.Close(); err != nil {
+	if err = profileRows.Close(); err != nil {
 		return "", err
 	}
 	if !seen {
 		return "", ErrCorpusNotFound
 	}
-	rows, err = q.QueryContext(ctx, `SELECT v.variant_id, v.variant_key, COALESCE(v.predecessor_variant_id, ''),
+	variantRows, err := q.QueryContext(ctx, `SELECT v.variant_id, v.variant_key, COALESCE(v.predecessor_variant_id, ''),
         vr.variant_revision_id, vr.status
         FROM device_corpus_variants v
         JOIN device_corpus_variant_revisions vr ON vr.variant_id = v.variant_id
@@ -355,20 +367,20 @@ func corpusProfileETag(ctx context.Context, q corpusQuerier, profileID string) (
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
-	for rows.Next() {
+	defer variantRows.Close()
+	for variantRows.Next() {
 		var variantID, key, predecessor, revisionID, status string
-		if err = rows.Scan(&variantID, &key, &predecessor, &revisionID, &status); err != nil {
-			rows.Close()
+		if err = variantRows.Scan(&variantID, &key, &predecessor, &revisionID, &status); err != nil {
+			variantRows.Close()
 			return "", err
 		}
 		parts = append(parts, "v:"+variantID+":"+key+":"+predecessor+":"+revisionID+":"+status)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
+	if err = variantRows.Err(); err != nil {
+		variantRows.Close()
 		return "", err
 	}
-	if err = rows.Close(); err != nil {
+	if err = variantRows.Close(); err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
