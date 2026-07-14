@@ -136,8 +136,18 @@ def _load_admin_token(path: str) -> bytes | None:
         raise ValueError("MON_ADMIN_TOKEN_FILE must be a regular file, not a symlink")
     if os.name == "posix" and info.st_mode & 0o077:
         raise ValueError("MON_ADMIN_TOKEN_FILE must not be readable by group or others")
-    with open(path, "rb") as handle:
-        opened = os.fstat(handle.fileno())
+    # O_NOFOLLOW closes the lstat/open race on platforms that provide it.
+    # O_NONBLOCK also prevents a swapped FIFO/device from hanging before fstat
+    # can reject it; it has no effect on ordinary regular-file reads.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
             or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
@@ -145,7 +155,13 @@ def _load_admin_token(path: str) -> bytes | None:
             raise ValueError("MON_ADMIN_TOKEN_FILE changed while it was opened")
         if os.name == "posix" and opened.st_mode & 0o077:
             raise ValueError("MON_ADMIN_TOKEN_FILE must not be readable by group or others")
-        token = handle.read(4097).strip()
+        handle = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        with handle:
+            token = handle.read(4097).strip()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if len(token) < 32 or len(token) > 4096 or b"\x00" in token:
         raise ValueError("MON_ADMIN_TOKEN_FILE must contain a 256-bit-or-stronger token")
     try:
@@ -339,9 +355,19 @@ def _validated_query(method: str, path: str, raw_query: str) -> str:
     return urllib.parse.urlencode(tuple(ordered), doseq=False)
 
 
+def _safe_log_field(value: str, limit: int = 512) -> str:
+    """Escape terminal controls and cap attacker-controlled log fields."""
+    truncated = len(value) > limit
+    escaped = value[:limit].encode("unicode_escape").decode("ascii")
+    return escaped + ("...[truncated]" if truncated else "")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "vedetta-operations/2.0"
     sys_version = ""
+    # Pin the no-keepalive behavior this proxy relies on even if the stdlib
+    # default changes. The watchdog remains per-request as defense in depth.
+    protocol_version = "HTTP/1.0"
 
     def setup(self) -> None:
         super().setup()
@@ -349,14 +375,6 @@ class Handler(BaseHTTPRequestHandler):
         # rfile.read(Content-Length) must not let a slow or abandoned client
         # retain a ThreadingHTTPServer worker indefinitely.
         self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
-        # A socket timeout measures inactivity and can be reset by a slow-drip
-        # client. This absolute watchdog also covers request-line/header reads,
-        # which happen before any do_* handler can enforce the body deadline.
-        self._request_read_deadline = threading.Timer(
-            REQUEST_READ_DEADLINE_SECONDS, self._expire_request_read
-        )
-        self._request_read_deadline.daemon = True
-        self._request_read_deadline.start()
 
     def _expire_request_read(self) -> None:
         self.close_connection = True
@@ -366,6 +384,15 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def handle_one_request(self) -> None:
+        # A socket timeout measures inactivity and can be reset by a slow-drip
+        # client. Start a fresh absolute watchdog for every request so a future
+        # deliberate move to HTTP/1.1 cannot leave later keep-alive requests
+        # unprotected.
+        self._request_read_deadline = threading.Timer(
+            REQUEST_READ_DEADLINE_SECONDS, self._expire_request_read
+        )
+        self._request_read_deadline.daemon = True
+        self._request_read_deadline.start()
         try:
             super().handle_one_request()
         finally:
@@ -718,7 +745,14 @@ class Handler(BaseHTTPRequestHandler):
             path = urllib.parse.urlsplit(raw_path).path
         except ValueError:
             path = "<invalid-path>"
-        sys.stderr.write("%s - %s %s\n" % (self.client_address[0], command, path))
+        sys.stderr.write(
+            "%s - %s %s\n"
+            % (
+                _safe_log_field(str(self.client_address[0]), 64),
+                _safe_log_field(command, 32),
+                _safe_log_field(path),
+            )
+        )
 
 
 def main() -> None:

@@ -353,6 +353,38 @@ class ProxyTests(unittest.TestCase):
         self.assertNotIn(canary, captured.getvalue())
         self.assertIn("GET /api/v1/admin/device-corpus/profiles", captured.getvalue())
 
+    def test_request_log_escapes_terminal_controls(self):
+        handler = object.__new__(serve.Handler)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.command = "GET\x1b[2J"
+        handler.path = "/safe\x1b[31m?QUERY_CANARY_NEVER_LOG"
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            handler.log_message("ignored")
+        output = captured.getvalue()
+        self.assertNotIn("\x1b", output)
+        self.assertIn(r"GET\x1b[2J", output)
+        self.assertIn(r"/safe\x1b[31m", output)
+        self.assertNotIn("QUERY_CANARY_NEVER_LOG", output)
+
+    def test_request_watchdog_is_created_per_request(self):
+        handler = object.__new__(serve.Handler)
+        first = mock.Mock()
+        second = mock.Mock()
+        with mock.patch.object(
+            serve.threading, "Timer", side_effect=(first, second)
+        ) as timer, mock.patch.object(
+            BaseHTTPRequestHandler, "handle_one_request", return_value=None
+        ):
+            handler.handle_one_request()
+            handler.handle_one_request()
+        self.assertEqual(timer.call_count, 2)
+        first.start.assert_called_once_with()
+        first.cancel.assert_called_once_with()
+        second.start.assert_called_once_with()
+        second.cancel.assert_called_once_with()
+        self.assertEqual(serve.Handler.protocol_version, "HTTP/1.0")
+
     def test_malformed_request_line_gets_normal_400_without_log_crash(self):
         captured = io.StringIO()
         with contextlib.redirect_stderr(captured):
@@ -1119,7 +1151,13 @@ class ConfigurationTests(unittest.TestCase):
             token = Path(directory, "token")
             token.write_bytes(b"b" * 32 + b"\n")
             os.chmod(token, stat.S_IRUSR | stat.S_IWUSR)
-            self.assertEqual(serve._load_admin_token(str(token)), b"b" * 32)
+            with mock.patch.object(serve.os, "open", wraps=os.open) as secure_open:
+                self.assertEqual(serve._load_admin_token(str(token)), b"b" * 32)
+            flags = secure_open.call_args.args[1]
+            if hasattr(os, "O_NOFOLLOW"):
+                self.assertTrue(flags & os.O_NOFOLLOW)
+            if hasattr(os, "O_NONBLOCK"):
+                self.assertTrue(flags & os.O_NONBLOCK)
             os.chmod(token, 0o644)
             with self.assertRaises(ValueError):
                 serve._load_admin_token(str(token))

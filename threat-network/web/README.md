@@ -94,14 +94,18 @@ environment variable or command line.
 (cd threat-network && go build -o ./threat-network ./cmd/threat-network)
 sudo install -m 0755 threat-network/threat-network /usr/local/bin/threat-network
 
-umask 077
-openssl rand -hex 32 > /var/lib/vedetta/threat-network-admin.token
-chmod 600 /var/lib/vedetta/threat-network-admin.token
+id -u vedetta >/dev/null 2>&1 || \
+  sudo useradd --system --user-group --home-dir /var/lib/vedetta --shell /usr/sbin/nologin vedetta
+sudo install -d -m 0700 -o vedetta -g vedetta /var/lib/vedetta
+sudo -u vedetta sh -c \
+  'umask 077; openssl rand -hex 32 > /var/lib/vedetta/threat-network-admin.token'
+sudo chmod 600 /var/lib/vedetta/threat-network-admin.token
 
-THREAT_NETWORK_ADMIN_ENABLED=true \
-THREAT_NETWORK_ADMIN_ADDR=127.0.0.1:9091 \
-THREAT_NETWORK_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token \
-  /usr/local/bin/threat-network
+sudo -u vedetta env \
+  THREAT_NETWORK_ADMIN_ENABLED=true \
+  THREAT_NETWORK_ADMIN_ADDR=127.0.0.1:9091 \
+  THREAT_NETWORK_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token \
+    /usr/local/bin/threat-network
 ```
 
 If the backend runs in the repository Compose stack, use the tracked
