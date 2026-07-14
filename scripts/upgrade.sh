@@ -81,11 +81,13 @@ HEALTH_TIMEOUT=120
 while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes)          ASSUME_YES=1 ;;
-    --from)            shift; FROM_REF="${1:-}" ;;
+    --from)            [ $# -ge 2 ] || { err "--from requires an argument"; exit 2; }
+                       shift; FROM_REF="$1" ;;
     --no-cache)        NO_CACHE=1 ;;
     --skip-aux)        SKIP_AUX=1 ;;
     --prune-on-success) PRUNE_ON_SUCCESS=1 ;;
-    --health-timeout)  shift; HEALTH_TIMEOUT="${1:-120}" ;;
+    --health-timeout)  [ $# -ge 2 ] || { err "--health-timeout requires an argument"; exit 2; }
+                       shift; HEALTH_TIMEOUT="$1" ;;
     -h|--help)         usage; exit 0 ;;
     --)                shift; break ;;
     -*)                err "unknown option: $1"; usage; exit 2 ;;
@@ -235,7 +237,7 @@ restore_main_volume() {
       # Preserve the DB file's ownership (cp in the helper container runs as
       # root; a non-root backend could no longer open a root-owned DB).
       docker run --rm -v "${VOL_DATA}:/data" -v "${SNAP_DIR}:/backup:ro" alpine \
-        sh -ec 'owner="$(stat -c %u:%g /data/vedetta.db 2>/dev/null || stat -c %u:%g /data)"
+        sh -ec 'owner="$(stat -c %u:%g /data/vedetta.db 2>/dev/null || stat -c %u:%g /data 2>/dev/null || echo 0:0)"
                 rm -f /data/vedetta.db /data/vedetta.db-wal /data/vedetta.db-shm
                 cp "/backup/$1" /data/vedetta.db
                 chown "$owner" /data/vedetta.db' _ "$(basename "$SNAP_ARTIFACT")"
@@ -278,8 +280,20 @@ do_rollback() {
     if [ "$CODE_CHANGED" = "1" ]; then
       if git checkout --quiet "$PREV_REF"; then ok "Restored working tree to ${PREV_DESC}."
       else
-        halt_rollback "git checkout ${PREV_DESC} failed — the tree still holds the target version"
+        err "ROLLBACK INCOMPLETE: git checkout ${PREV_DESC} failed — the tree still holds"
+        err "the target version. The stack is still RUNNING the previous build; fix the"
+        err "tree (git status) before any 'docker compose' build or up."
         return 1
+      fi
+      # A partially-successful target build may have retagged SOME service
+      # images even though the running containers still use the old image IDs.
+      # Rebuild at the previous ref so the compose tags point back at known-good
+      # builds — otherwise a later plain `docker compose up -d` would recreate
+      # containers onto the failed target image. Containers are NOT restarted.
+      if ! docker compose build ${NO_CACHE:+--no-cache}; then
+        err "WARNING: rebuild at ${PREV_DESC} failed — compose image tags may still"
+        err "point at the failed target build. The running stack is unaffected, but do"
+        err "NOT run 'docker compose up -d' until 'docker compose build' succeeds here."
       fi
     fi
     ok "The running stack was never touched — it stays up as-is."
@@ -337,6 +351,12 @@ fail() {
   err "UPGRADE FAILED: $msg"
   if [ "$SNAPSHOT_DONE" = "1" ]; then
     do_rollback
+  elif [ "$STACK_WAS_STOPPED" = "1" ]; then
+    # The stack was stopped for a cold snapshot that then failed. Nothing else
+    # changed (tree and images untouched), so restart it as it was rather than
+    # leaving the installation down after a pre-snapshot failure.
+    warn "No snapshot was taken; restarting the stack as it was before the attempt…"
+    docker compose up -d || err "could not restart the stack — run: docker compose up -d"
   else
     err "No snapshot was taken yet; the stack was not modified — nothing to roll back."
   fi
@@ -409,8 +429,12 @@ fi
 ok "Core DB snapshot: $(basename "$SNAP_ARTIFACT") (${SNAP_MODE})"
 
 # .env sits outside the volume; capture it too (it holds deployment secrets).
+# Explicit fail: a bare `cp && ok` under set -e would die silently here (the
+# ERR trap is not registered until the snapshot section completes).
 if [ -f "${PROJECT_DIR}/.env" ]; then
-  cp -p "${PROJECT_DIR}/.env" "${SNAP_DIR}/env-${TS}.bak" && ok "Copied .env → env-${TS}.bak"
+  cp -p "${PROJECT_DIR}/.env" "${SNAP_DIR}/env-${TS}.bak" \
+    || fail "could not copy .env into the snapshot directory"
+  ok "Copied .env → env-${TS}.bak"
 else
   warn "No .env next to docker-compose.yml — skipping .env backup."
 fi
@@ -497,7 +521,8 @@ EOF
 
 if [ "$PRUNE_ON_SUCCESS" = "1" ]; then
   cd "$PROJECT_DIR"
-  rm -rf "$SNAP_DIR" && echo "  ✓ Pruned snapshot (--prune-on-success)."
+  if rm -rf "$SNAP_DIR"; then echo "  ✓ Pruned snapshot (--prune-on-success)."
+  else warn "Could not prune the snapshot directory — remove it manually: ${SNAP_DIR}"; fi
 else
   ok "Pre-upgrade snapshot kept at: ${SNAP_DIR}"
   ok "It contains your DB, .env, and API tokens — treat it as sensitive and keep"
