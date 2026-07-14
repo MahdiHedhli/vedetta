@@ -1,6 +1,10 @@
 package export
 
-import "github.com/vedetta-network/vedetta/telemetry/internal/corereader"
+import (
+	"strings"
+
+	"github.com/vedetta-network/vedetta/telemetry/internal/corereader"
+)
 
 // GateConfig holds the tunable export-gate thresholds.
 type GateConfig struct {
@@ -13,7 +17,8 @@ type GateConfig struct {
 // ("", false) otherwise.
 //
 // ALL of the following must hold for any export:
-//   - event_type is dns_query or anomaly
+//   - event_type is dns_query
+//   - dns_source is not simulation
 //   - not acknowledged
 //   - not tagged whitelisted / suppressed / deduplicated-only
 //   - domain is public (multi-label, non-private, non-IP, PSL-reducible)
@@ -36,6 +41,12 @@ func Eligible(ev corereader.Event, cfg GateConfig) (Kind, bool) {
 		// arbitrary data (e.g. an IP as 198-51-100-77.com) onto the public feed
 		// (GHSA-hx86).
 	default:
+		return "", false
+	}
+	// Simulator traffic is intentionally persisted in Core so operators can
+	// exercise findings and UI workflows. It must never become community
+	// evidence, even if a synthetic domain happens to match a live IOC feed.
+	if strings.EqualFold(strings.TrimSpace(ev.DNSSource), "simulation") {
 		return "", false
 	}
 	if ev.Acknowledged {

@@ -67,6 +67,14 @@ func TestEligibleAcknowledgedWithheld(t *testing.T) {
 	}
 }
 
+func TestEligibleSimulationWithheld(t *testing.T) {
+	e := ev("bad.badzone.example", 0.99, "known_bad")
+	e.DNSSource = " Simulation "
+	if _, ok := Eligible(e, gateCfg); ok {
+		t.Errorf("simulated known_bad event should be withheld")
+	}
+}
+
 func TestEligibleWhitelistedSuppressedWithheld(t *testing.T) {
 	for _, tag := range []string{"whitelisted", "suppressed"} {
 		e := ev("bad.badzone.example", 0.99, "known_bad", tag)
