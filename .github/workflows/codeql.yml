@@ -33,13 +33,16 @@ jobs:
 
       - name: Set up Go
         if: matrix.language == 'go'
-        uses: actions/setup-go@v5
+        # Go CodeQL extracts the requested package graph from each traced
+        # top-level go build, including when GOCACHE satisfies compilation.
+        uses: actions/setup-go@v6
         with:
           go-version: stable
-          # CodeQL manual mode must observe compiler executions after init.
-          # Restoring setup-go's build cache can make go build reuse compiled
-          # packages and leave the CodeQL database incomplete.
-          cache: false
+          cache-dependency-path: |
+            backend/go.sum
+            sensor/go.sum
+            threat-network/go.sum
+            scripts/simulate/go.sum
 
       # setup-go must run before CodeQL initialization. In manual build mode,
       # init prepends CodeQL's tracing wrapper to PATH; running setup-go later
