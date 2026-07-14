@@ -11,8 +11,17 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
-// CreateToken inserts a new API token into the database.
+// CreateToken inserts a non-sensor API token into the database. Sensor
+// credentials are security state tied to an identity lifecycle and may only be
+// installed atomically through ProvisionSensorToken; allowing this generic path
+// would let a tombstoned identity authenticate without being reactivated.
 func (db *DB) CreateToken(token auth.Token) error {
+	if token.Scope == auth.ScopeSensor {
+		return fmt.Errorf("sensor-scoped tokens must be issued through sensor enrollment")
+	}
+	if strings.TrimSpace(token.SensorID) != "" {
+		return fmt.Errorf("non-sensor tokens may not carry a sensor_id")
+	}
 	var sensorID any
 	if strings.TrimSpace(token.SensorID) != "" {
 		sensorID = token.SensorID
@@ -222,10 +231,11 @@ func (db *DB) EnsureTokenFromRaw(rawToken string, scope auth.TokenScope, label s
 	return true, nil
 }
 
-// DeleteTokensBySensor revokes all tokens associated with a sensor. Admin tokens
-// carry no sensor_id, so they are never affected by this call.
+// DeleteTokensBySensor revokes only sensor credentials associated with a
+// sensor. Legacy or manually-corrupted non-sensor rows carrying sensor_id must
+// never make this helper revoke an admin/read/ingest credential.
 func (db *DB) DeleteTokensBySensor(sensorID string) error {
-	_, err := db.Exec(`UPDATE api_tokens SET revoked = 1 WHERE sensor_id = ?`, sensorID)
+	_, err := db.Exec(`UPDATE api_tokens SET revoked = 1 WHERE sensor_id = ? AND scope = ?`, sensorID, auth.ScopeSensor)
 	return err
 }
 
@@ -254,6 +264,15 @@ var ErrSensorNotFound = errors.New("sensor identity does not exist")
 // receives nil can trust exactly one fresh token is active and no partial state
 // leaked.
 func (db *DB) ProvisionSensorToken(sensor models.Sensor, token auth.Token, isReset bool) error {
+	return db.ProvisionSensorTokenWithActor(sensor, token, isReset, "")
+}
+
+// ProvisionSensorTokenWithActor is ProvisionSensorToken plus the authenticated
+// actor recorded when a reset deliberately reactivates a removed identity.
+func (db *DB) ProvisionSensorTokenWithActor(sensor models.Sensor, token auth.Token, isReset bool, actor string) error {
+	if token.Scope != auth.ScopeSensor || strings.TrimSpace(token.SensorID) != sensor.SensorID {
+		return fmt.Errorf("provisioned token must be sensor-scoped and bound to sensor_id")
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -261,16 +280,38 @@ func (db *DB) ProvisionSensorToken(sensor models.Sensor, token auth.Token, isRes
 	defer tx.Rollback() // no-op after a successful Commit
 
 	// Enforce the identity precondition INSIDE the tx so it cannot be raced apart
-	// from the token install (beta-gate B1a).
-	var rows int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM sensors WHERE sensor_id = ?`, sensor.SensorID).Scan(&rows); err != nil {
-		return fmt.Errorf("check sensor identity: %w", err)
-	}
-	if isReset && rows == 0 {
-		return ErrSensorNotFound
-	}
-	if !isReset && rows > 0 {
-		return ErrSensorExists
+	// from the token install (beta-gate B1a). A reset begins with a no-op UPDATE,
+	// making this the transaction's first write and ordering it against removal.
+	wasRemoved := false
+	if isReset {
+		result, err := tx.Exec(`UPDATE sensors SET sensor_id = sensor_id WHERE sensor_id = ?`, sensor.SensorID)
+		if err != nil {
+			return fmt.Errorf("lock sensor identity for reset: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("inspect reset identity lock: %w", err)
+		}
+		if rows == 0 {
+			return ErrSensorNotFound
+		}
+		if err := tx.QueryRow(`SELECT removed_at IS NOT NULL FROM sensors WHERE sensor_id = ?`, sensor.SensorID).Scan(&wasRemoved); err != nil {
+			return fmt.Errorf("check sensor removal state: %w", err)
+		}
+	} else {
+		// Acquire the SQLite writer lock before reading identity state. Without a
+		// first write, two distinct enrollments can both consume their single-use
+		// codes and one later fail with BUSY_SNAPSHOT when it tries to insert.
+		if _, err := tx.Exec(`UPDATE sensors SET sensor_id = sensor_id WHERE 0`); err != nil {
+			return fmt.Errorf("lock sensor identities for enrollment: %w", err)
+		}
+		var rows int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM sensors WHERE sensor_id = ?`, sensor.SensorID).Scan(&rows); err != nil {
+			return fmt.Errorf("check sensor identity: %w", err)
+		}
+		if rows > 0 {
+			return ErrSensorExists
+		}
 	}
 
 	if isReset {
@@ -284,7 +325,7 @@ func (db *DB) ProvisionSensorToken(sensor models.Sensor, token auth.Token, isRes
 
 	// upsert only on reset; a NEW enrollment uses a plain INSERT so a racing
 	// creation of the same identity conflicts instead of silently overwriting it.
-	if err := registerSensorOn(tx, sensor, isReset); err != nil {
+	if err := registerSensorOn(tx, sensor, isReset, isReset); err != nil {
 		return fmt.Errorf("write sensor row: %w", err)
 	}
 
@@ -297,6 +338,14 @@ func (db *DB) ProvisionSensorToken(sensor models.Sensor, token auth.Token, isRes
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0)
 	`, token.TokenID, token.TokenHash, token.Scope, sensorID, token.Label, token.CreatedAt, token.LastUsed); err != nil {
 		return fmt.Errorf("insert sensor token (another active token may already exist for this sensor): %w", err)
+	}
+	if wasRemoved {
+		if strings.TrimSpace(actor) == "" {
+			actor = "reset"
+		}
+		if err := insertSensorLifecycleOn(tx, sensor.SensorID, "reactivated", actor, "", time.Now().UTC()); err != nil {
+			return fmt.Errorf("record sensor reactivation: %w", err)
+		}
 	}
 
 	return tx.Commit()

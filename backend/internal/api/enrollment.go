@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -256,12 +257,33 @@ func (s *Server) handleGenerateEnrollmentCode(w http.ResponseWriter, r *http.Req
 		s.Enroll = NewEnrollmentStore()
 	}
 
-	var body struct {
+	type enrollmentCodeRequest struct {
 		SensorID string `json:"sensor_id"`
 	}
+	body := &enrollmentCodeRequest{}
 	if r.Body != nil {
-		// Body is optional; a malformed/empty body just yields a generic code.
-		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+		// The body is optional, but a present malformed body must never silently
+		// downgrade a requested reset into a generic enrollment code.
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 4096))
+		var decoded *enrollmentCodeRequest
+		if err := decoder.Decode(&decoded); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+			return
+		} else if err == nil {
+			if decoded == nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "request body must be a JSON object"})
+				return
+			}
+			body = decoded
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+			return
+		} else if err == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "request body must contain one JSON object"})
+			return
+		}
 	}
 	sensorID := strings.TrimSpace(body.SensorID)
 

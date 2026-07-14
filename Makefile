@@ -14,7 +14,7 @@ help:
 	@echo "  make up                - Start all services"
 	@echo "  make down              - Stop all"
 	@echo "  make logs              - Tail backend logs"
-	@echo "  make clean-tokens      - Remove all sensor auth tokens & registrations (for fresh --reset testing)"
+	@echo "  make clean-tokens      - Revoke sensor credentials; retained IDs require bound reset codes"
 	@echo ""
 	@echo "Simulation (for SNR tier validation in Threats view):"
 	@echo "  make simulate-fp       - Insert ~80 false-positive-like events (benign updates)"
@@ -55,10 +55,9 @@ logs:
 clean-tokens:
 	docker compose exec backend sh -c '
 		sqlite3 /data/vedetta.db "
-			DELETE FROM api_tokens WHERE scope = \"sensor\";
-			DELETE FROM sensors;
-			VACUUM;
-		" && echo "All sensor tokens and sensor records removed. Ready for fresh registration."
+			UPDATE api_tokens SET revoked = 1 WHERE scope = \"sensor\" AND revoked = 0;
+			UPDATE sensors SET status = \"offline\";
+		" && echo "Sensor credentials revoked; identities retained. Use admin-minted reset codes to reconnect existing sensor IDs."
 	'
 
 # --- Simulation (inserts into events table for fast UI/SNR testing) ---

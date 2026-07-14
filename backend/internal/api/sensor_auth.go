@@ -43,6 +43,21 @@ func (s *Server) requireAuthenticatedSensorID(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "token does not match sensor_id"})
 		return "", false
 	}
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return "", false
+	}
+	active, err := s.DB.SensorActive(token.SensorID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to verify sensor identity"})
+		return "", false
+	}
+	if !active {
+		// Defense in depth for legacy/manual token rows: removal remains effective
+		// even if a sensor credential exists outside the provisioning path.
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "sensor identity is not active"})
+		return "", false
+	}
 
 	return token.SensorID, true
 }

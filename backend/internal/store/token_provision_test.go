@@ -62,7 +62,10 @@ func TestProvisionSensorToken_Atomicity(t *testing.T) {
 	}
 
 	// A reset against a NON-existent identity must fail with ErrSensorNotFound.
-	_, tokX := mint()
+	_, tokX, err := auth.GenerateToken(auth.ScopeSensor, "ghost", "test")
+	if err != nil {
+		t.Fatalf("generate ghost token: %v", err)
+	}
 	if err := db.ProvisionSensorToken(models.Sensor{SensorID: "ghost"}, tokX, true); !errors.Is(err, ErrSensorNotFound) {
 		t.Fatalf("expected ErrSensorNotFound resetting a non-existent sensor, got %v", err)
 	}

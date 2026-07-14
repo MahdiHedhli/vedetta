@@ -153,6 +153,15 @@ type Sensor struct {
 	Interfaces string    `json:"interfaces,omitempty" db:"interfaces"` // JSON-encoded []NetworkInterface
 }
 
+// RemovedSensor is the safe, operator-facing view of a retained sensor
+// tombstone. Removal actor/token details and raw lifecycle metadata remain
+// server-side and are never serialized by the sensor-list endpoint.
+type RemovedSensor struct {
+	Sensor
+	RemovedAt     time.Time `json:"removed_at" db:"removed_at"`
+	RemovalReason string    `json:"removal_reason,omitempty" db:"removal_reason"`
+}
+
 // ScanTarget represents a named subnet to scan (e.g., IoT VLAN, Guest network).
 type ScanTarget struct {
 	TargetID     string     `json:"target_id" db:"target_id"`

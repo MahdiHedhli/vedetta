@@ -67,6 +67,7 @@ func TestFreshMigrationsProduceCompleteSchema(t *testing.T) {
 		"device_address_history", "device_identity_evidence", "device_identity_actions",
 		"event_detection_evidence", "findings", "finding_events", "finding_evidence",
 		"finding_status_history", "finding_suppression_rules", "finding_suppression_history", "collection_source_health",
+		"sensor_lifecycle_events",
 		"schema_migrations",
 	}
 	for _, tbl := range wantTables {
@@ -94,6 +95,16 @@ func TestFreshMigrationsProduceCompleteSchema(t *testing.T) {
 	for _, col := range []string{"merged_into_device_id", "merge_action_id", "merged_at"} {
 		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name=?`, col).Scan(&count); err != nil || count != 1 {
 			t.Errorf("expected devices.%s after migration 025 (count=%d err=%v)", col, count, err)
+		}
+	}
+	for _, col := range []string{"removed_at", "removed_by_token_id", "removal_reason"} {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sensors') WHERE name=?`, col).Scan(&count); err != nil || count != 1 {
+			t.Errorf("expected sensors.%s after migration 026 (count=%d err=%v)", col, count, err)
+		}
+	}
+	for _, col := range []string{"event_id", "sensor_id", "event_type", "actor", "reason", "details", "created_at"} {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sensor_lifecycle_events') WHERE name=?`, col).Scan(&count); err != nil || count != 1 {
+			t.Errorf("expected sensor_lifecycle_events.%s after migration 026 (count=%d err=%v)", col, count, err)
 		}
 	}
 

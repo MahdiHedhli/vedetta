@@ -1254,12 +1254,14 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 			// When the remembered token is gone/revoked, fall through to the normal flow,
 			// which surfaces the correct next step (present a fresh reset code).
 			if tok, terr := s.DB.GetTokenByID(tokenID); terr == nil && tok != nil && !tok.Revoked {
-				// Refresh sensor metadata idempotently, then hand back the same secret.
+				// Refresh sensor metadata and re-check the exact credential atomically.
+				// A concurrent admin removal must win cleanly instead of this replay
+				// returning a token for (or resurrecting) a tombstoned identity.
 				interfacesStr := ""
 				if len(body.Interfaces) > 0 {
 					interfacesStr = string(body.Interfaces)
 				}
-				_ = s.DB.RegisterSensor(models.Sensor{
+				refreshErr := s.DB.RefreshSensorWithActiveToken(models.Sensor{
 					SensorID:   body.SensorID,
 					Hostname:   body.Hostname,
 					OS:         body.OS,
@@ -1268,16 +1270,25 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 					Version:    body.Version,
 					IsPrimary:  body.IsPrimary,
 					Interfaces: interfacesStr,
-				})
-				log.Printf("Sensor %s re-registered via idempotent enrollment replay — returning existing token %s", body.SensorID, tokenID)
-				writeJSON(w, http.StatusOK, sensorRegistrationResponse{
-					Status:       "registered",
-					SensorID:     body.SensorID,
-					AuthToken:    rawToken,
-					TokenID:      tokenID,
-					TokenWarning: "save this token now — it will not be displayed again",
-				})
-				return
+				}, tokenID)
+				if refreshErr == nil {
+					log.Printf("Sensor %s re-registered via idempotent enrollment replay — returning existing token %s", body.SensorID, tokenID)
+					writeJSON(w, http.StatusOK, sensorRegistrationResponse{
+						Status:       "registered",
+						SensorID:     body.SensorID,
+						AuthToken:    rawToken,
+						TokenID:      tokenID,
+						TokenWarning: "save this token now — it will not be displayed again",
+					})
+					return
+				}
+				if !errors.Is(refreshErr, store.ErrSensorRemoved) &&
+					!errors.Is(refreshErr, store.ErrSensorTokenInactive) &&
+					!errors.Is(refreshErr, store.ErrSensorNotFound) {
+					log.Printf("Sensor %s idempotent replay refresh failed: %v", body.SensorID, refreshErr)
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to refresh sensor registration"})
+					return
+				}
 			}
 			log.Printf("Sensor %s replayed a redeemed code whose token is no longer active — falling through to normal enrollment", body.SensorID)
 		}
@@ -1321,6 +1332,7 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 	// actual revoke+mint happens atomically in ProvisionSensorToken below.
 	consumedEnrollCode := ""
 	resetExisting := false
+	reactivationActor := ""
 
 	if sensorExists {
 		// This sensor IDENTITY already exists — whether its token is currently active
@@ -1334,6 +1346,7 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 			// Admin-initiated reset/reactivation.
 			log.Printf("Sensor %s reset by admin token %s — revoking any old token, issuing a new one", body.SensorID, presentedToken.TokenID)
 			resetExisting = true
+			reactivationActor = "token:" + presentedToken.TokenID
 		case presentedToken != nil:
 			// A valid (therefore active) matching sensor token: metadata refresh; keep
 			// the existing credential (no reissue).
@@ -1348,6 +1361,7 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Sensor %s reset via a bound enrollment code — revoking any old token, issuing a new one", body.SensorID)
 			resetExisting = true
 			consumedEnrollCode = enrollCode
+			reactivationActor = "bound-reset-code"
 		default:
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"error": "sensor_id already exists (it may be actively enrolled, or have been revoked by an admin). A generic new-sensor code cannot claim or reactivate an existing sensor. Present its current sensor token, an admin token, or an admin-minted RESET code bound to this sensor_id (POST /api/v1/enrollment-codes with {\"sensor_id\":\"...\"}). Two devices sharing hostname/OS/arch also collide here — give one a distinct hostname.",
@@ -1431,7 +1445,7 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		// current active token, write the sensor row, and insert the new token in ONE
 		// transaction. The partial unique index means a racing reset/registration for
 		// the same sensor_id leaves only ONE active token (beta-gate B1a).
-		if err := s.DB.ProvisionSensorToken(sensor, token, resetExisting); err != nil {
+		if err := s.DB.ProvisionSensorTokenWithActor(sensor, token, resetExisting, reactivationActor); err != nil {
 			log.Printf("Sensor %s token provisioning failed: %v", body.SensorID, err)
 			switch {
 			case errors.Is(err, store.ErrSensorExists):
@@ -1462,9 +1476,16 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		if consumedEnrollCode != "" && s.Enroll != nil {
 			s.Enroll.RecordRedemption(consumedEnrollCode, body.SensorID, rawToken, token.TokenID)
 		}
-	} else if err := s.DB.RegisterSensor(sensor); err != nil {
+	} else if err := s.DB.RefreshSensorWithActiveToken(sensor, presentedToken.TokenID); err != nil {
 		// Metadata refresh only (matching sensor token, no reissue).
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		log.Printf("Sensor %s metadata refresh failed: %v", body.SensorID, err)
+		if errors.Is(err, store.ErrSensorRemoved) || errors.Is(err, store.ErrSensorTokenInactive) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "sensor is no longer active; use an admin-minted reset code bound to this sensor_id to reactivate it",
+			})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to refresh sensor registration"})
+		}
 		return
 	}
 
@@ -1615,15 +1636,18 @@ func (s *Server) handleSensorList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sensors, err := s.DB.ListSensors()
+	sensors, removed, err := s.DB.ListSensorPartitions()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		log.Printf("List sensors failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list sensors"})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sensors": sensors,
-		"total":   len(sensors),
+		"removed_sensors": removed,
+		"removed_total":   len(removed),
+		"sensors":         sensors,
+		"total":           len(sensors),
 	})
 }
 
@@ -1699,7 +1723,12 @@ func (s *Server) handleSetPrimarySensor(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.DB.SetPrimarySensor(sensorID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		if errors.Is(err, store.ErrSensorNotFound) || errors.Is(err, store.ErrSensorRemoved) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "sensor not found"})
+		} else {
+			log.Printf("Set primary sensor %s failed: %v", sensorID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to set primary sensor"})
+		}
 		return
 	}
 
@@ -1707,9 +1736,9 @@ func (s *Server) handleSetPrimarySensor(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"primary": sensorID})
 }
 
-// handleDeleteSensor removes a sensor (and its auth tokens) from the fleet. Admin
-// scope, same as Make Primary. The last remaining primary can't be removed — the
-// store refuses it, and the caller must promote another sensor first (409).
+// handleDeleteSensor tombstones a sensor and revokes only its sensor credential.
+// Its identity and history remain, so returning requires a fresh bound reset code.
+// The current primary can't be removed; another active sensor must be promoted.
 func (s *Server) handleDeleteSensor(w http.ResponseWriter, r *http.Request) {
 	if s.DB == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
@@ -1722,7 +1751,12 @@ func (s *Server) handleDeleteSensor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.DB.DeleteSensor(sensorID); err != nil {
+	actorTokenID := ""
+	if token := auth.GetTokenFromContext(r); token != nil {
+		actorTokenID = token.TokenID
+	}
+	removedAt, err := s.DB.RemoveSensor(sensorID, actorTokenID, "removed by operator")
+	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrSensorNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "sensor not found"})
@@ -1730,14 +1764,19 @@ func (s *Server) handleDeleteSensor(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"error": "cannot remove the primary sensor; make another sensor primary first"})
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			log.Printf("Remove sensor %s failed: %v", sensorID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to remove sensor"})
 		}
 		return
 	}
 
 	log.Printf("Sensor removed: %s", sensorID)
 	s.logInfo("sensor", fmt.Sprintf("Sensor removed: %s", sensorID))
-	writeJSON(w, http.StatusOK, map[string]any{"removed": sensorID})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "removed",
+		"sensor_id":  sensorID,
+		"removed_at": removedAt,
+	})
 }
 
 // deduplicateGatewayEchoes pairs the query and response packets emitted for one
