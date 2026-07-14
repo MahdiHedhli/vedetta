@@ -183,7 +183,9 @@ backend_running() { [ -n "$(docker compose ps -q backend 2>/dev/null)" ]; }
 
 wait_health() {
   local timeout="$1" i
-  for ((i = 0; i < timeout; i++)); do
+  # 10#: force base-10 — a leading-zero timeout (e.g. "08") would otherwise be
+  # parsed as octal and crash the arithmetic context.
+  for ((i = 0; i < 10#$timeout; i++)); do
     if curl -fsS -m 3 "http://127.0.0.1:${BACKEND_PORT}/healthz" >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
@@ -395,12 +397,17 @@ do_rollback() {
     # against the just-restored DB, undoing the rollback.
     halt_rollback "the failed version is the current checkout — restarting it would re-run the failing migration (re-run with --from <known-good-ref> to enable automatic rollback)"
     return 1
+  else
+    # PREV_REF == fail_head with NEW_STACK_UP=0: cold pre-start failure with
+    # no known-good ref. Compose builds and tags each service independently,
+    # so the failed build may ALREADY have retagged some services (e.g. the
+    # backend) with the new code before another service failed — `up -d` here
+    # could boot that new backend against the untouched DB and run the very
+    # migrations this "failed" upgrade was supposed to withhold. The stack was
+    # already down when the cold path began, so halting adds no new downtime.
+    halt_rollback "the failed build may have retagged some service images with the new code — starting now could migrate the untouched DB (fix the build, or re-run with --from <known-good-ref>)"
+    return 1
   fi
-  # PREV_REF == fail_head with NEW_STACK_UP=0 (cold pre-start failure, no
-  # --from): skip the rebuild — it is the build that just failed and would
-  # fail again, turning a recoverable state into a halt. The image tags are
-  # unchanged for the failed service(s); `up -d` restores the pre-script
-  # status quo with the untouched DB.
   docker compose up -d || { halt_rollback "docker compose up -d failed for the previous version"; return 1; }
 
   if wait_health 60; then ok "Previous version is back up and healthy at ${PREV_DESC}."
@@ -468,7 +475,9 @@ finalize_snapshot() {
   # Explicit fail: a bare `cp && ok` under set -e would die silently here (the
   # ERR trap is not registered until the snapshot section completes).
   if [ -f "${PROJECT_DIR}/.env" ]; then
-    cp -p "${PROJECT_DIR}/.env" "${SNAP_DIR}/env-${TS}.bak" \
+    # Plain cp (no -p): preserving mode/ownership can fail on shared/network
+    # filesystems, and umask 077 + the 0700 dir already keep the copy private.
+    cp "${PROJECT_DIR}/.env" "${SNAP_DIR}/env-${TS}.bak" \
       || fail "could not copy .env into the snapshot directory"
     ok "Copied .env → env-${TS}.bak"
   else
