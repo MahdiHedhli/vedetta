@@ -145,6 +145,31 @@ describe('SensorsView sensor lifecycle', () => {
     expect(screen.queryByText('SHOULD-NOT-SHOW')).not.toBeInTheDocument();
   });
 
+  it('keeps the current reset code when regeneration fails', async () => {
+    authFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          type: 'reset',
+          sensor_id: removed.sensor_id,
+          enrollment_code: 'STILL-VALID-CODE',
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      })
+      .mockRejectedValueOnce(new Error('Core is temporarily unavailable'));
+    const user = userEvent.setup();
+    render(<SensorsView sensors={[]} removedSensors={[removed]} onSetup={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Generate reset code' }));
+    expect(await screen.findByText('STILL-VALID-CODE')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Generate reset code' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Core is temporarily unavailable');
+    expect(screen.getByText('STILL-VALID-CODE')).toBeInTheDocument();
+    expect(authFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('awaits the post-action refresh and surfaces a refresh failure', async () => {
     authFetch.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({}) });
     let rejectRefresh;
@@ -156,7 +181,9 @@ describe('SensorsView sensor lifecycle', () => {
     expect(screen.getByRole('button', { name: 'Updating…' })).toBeDisabled();
     rejectRefresh(new Error('Sensor list refresh failed'));
 
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Sensor list refresh failed'));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
+      'Sensor is now primary, but refreshing the list failed: Sensor list refresh failed',
+    ));
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'Make Primary' })).not.toBeDisabled();
   });
@@ -182,7 +209,8 @@ describe('SensorsView sensor lifecycle', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     try {
       authFetch.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({}) });
-      const refresh = vi.fn().mockRejectedValue(new Error('Sensor list refresh failed after removal'));
+      let rejectRefresh;
+      const refresh = vi.fn(() => new Promise((_, reject) => { rejectRefresh = reject; }));
       const user = userEvent.setup();
       render(<SensorsView sensors={[active]} removedSensors={[]} onSetup={vi.fn()} onRefreshSensors={refresh} />);
 
@@ -190,7 +218,11 @@ describe('SensorsView sensor lifecycle', () => {
 
       expect(authFetch).toHaveBeenCalledWith('/api/v1/sensor/sensor-active', { method: 'DELETE' });
       expect(refresh).toHaveBeenCalledTimes(1);
-      expect(await screen.findByRole('alert')).toHaveTextContent('Sensor list refresh failed after removal');
+      expect(screen.getByRole('button', { name: 'Removing…' })).toBeDisabled();
+      rejectRefresh(new Error('Sensor list refresh failed after removal'));
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Sensor was removed, but refreshing the list failed: Sensor list refresh failed after removal',
+      );
       expect(screen.getByRole('button', { name: 'Remove' })).not.toBeDisabled();
     } finally {
       confirm.mockRestore();

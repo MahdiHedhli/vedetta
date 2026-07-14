@@ -2769,11 +2769,20 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
     setSensorActionError('');
     setSensorAction({ sensorId, kind: 'primary' });
     try {
-      const response = await authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}/primary`, { method: 'PUT' });
-      if (!response.ok) throw new Error(await responseError(response, 'Failed to make sensor primary.'));
-      if (onRefreshSensors) await onRefreshSensors();
-    } catch (error) {
-      setSensorActionError(error?.message || 'Failed to make sensor primary.');
+      try {
+        const response = await authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}/primary`, { method: 'PUT' });
+        if (!response.ok) throw new Error(await responseError(response, 'Failed to make sensor primary.'));
+      } catch (error) {
+        setSensorActionError(error?.message || 'Failed to make sensor primary.');
+        return;
+      }
+      if (onRefreshSensors) {
+        try {
+          await onRefreshSensors();
+        } catch (error) {
+          setSensorActionError(`Sensor is now primary, but refreshing the list failed: ${error?.message || 'unknown error'}`);
+        }
+      }
     } finally {
       setSensorAction(null);
     }
@@ -2787,11 +2796,20 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
     setSensorActionError('');
     setSensorAction({ sensorId, kind: 'remove' });
     try {
-      const response = await authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error(await responseError(response, 'Failed to remove sensor.'));
-      if (onRefreshSensors) await onRefreshSensors();
-    } catch (error) {
-      setSensorActionError(error?.message || 'Failed to remove sensor.');
+      try {
+        const response = await authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error(await responseError(response, 'Failed to remove sensor.'));
+      } catch (error) {
+        setSensorActionError(error?.message || 'Failed to remove sensor.');
+        return;
+      }
+      if (onRefreshSensors) {
+        try {
+          await onRefreshSensors();
+        } catch (error) {
+          setSensorActionError(`Sensor was removed, but refreshing the list failed: ${error?.message || 'unknown error'}`);
+        }
+      }
     } finally {
       setSensorAction(null);
     }
@@ -2800,7 +2818,6 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
   const generateResetCode = async (sensorId) => {
     if (sensorAction) return;
     setSensorActionError('');
-    setResetCode(null);
     setSensorAction({ sensorId, kind: 'reset' });
     try {
       const response = await authFetch('/api/v1/enrollment-codes', {

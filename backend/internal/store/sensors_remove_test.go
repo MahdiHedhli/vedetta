@@ -68,11 +68,18 @@ func TestRemoveSensor_TombstonesAndReactivates(t *testing.T) {
 
 	var storedRemoved sql.NullTime
 	var status string
-	if err := db.QueryRow(`SELECT removed_at, status FROM sensors WHERE sensor_id='s2'`).Scan(&storedRemoved, &status); err != nil {
+	var removalReason, removedByToken string
+	if err := db.QueryRow(`
+		SELECT removed_at, status, removal_reason, removed_by_token_id
+		FROM sensors WHERE sensor_id='s2'
+	`).Scan(&storedRemoved, &status, &removalReason, &removedByToken); err != nil {
 		t.Fatalf("read tombstone: %v", err)
 	}
 	if !storedRemoved.Valid || status != "offline" {
 		t.Fatalf("s2 was not tombstoned offline: removed=%v status=%q", storedRemoved, status)
+	}
+	if removalReason != "stale duplicate" || removedByToken != "admin-1" {
+		t.Fatalf("removal metadata not persisted: reason=%q actor=%q", removalReason, removedByToken)
 	}
 	exists, err := db.SensorExists("s2")
 	if err != nil || !exists {
@@ -109,6 +116,16 @@ func TestRemoveSensor_TombstonesAndReactivates(t *testing.T) {
 	}
 	if removedEvents != 1 {
 		t.Fatalf("removal events=%d, want 1", removedEvents)
+	}
+	var eventActor, eventReason string
+	if err := db.QueryRow(`
+		SELECT actor, reason FROM sensor_lifecycle_events
+		WHERE sensor_id='s2' AND event_type='removed'
+	`).Scan(&eventActor, &eventReason); err != nil {
+		t.Fatalf("read removal audit event: %v", err)
+	}
+	if eventActor != "admin-1" || eventReason != "stale duplicate" {
+		t.Fatalf("removal audit metadata not persisted: actor=%q reason=%q", eventActor, eventReason)
 	}
 	removedAgain, err := db.RemoveSensor("s2", "admin-2", "repeat")
 	if err != nil || !removedAgain.Equal(storedRemoved.Time.UTC()) {
