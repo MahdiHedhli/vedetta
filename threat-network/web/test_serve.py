@@ -1115,6 +1115,12 @@ class ConfigurationTests(unittest.TestCase):
             'var profileReasons=["new_profile","label_correction"];', dashboard
         )
         self.assertIn("minimum=1,maximum=dhcp?254:65535", dashboard)
+        self.assertIn('required:"required"', dashboard)
+        self.assertIn('basisPoints(value,"Version fact confidence")', dashboard)
+        self.assertIn(
+            'basisPoints($("v-confidence").value,"Variant confidence")',
+            dashboard,
+        )
         self.assertIn('<select id="p-reason" disabled>', dashboard)
         self.assertFalse(
             serve._is_admin_route(
