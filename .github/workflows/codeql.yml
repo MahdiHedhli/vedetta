@@ -39,7 +39,6 @@ jobs:
           cache-dependency-path: |
             backend/go.sum
             sensor/go.sum
-            telemetry/go.sum
             threat-network/go.sum
             scripts/simulate/go.sum
 
