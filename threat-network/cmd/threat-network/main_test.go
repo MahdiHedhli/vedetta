@@ -166,6 +166,40 @@ func TestPrepareRunModeFailsDaemonStartupClosedOnCorruptCorpus(t *testing.T) {
 	}
 }
 
+func TestValidateCurrentCorpusSnapshotSurfacesDeadlinePromptly(t *testing.T) {
+	const timeout = 50 * time.Millisecond
+	started := time.Now()
+	err := validateCurrentCorpusSnapshot(context.Background(), timeout, func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("snapshot validation error = %v, want context deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("snapshot validation ignored deadline for %s", elapsed)
+	}
+}
+
+func TestValidateCurrentCorpusSnapshotCleansUpContextAfterSuccess(t *testing.T) {
+	var validationCtx context.Context
+	err := validateCurrentCorpusSnapshot(context.Background(), time.Minute, func(ctx context.Context) error {
+		validationCtx = ctx
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot validation error = %v", err)
+	}
+	select {
+	case <-validationCtx.Done():
+		if !errors.Is(validationCtx.Err(), context.Canceled) {
+			t.Fatalf("validation context error = %v, want context canceled", validationCtx.Err())
+		}
+	default:
+		t.Fatal("snapshot validation context was not canceled after success")
+	}
+}
+
 func TestValidateAdminListenAddr(t *testing.T) {
 	tests := []struct {
 		name  string
