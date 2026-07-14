@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -21,6 +22,9 @@ var migrationsFS embed.FS
 // DB wraps the SQLite connection for the threat-network service.
 type DB struct {
 	*sql.DB
+	corpusCacheMu  sync.RWMutex
+	corpusLoadGate chan struct{}
+	corpusCache    *corpusSnapshotCache
 }
 
 // Open opens (or creates) the service-local SQLite database, applies the
@@ -30,7 +34,10 @@ func Open(dbPath string) (*DB, error) {
 	if dbPath == "" {
 		dbPath = ":memory:"
 	}
-	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on"
+	// Recursive triggers make SQLite's implicit DELETE for INSERT OR REPLACE
+	// honor the corpus append-only guards. Without this connection setting a
+	// replacement can tunnel around every BEFORE DELETE integrity trigger.
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on&_recursive_triggers=on"
 	sqldb, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -42,7 +49,7 @@ func Open(dbPath string) (*DB, error) {
 	if err := sqldb.Ping(); err != nil {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
-	db := &DB{sqldb}
+	db := &DB{DB: sqldb, corpusLoadGate: make(chan struct{}, 1)}
 	if err := db.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}

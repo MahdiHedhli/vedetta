@@ -9,7 +9,9 @@ COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -o /threat-network ./cmd/threat-network
 
 FROM alpine:3.22
-RUN apk --no-cache add ca-certificates
+# sqlite supplies the online .backup command used by the documented corpus/feed
+# recovery procedure; it is not used on the HTTP request path.
+RUN apk --no-cache add ca-certificates sqlite
 COPY --from=builder /threat-network /usr/local/bin/threat-network
 
 # Service-local SQLite DB lives here; mount a volume for persistence.

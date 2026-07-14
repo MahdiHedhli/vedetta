@@ -84,12 +84,86 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var m map[string]any
-	json.NewDecoder(resp.Body).Decode(&m)
-	if m["service"] != "vedetta-threat-network" || m["schema_version"].(float64) != 1 {
+	if err = json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want 200; body=%v", resp.StatusCode, m)
+	}
+	schemaVersion, ok := m["schema_version"].(float64)
+	if m["service"] != "vedetta-threat-network" || !ok || schemaVersion != 1 {
 		t.Fatalf("unexpected status body: %v", m)
 	}
 	if _, ok := m["feed_items"]; !ok {
 		t.Fatal("status must include feed_items count")
+	}
+	for _, key := range []string{"corpus_schema_version", "corpus_revision", "corpus_profiles", "corpus_variants"} {
+		if _, ok := m[key]; !ok {
+			t.Fatalf("healthy status must include %s: %v", key, m)
+		}
+	}
+}
+
+func TestStatusEndpointReportsCorpusManifestFailure(t *testing.T) {
+	_, db, ts := newTestServer(t)
+	if _, err := db.Exec(`UPDATE device_corpus_state SET updated_at = 'not-a-time' WHERE singleton = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/v1/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want 503; body=%v", resp.StatusCode, body)
+	}
+	if body["status"] != "error" || body["corpus_status"] != "error" {
+		t.Fatalf("manifest failure status = %v, want status:error and corpus_status:error", body)
+	}
+	for _, key := range []string{"corpus_schema_version", "corpus_revision", "corpus_profiles", "corpus_variants"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("failed manifest must not publish stale %s metadata: %v", key, body)
+		}
+	}
+}
+
+func TestPublicMethodNotAllowedAdvertisesAllowedMethods(t *testing.T) {
+	_, _, ts := newTestServer(t)
+	tests := []struct {
+		path   string
+		method string
+		allow  string
+	}{
+		{path: "/api/v1/status", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/reporters/register", method: http.MethodGet, allow: "POST"},
+		{path: "/api/v1/ingest", method: http.MethodGet, allow: "POST"},
+		{path: "/api/v1/feed/community", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/device-corpus/manifest", method: http.MethodPost, allow: "GET"},
+		{path: "/api/v1/device-corpus/snapshot", method: http.MethodPost, allow: "GET"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, ts.URL+tt.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", resp.StatusCode)
+			}
+			if got := resp.Header.Get("Allow"); got != tt.allow {
+				t.Fatalf("Allow = %q, want %q", got, tt.allow)
+			}
+		})
 	}
 }
 
