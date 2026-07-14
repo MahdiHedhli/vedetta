@@ -43,7 +43,7 @@ if [[ ! -f "${EXAMPLE_FILE}" ]]; then
   exit 1
 fi
 
-if [[ -e "${ENV_FILE}" ]]; then
+if [[ -e "${ENV_FILE}" || -L "${ENV_FILE}" ]]; then
   echo "error: ${ENV_FILE} already exists — refusing to overwrite." >&2
   echo "       Delete it first if you really want to regenerate credentials." >&2
   exit 1
@@ -68,13 +68,14 @@ done
 # shell/URL-safe by using hex.
 SETUP_CODE="$(openssl rand -hex 16)"
 
-# Write atomically: build into a temp file, then move into place so a failure
-# never leaves a half-written .env behind.
-UMASK_OLD="$(umask)"
-umask 077 # secrets — owner-only from the moment the file exists
+# Write atomically: build into a private temp file, then install it with
+# create-if-absent semantics so failures never leave a partial .env behind.
+umask 077 # this script cannot change its parent shell's umask
 TMP_FILE="$(mktemp "${ENV_FILE}.XXXXXX")"
-umask "${UMASK_OLD}"
-trap 'rm -f "${TMP_FILE}"' EXIT
+cleanup_temp_files() {
+  rm -f "${TMP_FILE}" "${TMP_FILE}.tmp"
+}
+trap cleanup_temp_files EXIT
 
 # Start from the documented template so every non-secret default and comment is
 # preserved, then substitute the secret values.
@@ -229,8 +230,25 @@ set_var "VEDETTA_BACKEND_PORT" "${BACKEND_PORT}" "${TMP_FILE}"
 set_var "VEDETTA_FRONTEND_PORT" "${FRONTEND_PORT}" "${TMP_FILE}"
 set_var "VEDETTA_COLLECTOR_PORT" "${COLLECTOR_PORT}" "${TMP_FILE}"
 
-mv "${TMP_FILE}" "${ENV_FILE}"
-chmod 600 "${ENV_FILE}" # secrets — owner read/write only
+# Install with create-if-absent semantics. TMP_FILE is in ENV_FILE's directory,
+# so a hard link is a same-filesystem atomic operation: concurrent setup runs
+# cannot both succeed, and an existing path (including a symlink) is never
+# replaced. The inode is already mode 0600 before its public name appears.
+chmod 600 "${TMP_FILE}"
+INSTALL_ERROR=""
+if ! INSTALL_ERROR="$(ln "${TMP_FILE}" "${ENV_FILE}" 2>&1)"; then
+  if [[ -e "${ENV_FILE}" || -L "${ENV_FILE}" ]]; then
+    echo "error: ${ENV_FILE} was created by another setup process — refusing to overwrite." >&2
+    echo "       Use the credentials printed by the successful process." >&2
+  else
+    echo "error: could not install ${ENV_FILE} atomically; no credentials were written there." >&2
+    if [[ -n "${INSTALL_ERROR}" ]]; then
+      printf '       %s\n' "${INSTALL_ERROR}" >&2
+    fi
+  fi
+  exit 1
+fi
+rm -f "${TMP_FILE}"
 trap - EXIT
 
 echo "Wrote ${ENV_FILE} with fresh, distinct machine credentials:"

@@ -231,6 +231,58 @@ VEDETTA_SKIP_PORT_PROBE=1 ENV_FILE="${SKIPPED_ENV}" \
   "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/skipped.out"
 assert_true "generator labels skipped ports as not probed" grep -q 'Host ports (NOT probed' "${TMP_DIR}/skipped.out"
 
+# Hold two generators at their first openssl call. Both have passed the initial
+# destination check before either can install, deterministically exercising the
+# final create-if-absent boundary rather than relying on scheduler timing.
+REAL_OPENSSL="$(command -v openssl)"
+RACE_BIN="${TMP_DIR}/race-bin"
+RACE_STATE="${TMP_DIR}/race-state"
+RACE_ENV="${TMP_DIR}/concurrent.env"
+mkdir "${RACE_BIN}" "${RACE_STATE}"
+cat >"${RACE_BIN}/openssl" <<'EOF'
+#!/bin/sh
+marker="${RACE_STATE}/ready.${RACE_ID}"
+if [ ! -e "${marker}" ]; then
+  : >"${marker}"
+  while [ "$(find "${RACE_STATE}" -name 'ready.*' -type f | wc -l | tr -d ' ')" -lt 2 ]; do
+    sleep 0.01
+  done
+fi
+exec "${REAL_OPENSSL}" "$@"
+EOF
+chmod +x "${RACE_BIN}/openssl"
+
+RACE_ID=a RACE_STATE="${RACE_STATE}" REAL_OPENSSL="${REAL_OPENSSL}" \
+  PATH="${RACE_BIN}:${PATH}" VEDETTA_SKIP_PORT_PROBE=1 ENV_FILE="${RACE_ENV}" \
+  "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/race-a.out" 2>"${TMP_DIR}/race-a.err" &
+race_pid_a=$!
+RACE_ID=b RACE_STATE="${RACE_STATE}" REAL_OPENSSL="${REAL_OPENSSL}" \
+  PATH="${RACE_BIN}:${PATH}" VEDETTA_SKIP_PORT_PROBE=1 ENV_FILE="${RACE_ENV}" \
+  "${REPO_ROOT}/scripts/gen-env.sh" >"${TMP_DIR}/race-b.out" 2>"${TMP_DIR}/race-b.err" &
+race_pid_b=$!
+race_status_a=0
+race_status_b=0
+wait "${race_pid_a}" || race_status_a=$?
+wait "${race_pid_b}" || race_status_b=$?
+
+race_successes=0
+[ "${race_status_a}" -eq 0 ] && race_successes=$((race_successes + 1))
+[ "${race_status_b}" -eq 0 ] && race_successes=$((race_successes + 1))
+assert_eq 1 "${race_successes}" "concurrent generators have exactly one winner"
+assert_true "concurrent generator installs one complete env" test -s "${RACE_ENV}"
+if [ "${race_status_a}" -eq 0 ]; then
+  race_winner_out="${TMP_DIR}/race-a.out"
+  race_loser_err="${TMP_DIR}/race-b.err"
+else
+  race_winner_out="${TMP_DIR}/race-b.out"
+  race_loser_err="${TMP_DIR}/race-a.err"
+fi
+race_final_code="$(sed -n 's/^VEDETTA_SETUP_CODE=//p' "${RACE_ENV}")"
+race_printed_code="$(tail -n 1 "${race_winner_out}" | tr -d '[:space:]')"
+assert_eq "${race_final_code}" "${race_printed_code}" "winning setup code matches installed env"
+assert_true "concurrent loser reports create-if-absent refusal" grep -q \
+  'created by another setup process.*refusing to overwrite' "${race_loser_err}"
+
 assert_true "update-all checks the local Core after rebuild" grep -Fq \
   'curl -sf "${LOCAL_CORE_URL}/healthz"' "${REPO_ROOT}/scripts/update-all.sh"
 assert_true "update-all preserves the remote sensor Core override" grep -Fq \
