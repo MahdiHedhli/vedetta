@@ -694,7 +694,7 @@ func (db *DB) CountDevicesBySegment(segment string) (int, error) {
 
 // GetLastDeviceUpdate returns the most recent last_seen timestamp across all devices.
 // Used for SNR monitoring to show freshness of the device context baseline
-// (e.g. "frozen since end of 10h collection run" vs actively updating during real capture).
+// (for example, a stale inventory snapshot versus actively updating discovery data).
 func (db *DB) GetLastDeviceUpdate() (time.Time, error) {
 	// Prefer TEXT scan + parse (SQLite often surfaces TIMESTAMP as string for aggregates)
 	var lastStr string

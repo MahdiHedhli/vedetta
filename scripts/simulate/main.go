@@ -16,7 +16,7 @@ Examples:
   go run main.go -count 30  -scenario high_threat
   go run main.go -count 100 -scenario mixed
 
-  # Use real 151-device baseline from the 10h collection for authentic context:
+  # Use the current local inventory as context for otherwise synthetic events:
   go run main.go -count 50 -scenario mixed -real-context
 */
 
@@ -32,16 +32,16 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/google/uuid"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func main() {
 	dbPath := flag.String("db", "/data/vedetta.db", "Path to vedetta.db")
 	count := flag.Int("count", 50, "Number of events to generate")
 	scenario := flag.String("scenario", "mixed", "Scenario: false_positive | mid_warning | high_threat | mixed")
-	realContext := flag.Bool("real-context", false, "Use real devices from the DB (151-device 10h baseline) for authentic vendor/segment/new_device context. Enables realistic SNR testing of device boosts and UI filters/suppression.")
-	enrich := flag.Bool("enrich", false, "POST generated events to /api/v1/ingest so they go through the full Enricher pipeline (real anomaly scoring, context boosts, tags, threat descriptions based on the frozen 151-device baseline). Produces high-quality scored test data for FP/power validation.")
+	realContext := flag.Bool("real-context", false, "Use the current local device inventory for vendor, segment, and first-seen context on synthetic events. Enables realistic SNR testing without embedding inventory data.")
+	enrich := flag.Bool("enrich", false, "POST generated events to /api/v1/ingest so they go through the full Enricher pipeline for computed scores, context boosts, tags, and threat descriptions.")
 	flag.Parse()
 
 	db, err := sql.Open("sqlite3", *dbPath)
@@ -75,9 +75,9 @@ func main() {
 			if dev.Segment != "" {
 				event.NetworkSegment = dev.Segment
 			}
-			// For authentic FP testing: if this real device from the 10h baseline is "established"
-			// at the event time, strip spurious new_device/very_new tags so benign traffic from
-			// real old IoT (Sonos, Luba, etc.) does not get fake context boosts in the test data.
+			// If this inventory device is established at the event time, strip spurious
+			// new_device/very_new tags so established IoT devices do not receive fake
+			// context boosts in the synthetic test data.
 			if !dev.FirstSeen.IsZero() && event.Timestamp.Sub(dev.FirstSeen) > 48*time.Hour {
 				event.TagsJSON = strings.ReplaceAll(event.TagsJSON, `"new_device",`, "")
 				event.TagsJSON = strings.ReplaceAll(event.TagsJSON, `"very_new_device",`, "")
@@ -91,8 +91,8 @@ func main() {
 	}
 
 	if *enrich {
-		// Send through the public ingest so Enricher runs: real scoring, device context lookup
-		// against the 151-device baseline, boosts, threat descriptions, etc.
+		// Send through public ingest so Enricher runs scoring, current-inventory
+		// context lookup, boosts, and threat descriptions.
 		ingestURL := "http://localhost:8080/api/v1/ingest"
 		// Build minimal payloads that the ingest will accept and enrich (it calls Enricher.Enrich)
 		var payloads []map[string]any
@@ -121,7 +121,7 @@ func main() {
 			json.NewDecoder(resp.Body).Decode(&result)
 			log.Printf("Enriched via pipeline: %v", result)
 		}
-		fmt.Printf("Sent %d events through Enricher (real scores/tags from 151-device baseline).\n", len(eventsToPersist))
+		fmt.Printf("Sent %d synthetic events through Enricher with current-inventory context.\n", len(eventsToPersist))
 	} else {
 		// Legacy direct insert path (for existing targets that expect pre-scored or 0-score test data)
 		inserted := 0
@@ -330,7 +330,7 @@ func randomString(n int) string {
 	return string(b)
 }
 
-// === Real device context support for authentic SNR validation ===
+// === Current local device context support for SNR validation ===
 
 type realDevice struct {
 	IP        string

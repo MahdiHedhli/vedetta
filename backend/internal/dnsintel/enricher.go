@@ -58,21 +58,21 @@ var knownGoodUpdateDomains = []string{
 	"philips-hue.com", "meethue.com", "tplinkcloud.com", "ubnt.com", "ui.com", "ubiquiti.com",
 	// Common telemetry / error reporting (high entropy but benign)
 	"sentry.io", "segment.io", "mixpanel.com", "newrelic.com",
-	// Additional from real network data (LIFX, Koogeek, CyberPower power devices)
+	// Additional common power and smart-home ecosystems
 	"lifx.com", "koogeek.com", "cyberpower.com",
-	// Tuya IoT cloud (very common for cheap Espressif/Realtek/Mediatek smart plugs, bulbs, sensors on real home networks;
+	// Tuya IoT cloud (common for Espressif/Realtek/Mediatek smart plugs, bulbs, and sensors;
 	// these frequently produce high-entropy subdomains + regular telemetry that would otherwise trigger DGA/beacon false positives)
 	"tuya.com", "tuyaus.com", "tuyacn.com", "tuya-cloud.com",
 	// TP-Link / Kasa (common in home LANs with routers + IoT)
 	"tplink.com", "kasa.com",
-	// Other frequent IoT ecosystems (robotic mowers, cameras, locks seen in real device scans)
+	// Other frequent IoT ecosystems (robotic mowers, cameras, and locks)
 	"mammotion.com", "eufylife.com",
-	// Netatmo (security cameras like Welcome, weather stations - observed in real scans as Netatmo-Welcome-*)
+	// Netatmo security cameras and weather stations
 	"netatmo.com", "netatmo.net",
-	// PiKVM (open-source IP-KVM device - observed in 10h real device collection run)
+	// PiKVM open-source IP-KVM devices
 	"pikvm.org",
 	// Ultra-common developer / consumer domains that frequently produce noisy single-signal "known_bad" hits
-	// in abuse feeds (urlhaus etc.) during live VALIDATE-REAL on real home traffic. Pure feed match on these
+	// in abuse feeds (urlhaus etc.) during validation traffic. Pure feed matches on these
 	// (especially from primary machines) is almost always FP. Real threats will still score via other signals
 	// or high-risk device context (EOL, new, IoT).
 	"github.com", "raw.githubusercontent.com",
