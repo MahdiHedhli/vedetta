@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,16 +30,50 @@ func uuidFor(label string) string {
 }
 
 func newTestServer(t *testing.T) (*Server, *store.DB, *httptest.Server) {
+	return newTestServerWithLogger(t, log.New(io.Discard, "", 0))
+}
+
+func newTestServerWithLogger(t *testing.T, logger *log.Logger) (*Server, *store.DB, *httptest.Server) {
 	t.Helper()
 	db, err := store.Open("")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	s := NewServer(db, log.New(io.Discard, "", 0))
+	s := NewServer(db, logger)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return s, db, ts
+}
+
+func TestIngestAuthRejectDoesNotLogUntrustedReporterID(t *testing.T) {
+	var logs bytes.Buffer
+	_, _, ts := newTestServerWithLogger(t, log.New(&logs, "", 0))
+
+	untrustedID := "customer@example.invalid/private-router?secret=should-not-be-logged"
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/ingest", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "VedettaReporter "+untrustedID)
+	req.Header.Set("X-Vedetta-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
+	req.Header.Set("X-Vedetta-Nonce", uuidFor("untrusted-log-nonce"))
+	req.Header.Set("X-Vedetta-Signature", "invalid")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+	if strings.Contains(logs.String(), untrustedID) {
+		t.Fatalf("unauthenticated reporter input leaked to logs: %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "ingest auth reject code=") {
+		t.Fatalf("expected a bounded rejection record, got %q", logs.String())
+	}
 }
 
 func TestStatusEndpoint(t *testing.T) {

@@ -163,7 +163,9 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			if ae.Code == auth.CodeReporterDenylisted {
 				status = http.StatusForbidden
 			}
-			s.logger.Printf("ingest auth reject reporter_id=%s code=%s", sr.ReporterID, ae.Code)
+			// sr.ReporterID is untrusted Authorization-header input until Verify
+			// succeeds. Never persist it in logs.
+			s.logger.Printf("ingest auth reject code=%s", ae.Code)
 			writeErr(w, status, ae.Code, ae.Message)
 			return
 		}
@@ -173,7 +175,9 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	res, err := s.Ingest.Process(reporter.ReporterID, body)
 	if err != nil {
-		s.writeIngestError(w, sr.ReporterID, body, err)
+		// Use the reporter identity loaded from the database after successful
+		// signature verification, never the raw Authorization-header value.
+		s.writeIngestError(w, reporter.ReporterID, body, err)
 		return
 	}
 

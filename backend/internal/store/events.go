@@ -174,6 +174,40 @@ type EventQueryResult struct {
 	Limit  int            `json:"limit"`
 }
 
+// eventOrderClause maps the public sort controls to complete, constant SQL
+// fragments. Keeping request values out of the query text makes the injection
+// boundary explicit to both readers and static analyzers.
+func eventOrderClause(sort, order string) string {
+	ascending := order == "asc"
+	switch sort {
+	case "event_type":
+		if ascending {
+			return "e.event_type ASC, e.event_id ASC"
+		}
+		return "e.event_type DESC, e.event_id DESC"
+	case "anomaly_score":
+		if ascending {
+			return "e.anomaly_score ASC, e.event_id ASC"
+		}
+		return "e.anomaly_score DESC, e.event_id DESC"
+	case "source_hash":
+		if ascending {
+			return "e.source_hash ASC, e.event_id ASC"
+		}
+		return "e.source_hash DESC, e.event_id DESC"
+	case "domain":
+		if ascending {
+			return "e.domain ASC, e.event_id ASC"
+		}
+		return "e.domain DESC, e.event_id DESC"
+	default:
+		if ascending {
+			return "e.timestamp ASC, e.event_id ASC"
+		}
+		return "e.timestamp DESC, e.event_id DESC"
+	}
+}
+
 // QueryEvents returns events matching the given filters with pagination.
 func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 	// Defaults
@@ -187,22 +221,7 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 		params.Limit = 500
 	}
 
-	// Validate and default sort
-	allowedSort := map[string]string{
-		"timestamp":     "e.timestamp",
-		"event_type":    "e.event_type",
-		"anomaly_score": "e.anomaly_score",
-		"source_hash":   "e.source_hash",
-		"domain":        "e.domain",
-	}
-	sortExpression, ok := allowedSort[params.Sort]
-	if !ok {
-		params.Sort = "timestamp"
-		sortExpression = allowedSort[params.Sort]
-	}
-	if params.Order != "asc" {
-		params.Order = "desc"
-	}
+	orderBy := eventOrderClause(params.Sort, params.Order)
 
 	// Build WHERE clauses
 	var conditions []string
@@ -276,7 +295,7 @@ func (db *DB) QueryEvents(params EventQueryParams) (*EventQueryResult, error) {
 		       COALESCE(e.origin, ''), COALESCE(e.sensor_id, ''),
 		       COALESCE(e.disposition, 'active'), COALESCE(e.suppression_rule_id, '')
 		` + eventFromSQL + ` ` + whereClause + `
-		ORDER BY ` + sortExpression + ` ` + params.Order + `, e.event_id ` + params.Order + `
+		ORDER BY ` + orderBy + `
 		LIMIT ? OFFSET ?`
 
 	dataArgs := append(args, params.Limit, offset)
