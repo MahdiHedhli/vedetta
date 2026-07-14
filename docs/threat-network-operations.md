@@ -293,6 +293,7 @@ sudo -u vedetta sh -c \
 sudo chmod 600 /var/lib/vedetta/threat-network-admin.token
 
 sudo -u vedetta env \
+  THREAT_NETWORK_DB=/var/lib/vedetta/threat-network.db \
   THREAT_NETWORK_ADMIN_ENABLED=true \
   THREAT_NETWORK_ADMIN_ADDR=127.0.0.1:9091 \
   THREAT_NETWORK_ADMIN_TOKEN_FILE=/var/lib/vedetta/threat-network-admin.token \

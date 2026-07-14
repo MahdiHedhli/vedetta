@@ -1114,12 +1114,26 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn(
             'var profileReasons=["new_profile","label_correction"];', dashboard
         )
+        self.assertIn("minimum=1,maximum=dhcp?254:65535", dashboard)
         self.assertIn('<select id="p-reason" disabled>', dashboard)
         self.assertFalse(
             serve._is_admin_route(
                 "POST", "/api/v1/admin/device-corpus/releases/12"
             )
         )
+
+    def test_native_start_docs_use_service_owned_database_path(self):
+        repository = Path(__file__).resolve().parents[2]
+        paths = (
+            repository / "threat-network" / "web" / "README.md",
+            repository / "docs" / "threat-network-operations.md",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertIn(
+                    "THREAT_NETWORK_DB=/var/lib/vedetta/threat-network.db",
+                    path.read_text(),
+                )
 
     def test_upstreams_must_be_explicit_loopback_origins(self):
         for value in ("http://127.0.0.1:9090", "https://[::1]:9091"):
