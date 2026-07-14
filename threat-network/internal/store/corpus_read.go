@@ -417,7 +417,7 @@ func (db *DB) PageCorpusProfiles(ctx context.Context, search string, limit, offs
 	if limit < 1 || limit > 100 || offset < 0 || len(search) > 128 || strings.ContainsAny(search, "\r\n\x00") {
 		return page, fmt.Errorf("invalid corpus profile page")
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return page, err
 	}
@@ -609,7 +609,7 @@ func (db *DB) PageCorpusAudit(ctx context.Context, limit, offset int) (CorpusAud
 	if limit < 1 || limit > 100 || offset < 0 {
 		return page, fmt.Errorf("invalid corpus audit page")
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return page, err
 	}
@@ -667,7 +667,7 @@ func (db *DB) PageCorpusReleases(ctx context.Context, limit, offset int) (Corpus
 	if limit < 1 || limit > 100 || offset < 0 {
 		return page, fmt.Errorf("invalid corpus release page")
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return page, err
 	}
