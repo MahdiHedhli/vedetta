@@ -45,3 +45,18 @@ func TestValidatePublicSnapshotRejectsVersionFactWithoutProvenance(t *testing.T)
 		t.Fatalf("unexpected non-reflective provenance error: %v", err)
 	}
 }
+
+func TestValidatePublicSnapshotRejectsVariantWithoutProvenance(t *testing.T) {
+	t.Parallel()
+
+	snapshot := validPublicSnapshot(t)
+	snapshot.Profiles[0].Variants[0].Sources = nil
+	snapshot.Profiles[0].Variants[0].VersionFacts = nil
+	err := ValidatePublicSnapshot(snapshot)
+	if err == nil {
+		t.Fatal("source-less public variant unexpectedly accepted")
+	}
+	if !strings.Contains(err.Error(), ".sources") || !strings.Contains(err.Error(), "provenance") {
+		t.Fatalf("unexpected source-less variant error: %v", err)
+	}
+}

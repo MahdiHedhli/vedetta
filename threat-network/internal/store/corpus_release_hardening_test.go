@@ -6,9 +6,13 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/vedetta-network/vedetta/threat-network/internal/corpus"
 )
 
 func TestCurrentCorpusSnapshotReturnsCallerOwnedBytes(t *testing.T) {
@@ -166,6 +170,36 @@ func TestStoredCorpusReleaseMetadataMustMatchSnapshot(t *testing.T) {
 				t.Fatal("historical snapshot served despite release metadata mismatch")
 			}
 		})
+	}
+}
+
+func TestStoredCorpusReleaseRequiresVariantProvenance(t *testing.T) {
+	sourceDB := newTestDB(t)
+	createPublishedCorpusTestProfile(t, sourceDB, "Source-less Release", 0)
+	raw, _, err := sourceDB.CurrentCorpusSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot corpus.PublicSnapshot
+	if err = json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	variant := &snapshot.Profiles[0].Variants[0]
+	variant.Sources = []corpus.Source{}
+	variant.VersionFacts = []corpus.VersionFact{}
+	raw, err = json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db := newTestDB(t)
+	installSyntheticCorpusRelease(t, db, string(raw), len(snapshot.Profiles), 1,
+		snapshot.GeneratedAt.Format(time.RFC3339Nano))
+	if _, _, err = db.CurrentCorpusSnapshot(context.Background()); err == nil || !strings.Contains(err.Error(), "provenance") {
+		t.Fatalf("current source-less snapshot error=%v", err)
+	}
+	if _, _, err = db.GetCorpusRelease(context.Background(), 1); err == nil || !strings.Contains(err.Error(), "provenance") {
+		t.Fatalf("historical source-less snapshot error=%v", err)
 	}
 }
 

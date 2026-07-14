@@ -168,6 +168,9 @@ func validatePublicVariant(path, profileID string, variant PublicVariant, allVar
 	if variant.ShapeHash != hash {
 		return fmt.Errorf("%s.shape_hash does not address the canonical shape", path)
 	}
+	if len(variant.Sources) == 0 {
+		return fmt.Errorf("%s.sources requires at least one provenance citation", path)
+	}
 	if len(variant.Sources) > 16 {
 		return fmt.Errorf("%s.sources exceeds publication bound", path)
 	}
