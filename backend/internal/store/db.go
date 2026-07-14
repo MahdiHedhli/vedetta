@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -25,23 +26,29 @@ type DB struct {
 
 // Open opens (or creates) the SQLite database and runs migrations.
 func Open(dbPath string) (*DB, error) {
+	return openWith(dbPath, sql.Open)
+}
+
+type sqlOpenFunc func(driverName, dataSourceName string) (*sql.DB, error)
+
+func openWith(dbPath string, opener sqlOpenFunc) (*DB, error) {
 	if dbPath == "" {
 		dbPath = "/data/vedetta.db"
 	}
 
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
+	db, err := opener("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	// Test the connection
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+		return nil, fmt.Errorf("failed to ping database: %w", errors.Join(err, db.Close()))
 	}
 
 	store := &DB{DB: db}
 	if err := store.migrate(); err != nil {
-		return nil, fmt.Errorf("migration failed: %w", err)
+		return nil, fmt.Errorf("migration failed: %w", errors.Join(err, db.Close()))
 	}
 
 	log.Printf("Database opened: %s", dbPath)
@@ -111,121 +118,8 @@ func (db *DB) migrate() error {
 		return db.applyInlineFallback()
 	}
 
-	// Apply migrations on ONE dedicated connection with FOREIGN KEY enforcement
-	// relaxed for the whole pass. SQLite silently ignores `PRAGMA foreign_keys`
-	// inside a transaction, and the runner wraps every migration file in one, so a
-	// migration can never disable enforcement itself. Table-rebuild migrations
-	// (019/020/025: RENAME old -> CREATE new -> copy rows -> DROP old) then fail on
-	// a POPULATED database, because DROPping the renamed old table performs an
-	// implicit row-by-row DELETE that enforces FK RESTRICT against child rows an
-	// earlier migration created (e.g. 018's device_signals/identities/networks ->
-	// devices). It only manifests with data present — which is why fresh-install
-	// tests (zero rows) stayed green while a real 015->025 upgrade of a live
-	// inventory crashed the backend fail-closed at 019. Fix: relax enforcement
-	// OUTSIDE any transaction on a reserved connection, run the whole loop on it,
-	// then re-validate the entire graph with `PRAGMA foreign_key_check` and refuse
-	// to start on any violation. Enforcement stays ON for the app's other pooled
-	// connections (per-connection DSN flag, db.go Open) and is restored on this one
-	// before it returns to the pool. Mirrors asset_schema.go ensureOpenEventQueryType.
-	ctx := context.Background()
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("reserve migration connection: %w", err)
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
-		return fmt.Errorf("relax foreign keys for migration: %w", err)
-	}
-
-	// Apply each migration that hasn't been applied yet
-	for _, filename := range sqlFiles {
-		var applied int
-		err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE id = ?", filename).Scan(&applied)
-		if err != nil {
-			return fmt.Errorf("check migration %s: %w", filename, err)
-		}
-		if applied > 0 {
-			continue
-		}
-
-		// Read the migration file
-		sqlBytes, err := os.ReadFile(filepath.Join(migrationDir, filename))
-		if err != nil {
-			return fmt.Errorf("read migration %s: %w", filename, err)
-		}
-
-		// Execute in a transaction on the FK-relaxed migration connection.
-		tx, err := conn.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin tx for %s: %w", filename, err)
-		}
-
-		// Execute the migration statement-by-statement. Per-STATEMENT tolerance
-		// (rather than executing the whole file at once) is essential: an
-		// already-applied statement — e.g. an ALTER for a column another migration
-		// already added — must NOT abort the statements that FOLLOW it in the same
-		// file. Whole-file exec stops at the first error, so a redundant leading
-		// ALTER used to silently skip a later CREATE TABLE while the migration was
-		// still recorded as applied, leaving the schema incomplete (beta-gate B3:
-		// suppression_rules never created). Any UNEXPECTED error still rolls back.
-		for _, stmt := range splitSQLStatements(string(sqlBytes)) {
-			if isNoOpSQL(stmt) {
-				continue
-			}
-			if _, execErr := tx.Exec(stmt); execErr != nil {
-				if isAlreadyAppliedErr(execErr) {
-					log.Printf("Migration %s: statement already applied (%v) — skipping, continuing with the rest", filename, execErr)
-					continue
-				}
-				tx.Rollback()
-				return fmt.Errorf("execute migration %s: %w", filename, execErr)
-			}
-		}
-
-		// Record as applied. Use OR IGNORE to be extra safe if the record was partially created.
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)`,
-			filename, time.Now().UTC()); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("record migration %s: %w", filename, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration %s: %w", filename, err)
-		}
-
-		log.Printf("Migration applied: %s", filename)
-	}
-
-	// Now that every rebuild is done, re-validate all foreign keys across the
-	// whole schema. Enforcement was relaxed during the pass, so this is the gate
-	// that catches a migration which genuinely orphaned a row: fail closed rather
-	// than serve a corrupt graph.
-	fkRows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
-	if err != nil {
-		return fmt.Errorf("foreign_key_check: %w", err)
-	}
-	var violations []string
-	for fkRows.Next() {
-		var table, parent sql.NullString
-		var rowid, fkID sql.NullInt64
-		if scanErr := fkRows.Scan(&table, &rowid, &parent, &fkID); scanErr != nil {
-			fkRows.Close()
-			return fmt.Errorf("scan foreign_key_check: %w", scanErr)
-		}
-		violations = append(violations, fmt.Sprintf("%s(rowid=%d)->%s", table.String, rowid.Int64, parent.String))
-	}
-	fkRows.Close()
-	if rowsErr := fkRows.Err(); rowsErr != nil {
-		return fmt.Errorf("foreign_key_check rows: %w", rowsErr)
-	}
-	if len(violations) > 0 {
-		return fmt.Errorf("post-migration foreign_key_check found %d violation(s): %s",
-			len(violations), strings.Join(violations, ", "))
-	}
-
-	// Restore enforcement before this connection is returned to the pool.
-	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
-		return fmt.Errorf("restore foreign keys after migration: %w", err)
+	if err := db.applyFileMigrations(context.Background(), migrationDir, sqlFiles); err != nil {
+		return err
 	}
 
 	log.Printf("Database migrations complete (%d files)", len(sqlFiles))
@@ -293,6 +187,139 @@ func (db *DB) migrate() error {
 	}
 
 	return nil
+}
+
+// applyFileMigrations runs the filesystem migration chain on one reserved
+// connection. SQLite PRAGMAs are connection-local, and foreign_keys cannot be
+// changed from inside the transaction used for each migration file. Keep that
+// connection FK-relaxed only for the migration pass, validate the resulting
+// graph, restore both migration-sensitive PRAGMAs on every exit, and release the
+// connection before migrate continues with db-level runtime ensures. Releasing
+// here is essential for :memory: databases: a db-level query while this connection
+// is reserved would make database/sql open an independent empty SQLite database.
+func (db *DB) applyFileMigrations(ctx context.Context, migrationDir string, sqlFiles []string) (retErr error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve migration connection: %w", err)
+	}
+	defer func() {
+		// Do not use ctx for cleanup: a cancelled caller must not return a pooled
+		// connection with migration PRAGMAs still relaxed.
+		cleanupCtx := context.Background()
+		var cleanupErr error
+		if _, err := conn.ExecContext(cleanupCtx, `PRAGMA legacy_alter_table = OFF`); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore legacy_alter_table after migration: %w", err))
+		}
+		if _, err := conn.ExecContext(cleanupCtx, `PRAGMA foreign_keys = ON`); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore foreign keys after migration: %w", err))
+		}
+		if err := conn.Close(); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release migration connection: %w", err))
+		}
+		retErr = errors.Join(retErr, cleanupErr)
+	}()
+
+	// A prior failed schema rebuild could have left a pooled connection with this
+	// enabled. Start from the normal default as well as restoring it on return.
+	if _, err := conn.ExecContext(ctx, `PRAGMA legacy_alter_table = OFF`); err != nil {
+		return fmt.Errorf("reset legacy_alter_table before migration: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("relax foreign keys for migration: %w", err)
+	}
+
+	for _, filename := range sqlFiles {
+		var applied int
+		if err := conn.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM schema_migrations WHERE id = ?", filename).Scan(&applied); err != nil {
+			return fmt.Errorf("check migration %s: %w", filename, err)
+		}
+		if applied > 0 {
+			continue
+		}
+
+		sqlBytes, err := os.ReadFile(filepath.Join(migrationDir, filename))
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", filename, err)
+		}
+		if err := applyMigrationFile(ctx, conn, filename, string(sqlBytes)); err != nil {
+			return err
+		}
+		log.Printf("Migration applied: %s", filename)
+	}
+
+	violations, err := migrationForeignKeyViolations(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if len(violations) > 0 {
+		return fmt.Errorf("post-migration foreign_key_check found %d violation(s): %s",
+			len(violations), strings.Join(violations, ", "))
+	}
+	return nil
+}
+
+func applyMigrationFile(ctx context.Context, conn *sql.Conn, filename, script string) (retErr error) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx for %s: %w", filename, err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			retErr = errors.Join(retErr, fmt.Errorf("rollback migration %s: %w", filename, err))
+		}
+	}()
+
+	// Execute statement-by-statement. Per-statement tolerance is essential: an
+	// already-applied ALTER must not skip later statements in the same file.
+	for _, stmt := range splitSQLStatements(script) {
+		if isNoOpSQL(stmt) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			if isAlreadyAppliedErr(err) {
+				log.Printf("Migration %s: statement already applied (%v) — skipping, continuing with the rest", filename, err)
+				continue
+			}
+			return fmt.Errorf("execute migration %s: %w", filename, err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)`,
+		filename, time.Now().UTC()); err != nil {
+		return fmt.Errorf("record migration %s: %w", filename, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %s: %w", filename, err)
+	}
+	return nil
+}
+
+func migrationForeignKeyViolations(ctx context.Context, conn *sql.Conn) (violations []string, retErr error) {
+	rows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return nil, fmt.Errorf("foreign_key_check: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close foreign_key_check rows: %w", err))
+		}
+	}()
+
+	for rows.Next() {
+		var table, parent sql.NullString
+		var rowid, fkID sql.NullInt64
+		if err := rows.Scan(&table, &rowid, &parent, &fkID); err != nil {
+			return nil, fmt.Errorf("scan foreign_key_check: %w", err)
+		}
+		violations = append(violations,
+			fmt.Sprintf("%s(rowid=%d)->%s", table.String, rowid.Int64, parent.String))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("foreign_key_check rows: %w", err)
+	}
+	return violations, nil
 }
 
 // ensureSingleActiveSensorToken collapses any duplicate active sensor tokens

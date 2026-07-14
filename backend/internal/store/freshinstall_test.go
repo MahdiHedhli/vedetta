@@ -439,6 +439,134 @@ func stageMigrations(t *testing.T, dst string) {
 	}
 }
 
+func stageFailingMigration(t *testing.T, dst string) string {
+	t.Helper()
+	migrationDir := filepath.Join(dst, "siem", "migrations")
+	if err := os.MkdirAll(migrationDir, 0o755); err != nil {
+		t.Fatalf("mkdir failing migrations: %v", err)
+	}
+	// legacy_alter_table deliberately remains ON when the following statement
+	// fails. The runner must roll back the transaction and restore both
+	// connection-local migration PRAGMAs before releasing the connection.
+	script := `
+		PRAGMA legacy_alter_table = ON;
+		CREATE TABLE migration_should_rollback (id INTEGER PRIMARY KEY);
+		INSERT INTO table_that_does_not_exist VALUES (1);
+	`
+	if err := os.WriteFile(filepath.Join(migrationDir, "001_fails.sql"), []byte(script), 0o644); err != nil {
+		t.Fatalf("write failing migration: %v", err)
+	}
+	return migrationDir
+}
+
+func TestOpen_FileMigrationsInMemoryUsesOneConnection(t *testing.T) {
+	t.Setenv("VEDETTA_MIGRATIONS_DIR", findMigrationsDir(t))
+
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open(:memory:) with file migrations: %v", err)
+	}
+	defer db.Close()
+
+	// The test is intentionally serial and has performed no operation since Open.
+	// Two connections here means the migration connection was still reserved when
+	// runtime ensures ran, forcing database/sql to create a separate empty
+	// :memory: database.
+	if got := db.Stats().OpenConnections; got != 1 {
+		t.Fatalf("Open(:memory:) retained %d pooled connections, want exactly 1 migrated database", got)
+	}
+
+	for _, table := range []string{"events", "devices", "api_tokens", "findings"} {
+		var found int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&found); err != nil {
+			t.Fatalf("inspect %s after in-memory migration: %v", table, err)
+		}
+		if found != 1 {
+			t.Fatalf("table %s missing after in-memory file migration", table)
+		}
+	}
+
+	var foreignKeys, legacyAlter int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("read foreign_keys after in-memory migration: %v", err)
+	}
+	if err := db.QueryRow(`PRAGMA legacy_alter_table`).Scan(&legacyAlter); err != nil {
+		t.Fatalf("read legacy_alter_table after in-memory migration: %v", err)
+	}
+	if foreignKeys != 1 || legacyAlter != 0 {
+		t.Fatalf("migration connection PRAGMAs = foreign_keys:%d legacy_alter_table:%d, want 1/0", foreignKeys, legacyAlter)
+	}
+}
+
+func TestMigrateFailureRestoresAndReleasesConnection(t *testing.T) {
+	migrationDir := stageFailingMigration(t, t.TempDir())
+	t.Setenv("VEDETTA_MIGRATIONS_DIR", migrationDir)
+
+	raw, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "migration-cleanup.db")+"?_foreign_keys=on")
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	defer raw.Close()
+	// A single connection makes the lifecycle deterministic: the post-failure
+	// PRAGMA reads must reuse the exact connection used by the migration runner.
+	raw.SetMaxOpenConns(1)
+	raw.SetMaxIdleConns(1)
+
+	db := &DB{DB: raw}
+	if err := db.migrate(); err == nil {
+		t.Fatal("migrate unexpectedly accepted the failing migration")
+	}
+	if got := raw.Stats().InUse; got != 0 {
+		t.Fatalf("migration failure left %d connection(s) checked out, want 0", got)
+	}
+
+	var foreignKeys, legacyAlter int
+	if err := raw.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("read foreign_keys after failed migration: %v", err)
+	}
+	if err := raw.QueryRow(`PRAGMA legacy_alter_table`).Scan(&legacyAlter); err != nil {
+		t.Fatalf("read legacy_alter_table after failed migration: %v", err)
+	}
+	if foreignKeys != 1 || legacyAlter != 0 {
+		t.Fatalf("failed migration returned connection with foreign_keys:%d legacy_alter_table:%d, want 1/0", foreignKeys, legacyAlter)
+	}
+
+	var rolledBack int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='migration_should_rollback'`).Scan(&rolledBack); err != nil {
+		t.Fatalf("inspect failed migration rollback: %v", err)
+	}
+	if rolledBack != 0 {
+		t.Fatal("failed migration did not roll back its schema changes")
+	}
+}
+
+func TestOpenMigrationFailureClosesDatabase(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("VEDETTA_MIGRATIONS_DIR", stageFailingMigration(t, tmp))
+
+	var opened *sql.DB
+	opener := func(driverName, dataSourceName string) (*sql.DB, error) {
+		db, err := sql.Open(driverName, dataSourceName)
+		opened = db
+		return db, err
+	}
+	if db, err := openWith(filepath.Join(tmp, "open-failure.db"), opener); err == nil {
+		if db != nil {
+			db.Close()
+		}
+		t.Fatal("openWith unexpectedly accepted the failing migration")
+	}
+	if opened == nil {
+		t.Fatal("test opener was not called")
+	}
+	if err := opened.Ping(); err == nil {
+		t.Fatal("database pool remained usable after Open returned a migration error")
+	}
+	if got := opened.Stats().OpenConnections; got != 0 {
+		t.Fatalf("Open migration failure retained %d connection(s), want 0", got)
+	}
+}
+
 // TestFullMigrationChain_RealRunner exercises the REAL filesystem migration runner
 // (store.Open → migrate() over on-disk siem/migrations/*.sql), NOT the inline
 // fallback. It is the permanent gate for two foundation-migration bugs:
@@ -955,7 +1083,13 @@ func TestFullMigrationChain_PopulatedLegacyDB_FKSafe(t *testing.T) {
 	for rows.Next() {
 		violations++
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatalf("iterate foreign_key_check: %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close foreign_key_check rows: %v", err)
+	}
 	if violations != 0 {
 		t.Errorf("PRAGMA foreign_key_check reported %d violation(s) after the populated upgrade, want 0", violations)
 	}
