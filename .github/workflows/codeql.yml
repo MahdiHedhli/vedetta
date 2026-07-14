@@ -31,12 +31,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-
       - name: Set up Go
         if: matrix.language == 'go'
         uses: actions/setup-go@v5
@@ -47,6 +41,16 @@ jobs:
             sensor/go.sum
             telemetry/go.sum
             threat-network/go.sum
+            scripts/simulate/go.sum
+
+      # setup-go must run before CodeQL initialization. In manual build mode,
+      # init prepends CodeQL's tracing wrapper to PATH; running setup-go later
+      # replaces that wrapper and produces an empty Go database.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
 
       - name: Install sensor build dependency
         if: matrix.language == 'go'
@@ -55,9 +59,13 @@ jobs:
       - name: Build Go modules for CodeQL
         if: matrix.language == 'go'
         run: |
-          for module in backend sensor telemetry threat-network; do
+          for module in backend sensor telemetry threat-network scripts/simulate; do
             (cd "$module" && go build ./...)
           done
+          # The shipped Windows sensor has separate ETW, service, credential,
+          # and network-scan implementations hidden behind Windows build tags.
+          # Trace the release target as well as the default Linux build.
+          (cd sensor && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...)
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v4
