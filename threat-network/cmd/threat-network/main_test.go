@@ -129,7 +129,7 @@ func TestPrepareRunModeDispatchesEarlyExitCommandsBeforeCorpusValidation(t *test
 			tt.setup(t, db)
 			installCorruptCorpusRelease(t, db)
 
-			if _, _, err := db.CurrentCorpusSnapshot(context.Background(), ); err == nil {
+			if _, _, err := db.CurrentCorpusSnapshot(context.Background()); err == nil {
 				t.Fatal("test setup did not corrupt the current corpus release")
 			}
 			handled, err := prepareRunMode(db, tt.mode)
