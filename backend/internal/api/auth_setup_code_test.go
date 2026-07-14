@@ -90,6 +90,35 @@ func TestBootstrap_FirstAdminRequiresSetupCode(t *testing.T) {
 	}
 }
 
+func TestBootstrap_InvalidAdminPayloadDoesNotConsumeSetupCode(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	router := NewRouter(srv)
+
+	data, err := json.Marshal(map[string]any{
+		"scope":     "admin",
+		"sensor_id": "sensor-id-is-not-valid-here",
+		"label":     "malformed first admin",
+	})
+	if err != nil {
+		t.Fatalf("marshal malformed request: %v", err)
+	}
+	req := httptest.NewRequest("POST", "/api/v1/auth/tokens", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Vedetta-Setup-Code", testSetupCode)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed first admin: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Payload validation must happen before the single-use code is consumed, so
+	// the operator can correct the request without restarting Core.
+	w = postToken(t, router, "admin", "", testSetupCode)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("corrected first admin with same setup code: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestBootstrap_SetupCodeConsumedIsReflectedInStatus(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	router := NewRouter(srv)

@@ -80,7 +80,23 @@ func createTestToken(t *testing.T, db *store.DB, scope auth.TokenScope, sensorID
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
-	if err := db.CreateToken(token); err != nil {
+	if scope == auth.ScopeSensor {
+		// Production sensor tokens must go through atomic enrollment. A few API
+		// authorization tests deliberately need a synthetic sensor credential to
+		// exercise a scope boundary without enrolling a device, so insert it only
+		// in this test helper.
+		var boundID any
+		if sensorID != "" {
+			boundID = sensorID
+		}
+		if _, err := db.Exec(`
+			INSERT INTO api_tokens
+				(token_id, token_hash, scope, sensor_id, label, created_at, last_used, revoked)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+		`, token.TokenID, token.TokenHash, token.Scope, boundID, token.Label, token.CreatedAt, token.LastUsed); err != nil {
+			t.Fatalf("store synthetic sensor token: %v", err)
+		}
+	} else if err := db.CreateToken(token); err != nil {
 		t.Fatalf("store token: %v", err)
 	}
 

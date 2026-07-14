@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
@@ -32,7 +33,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Scope    string `json:"scope"` // sensor | admin | ingest | read
+		Scope    string `json:"scope"` // admin | ingest | read; sensor tokens use enrollment
 		SensorID string `json:"sensor_id,omitempty"`
 		Label    string `json:"label,omitempty"`
 	}
@@ -43,8 +44,19 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scope := auth.TokenScope(body.Scope)
-	if scope != auth.ScopeSensor && scope != auth.ScopeAdmin && scope != auth.ScopeIngest && scope != auth.ScopeRead {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "scope must be 'sensor', 'admin', 'ingest', or 'read'"})
+	switch scope {
+	case auth.ScopeAdmin, auth.ScopeIngest, auth.ScopeRead, auth.ScopeSensor:
+		// ScopeSensor is recognized so bootstrap can preserve its admin-only 403;
+		// it is rejected explicitly below once the bootstrap gate has run.
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "scope must be 'admin', 'ingest', or 'read'"})
+		return
+	}
+	if scope != auth.ScopeSensor && strings.TrimSpace(body.SensorID) != "" {
+		// Reject malformed first-admin requests before consuming the one-time
+		// setup code. Sensor scope is handled after the bootstrap admin-only gate
+		// so it preserves the documented bootstrap 403 response.
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "sensor_id is not valid for this token endpoint"})
 		return
 	}
 
@@ -68,7 +80,10 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
+	if scope == auth.ScopeSensor {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "sensor tokens are issued through sensor enrollment"})
+		return
+	}
 	// Generate the token
 	rawToken, token, err := auth.GenerateToken(scope, body.SensorID, body.Label)
 	if err != nil {

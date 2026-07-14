@@ -986,10 +986,10 @@ func stageMigrationsUpTo(t *testing.T, dst, cutoff string) {
 // device_networks / device_identities / device_signals rows migration 018 created,
 // raising "FOREIGN KEY constraint failed". It ONLY fires with data present — which is
 // why every other real-runner test here (zero device rows) stayed green while a real
-// 015->025 upgrade of a live inventory crashed the backend fail-closed at 019.
+// 015->026 upgrade of a live inventory crashed the backend fail-closed at 019.
 //
 // This test seeds a device + a device_networks child row at the 018 schema, then runs
-// the REAL runner over 019..025 and asserts it completes, preserves the data, and
+// the REAL runner over 019..026 and asserts it completes, preserves the data, and
 // leaves a clean foreign_key_check. It fails (store.Open error at 019) if the runner
 // stops relaxing FK enforcement for the migration pass.
 //
@@ -1041,21 +1041,21 @@ func TestFullMigrationChain_PopulatedLegacyDB_FKSafe(t *testing.T) {
 		t.Fatalf("close 018 db: %v", err)
 	}
 
-	// Phase 2: complete the chain (019..025) and re-open. The real runner now applies
+	// Phase 2: complete the chain (019..026) and re-open. The real runner now applies
 	// the events+devices rebuilds to the POPULATED DB. Pre-fix this returned
 	// "FOREIGN KEY constraint failed" at 019; post-fix it must succeed.
 	stageMigrations(t, tmp)
 	db, err := Open(dbPath)
 	if err != nil {
-		t.Fatalf("store.Open over 019..025 on a POPULATED legacy DB failed (the FK-on rebuild regression): %v", err)
+		t.Fatalf("store.Open over 019..026 on a POPULATED legacy DB failed (the FK-on rebuild regression): %v", err)
 	}
 	defer db.Close()
 
 	if err := db.QueryRow(`SELECT MAX(id) FROM schema_migrations`).Scan(&head); err != nil {
 		t.Fatalf("read migration head after full chain: %v", err)
 	}
-	if !strings.HasPrefix(head, "025") {
-		t.Errorf("migration head = %q, want 025_*", head)
+	if !strings.HasPrefix(head, "026") {
+		t.Errorf("migration head = %q, want 026_*", head)
 	}
 
 	// The seeded device + child row survived the rebuilds.

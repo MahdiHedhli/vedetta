@@ -157,6 +157,15 @@ Migration 025 adds the following asset-centered tables:
 - `finding_suppression_rules` and `finding_suppression_history`
 - `collection_source_health`
 
+Migration 026 adds retained sensor lifecycle state:
+
+- `removed_at`, `removed_by_token_id`, and `removal_reason` on `sensors`
+- `sensor_lifecycle_events` for append-only removal/reactivation history
+
+Removed sensor rows are identity tombstones. They remain in Core so a generic
+enrollment code can never reclaim a previously used sensor ID; reactivation
+requires an admin-minted reset code bound to that exact ID.
+
 ## Storage
 
 ### Local Node (SQLite)
@@ -263,6 +272,6 @@ Migration 025 adds the following asset-centered tables:
 ## Schema Versioning
 
 Core applies numbered, forward-only SQLite migrations and mirrors the latest
-schema in its inline fallback. Migration 025 is additive but its rollback path is
-the pre-upgrade database backup plus the matching prior image; in-place down
-migrations are unsupported.
+schema in its inline fallback. Migrations 025 and 026 are additive, but their
+rollback path is the pre-upgrade database backup plus the matching prior image;
+in-place down migrations are unsupported.

@@ -250,14 +250,9 @@ func TestIngestAuth_SensorTokenCannotCrossCollectorBoundary(t *testing.T) {
 	router := NewRouter(srv)
 	_ = createIngestToken(t, db) // establishes auth state (>=1 token exists)
 
-	// Sensor-scoped token with no sensor_id (avoids the sensors FK).
-	rawSensor, sensorTok, err := auth.GenerateToken(auth.ScopeSensor, "", "test-sensor")
-	if err != nil {
-		t.Fatalf("generate sensor token: %v", err)
-	}
-	if err := db.CreateToken(sensorTok); err != nil {
-		t.Fatalf("store sensor token: %v", err)
-	}
+	// Synthetic sensor credential exercises the ingest scope boundary; real
+	// sensor credentials are issued only through enrollment.
+	rawSensor := createTestToken(t, db, auth.ScopeSensor, "")
 
 	w := postIngest(t, router, []models.Event{
 		{EventType: "firewall_log", Timestamp: time.Now().UTC(), SourceHash: "h"},

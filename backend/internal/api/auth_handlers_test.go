@@ -10,7 +10,7 @@ package api
 //   - bootstrap: first admin token creatable with NO auth → 201;
 //   - after bootstrap: second token creatable WITH an admin bearer → 201;
 //   - after bootstrap: create with NO token → 401;
-//   - after bootstrap: create with a NON-admin (sensor) token → 403.
+//   - after bootstrap: create with a NON-admin (read) token → 403.
 //
 // Synthetic values only.
 
@@ -64,11 +64,11 @@ func TestHandleCreateToken_BootstrapThenAdminCanMintSecond(t *testing.T) {
 
 	// 2. After bootstrap: minting a SECOND token WITH the admin bearer must now
 	//    succeed. This is the exact case BUG-2 broke (403 with a valid admin token).
-	w2, sensorToken := createTokenRequest(t, router, adminToken, "sensor")
+	w2, readToken := createTokenRequest(t, router, adminToken, "read")
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("second token with admin bearer: expected 201, got %d: %s", w2.Code, w2.Body.String())
 	}
-	if sensorToken == "" {
+	if readToken == "" {
 		t.Fatal("second token: no raw token returned")
 	}
 }
@@ -78,9 +78,9 @@ func TestHandleCreateToken_RejectsUnauthedAndNonAdminAfterBootstrap(t *testing.T
 	router := NewRouter(srv)
 
 	// Establish auth state: at least one token exists (bootstrap done). The
-	// sensor-scoped token uses an empty sensor_id to avoid the sensors FK.
+	// A read token is a valid non-admin credential for the middleware check.
 	adminToken := createTestToken(t, db, "admin", "")
-	nonAdminToken := createTestToken(t, db, "sensor", "")
+	nonAdminToken := createTestToken(t, db, "read", "")
 
 	// No bearer at all → 401 (auth is configured, header missing/invalid).
 	w, _ := createTokenRequest(t, router, "", "sensor")
@@ -88,7 +88,7 @@ func TestHandleCreateToken_RejectsUnauthedAndNonAdminAfterBootstrap(t *testing.T
 		t.Errorf("no-auth create after bootstrap: expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Valid but non-admin (sensor) token → 403.
+	// Valid but non-admin (read) token → 403.
 	w2, _ := createTokenRequest(t, router, nonAdminToken, "sensor")
 	if w2.Code != http.StatusForbidden {
 		t.Errorf("non-admin create after bootstrap: expected 403, got %d: %s", w2.Code, w2.Body.String())
@@ -98,6 +98,38 @@ func TestHandleCreateToken_RejectsUnauthedAndNonAdminAfterBootstrap(t *testing.T
 	w3, _ := createTokenRequest(t, router, adminToken, "ingest")
 	if w3.Code != http.StatusCreated {
 		t.Errorf("admin create after bootstrap: expected 201, got %d: %s", w3.Code, w3.Body.String())
+	}
+}
+
+func TestHandleCreateTokenRejectsSensorScope(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	adminToken := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	w, raw := createTokenRequest(t, router, adminToken, "sensor")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("generic sensor token creation: want 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if raw != "" {
+		t.Fatal("generic sensor token creation returned a secret")
+	}
+}
+
+func TestHandleCreateTokenRejectsSensorIDOnNonSensorScope(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	adminToken := createTestToken(t, db, auth.ScopeAdmin, "")
+
+	data, _ := json.Marshal(map[string]any{
+		"scope": "admin", "sensor_id": "sensor-x", "label": "invalid",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/tokens", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("admin token with sensor_id: want 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

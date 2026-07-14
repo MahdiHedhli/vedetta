@@ -195,7 +195,8 @@ migrations run there.
 
 If an update misbehaves, stop the upgraded Core before restoring. For any release
 that ran a database migration, including migration 025 (asset identity and
-findings), restore the pre-update database together with the previous image.
+findings) or 026 (retained sensor identities), restore the pre-update database
+together with the previous image.
 Do not run the older image against the expanded database: older device-merge,
 suppression, and retention code does not understand the new finding/evidence/audit
 relationships.
@@ -220,7 +221,7 @@ unset VED_TOKEN VED_BACKEND_PORT
 Because the pre-update backup predates the new migration, restoring it returns
 both the code **and** the database to a known-good, mutually-compatible state.
 
-> Migration 025 is forward-only. Rollback across it requires the backup taken
+> Migrations 025 and 026 are forward-only. Rollback across either requires the backup taken
 > **before** updating; deleting its tables or reusing the migrated database with
 > an older binary is not a supported rollback path.
 

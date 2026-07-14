@@ -185,6 +185,9 @@ func (db *DB) migrate() error {
 	if err := db.ensureAssetCenteredSchema(); err != nil {
 		return fmt.Errorf("ensure asset-centered schema: %w", err)
 	}
+	if err := db.ensureSensorLifecycleSchema(); err != nil {
+		return fmt.Errorf("ensure sensor lifecycle schema: %w", err)
+	}
 
 	return nil
 }
@@ -457,6 +460,9 @@ func (db *DB) applyInlineFallback() error {
 	db.ensureSingleActiveSensorToken()
 	if err := db.ensureAssetCenteredSchema(); err != nil {
 		return fmt.Errorf("ensure inline asset-centered schema: %w", err)
+	}
+	if err := db.ensureSensorLifecycleSchema(); err != nil {
+		return fmt.Errorf("ensure inline sensor lifecycle schema: %w", err)
 	}
 	log.Println("Inline fallback migration applied")
 	return nil

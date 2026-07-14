@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { authFetch, authFetchJSON, getAdminToken, setAdminToken, clearAdminToken, hasAdminToken, CORE_BASE } from './lib/api';
 import { FindingsDashboardSummary, FindingsWorkspace } from './findings/FindingsView';
 import { useFindings } from './findings/useFindings';
@@ -45,6 +45,11 @@ const SEGMENT_COLORS = {
   guest: 'bg-green-400/20 text-green-400',
 };
 
+export function sensorListFailureWatermark(currentSequence, failedSequence, surfaceError) {
+  if (!surfaceError || failedSequence <= currentSequence) return currentSequence;
+  return failedSequence;
+}
+
 // Brand: Geometric Rook mark (amber on dark)
 function RookMark({ size = 32 }) {
   return (
@@ -68,6 +73,9 @@ export default function App() {
   const [devices, setDevices] = useState([]);
   const [targets, setTargets] = useState([]);
   const [sensors, setSensors] = useState([]);
+  const [removedSensors, setRemovedSensors] = useState([]);
+  const sensorListRequestSequence = useRef(0);
+  const sensorListAppliedSequence = useRef(0);
   const [sensorInterfaces, setSensorInterfaces] = useState([]);
   const [scanStatus, setScanStatus] = useState(null);
   const [error, setError] = useState(null);
@@ -208,15 +216,45 @@ export default function App() {
       .catch(() => {});
   }, [canAdmin]);
 
-  const fetchSensors = useCallback(() => {
+  const fetchSensors = useCallback(({ surfaceError = false } = {}) => {
+    const requestSequence = sensorListRequestSequence.current + 1;
+    sensorListRequestSequence.current = requestSequence;
     if (!canAdmin) {
+      // Invalidate any authenticated request still in flight before clearing
+      // operator-only sensor lifecycle data from the UI.
+      sensorListAppliedSequence.current = requestSequence;
       setSensors([]);
+      setRemovedSensors([]);
       return Promise.resolve();
     }
-    authFetch('/api/v1/sensor/list')
+    return authFetch('/api/v1/sensor/list')
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((data) => setSensors(data.sensors || []))
-      .catch(() => {});
+      .then((data) => {
+        // Apply responses in completion order only when they are at least as
+        // recent as the last successful response. A slow pre-action poll can no
+        // longer overwrite the post-remove/post-primary refresh.
+        if (requestSequence >= sensorListAppliedSequence.current) {
+          setSensors(data.sensors || []);
+          setRemovedSensors(data.removed_sensors || []);
+          sensorListAppliedSequence.current = requestSequence;
+        }
+        return data;
+      })
+      .catch((error) => {
+        if (surfaceError) {
+          // A post-mutation refresh that fails is still newer than every poll
+          // already in flight. Advance the invalidation watermark before
+          // surfacing the error so an older pre-action response cannot restore
+          // the sensor that was just removed (or the prior primary state).
+          sensorListAppliedSequence.current = sensorListFailureWatermark(
+            sensorListAppliedSequence.current,
+            requestSequence,
+            surfaceError,
+          );
+          throw error;
+        }
+        return undefined;
+      });
   }, [canAdmin]);
 
   const fetchThreatData = useCallback(() => {
@@ -614,7 +652,12 @@ export default function App() {
             )}
           />
         ) : view === 'sensors' ? (
-          <SensorsView sensors={sensors} onSetup={() => setShowSetup(true)} onRefreshSensors={fetchSensors} />
+          <SensorsView
+            sensors={sensors}
+            removedSensors={removedSensors}
+            onSetup={() => setShowSetup(true)}
+            onRefreshSensors={() => fetchSensors({ surfaceError: true })}
+          />
         ) : view === 'logs' ? (
           <LogsView />
         ) : view === 'whitelist' ? (
@@ -2699,11 +2742,122 @@ sudo ./vedetta-sensor --core ${coreUrl}${enrollCode ? ` --enroll-code ${enrollCo
 
 // --- Sensors View ---
 
-function SensorsView({ sensors, onSetup, onRefreshSensors }) {
-  const setPrimary = (sensorId) => {
-    authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}/primary`, { method: 'PUT' })
-      .then(() => onRefreshSensors && onRefreshSensors())
-      .catch(() => {});
+export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSensors }) {
+  const [sensorAction, setSensorAction] = useState(null);
+  const [sensorActionError, setSensorActionError] = useState('');
+  const [resetCode, setResetCode] = useState(null);
+
+  useEffect(() => {
+    if (!resetCode) return undefined;
+
+    // A successful reactivation removes the sensor from this partition. Clear
+    // the one-time secret immediately so it cannot reappear if that identity is
+    // removed again without the view unmounting.
+    if (!removedSensors.some((sensor) => sensor.sensor_id === resetCode.sensorId)) {
+      setResetCode(null);
+      return undefined;
+    }
+
+    const expiresAt = Date.parse(resetCode.expiresAt || '');
+    if (!Number.isFinite(expiresAt)) return undefined;
+    const remaining = expiresAt - Date.now();
+    if (remaining <= 0) {
+      setResetCode(null);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setResetCode((current) => (
+        current?.sensorId === resetCode.sensorId && current?.code === resetCode.code
+          ? null
+          : current
+      ));
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [removedSensors, resetCode]);
+
+  const responseError = async (response, fallback) => {
+    const body = await response.json().catch(() => ({}));
+    return body.error || fallback;
+  };
+
+  const setPrimary = async (sensorId) => {
+    if (sensorAction) return;
+    setSensorActionError('');
+    setSensorAction({ sensorId, kind: 'primary' });
+    try {
+      try {
+        const response = await authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}/primary`, { method: 'PUT' });
+        if (!response.ok) throw new Error(await responseError(response, 'Failed to make sensor primary.'));
+      } catch (error) {
+        setSensorActionError(error?.message || 'Failed to make sensor primary.');
+        return;
+      }
+      if (onRefreshSensors) {
+        try {
+          await onRefreshSensors();
+        } catch (error) {
+          setSensorActionError(`Sensor is now primary, but refreshing the list failed: ${error?.message || 'unknown error'}`);
+        }
+      }
+    } finally {
+      setSensorAction(null);
+    }
+  };
+
+  const removeSensor = async (sensorId, hostname) => {
+    if (sensorAction) return;
+    if (!window.confirm(`Remove sensor "${hostname || sensorId}"? This disconnects and hides it, revokes its sensor credential, and keeps its history. To return it later, generate a fresh reset code bound to this sensor ID.`)) {
+      return;
+    }
+    setSensorActionError('');
+    setSensorAction({ sensorId, kind: 'remove' });
+    try {
+      try {
+        const response = await authFetch(`/api/v1/sensor/${encodeURIComponent(sensorId)}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error(await responseError(response, 'Failed to remove sensor.'));
+      } catch (error) {
+        setSensorActionError(error?.message || 'Failed to remove sensor.');
+        return;
+      }
+      if (onRefreshSensors) {
+        try {
+          await onRefreshSensors();
+        } catch (error) {
+          setSensorActionError(`Sensor was removed, but refreshing the list failed: ${error?.message || 'unknown error'}`);
+        }
+      }
+    } finally {
+      setSensorAction(null);
+    }
+  };
+
+  const generateResetCode = async (sensorId) => {
+    if (sensorAction) return;
+    setSensorActionError('');
+    setSensorAction({ sensorId, kind: 'reset' });
+    try {
+      const response = await authFetch('/api/v1/enrollment-codes', {
+        method: 'POST',
+        body: { sensor_id: sensorId },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to generate reset code.');
+      const expiresAt = Date.parse(data.expires_at || '');
+      if (
+        data.type !== 'reset' ||
+        data.sensor_id !== sensorId ||
+        !data.enrollment_code ||
+        !Number.isFinite(expiresAt) ||
+        expiresAt <= Date.now()
+      ) {
+        throw new Error('Core returned an invalid reset code response.');
+      }
+      setResetCode({ sensorId, code: data.enrollment_code, expiresAt: data.expires_at || '' });
+    } catch (error) {
+      setSensorActionError(error?.message || 'Failed to generate reset code.');
+    } finally {
+      setSensorAction(null);
+    }
   };
 
   return (
@@ -2717,6 +2871,20 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
           + Add Sensor
         </button>
       </div>
+
+      {sensorActionError && (
+        <div role="alert" className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <span>{sensorActionError}</span>
+          <button
+            type="button"
+            onClick={() => setSensorActionError('')}
+            className="flex-shrink-0 text-red-300 hover:text-red-100"
+            aria-label="Dismiss sensor action error"
+          >
+            &times;
+          </button>
+        </div>
+      )}
 
       {sensors.length === 0 ? (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
@@ -2732,41 +2900,90 @@ function SensorsView({ sensors, onSetup, onRefreshSensors }) {
         <div className="space-y-3">
           {sensors.map((s) => (
             <div key={s.sensor_id} className={`bg-gray-900 border rounded-lg p-4 ${s.is_primary ? 'border-amber-500/40' : 'border-gray-800'}`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
-                  <div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium">{s.hostname}</p>
+                      <p className="text-sm font-medium truncate">{s.hostname}</p>
                       {s.is_primary && (
-                        <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded">primary</span>
+                        <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded flex-shrink-0">primary</span>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500">{s.sensor_id}</p>
+                    <p className="text-xs text-gray-500 truncate">{s.sensor_id}</p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-sm font-mono text-gray-300">{s.cidr}</p>
-                  <p className="text-xs text-gray-500">{s.os}/{s.arch} &middot; v{s.version}</p>
+                <div className="min-w-0 sm:text-right">
+                  <p className="text-sm font-mono text-gray-300 break-all sm:break-normal">{s.cidr}</p>
+                  <p className="text-xs text-gray-500 break-words">{s.os}/{s.arch} &middot; v{s.version}</p>
                 </div>
               </div>
-              <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-800">
-                <div className="flex gap-4 text-xs text-gray-500">
+              <div className="flex flex-col gap-3 mt-3 pt-3 border-t border-gray-800 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
                   <span>First seen: {timeAgo(s.first_seen)}</span>
                   <span>Last report: {timeAgo(s.last_seen)}</span>
                 </div>
                 {!s.is_primary && (
-                  <button
-                    onClick={() => setPrimary(s.sensor_id)}
-                    className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
-                  >
-                    Make Primary
-                  </button>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                    <button
+                      onClick={() => setPrimary(s.sensor_id)}
+                      disabled={Boolean(sensorAction)}
+                      className="min-h-8 rounded px-2 py-1.5 text-xs text-amber-400 hover:bg-amber-500/10 hover:text-amber-300 disabled:cursor-not-allowed disabled:text-gray-600 transition-colors"
+                    >
+                      {sensorAction?.sensorId === s.sensor_id && sensorAction.kind === 'primary' ? 'Updating…' : 'Make Primary'}
+                    </button>
+                    <button
+                      onClick={() => removeSensor(s.sensor_id, s.hostname)}
+                      disabled={Boolean(sensorAction)}
+                      className="min-h-8 rounded px-2 py-1.5 text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed disabled:text-gray-600 transition-colors"
+                    >
+                      {sensorAction?.sensorId === s.sensor_id && sensorAction.kind === 'remove' ? 'Removing…' : 'Remove'}
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
           ))}
         </div>
+      )}
+
+      {removedSensors.length > 0 && (
+        <section className="mt-8" aria-labelledby="removed-sensors-heading">
+          <div className="mb-3">
+            <h3 id="removed-sensors-heading" className="text-lg font-medium text-gray-200">Removed sensors</h3>
+            <p className="mt-1 text-xs text-gray-500">Retained identities cannot be claimed by a generic enrollment code. Generate a bound reset code to deliberately reconnect one.</p>
+          </div>
+          <div className="space-y-3">
+            {removedSensors.map((s) => (
+              <div key={s.sensor_id} className="rounded-lg border border-gray-800 bg-gray-900/70 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-gray-300">{s.hostname || s.sensor_id}</p>
+                    <p className="truncate text-xs text-gray-500">{s.sensor_id}</p>
+                    <p className="mt-1 break-words text-xs text-gray-500">{s.os}/{s.arch} &middot; v{s.version} &middot; last report {timeAgo(s.last_seen)}</p>
+                    <p className="mt-1 text-xs text-gray-500">Removed {timeAgo(s.removed_at)}{s.removal_reason ? ` · ${s.removal_reason}` : ''}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => generateResetCode(s.sensor_id)}
+                    disabled={Boolean(sensorAction)}
+                    className="self-start rounded border border-amber-500/30 px-3 py-2 text-xs text-amber-300 transition-colors hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:border-gray-700 disabled:text-gray-600"
+                  >
+                    {sensorAction?.sensorId === s.sensor_id && sensorAction.kind === 'reset' ? 'Generating…' : 'Generate reset code'}
+                  </button>
+                </div>
+                {resetCode?.sensorId === s.sensor_id && (
+                  <div role="status" aria-live="polite" className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                    <p className="text-xs font-medium text-amber-200">Single-use reset code</p>
+                    <p className="mt-1 break-all font-mono text-base text-amber-300">{resetCode.code}</p>
+                    {resetCode.expiresAt && <p className="mt-1 text-xs text-amber-200/70">Expires {new Date(resetCode.expiresAt).toLocaleString()}</p>}
+                    <p className="mt-2 text-xs text-gray-400">Minting this code does not reactivate the sensor. Rerun its installer with <span className="font-mono">--reset --enroll-code</span> on Linux/macOS, or <span className="font-mono">-Reset -EnrollCode</span> on Windows. The code is kept only in this page&apos;s memory.</p>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
       )}
     </>
   );
