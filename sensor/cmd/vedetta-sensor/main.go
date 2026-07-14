@@ -50,6 +50,10 @@ func main() {
 	passiveDHCP := flag.Bool("passive-dhcp", true, "Enable passive DHCP discovery")
 	passiveMDNS := flag.Bool("passive-mdns", true, "Enable passive mDNS discovery")
 	passiveSSDP := flag.Bool("passive-ssdp", true, "Enable passive SSDP/UPnP discovery")
+	arpDiscovery := flag.Bool("arp-discovery", true, "Enable unprivileged ARP-cache discovery (reads the OS neighbor cache; passive, no root)")
+	arpSweep := flag.Bool("arp-sweep", false, "Warm the ARP cache with a lightweight unprivileged TCP/UDP sweep (active; off by default)")
+	arpPollInterval := flag.Duration("arp-poll-interval", 30*time.Second, "How often to read the OS ARP/neighbor cache")
+	arpSweepInterval := flag.Duration("arp-sweep-interval", 5*time.Minute, "How often to warm the ARP cache when --arp-sweep is set (<=0 warms once at startup)")
 	printCapturePlan := flag.Bool("print-capture-plan", false, "Print the recommended DNS/passive capture interfaces and exit")
 	showVersion := flag.Bool("version", false, "Show version")
 	enrollCode := flag.String("enroll-code", "", "One-time enrollment code from Core (or set VEDETTA_ENROLL_CODE). Required to register a NEW sensor once Core has admin auth configured.")
@@ -162,6 +166,11 @@ func main() {
 		passiveDHCP:    *passiveDHCP,
 		passiveMDNS:    *passiveMDNS,
 		passiveSSDP:    *passiveSSDP,
+
+		arpEnabled:       *arpDiscovery,
+		arpSweep:         *arpSweep,
+		arpPollInterval:  *arpPollInterval,
+		arpSweepInterval: *arpSweepInterval,
 	}
 
 	// Enrollment-only mode (installer step): interactive, the network is up. Resolve the
@@ -221,11 +230,17 @@ type sensorRun struct {
 	passiveMDNS    bool
 	passiveSSDP    bool
 
+	arpEnabled       bool
+	arpSweep         bool
+	arpPollInterval  time.Duration
+	arpSweepInterval time.Duration
+
 	// runtime state populated by prepare() + startCaptures()
 	scanCIDR        string
 	interfaces      []netinfo.NetworkInterface
 	capturer        *dnscap.Capturer
 	passiveCapturer *passive.Capturer
+	arpSource       *netscan.Source
 	dnsQueries      chan dnscap.Query
 	passiveHosts    chan netscan.DiscoveredHost
 	wg              sync.WaitGroup
@@ -385,11 +400,49 @@ func (r *sensorRun) startCaptures() {
 			}()
 		}
 	}
+
+	// Unprivileged ARP-cache discovery: reads the OS neighbor cache (passive) and, when
+	// --arp-sweep is set, warms it first. It shares the passive host sink/drain — if
+	// passive discovery is disabled those don't exist yet, so create them here.
+	if r.arpEnabled {
+		if r.passiveHosts == nil {
+			r.passiveHosts = make(chan netscan.DiscoveredHost, 200)
+			r.wg.Add(1)
+			go func() {
+				defer r.wg.Done()
+				pushPassiveHosts(r.core, r.scanCIDR, r.passiveHosts)
+			}()
+		}
+		src := netscan.NewSource(netscan.SourceConfig{
+			CIDR:          r.scanCIDR,
+			Sweep:         r.arpSweep,
+			PollInterval:  r.arpPollInterval,
+			SweepInterval: r.arpSweepInterval,
+			OnHost: func(host netscan.DiscoveredHost) {
+				select {
+				case r.passiveHosts <- host:
+				default:
+					r.droppedHosts.Add(1) // shares the passive drop counter, reported in loop
+				}
+			},
+		})
+		if err := src.Start(); err != nil {
+			log.Printf("WARNING: Failed to start ARP-cache discovery: %v", err)
+		} else {
+			r.arpSource = src
+			log.Printf("ARP-cache discovery active (sweep=%v poll=%s)", r.arpSweep, r.arpPollInterval)
+		}
+	}
 }
 
 // shutdown stops the capturers and drains their push goroutines within the bounded
 // window.
 func (r *sensorRun) shutdown() {
+	// Stop the ARP source BEFORE shutdownCaptures closes r.passiveHosts, so its poll
+	// loop can never send on a closed channel. Stop() blocks until the loop has drained.
+	if r.arpSource != nil {
+		r.arpSource.Stop()
+	}
 	shutdownCaptures(r.capturer, r.passiveCapturer, r.dnsQueries, r.passiveHosts, &r.wg)
 }
 
