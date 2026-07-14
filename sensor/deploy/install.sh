@@ -144,13 +144,16 @@ brew_bin_dir() {
 daemon_path() {
   # Explicit override for non-standard layouts (and deterministic tests).
   if [ -n "${VEDETTA_DAEMON_PATH:-}" ]; then printf '%s' "$VEDETTA_DAEMON_PATH"; return; fi
-  local bd; bd="$(brew_bin_dir)"
+  local bd raw; bd="$(brew_bin_dir)"
   if [ "$OS" = "Darwin" ]; then
-    printf '%s' "${bd:+$bd:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    raw="${bd:+$bd:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   else
     # systemd's compiled-in default PATH, plus any Homebrew-on-Linux prefix.
-    printf '%s' "${bd:+$bd:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    raw="${bd:+$bd:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   fi
+  # Drop duplicate entries (brew_bin_dir may overlap the hardcoded fallback),
+  # preserving first-seen order.
+  printf '%s' "$raw" | awk -v RS=: -v ORS= '!seen[$0]++{ if(n++) printf ":"; printf "%s", $0 }'
 }
 
 # Is <cmd> resolvable from the DAEMON's PATH (not the installer's richer PATH)?
