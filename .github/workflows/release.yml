@@ -35,10 +35,10 @@ jobs:
           # Windows is cgo-free (ETW + native ICMP/ARP) → cross-compile on ubuntu.
           - { runner: ubuntu-latest, goos: windows, goarch: amd64, cgo: "0" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
           cache-dependency-path: sensor/go.sum
@@ -79,7 +79,7 @@ jobs:
             fi
             tar -czf "vedetta-sensor_${GOOS}_${GOARCH}.tar.gz" "$bin"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sensor-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -91,7 +91,7 @@ jobs:
     needs: build-sensor
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -101,7 +101,7 @@ jobs:
           sha256sum vedetta-sensor_*.tar.gz vedetta-sensor_*.zip > checksums.txt
           cat checksums.txt
       - name: Create/refresh DRAFT release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true # never auto-publish — review and publish by hand
           fail_on_unmatched_files: true

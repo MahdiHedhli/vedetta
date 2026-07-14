@@ -31,8 +31,8 @@ jobs:
       run:
         working-directory: ${{ matrix.module }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           # 'stable' tracks the latest patched Go, which also ships the fixed
           # standard library — govulncheck's stdlib advisories are cleared by
@@ -96,8 +96,8 @@ jobs:
     env:
       CGO_ENABLED: "0" # the Windows sensor is driver-free: no cgo, no Npcap, no pcap
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
           cache-dependency-path: sensor/go.sum
@@ -130,8 +130,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -153,7 +153,7 @@ jobs:
     name: collector
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Lua
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
       # BLOCKING: the syslog/CEF parser regex correctness guard is interpreter-
@@ -193,11 +193,11 @@ jobs:
     name: secret-scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
