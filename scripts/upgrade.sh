@@ -232,6 +232,15 @@ compose_up_core() {
   docker compose up -d $svcs
 }
 
+# remove_temp_backup — delete the in-volume online-backup temp file. `exec`
+# needs a RUNNING backend; if it crashed/restarted between the copy and this
+# cleanup, fall back to a helper container mounting the volume — otherwise a
+# full copy of the live DB silently stays behind, keeping the volume full.
+remove_temp_backup() {
+  docker compose exec -T backend rm -f "/data/pre-${TS}.db" 2>/dev/null \
+    || docker run --rm -v "${VOL_DATA}:/data" "$HELPER_IMAGE" rm -f "/data/pre-${TS}.db" 2>/dev/null
+}
+
 wait_health() {
   local timeout="$1" i
   # 10#: force base-10 — a leading-zero timeout (e.g. "08") would otherwise be
@@ -335,10 +344,16 @@ SNAP_DIR="${BACKUP_ROOT}/upgrade-${TS}"
 LOG="${SNAP_DIR}/upgrade-${TS}.log"
 # The snapshot holds the live DB, API tokens, and .env — owner-only from the
 # very first byte, not only at the post-snapshot chmod (which an interrupted
-# run would never reach).
+# run would never reach). The umask is restored right after: leaving 077
+# global would give files REWRITTEN BY git checkout 0600 modes on disk (and
+# carry them into build contexts). Everything inside the 0700 SNAP_DIR is
+# access-gated by the directory regardless of per-file modes, and
+# finalize_snapshot re-tightens with chmod -R go-rwx.
+_orig_umask="$(umask)"
 umask 077
 mkdir -p "$SNAP_DIR"
 chmod 700 "$SNAP_DIR"
+umask "$_orig_umask"
 # Tee everything (stdout + stderr) into the snapshot dir so a failed upgrade
 # leaves a complete transcript next to the backup it can be restored from.
 # Keep the original fds on 3/4: restoring them at the end lets the background
@@ -556,7 +571,10 @@ fi
 # From here on, ANY unexpected command failure routes through fail() and the
 # rollback machinery (do_rollback picks the correct branch for the current
 # state — including "nothing touched yet": restore the tree, keep serving).
+# Interrupts too: Ctrl-C/SIGTERM while e.g. waiting out a hung migration must
+# also roll back, not exit leaving the migrated DB and new images in place.
 trap 'fail "unexpected error near line ${LINENO}"' ERR
+trap 'fail "interrupted (SIGINT/SIGTERM)"' INT TERM
 
 # finalize_snapshot — .env + aux volumes + permissions + arm the ERR trap.
 # Runs once, right after the Core DB artifact lands (cold: step 1; warm: step 3).
@@ -653,7 +671,7 @@ if [ "$WARM" = "1" ]; then
   # the untouched old stack keeps serving.
   docker compose exec -T backend sqlite3 -batch -cmd '.timeout 5000' /data/vedetta.db \
     ".backup '/data/pre-${TS}.db'" \
-    || { docker compose exec -T backend rm -f "/data/pre-${TS}.db" 2>/dev/null || true
+    || { remove_temp_backup || true
          fail "online .backup failed"; }
   # Plain `docker cp` (not `docker compose cp`, which needs Compose >= 2.20),
   # and clean the in-container temp file up on BOTH exits so a failed copy
@@ -663,11 +681,11 @@ if [ "$WARM" = "1" ]; then
   backend_cid="$(docker compose ps -q backend | head -n1)"
   [ -n "$backend_cid" ] || fail "backend container disappeared before the snapshot could be copied out"
   if ! docker cp "${backend_cid}:/data/pre-${TS}.db" "$SNAP_ARTIFACT"; then
-    docker compose exec -T backend rm -f "/data/pre-${TS}.db" 2>/dev/null || true
+    remove_temp_backup || true
     fail "copying the snapshot out of the container failed"
   fi
-  docker compose exec -T backend rm -f "/data/pre-${TS}.db" \
-    || warn "could not remove the in-container temp snapshot (harmless)."
+  remove_temp_backup \
+    || warn "could not remove the temp snapshot — free the space manually: /data/pre-${TS}.db in ${VOL_DATA}"
   SNAP_MODE="online"
   finalize_snapshot
 fi
