@@ -1150,6 +1150,8 @@ class ConfigurationTests(unittest.TestCase):
             "http://198.51.100.2:9090",
             "http://127.0.0.1:9090/api",
             "http://user@127.0.0.1:9090",
+            "http://:password@127.0.0.1:9090",
+            "http://@127.0.0.1:9090",
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 serve._loopback_url(value, "test")

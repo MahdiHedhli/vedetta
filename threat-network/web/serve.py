@@ -116,7 +116,13 @@ def _loopback_url(value: str, name: str) -> str:
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError(f"{name} must be an http(s) URL")
-    if parsed.path not in ("", "/") or parsed.query or parsed.fragment or parsed.username:
+    if (
+        parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         raise ValueError(f"{name} must contain only scheme, host, and port")
     host = parsed.hostname.rstrip(".").lower()
     try:
@@ -465,7 +471,8 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if (
             parsed.scheme not in ("http", "https")
-            or parsed.username
+            or parsed.username is not None
+            or parsed.password is not None
             or parsed.path not in ("", "/")
             or parsed.query
             or parsed.fragment
@@ -772,7 +779,8 @@ def main() -> None:
             if (
                 parsed.scheme not in ("http", "https")
                 or not parsed.hostname
-                or parsed.username
+                or parsed.username is not None
+                or parsed.password is not None
                 or parsed.path not in ("", "/")
                 or parsed.query
                 or parsed.fragment

@@ -342,9 +342,10 @@ third-party corpus from being admitted merely because it fits the technical sche
 
 The corpus tables and releases live in the same persisted
 `/data/threat-network.db`. Back up that file with SQLite's online `.backup` command
-before deploying schema or curator-workflow changes. Migration 004 is additive, so an
-older threat-network binary ignores the new tables; restoring the matching binary and
-pre-change database remains the clean rollback path.
+before deploying schema or curator-workflow changes. Corpus migrations 004–007 are
+forward-only and additive, so a pre-corpus threat-network binary ignores the new
+tables; restoring the matching binary and pre-change database remains the clean
+rollback path.
 
 ---
 
