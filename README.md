@@ -166,8 +166,9 @@ unset VEDETTA_TOKEN
 **Create your admin token first (step 1's onboarding wizard), then enroll the
 sensor.** Core always requires a one-time **enrollment code** to register a new
 sensor (admin-before-sensor — there is no open bootstrap). Generate one from the
-dashboard onboarding wizard (the "Connect a sensor" step) and pass it as
-`--enroll-code`.
+dashboard onboarding wizard (the "Connect a sensor" step). On macOS/Linux, give
+the installer a mode-0600 secret file or use its interactive stdin option; do not
+place the code in a command-line argument.
 
 > **What address goes in `--core`?** Core is **loopback-only by default** (see the
 > transport note above), so the right value depends on where the sensor runs:
@@ -190,29 +191,44 @@ URL printed by `gen-env.sh` for a same-host sensor):
 **macOS / Linux:**
 
 ```bash
-curl -fsSL -o /tmp/vedetta-sensor-install.sh \
-  https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
+(
+  set -e
+  umask 077
+  RELEASE_TAG=v0.1.0-beta.3
+  INSTALLER_FILE="$(mktemp "$HOME/.vedetta-sensor-install.XXXXXXXX")"
+  CODE_FILE="$(mktemp "$HOME/.vedetta-enroll.XXXXXXXX")"
+  trap 'rm -f -- "$INSTALLER_FILE" "$CODE_FILE"' EXIT
+  curl -fsSL -o "$INSTALLER_FILE" \
+    "https://raw.githubusercontent.com/MahdiHedhli/vedetta/${RELEASE_TAG}/sensor/deploy/install.sh"
+  /bin/bash -c 'read -r -s -p "Enrollment code: " code; echo; printf "%s\n" "$code" >"$1"' _ "$CODE_FILE"
+  sudo env VEDETTA_RELEASE_TAG="$RELEASE_TAG" bash "$INSTALLER_FILE" \
+    --core https://vedetta.example.com \
+    --enroll-code-file "$CODE_FILE"
+)
 
-sudo bash /tmp/vedetta-sensor-install.sh \
-  --core https://vedetta.example.com \
-  --enroll-code <ENROLL_CODE>
-
-# update an already-enrolled sensor (no code needed):    sudo bash /tmp/vedetta-sensor-install.sh --core https://vedetta.example.com
-# override LAN auto-detection:                           --cidr 192.168.1.0/24
-# reset a stranded sensor (then re-enroll with a code):  sudo bash /tmp/vedetta-sensor-install.sh --core https://... --reset --enroll-code <CODE>
+# update an already-enrolled sensor: repeat with a fresh private installer, but omit CODE_FILE and --enroll-code-file
+# override LAN auto-detection: add --cidr 192.168.1.0/24
+# reset a stranded sensor: repeat the secure-file steps and add --reset
 ```
+
+`--enroll-code-stdin` is also available when running a downloaded installer from
+a terminal. It cannot share stdin with a `curl | bash` pipeline. The former
+`--enroll-code CODE` form is disabled by default because process arguments can be
+visible to other local users.
 
 **Windows** (driver-free — no Npcap, no nmap). Run in an **elevated** PowerShell; pin
 the release with `-Tag`:
 
 ```powershell
-# review the script first: https://github.com/MahdiHedhli/vedetta/blob/main/sensor/deploy/install.ps1
-irm https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.ps1 -OutFile install.ps1
-.\install.ps1 -Core https://vedetta.example.com -EnrollCode <ENROLL_CODE> -Tag v0.1.0-beta.2
+$ReleaseTag = "v0.1.0-beta.3"
+# review the pinned script first: https://github.com/MahdiHedhli/vedetta/blob/v0.1.0-beta.3/sensor/deploy/install.ps1
+irm "https://raw.githubusercontent.com/MahdiHedhli/vedetta/$ReleaseTag/sensor/deploy/install.ps1" -OutFile install.ps1
+.\install.ps1 -Core https://vedetta.example.com -Tag $ReleaseTag
+# On a fresh install, enter the one-time enrollment code at the secure prompt.
 
 # update an already-enrolled sensor (no code needed):   .\install.ps1 -Core https://vedetta.example.com
 # override LAN auto-detection:                           -CIDR 192.168.1.0/24
-# reset a stranded sensor (then re-enroll with a code):  .\install.ps1 -Core https://... -Reset -EnrollCode <CODE>
+# reset a stranded sensor (prompts for a bound code):    .\install.ps1 -Core https://... -Reset
 # uninstall:  Stop-Service VedettaSensor; sc.exe delete VedettaSensor; Remove-Item 'C:\Program Files\Vedetta','C:\ProgramData\Vedetta' -Recurse -Force
 ```
 
@@ -220,16 +236,18 @@ irm https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/ins
 > dashboard onboarding wizard (using the setup code from `gen-env.sh`), mint a
 > one-time enrollment code in the wizard's "Connect a sensor" step, then enroll the
 > sensor with the code. The **enrollment code is never stored in the service
-> configuration**: the installer spends it in a one-shot elevated enrollment step
-> (with the code passed via the environment, not a command line) and the service runs
-> only with the persisted token. Re-run the installer without the code to update an
-> already-enrolled sensor.
+> configuration**: the installer spends it in a one-shot elevated enrollment step.
+> macOS/Linux reads it from a private file or stdin; Windows uses a masked secure
+> prompt. Neither normal flow puts the secret in installer or sensor argv, and the
+> service runs only with the persisted token. Re-run the installer without the code
+> to update an already-enrolled sensor.
 
 Current public install paths:
 
 - **macOS / Linux** (`install.sh`): installs dependencies, downloads a checksum-verified
-  binary (or builds from source), registers a launchd/systemd service; prints a
-  capture-interface recommendation and supports `--dns-iface` / `--passive-iface`.
+  binary (or builds an exact published tag from source), stages and preflights upgrades,
+  and registers a launchd/systemd service. The installed binary and service definition
+  live under root-owned paths; the service never searches Homebrew for executables.
 - **Windows 11 / 10 22H2 / Server 2022** (`install.ps1`): driver-free — DNS via the
   `Microsoft-Windows-DNS-Client` ETW provider, discovery via native ICMP/ARP (no Npcap,
   no nmap). Registers a LocalSystem service; host-scoped capture in v1.
@@ -242,20 +260,35 @@ cd sensor
 go build -o vedetta-sensor ./cmd/vedetta-sensor
 # --core: https://<your-reverse-proxy-host> for a remote sensor, or the Core API
 # URL printed by gen-env.sh when the sensor runs on the same host as Core.
-sudo ./vedetta-sensor --core https://vedetta.example.com --enroll-code <ENROLL_CODE>
+sudo -v
+/bin/bash -c 'read -r -s -p "Enrollment code: " code; echo >&2; printf "%s\n" "$code"' | sudo -n /bin/sh -c '
+  IFS= read -r VEDETTA_ENROLL_CODE || exit 1
+  export VEDETTA_ENROLL_CODE
+  exec "$1" --enroll-only --core "$2"
+' vedetta-manual "$(pwd)/vedetta-sensor" https://vedetta.example.com &&
+sudo ./vedetta-sensor --core https://vedetta.example.com
 ```
 
-(`--enroll-code` is always required to register a new sensor — enrollment is
-admin-first, so mint the code in the onboarding wizard after creating your admin.
-You can also set `VEDETTA_ENROLL_CODE` instead of the flag.)
+The `&&` starts the sensor without the code only after one-shot enrollment
+succeeds.
+
+(An enrollment code is always required to register a new sensor. The installer’s
+private-file/stdin contract is preferred; `VEDETTA_ENROLL_CODE` is shown only for
+manual builds so the secret is not placed in argv.)
 
 Useful sensor diagnostics (use the same `--core` address as above):
 
 ```bash
 ./vedetta-sensor --core https://vedetta.example.com --cidr 10.0.0.0/24 --print-capture-plan
+
+# Read-only dependency + credential diagnostic. The installer prints this command
+# with the exact installed binary, token file, and nmap path for your platform.
+sudo ./vedetta-sensor --check --require-token --core https://vedetta.example.com
 ```
 
-That command prints the recommended DNS and passive-discovery interfaces, explains why they were chosen, and shows the override flags if you need to pin a different interface on a laptop, VPN client, or multi-homed host.
+`--print-capture-plan` explains interface selection. `--check` performs no enrollment,
+capture, scan, or heartbeat mutation; missing local dependencies or a missing token are
+fatal with `--require-token`, while an unreachable Core is reported as a degraded warning.
 
 ### 3. Update Vedetta
 

@@ -3,9 +3,14 @@
 package client
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // assertTokenSecured verifies the token file's NTFS DACL is restricted to SYSTEM +
@@ -29,5 +34,171 @@ func assertTokenSecured(t *testing.T, path string) {
 		if strings.Contains(acl, bad) {
 			t.Fatalf("token DACL unexpectedly grants %q:\n%s", bad, acl)
 		}
+	}
+
+	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatalf("read token security descriptor: %v", err)
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		t.Fatalf("read token owner: %v", err)
+	}
+	admins, err := windows.StringToSid("S-1-5-32-544")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !windows.EqualSid(owner, admins) {
+		t.Fatalf("token owner = %s, want BUILTIN\\Administrators", owner.String())
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		t.Fatalf("read token DACL: %v", err)
+	}
+	if dacl == nil || dacl.AceCount != 2 {
+		t.Fatalf("token DACL ACE count = %v, want exactly SYSTEM + Administrators", func() any {
+			if dacl == nil {
+				return "nil"
+			}
+			return dacl.AceCount
+		}())
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		t.Fatalf("read token DACL control flags: %v", err)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		t.Fatal("token DACL inherits permissions; want a protected DACL")
+	}
+	system, err := windows.StringToSid("S-1-5-18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundSystem, foundAdmins := false, false
+	for i := uint16(0); i < dacl.AceCount; i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, uint32(i), &ace); err != nil {
+			t.Fatalf("read token ACE %d: %v", i, err)
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE ||
+			ace.Header.AceFlags != windows.NO_INHERITANCE || ace.Mask != fileFullControl {
+			t.Fatalf("token ACE %d is not exact allow/full-control/no-inheritance policy", i)
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		switch {
+		case windows.EqualSid(sid, system):
+			if foundSystem {
+				t.Fatal("token DACL contains duplicate LocalSystem ACEs")
+			}
+			foundSystem = true
+		case windows.EqualSid(sid, admins):
+			if foundAdmins {
+				t.Fatal("token DACL contains duplicate Administrators ACEs")
+			}
+			foundAdmins = true
+		default:
+			t.Fatalf("token DACL contains unexpected trustee %s", sid.String())
+		}
+	}
+	if !foundSystem || !foundAdmins {
+		t.Fatal("token DACL is missing LocalSystem or Administrators")
+	}
+}
+
+func TestSecurePathReplacesAttackerACEAndOwnership(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sensor-token")
+	if err := os.WriteFile(path, []byte("synthetic-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Model a lower-privileged pre-creator with an explicit ACE. The remediation
+	// must replace, not augment, that DACL and must transfer ownership as well.
+	if out, err := exec.Command("icacls", path, "/grant", "*S-1-1-0:(F)").CombinedOutput(); err != nil {
+		t.Fatalf("seed Everyone ACE: %v\n%s", err, out)
+	}
+	if err := securePath(path, false); err != nil {
+		t.Fatalf("secure pre-created token: %v", err)
+	}
+	assertTokenSecured(t, path)
+}
+
+func TestEnsureSecureDirectoryCreatesExactDescriptor(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Vedetta")
+	if err := ensureSecureDirectory(dir); err != nil {
+		t.Fatalf("create protected token directory: %v", err)
+	}
+	if err := verifySecurePath(dir, true); err != nil {
+		t.Fatalf("verify protected token directory: %v", err)
+	}
+	// The final descriptor must be idempotently accepted on upgrades.
+	if err := ensureSecureDirectory(dir); err != nil {
+		t.Fatalf("verify existing protected token directory: %v", err)
+	}
+}
+
+func TestEnsureSecureDirectoryRejectsUnexpectedExistingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Vedetta")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("icacls", dir, "/grant", "*S-1-1-0:(OI)(CI)(F)").CombinedOutput(); err != nil {
+		t.Fatalf("seed Everyone directory ACE: %v\n%s", err, out)
+	}
+	if err := ensureSecureDirectory(dir); err == nil || !strings.Contains(err.Error(), "not the trusted Vedetta directory") {
+		t.Fatalf("unexpected existing directory error = %v, want fail-closed rejection", err)
+	}
+	// Rejection must not silently repair the attacker's object in place.
+	if out, err := exec.Command("icacls", dir).CombinedOutput(); err != nil || !strings.Contains(string(out), "Everyone") {
+		t.Fatalf("untrusted directory was mutated or became unreadable: err=%v\n%s", err, out)
+	}
+}
+
+func TestEnsureSecureDirectoryRejectsReparsePoint(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "target")
+	link := filepath.Join(parent, "Vedetta")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		// Directory junctions do not require Developer Mode and exercise the same
+		// FILE_ATTRIBUTE_REPARSE_POINT boundary on older CI images.
+		if out, junctionErr := exec.Command("cmd.exe", "/c", "mklink", "/J", link, target).CombinedOutput(); junctionErr != nil {
+			t.Skipf("cannot create Windows reparse point: symlink=%v junction=%v (%s)", err, junctionErr, out)
+		}
+	}
+	if err := ensureSecureDirectory(link); err == nil {
+		t.Fatal("reparse-point token directory accepted")
+	}
+}
+
+func TestClearPersistedTokenRecoversMalformedLeafWithoutFollowingIt(t *testing.T) {
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("malformed-dacl"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("icacls", tokenPath, "/grant", "*S-1-1-0:(F)").CombinedOutput(); err != nil {
+		t.Fatalf("seed malformed token DACL: %v\n%s", err, out)
+	}
+	if err := ClearPersistedToken(); err != nil {
+		t.Fatalf("clear malformed token leaf: %v", err)
+	}
+	if _, err := os.Lstat(tokenPath); !os.IsNotExist(err) {
+		t.Fatalf("malformed token leaf remained: %v", err)
+	}
+
+	target := filepath.Join(filepath.Dir(tokenPath), "unrelated-secret")
+	if err := os.WriteFile(target, []byte("must-survive-reset"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, tokenPath); err != nil {
+		t.Skipf("cannot create Windows token symlink: %v", err)
+	}
+	if err := ClearPersistedToken(); err != nil {
+		t.Fatalf("clear token symlink: %v", err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "must-survive-reset" {
+		t.Fatalf("reset changed symlink referent: data=%q err=%v", data, err)
 	}
 }

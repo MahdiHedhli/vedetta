@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,180 @@ func TestSensorHeartbeatRefreshesLastSeenWithoutDrainingWork(t *testing.T) {
 	}
 	if got := srv.ScanQueue.Drain(); len(got) != 1 {
 		t.Fatalf("heartbeat drained queued scan work: %+v", got)
+	}
+}
+
+func TestSensorAuthCheckIsAuthenticatedAndDoesNotMutateSensor(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	authToken := registerTestSensor(t, router, "sensor-auth-check")
+	adminToken := createTestToken(t, db, auth.ScopeAdmin, "")
+	unboundSensorToken := createTestToken(t, db, auth.ScopeSensor, "")
+
+	before := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	const tokenBefore = "2001-02-03T04:05:06Z"
+	if _, err := db.Exec(`UPDATE sensors SET last_seen = ?, status = 'offline' WHERE sensor_id = ?`, before, "sensor-auth-check"); err != nil {
+		t.Fatalf("age sensor before auth check: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE api_tokens SET last_used = ? WHERE token_hash = ?`, tokenBefore, auth.HashToken(authToken)); err != nil {
+		t.Fatalf("age token before auth check: %v", err)
+	}
+	if srv.ScanQueue == nil {
+		srv.ScanQueue = &ScanQueue{}
+	}
+	srv.ScanQueue.Enqueue("192.0.2.0/24", "default", false)
+
+	request := func(token, sensorID string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sensor/auth-check", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if sensorID != "" {
+			req.Header.Set("X-Sensor-ID", sensorID)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("auth check Cache-Control = %q, want no-store", got)
+		}
+		return w
+	}
+
+	missing := request("", "sensor-auth-check")
+	if missing.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token: expected 401, got %d: %s", missing.Code, missing.Body.String())
+	}
+	for name, w := range map[string]*httptest.ResponseRecorder{
+		"admin token":          request(adminToken, "sensor-auth-check"),
+		"unbound sensor token": request(unboundSensorToken, "sensor-auth-check"),
+		"mismatched sensor id": request(authToken, "different-sensor"),
+		"missing sensor id":    request(authToken, ""),
+	} {
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: expected generic 401, got %d: %s", name, w.Code, w.Body.String())
+		}
+		if w.Body.String() != missing.Body.String() {
+			t.Fatalf("%s: credential failure differed from missing-token response: %q vs %q", name, w.Body.String(), missing.Body.String())
+		}
+	}
+	if w := request(authToken, "sensor-auth-check"); w.Code != http.StatusNoContent {
+		t.Fatalf("valid auth check: expected 204, got %d: %s", w.Code, w.Body.String())
+	} else if w.Body.Len() != 0 {
+		t.Fatalf("auth check leaked an unexpected response body: %q", w.Body.String())
+	}
+
+	var lastSeen time.Time
+	var status string
+	if err := db.QueryRow(`SELECT last_seen, status FROM sensors WHERE sensor_id = ?`, "sensor-auth-check").Scan(&lastSeen, &status); err != nil {
+		t.Fatalf("read sensor after auth check: %v", err)
+	}
+	if !lastSeen.Equal(before) || status != "offline" {
+		t.Fatalf("auth check mutated sensor state: last_seen=%s status=%q; want %s/offline", lastSeen, status, before)
+	}
+	var tokenLastUsed string
+	if err := db.QueryRow(`SELECT last_used FROM api_tokens WHERE token_hash = ?`, auth.HashToken(authToken)).Scan(&tokenLastUsed); err != nil {
+		t.Fatalf("read token after auth check: %v", err)
+	}
+	if tokenLastUsed != tokenBefore {
+		t.Fatalf("auth check mutated token last_used: got %q, want %q", tokenLastUsed, tokenBefore)
+	}
+	if _, err := db.Exec(`UPDATE api_tokens SET revoked = 1 WHERE token_hash = ?`, auth.HashToken(authToken)); err != nil {
+		t.Fatalf("revoke token: %v", err)
+	}
+	if w := request(authToken, "sensor-auth-check"); w.Code != http.StatusUnauthorized || w.Body.String() != missing.Body.String() {
+		t.Fatalf("revoked token: expected same generic 401, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := db.QueryRow(`SELECT last_used FROM api_tokens WHERE token_hash = ?`, auth.HashToken(authToken)).Scan(&tokenLastUsed); err != nil {
+		t.Fatalf("read revoked token after auth check: %v", err)
+	}
+	if tokenLastUsed != tokenBefore {
+		t.Fatalf("revoked auth check mutated token last_used: got %q, want %q", tokenLastUsed, tokenBefore)
+	}
+	if got := srv.ScanQueue.Drain(); len(got) != 1 {
+		t.Fatalf("auth check drained queued work: %+v", got)
+	}
+}
+
+func TestSensorAuthCheckRejectsTombstonedIdentityWithoutMutation(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	initialToken := registerTestSensor(t, router, "sensor-auth-check-tombstone")
+	if _, err := db.Exec(`UPDATE api_tokens SET revoked = 1 WHERE token_hash = ?`, auth.HashToken(initialToken)); err != nil {
+		t.Fatalf("revoke initial sensor token: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE sensors
+		SET removed_at = ?, status = 'offline', removal_reason = 'test tombstone'
+		WHERE sensor_id = ?
+	`, time.Now().UTC(), "sensor-auth-check-tombstone"); err != nil {
+		t.Fatalf("tombstone sensor: %v", err)
+	}
+
+	// Recreate the legacy/manual-token condition that the DB lifecycle guard must
+	// defeat: an unrevoked, correctly bound credential exists for a tombstone.
+	legacyToken := createTestToken(t, db, auth.ScopeSensor, "sensor-auth-check-tombstone")
+	const tokenBefore = "2002-03-04T05:06:07Z"
+	if _, err := db.Exec(`UPDATE api_tokens SET last_used = ? WHERE token_hash = ?`, tokenBefore, auth.HashToken(legacyToken)); err != nil {
+		t.Fatalf("age legacy token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sensor/auth-check", nil)
+	req.Header.Set("Authorization", "Bearer "+legacyToken)
+	req.Header.Set("X-Sensor-ID", "sensor-auth-check-tombstone")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("tombstoned auth check Cache-Control = %q, want no-store", got)
+	}
+	if w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"invalid or revoked sensor token\"}\n" {
+		t.Fatalf("tombstoned identity: expected generic 401, got %d: %s", w.Code, w.Body.String())
+	}
+	active, err := db.SensorActive("sensor-auth-check-tombstone")
+	if err != nil {
+		t.Fatalf("read tombstone state: %v", err)
+	}
+	if active {
+		t.Fatal("auth check reactivated tombstoned sensor identity")
+	}
+	var tokenLastUsed string
+	if err := db.QueryRow(`SELECT last_used FROM api_tokens WHERE token_hash = ?`, auth.HashToken(legacyToken)).Scan(&tokenLastUsed); err != nil {
+		t.Fatalf("read legacy token after auth check: %v", err)
+	}
+	if tokenLastUsed != tokenBefore {
+		t.Fatalf("tombstone auth check mutated token last_used: got %q, want %q", tokenLastUsed, tokenBefore)
+	}
+}
+
+func TestSensorAuthCheckReturnsServiceUnavailableOnDatabaseFailure(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close test database: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sensor/auth-check", nil)
+	req.Header.Set("Authorization", "Bearer syntactically-valid-but-unavailable")
+	req.Header.Set("X-Sensor-ID", "sensor-auth-check")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("failed auth check Cache-Control = %q, want no-store", got)
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("database failure: expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestValidateReadOnlySensorRequestRejectsNilDatabaseWithoutPanic(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sensor/auth-check", nil)
+	req.Header.Set("Authorization", "Bearer syntactically-valid-but-unavailable")
+	req.Header.Set("X-Sensor-ID", "sensor-auth-check")
+
+	err := (&Server{}).validateReadOnlySensorRequest(req)
+	if err == nil || err.Error() != "database not available" {
+		t.Fatalf("nil database error = %v, want database not available", err)
+	}
+	if errors.Is(err, errInvalidReadOnlySensorCredential) {
+		t.Fatalf("nil database was collapsed into a credential failure: %v", err)
 	}
 }
 

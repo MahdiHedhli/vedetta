@@ -62,6 +62,9 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
           "$(go env GOPATH)/bin/staticcheck" ./...
       - run: go test ./...
+      - name: Sensor installer transaction and service-health tests
+        if: matrix.module == 'sensor'
+        run: bash deploy/install_test.sh
       - name: govulncheck (source mode)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -104,8 +107,34 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+      - name: Parse the PowerShell 5.1 installer and enforce ASCII source
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          $installer = (Resolve-Path "deploy/install.ps1").Path
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $installer, [ref]$tokens, [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+          $nonAscii = [System.IO.File]::ReadAllBytes($installer) | Where-Object { $_ -gt 127 }
+          if ($nonAscii.Count -ne 0) {
+            Write-Error "deploy/install.ps1 contains non-ASCII bytes"
+            exit 1
+          }
       - name: Build the release executable
         run: go build -trimpath -ldflags="-s -w" -o vedetta-sensor.exe ./cmd/vedetta-sensor
+      - name: Windows installer end-to-end transaction smoke
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          $installer = (Resolve-Path "deploy/install.ps1").Path
+          $sensor = (Resolve-Path "vedetta-sensor.exe").Path
+          $smoke = (Resolve-Path "deploy/testdata/windows-smoke/run.ps1").Path
+          & $smoke -Installer $installer -SensorBinary $sensor
       - name: Assert the Windows build pulls in no pcap (driver-free guarantee)
         shell: bash
         run: |

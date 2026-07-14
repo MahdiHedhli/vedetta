@@ -1,12 +1,65 @@
 package api
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
 )
+
+var errInvalidReadOnlySensorCredential = errors.New("invalid read-only sensor credential")
+
+func (s *Server) readOnlySensorToken(r *http.Request) (*auth.Token, error) {
+	if s.DB == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || parts[0] != "Bearer" || strings.TrimSpace(parts[1]) == "" {
+		return nil, auth.ErrInvalidAuthorizationHeader
+	}
+	token, err := s.DB.GetTokenByHash(auth.HashToken(strings.TrimSpace(parts[1])))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errInvalidReadOnlySensorCredential
+	}
+	if err != nil {
+		return nil, fmt.Errorf("look up sensor token: %w", err)
+	}
+	if token.Revoked {
+		return nil, errInvalidReadOnlySensorCredential
+	}
+	return token, nil
+}
+
+// validateReadOnlySensorRequest enforces the same identity lifecycle as normal
+// sensor authorization without touching api_tokens.last_used. Every caller error
+// intentionally collapses to one sentinel so the endpoint cannot be used as a
+// token/sensor existence oracle; database failures remain distinguishable for a
+// generic service-unavailable response.
+func (s *Server) validateReadOnlySensorRequest(r *http.Request) error {
+	token, err := s.readOnlySensorToken(r)
+	if err != nil {
+		if errors.Is(err, auth.ErrInvalidAuthorizationHeader) || errors.Is(err, auth.ErrMissingAuthorizationHeader) {
+			return errInvalidReadOnlySensorCredential
+		}
+		return err
+	}
+	reportedSensorID, err := canonicalSensorID(r.Header.Get("X-Sensor-ID"))
+	if err != nil || reportedSensorID == "" || token.Scope != auth.ScopeSensor || token.SensorID == "" || token.SensorID != reportedSensorID {
+		return errInvalidReadOnlySensorCredential
+	}
+	active, err := s.DB.SensorActive(token.SensorID)
+	if err != nil {
+		return fmt.Errorf("verify sensor identity: %w", err)
+	}
+	if !active {
+		return errInvalidReadOnlySensorCredential
+	}
+	return nil
+}
 
 // sensorRegistrationResponse returns the one-time bearer credential minted during initial sensor bootstrap.
 // auth_token is only populated when Core creates a new sensor-scoped token; authenticated re-registration

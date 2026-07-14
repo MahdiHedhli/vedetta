@@ -38,19 +38,38 @@ func elevationHint(argv string) string {
 // returns 0 only if every MANDATORY gate passes. The two mandatory gates mirror the
 // only two log.Fatalf points on the long-running service path — nmap resolution
 // (netscan.NewScanner) and Core-client/token init (client.New) — so a green --check
-// means the daemon will not crash-loop on startup. Core reachability, token validity,
-// and root are reported as WARN (non-fatal): the running sensor tolerates a Core
-// outage and a missing token, and capture degrades rather than exiting without root.
+// means the daemon will not crash-loop on startup. An offline Core and insufficient
+// capture privilege are warnings because the daemon tolerates them. With
+// --require-token, a missing or rejected token is fatal. Without it, the token is not
+// validated so reset/enrollment preflight can proceed with a deliberately obsolete one.
 // The installer runs this under the service manager's exact PATH + token-file env, so
 // a dependency the daemon cannot see (e.g. Homebrew nmap off launchd's minimal PATH)
 // fails the install loudly instead of after a false "installed".
-func runSelfCheck(coreURL string) int {
+func runSelfCheck(coreURL, cidr string, requireToken bool) int {
 	fatal := 0
+	if target := strings.TrimSpace(cidr); target != "" && target != "auto" {
+		if err := netscan.ValidateLocalTarget(target); err != nil {
+			fmt.Printf("FAIL scan target: %v\n", err)
+			fatal++
+		} else {
+			fmt.Printf("OK   scan target supported by this sensor: %s\n", target)
+		}
+	} else {
+		fmt.Println("INFO scan target will be auto-detected when networking is available")
+	}
 	if s, err := netscan.NewScanner(); err != nil {
 		fmt.Printf("FAIL nmap: %v (PATH=%s)\n", err, os.Getenv("PATH"))
 		fatal++
 	} else {
-		fmt.Printf("OK   nmap: %s\n", s.BinaryPath)
+		checkCtx, cancelCheck := context.WithTimeout(context.Background(), 5*time.Second)
+		err := s.Check(checkCtx)
+		cancelCheck()
+		if err != nil {
+			fmt.Printf("FAIL nmap execution: %v\n", err)
+			fatal++
+		} else {
+			fmt.Printf("OK   nmap executable under scan credential: %s\n", s.BinaryPath)
+		}
 	}
 
 	core, err := client.New(coreURL)
@@ -58,34 +77,74 @@ func runSelfCheck(coreURL string) int {
 		fmt.Printf("FAIL core client/token init: %v\n", err)
 		fatal++
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if rerr := core.Reachable(ctx); rerr != nil {
-			fmt.Printf("WARN core unreachable at %s: %v (the running sensor retries)\n", coreURL, rerr)
-		} else {
-			fmt.Printf("OK   core reachable: %s\n", coreURL)
+		tokenConfigured := core.TokenConfigured()
+		if requireToken && !tokenConfigured {
+			fmt.Println("FAIL sensor token is required but no non-empty persisted token is configured")
+			fatal++
 		}
-		if core.TokenConfigured() {
-			if herr := core.Heartbeat(ctx); herr != nil {
-				fmt.Printf("WARN sensor token present but heartbeat failed: %v\n", herr)
+
+		reachabilityCtx, cancelReachability := context.WithTimeout(context.Background(), 5*time.Second)
+		rerr := core.Reachable(reachabilityCtx)
+		cancelReachability()
+		if rerr != nil {
+			if client.IsTransientReachabilityError(rerr) {
+				fmt.Printf("WARN core temporarily unreachable at %s: %v (the running sensor retries)\n", coreURL, rerr)
+				if requireToken && tokenConfigured {
+					fmt.Println("WARN sensor token could not be validated while Core is unreachable")
+				} else if tokenConfigured {
+					fmt.Println("INFO persisted sensor token present; validation was not requested")
+				} else if !requireToken {
+					fmt.Println("WARN not enrolled yet (no token) — pass --enroll-code to register")
+				}
 			} else {
-				fmt.Println("OK   sensor token valid")
+				fmt.Printf("FAIL invalid or unsafe Core configuration at %s: %v\n", coreURL, rerr)
+				fatal++
 			}
 		} else {
-			fmt.Println("WARN not enrolled yet (no token) — pass --enroll-code to register")
+			fmt.Printf("OK   core reachable: %s\n", coreURL)
+			if requireToken && tokenConfigured {
+				authCtx, cancelAuth := context.WithTimeout(context.Background(), 5*time.Second)
+				authErr := core.AuthCheck(authCtx)
+				cancelAuth()
+				if authErr != nil {
+					// Do not print the response body here: a non-Core or compromised endpoint
+					// must not be able to reflect credential material into installer logs.
+					fmt.Println("FAIL sensor token was rejected or could not be validated by reachable Core")
+					fatal++
+				} else {
+					fmt.Println("OK   sensor token valid")
+				}
+			} else if !tokenConfigured {
+				fmt.Println("WARN not enrolled yet (no token) — pass --enroll-code to register")
+			} else {
+				fmt.Println("INFO persisted sensor token present; validation was not requested")
+			}
 		}
 	}
 
-	if os.Geteuid() != 0 {
+	if runtime.GOOS == "windows" {
+		fmt.Println("INFO Windows privilege is not exercised by --check; interactive capture requires Administrator and the installed service runs as LocalSystem")
+	} else if os.Geteuid() != 0 {
 		fmt.Println("WARN not root — DNS/passive capture will be degraded (the service runs as root)")
 	}
 
 	if fatal > 0 {
-		fmt.Printf("preflight FAILED: %d mandatory dependency gap(s) — the daemon would crash-loop\n", fatal)
+		fmt.Printf("preflight FAILED: %d mandatory dependency gap(s) — the daemon would not operate correctly\n", fatal)
 		return 1
 	}
 	fmt.Println("preflight OK")
 	return 0
+}
+
+func clearPersistedSensorToken() error {
+	return client.ClearPersistedToken()
+}
+
+func validateResetEnrollment(reset, coreExplicit bool, enrollmentCode string) error {
+	if reset && coreExplicit && strings.TrimSpace(enrollmentCode) == "" {
+		return fmt.Errorf("--reset with an explicit --core requires a bound reset code via --enroll-code or VEDETTA_ENROLL_CODE")
+	}
+	return nil
 }
 
 func main() {
@@ -96,7 +155,7 @@ func main() {
 	scanPorts := flag.Bool("ports", false, "Include top-100 port scan")
 	primary := flag.Bool("primary", false, "Register as the primary sensor")
 	oneshot := flag.Bool("once", false, "Run a single scan and exit")
-	reset := flag.Bool("reset", false, "Reset sensor authentication (clears local token so you can re-register cleanly)")
+	reset := flag.Bool("reset", false, "Reset sensor authentication. With an explicit --core, preflight and re-register before replacing the credential; a bare --reset removes the local token.")
 	dnsEnabled := flag.Bool("dns", true, "Enable passive DNS capture")
 	dnsIface := flag.String("dns-iface", "auto", "Network interface for DNS capture (or 'auto')")
 	passiveEnabled := flag.Bool("passive-discovery", true, "Enable passive device discovery")
@@ -108,19 +167,24 @@ func main() {
 	printCapturePlan := flag.Bool("print-capture-plan", false, "Print the recommended DNS/passive capture interfaces and exit")
 	showVersion := flag.Bool("version", false, "Show version")
 	selfCheck := flag.Bool("check", false, "Verify runtime dependencies (nmap, token/client init, Core reachability) from THIS process's environment, print a per-dependency report, and exit non-zero on any fatal gap. The installer runs it under the service's exact PATH to catch problems the daemon would hit.")
+	requireToken := flag.Bool("require-token", false, "With --check, require a non-empty persisted sensor token and validate it when Core is reachable. An offline Core remains a warning so installation is possible during an outage.")
 	enrollCode := flag.String("enroll-code", "", "One-time enrollment code from Core (or set VEDETTA_ENROLL_CODE). Required to register a NEW sensor once Core has admin auth configured.")
 	enrollOnly := flag.Bool("enroll-only", false, "Register with Core using the enrollment code, persist the sensor token, and exit. The installer runs this (with the code in the environment, not on the command line) so the secret never lives in the long-running service configuration.")
 	flag.Parse()
 
-	// Did the operator explicitly pass --core? A bare `--reset` (e.g. from the
-	// installer) just clears the token and exits; `--reset --core ...` clears and
-	// re-registers in the same process (see below).
+	// Did the operator explicitly pass --core? A bare `--reset` clears the token and
+	// exits; `--reset --core ...` preflights local persistence and performs one
+	// reset/re-registration action without deleting the old file first.
 	coreExplicit := false
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "core" {
 			coreExplicit = true
 		}
 	})
+	enrollmentCode := strings.TrimSpace(*enrollCode)
+	if enrollmentCode == "" {
+		enrollmentCode = strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE"))
+	}
 
 	if *showVersion {
 		fmt.Printf("vedetta-sensor %s\n", buildVersion)
@@ -134,31 +198,39 @@ func main() {
 	// literal was previously hardcoded, so released sensors mis-reported their version).
 	client.Version = buildVersion
 
+	// Diagnostics dispatch before reset handling so even an accidental
+	// `--reset --check` remains read-only. --require-token is scoped to this mode;
+	// silently ignoring it on a normal run would falsely imply auth was verified.
+	if *requireToken && !*selfCheck {
+		log.Fatal("--require-token may only be used with --check")
+	}
+	if *selfCheck {
+		os.Exit(runSelfCheck(*coreURL, *cidr, *requireToken))
+	}
+	if err := validateResetEnrollment(*reset, coreExplicit, enrollmentCode); err != nil {
+		log.Fatal(err)
+	}
+
 	// Handle --reset flag (very important for home users when auth gets into a bad state).
 	if *reset {
-		tokenPath, err := client.DefaultTokenPath()
-		if err == nil {
-			if rmErr := os.Remove(tokenPath); rmErr != nil && !os.IsNotExist(rmErr) {
-				log.Printf("WARNING: could not remove sensor token %s: %v", tokenPath, rmErr)
-			}
-		}
-		log.Println("Sensor authentication token has been cleared.")
 		if !coreExplicit {
+			if err := clearPersistedSensorToken(); err != nil {
+				log.Fatalf("Sensor authentication token was not cleared: %v", err)
+			}
+			log.Println("Sensor authentication token has been cleared.")
 			// Bare `--reset` (the installer's reset step): clear and exit. The service
 			// (re)start then re-registers, supplying the enrollment code.
 			log.Println("Restart the sensor with --core to re-register. Within a few minutes the ORIGINAL --enroll-code still works (idempotent recovery); after that window — or once an admin has revoked the sensor — ask an admin for a FRESH reset code bound to this sensor (POST /api/v1/enrollment-codes with {\"sensor_id\":...}) and pass it as --enroll-code. A generic new-sensor code will not reactivate an existing sensor.")
 			os.Exit(0)
 		}
-		// `--reset --core ...`: fall through and re-register in THIS process so a reset
-		// never strands the sensor (issue #44). If the original registration response
-		// was lost, re-supplying the SAME --enroll-code within its short TTL returns the
-		// same idempotent token. After that window (or once the token was revoked), the
-		// sensor needs a FRESH admin-minted RESET code bound to this sensor_id — a
-		// generic new-sensor code will not reactivate an existing sensor.
-		log.Println("Re-registering after reset ...")
-		if strings.TrimSpace(*enrollCode) == "" && strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE")) == "" {
-			log.Println("NOTE: no --enroll-code supplied. If this sensor was already enrolled, recovery within a few minutes of the original enrollment still works with the ORIGINAL code; after that window an admin must mint a FRESH reset code bound to this sensor_id (POST /api/v1/enrollment-codes with {\"sensor_id\":...}) and you pass it as --enroll-code. A generic new-sensor code will not reactivate an existing sensor.")
-		}
+		// `--reset --core ...`: keep the old file and re-register in THIS process. The
+		// client suppresses its old bearer in memory below so the bound reset code is
+		// authoritative, and preflights the local replacement path before contacting
+		// Core. The remote rotation and local write cannot be one transaction: if the
+		// response is lost or persistence fails afterward, re-supplying the SAME code
+		// within its short TTL returns the same idempotent token. After that window the
+		// sensor needs a FRESH admin-minted reset code bound to this sensor_id.
+		log.Println("Re-registering after reset; preflighting local persistence before the credential is rotated ...")
 	}
 
 	// --print-capture-plan is a Unix-only interactive diagnostic (recommends DNS/passive
@@ -176,15 +248,6 @@ func main() {
 		return
 	}
 
-	// --check is a preflight the installer runs under the SERVICE's exact environment
-	// (minimal PATH + the token-file override) to reproduce the daemon's two fatal
-	// startup gates — nmap resolution and Core-client init — without installing,
-	// scanning, capturing, or persisting anything. It exits non-zero on a fatal gap so
-	// the installer fails loudly instead of writing a service that crash-loops.
-	if *selfCheck {
-		os.Exit(runSelfCheck(*coreURL))
-	}
-
 	// Set up the device scanner (local: nmap presence on Unix, native ICMP/ARP on
 	// Windows). No network.
 	scanner, err := netscan.NewScanner()
@@ -198,12 +261,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("Could not initialize Core client: %v", err)
 	}
-	if core.TokenConfigured() {
+	if core.TokenConfigured() && !*reset {
 		log.Printf("Loaded persisted sensor token from %s", core.TokenPath)
 	}
-	core.EnrollCode = strings.TrimSpace(*enrollCode)
-	if core.EnrollCode == "" {
-		core.EnrollCode = strings.TrimSpace(os.Getenv("VEDETTA_ENROLL_CODE"))
+	core.EnrollCode = enrollmentCode
+	if *reset {
+		// Exercise the complete local secure-write/replace/fsync path before Core can
+		// revoke the old credential. This catches predictable permission/disk errors.
+		// It cannot make the remote rotation and local filesystem one transaction;
+		// after a post-response failure, replay the same still-valid code or mint a
+		// fresh bound reset code.
+		if err := core.PreflightTokenPersistence(); err != nil {
+			log.Fatalf("Could not safely prepare sensor token replacement before reset: %v", err)
+		}
+		core.SuppressTokenForReset()
 	}
 
 	// Assemble the run with the RAW config. Everything network-dependent — CIDR
@@ -312,6 +383,14 @@ func (r *sensorRun) serve(ctx context.Context) {
 	}
 	r.startCaptures()
 	log.Printf("Starting scan loop: cidr=%s interval=%s ports=%v", r.scanCIDR, r.interval, r.scanPorts)
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		r.heartbeatLoop(ctx)
+	}()
+	defer func() { <-heartbeatDone }()
+	// Registration can itself consume several bounded HTTP attempts. Start liveness
+	// first so an already-enrolled sensor is not marked stale while Core is slow.
 	r.register(ctx)
 	runScan(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts)
 	r.loop(ctx)
@@ -355,10 +434,16 @@ var (
 // service that boots before DHCP does not fail); otherwise it errors immediately.
 func (r *sensorRun) resolveScanCIDR(ctx context.Context, wait bool) (string, error) {
 	if c := strings.TrimSpace(r.cidrFlag); c != "" && c != "auto" {
+		if err := netscan.ValidateLocalTarget(c); err != nil {
+			return "", fmt.Errorf("invalid explicit --cidr: %w", err)
+		}
 		return c, nil
 	}
 	for {
 		if d := bestSubnet(""); d != "" {
+			if err := netscan.ValidateLocalTarget(d); err != nil {
+				return "", fmt.Errorf("auto-detected invalid LAN subnet %q: %w", d, err)
+			}
 			log.Printf("Auto-detected LAN subnet: %s", d)
 			return d, nil
 		}
@@ -474,9 +559,7 @@ func (r *sensorRun) register(ctx context.Context) {
 // front-end; cancellation source (signal vs SCM) is the front-end's concern.
 func (r *sensorRun) loop(ctx context.Context) {
 	scanTicker := time.NewTicker(r.interval)
-	heartbeatTicker := time.NewTicker(sensorHeartbeatInterval)
 	defer scanTicker.Stop()
-	defer heartbeatTicker.Stop()
 
 	for {
 		select {
@@ -491,19 +574,32 @@ func (r *sensorRun) loop(ctx context.Context) {
 			if d, h := r.droppedDNS.Load(), r.droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Cumulative dropped events (capture buffers overflowed): %d DNS queries, %d passive hosts", d, h)
 			}
-		case <-heartbeatTicker.C:
-			// Scan work is intentionally not used as a heartbeat: fetching it drains
-			// queued scans, and the default five-minute scan interval is longer than
-			// Core's two-minute process-staleness window.
-			if err := r.core.Heartbeat(ctx); err != nil && ctx.Err() == nil {
-				log.Printf("Sensor heartbeat failed: %v", err)
-			}
 		case <-ctx.Done():
 			log.Printf("Shutdown requested, draining captures")
 			if d, h := r.droppedDNS.Load(), r.droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Dropped during run: %d DNS queries, %d passive hosts", d, h)
 			}
 			r.shutdown()
+			return
+		}
+	}
+}
+
+// heartbeatLoop is deliberately independent from scan scheduling. A permitted Nmap
+// scan can run for four minutes, longer than Core's two-minute process-staleness
+// window; putting heartbeat ticks in the synchronous scan loop would mark a healthy
+// sensor stale while it was doing exactly the requested work.
+func (r *sensorRun) heartbeatLoop(ctx context.Context) {
+	ticker := time.NewTicker(sensorHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			// Fetching work is not a heartbeat: it drains queued scans.
+			if err := r.core.Heartbeat(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("Sensor heartbeat failed: %v", err)
+			}
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -688,7 +784,7 @@ func runScan(ctx context.Context, scanner *netscan.Scanner, core *client.CoreCli
 		}
 		log.Printf("Scanning %s (segment=%s) ...", task.cidr, task.segment)
 
-		result, err := scanner.Scan(task.cidr, task.scanPorts)
+		result, err := scanner.ScanContext(ctx, task.cidr, task.scanPorts)
 		if err != nil {
 			log.Printf("Scan failed for %s: %v", task.cidr, err)
 			continue
