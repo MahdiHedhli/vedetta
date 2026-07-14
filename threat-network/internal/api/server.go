@@ -115,6 +115,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status["corpus_profiles"] = manifest.ProfileCount
 		status["corpus_variants"] = manifest.VariantCount
 	} else {
+		s.logger.Printf("status: corpus manifest lookup failed: %v", err)
 		status["status"] = "error"
 		status["corpus_status"] = "error"
 		httpStatus = http.StatusServiceUnavailable

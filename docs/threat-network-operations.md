@@ -211,12 +211,15 @@ Deploy the `threat-network` container off-node:
 | `THREAT_NETWORK_DB` | `/data/threat-network.db` | SQLite file — **mount `/data` as a persistent volume** |
 | `THREAT_NETWORK_ADMIN_ENABLED` | `false` | Exact `true` starts the separate corpus-management listener |
 | `THREAT_NETWORK_ADMIN_ADDR` | `127.0.0.1:9091` | Management bind; keep it on loopback for native deployments |
-| `THREAT_NETWORK_ADMIN_TOKEN_FILE` | none | Owner-only (`0400`/`0600`) regular non-symlink file containing a random 32-byte-or-longer bearer secret |
+| `THREAT_NETWORK_ADMIN_TOKEN_FILE` | none | Owner-only (`0400`/`0600`) regular non-symlink file containing at least 32 random printable ASCII bytes (for example, hex or base64url; not raw binary) |
 | `THREAT_NETWORK_ADMIN_ALLOW_NON_LOOPBACK` | `false` | Required second opt-in for an isolated container or authenticated TLS upstream |
 
-The token-file check is deliberately strict: the configured path must be a
-readable **regular, non-symlink file** with no group or other permission bits.
-Use `0400` or `0600`, owned by the account that runs `threat-network`, and
+The token-file check is deliberately strict: after trimming surrounding
+whitespace, the token must contain at least 32 printable ASCII bytes with no
+embedded whitespace or control characters. Generate an encoded value such as
+hex or base64url rather than writing raw random bytes. The configured path must
+be a readable **regular, non-symlink file** with no group or other permission
+bits. Use `0400` or `0600`, owned by the account that runs `threat-network`, and
 verify the path from inside the container or service namespace before startup.
 
 - For a native install or a Docker/Compose bind mount, create the source under

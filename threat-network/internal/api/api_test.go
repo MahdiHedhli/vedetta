@@ -69,7 +69,9 @@ func TestStatusEndpoint(t *testing.T) {
 }
 
 func TestStatusEndpointReportsCorpusManifestFailure(t *testing.T) {
-	_, db, ts := newTestServer(t)
+	s, db, ts := newTestServer(t)
+	var logs bytes.Buffer
+	s.logger.SetOutput(&logs)
 	if _, err := db.Exec(`UPDATE device_corpus_state SET updated_at = 'not-a-time' WHERE singleton = 1`); err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +95,9 @@ func TestStatusEndpointReportsCorpusManifestFailure(t *testing.T) {
 		if _, ok := body[key]; ok {
 			t.Fatalf("failed manifest must not publish stale %s metadata: %v", key, body)
 		}
+	}
+	if !bytes.Contains(logs.Bytes(), []byte("status: corpus manifest lookup failed:")) {
+		t.Fatalf("manifest failure log missing diagnostic: %q", logs.String())
 	}
 }
 
