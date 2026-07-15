@@ -744,7 +744,7 @@
             <li>Passive DNS capture with local threat scoring and enrichment</li>
             <li>EOL router &amp; camera risk detection (FBI IC3 advisory models)</li>
             <li>Docker Core + native macOS/Linux/Windows sensor, loopback-first by default</li>
-            <li>Opt-out community threat network &mdash; pseudonymous, known-bad indicators only</li>
+            <li>Opt-out community threat network &mdash; allowlisted, pseudonymous known-bad records; full boundary in Privacy</li>
           </ul>
         </div>
 
@@ -890,7 +890,7 @@
         <div class="feature-card">
           <div class="feature-kicker">Privacy And Trust</div>
           <h3>Self-hosted first</h3>
-          <p>The local deployment stays fully useful with no cloud dependency. Community telemetry is on by default but trivially opt-out, advisory-only, and privacy-reduced and pseudonymous (not anonymous) — no internal/device source IPs, MACs, or hostnames are ever serialized into the payload. (As with any outbound connection, the network intermediary — Cloudflare — sees your Core's public WAN address; that is transport metadata, not part of what is shared.)</p>
+          <p>The local deployment stays fully useful with no cloud dependency. Community telemetry is on by default, but an administrator can opt out in Settings; it is advisory-only, privacy-reduced, and pseudonymous (not anonymous). Beta signals contain an allowlisted known-bad domain/eTLD+1, hourly bucket, counts, confidence/reasons, IDs, and timing/schema metadata. Registration separately sends a random install UUID, version, and capability names. Neither exchange sends internal/device IPs, MACs, hostnames, raw queries, or per-asset hashes. The community service retains pseudonymous linkage and precise receipt timing as detailed in <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer">Privacy</a>; Cloudflare sees the public connection source/timing, and Vedetta transiently uses that public address as an in-memory rate-limit key (not SQLite/application logs).</p>
         </div>
 
         <div class="feature-card">
