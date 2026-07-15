@@ -3261,7 +3261,12 @@ def oui_table_failures(path: str, contents: str) -> list[str]:
     records, valid_csv = csv_records_with_spans(contents, ",")
     if not valid_csv or not records:
         return [f"{display_path(path)}: OUI table could not be decoded safely"]
-    header = [value.strip().lstrip("\ufeff").lower() for value, _s, _e in records[0]]
+    # Compare the header literally \u2014 the generator emits exactly "prefix,vendor", so a
+    # case- or whitespace-variant header is drift worth catching. Tolerate only a leading
+    # UTF-8 BOM on the first cell.
+    header = [value for value, _s, _e in records[0]]
+    if header:
+        header[0] = header[0].lstrip("\ufeff")
     if header != ["prefix", "vendor"]:
         return [f"{display_path(path)}: OUI table header must be exactly 'prefix,vendor'"]
     for row_number, row in enumerate(records[1:], start=2):
