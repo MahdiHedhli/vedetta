@@ -261,8 +261,16 @@ stop_project_core_containers() {
   [ -z "$ids" ] && return 0
   for id in $ids; do
     svc="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.service" }}' "$id" 2>/dev/null || true)"
-    if [ -n "$svc" ] && [ -n "$profile_only" ] && printf '%s\n' "$profile_only" | grep -Fxq "$svc"; then
-      continue   # profile-gated (e.g. threat-network) — never touched by a Core upgrade
+    # Spare profile-gated services per the CURRENT checkout AND per the
+    # ORIGINAL one (captured at preflight): a target ref that removed the
+    # community service must not cause a Core upgrade to stop it.
+    if [ -n "$svc" ]; then
+      if [ -n "$profile_only" ] && printf '%s\n' "$profile_only" | grep -Fxq "$svc"; then
+        continue   # profile-gated (e.g. threat-network) — never touched by a Core upgrade
+      fi
+      if [ -n "${PROFILE_ONLY_ORIG:-}" ] && printf '%s\n' "$PROFILE_ONLY_ORIG" | grep -Fxq "$svc"; then
+        continue   # profile-gated in the ORIGINAL checkout — same guarantee
+      fi
     fi
     docker stop "$id" >/dev/null || return 1
   done
@@ -353,6 +361,18 @@ PROJECT="$(detect_project)"
 # and report success while the real data sat stranded in the old project.
 # COMPOSE_PROJECT_NAME takes precedence over the file's `name:` key.
 export COMPOSE_PROJECT_NAME="$PROJECT"
+
+# Snapshot the ORIGINAL checkout's profile-only service set now, before any
+# git checkout can change the compose file — the quiesce sweep spares these
+# services even when the target ref removed or renamed them.
+PROFILE_ONLY_ORIG=""
+_core_orig="$(core_services 2>/dev/null || true)"
+if [ -n "$_core_orig" ]; then
+  _all_orig="$(COMPOSE_PROFILES='*' docker compose config --services 2>/dev/null || true)"
+  PROFILE_ONLY_ORIG="$(printf '%s\n' "$_all_orig" | grep -Fxv "$_core_orig" 2>/dev/null || true)"
+fi
+unset _core_orig _all_orig
+
 VOL_DATA="$(resolve_volume vedetta-data || true)"
 if [ -z "$VOL_DATA" ]; then
   err "Could not resolve the vedetta-data volume for Compose project '${PROJECT}'"
