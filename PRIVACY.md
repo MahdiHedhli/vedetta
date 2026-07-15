@@ -81,11 +81,16 @@ per-instance secret. It is reduced to `distinct_asset_count` and discarded befor
 egress; the hash and salt never leave the node.
 
 This boundary is structural: the export candidate has an explicit field allowlist.
-The community server independently rejects unknown fields, IP- or MAC-shaped
-values, single-label and configured special-use/internal names, invalid domain/URL
-syntax, and names that fail Public Suffix List reduction. These are concrete
-schema/content checks, not a claim that every possible identifier embedded in an
-otherwise valid public domain can be recognized.
+The community server independently checks unknown fields, IP- or MAC-shaped values,
+single-label and configured special-use/internal names, invalid domain/URL syntax,
+and Public Suffix List reduction. A signal that fails PSL reduction (or whose
+declared eTLD+1 disagrees with that reduction) is skipped and included in the
+batch's `rejected` count; other valid signals in that batch remain eligible for
+acceptance. The batch response reports the skip; a PSL failure alone does not make
+the batch poison or a retry candidate. Hard forbidden content such as an IP/MAC or
+private name, and unknown schema fields, still rejects the whole batch. These are
+concrete schema/content checks, not a claim that every possible identifier embedded
+in an otherwise valid public domain can be recognized.
 
 #### What the community service stores and for how long
 

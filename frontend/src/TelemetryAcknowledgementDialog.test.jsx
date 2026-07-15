@@ -42,7 +42,8 @@ describe('TelemetryAcknowledgementDialog', () => {
   it('states the exact enabled privacy boundary and local-impact behavior', async () => {
     renderDialog();
 
-    expect(screen.getByRole('heading', { name: 'Pseudonymous telemetry is currently enabled' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Core telemetry gate is currently enabled' })).toBeInTheDocument();
+    expect(screen.getByText(/separate telemetry-service process is running/i)).toBeInTheDocument();
     expect(screen.getByText(/matched public block-list domain/i)).toBeInTheDocument();
     expect(screen.getByText(/observation\/distinct-asset\/blocked counts/i)).toBeInTheDocument();
     expect(screen.getByText(/random signal and batch IDs/i)).toBeInTheDocument();
@@ -62,7 +63,7 @@ describe('TelemetryAcknowledgementDialog', () => {
     expect(screen.getByRole('button', { name: 'CHECKING…' })).toBeDisabled();
 
     view.rerender(<TelemetryAcknowledgementDialog {...view.props} phase="ready" setting={{ effective: false }} />);
-    expect(screen.getByRole('heading', { name: 'Telemetry is currently disabled' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Core telemetry gate is currently disabled' })).toBeInTheDocument();
     expect(screen.getByText(/No community contributions are sent/i)).toBeInTheDocument();
     expect(screen.getByText(/When telemetry is enabled, each beta signal/i)).toBeInTheDocument();
     expect(screen.getByText(/Signal rows and batch receipts expire after 30 days/i)).toBeInTheDocument();

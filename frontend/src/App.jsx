@@ -138,6 +138,8 @@ export default function App() {
   const adminSetupCodeRef = useRef(null);
   const adminTokenInputRef = useRef(null);
   const telemetryTokenValidationSequence = useRef(0);
+  const telemetrySettingsHandoffPendingRef = useRef(settingsHandoffPending);
+  telemetrySettingsHandoffPendingRef.current = settingsHandoffPending;
   const pendingAdminView = settingsHandoffPending ? 'settings' : null;
   // A background 401 may queue the Admin Access prompt while the telemetry
   // disclosure still owns modality. Mount only one accessible dialog at a time.
@@ -188,6 +190,7 @@ export default function App() {
 
   const navigateToTelemetrySettings = useCallback(({ verifiedToken = '' } = {}) => {
     telemetryTokenValidationSequence.current += 1;
+    telemetrySettingsHandoffPendingRef.current = false;
     setTelemetrySettingsNeedsPrompt(false);
     setTelemetryAdminHandoffToken(verifiedToken);
     completeTelemetrySettingsHandoff();
@@ -244,6 +247,7 @@ export default function App() {
     if (action === 'wait') return false;
     const needsPrompt = showTokenPrompt || telemetryAdminScopeRejected || action === 'prompt';
     setTelemetrySettingsNeedsPrompt(needsPrompt);
+    telemetrySettingsHandoffPendingRef.current = true;
     beginTelemetrySettingsHandoff();
     if (action === 'navigate' && !needsPrompt) {
       navigateToTelemetrySettings();
@@ -255,6 +259,7 @@ export default function App() {
 
   const closeAdminPrompt = useCallback(() => {
     telemetryTokenValidationSequence.current += 1;
+    telemetrySettingsHandoffPendingRef.current = false;
     setShowTokenPrompt(false);
     setTelemetrySettingsNeedsPrompt(false);
     setAuthError('');
@@ -269,6 +274,9 @@ export default function App() {
       setAuthError('A setup code is required. Find it in the Core logs from first start: docker logs <core-container>');
       return;
     }
+    const validationSequence = telemetryTokenValidationSequence.current + 1;
+    telemetryTokenValidationSequence.current = validationSequence;
+    const handoffWasPending = telemetrySettingsHandoffPendingRef.current;
     try {
       const headers = { 'Content-Type': 'application/json' };
       // GHSA-6cmx: Core requires the setup code to mint the FIRST admin token.
@@ -296,9 +304,15 @@ export default function App() {
           'Copy this token and store it safely. It will not be shown again.\n' +
           'You can always create additional admin tokens from the Settings page if you have an active session.'
         );
-        if (settingsHandoffPending) {
+        if (
+          handoffWasPending &&
+          telemetrySettingsHandoffPendingRef.current &&
+          telemetryTokenValidationSequence.current === validationSequence
+        ) {
           // This endpoint just minted the requested admin-scoped token, which
           // is authoritative even though useFindings has not refreshed yet.
+          // A cancelled handoff still receives and displays its newly minted
+          // one-time token, but must not dismiss the restored disclosure.
           navigateToTelemetrySettings({ verifiedToken: data.token });
         }
         // Refresh data now that we are authenticated
@@ -4383,20 +4397,20 @@ function TelemetrySettings() {
       tabIndex={-1}
       className="bg-gray-900 border border-gray-800 rounded-lg p-5 focus:outline-none focus:ring-2 focus:ring-amber-500/70"
     >
-      <h3 className="text-sm font-medium mb-1">Pseudonymous Telemetry</h3>
+      <h3 className="text-sm font-medium mb-1">Pseudonymous Telemetry — Core Live Gate</h3>
       <p className="text-xs text-gray-500 mb-2">
         Telemetry is <span className="text-gray-300 font-medium">on by default</span> (opt-out). For beta, signals contain the matched public known-bad domain and eTLD+1; hourly event bucket; observation, distinct-asset, and blocked counts; local confidence and fixed reason codes; and random signal/batch IDs with schema, batch-generation, and collection-window metadata. Registration sends a random install UUID, Vedetta version, and capability names, then receives a stable reporter pseudonym. No internal/device IP, MAC, hostname, raw query, or per-asset hash is sent.{' '}
         <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" className="text-teal-400 hover:text-teal-300 underline">Privacy notice</a>
       </p>
       <p className="text-xs text-gray-500 mb-3">
-        The server does not retain the install UUID, but stores the reporter pseudonym and version/capabilities, reporter creation/last-seen timing, linked signal data with receipt/first-received/last-merge times, and batch receipt counts. Signals and receipts expire after 30 days; reporter and derived-record expiry is incomplete. Cloudflare observes the public connection address and timing; the community service also holds that address and its last-access time only in an in-memory rate-limit bucket while active and until swept after 30 idle minutes, not in SQLite or application logs. Turning telemetry off stops contributions only — local monitoring and public threat-feed downloads continue normally.
+        The server does not retain the install UUID, but stores the reporter pseudonym and version/capabilities, reporter creation/last-seen timing, linked signal data with receipt/first-received/last-merge times, and batch receipt counts. Signals and receipts expire after 30 days; reporter and derived-record expiry is incomplete. Cloudflare observes the public connection address and timing; the community service also holds that address and its last-access time only in an in-memory rate-limit bucket while active and until swept after 30 idle minutes, not in SQLite or application logs. This switch controls Core's live contribution gate for a running telemetry service; it does not stop that service process. Turning Core's gate off stops contributions only — local monitoring and public threat-feed downloads continue normally.
       </p>
 
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${loading ? 'bg-amber-400' : effective === true ? 'bg-green-400' : 'bg-gray-500'}`} />
           <span className={`text-sm ${effective === true ? 'text-gray-300' : 'text-gray-400'}`}>
-            {loading ? 'Checking…' : state ? (effective ? 'Enabled' : 'Disabled') : 'Status unavailable'}
+            {loading ? 'Checking Core gate…' : state ? (effective ? 'Core gate enabled' : 'Core gate disabled') : 'Core gate status unavailable'}
           </span>
           {state && !loading && (
             <span className="text-[10px] text-gray-500 ml-1">· {sourceLabel}</span>
@@ -4411,7 +4425,7 @@ function TelemetrySettings() {
           disabled={!state || !isAdmin || saving || loading}
           onClick={toggle}
           className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${effective === true ? 'bg-green-500' : 'bg-gray-600'}`}
-          title={!isAdmin ? 'Admin token required to change this setting' : !state ? 'Telemetry status unavailable' : (effective ? 'Turn telemetry off' : 'Turn telemetry on')}
+          title={!isAdmin ? 'Admin token required to change this setting' : !state ? 'Core telemetry gate status unavailable' : (effective ? 'Turn Core telemetry gate off' : 'Turn Core telemetry gate on')}
         >
           <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${effective === true ? 'translate-x-6' : 'translate-x-1'}`} />
         </button>
@@ -4427,7 +4441,8 @@ function TelemetrySettings() {
           {' '}For a process-level hard stop before the telemetry daemon reads Core data or performs
           network egress, set{' '}
           <span className="font-mono">VEDETTA_TELEMETRY_OPTIN=false</span> on the telemetry service
-          and restart it. A saved dashboard setting independently controls Core's live telemetry gate.
+          and restart it. The dashboard switch independently controls only Core's live contribution
+          gate for a running telemetry service; it does not stop the service process.
         </p>
       )}
       {error && (

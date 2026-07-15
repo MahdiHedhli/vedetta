@@ -69,7 +69,7 @@ function deferred() {
 
 async function openTelemetryAdminPrompt(user) {
   expect(await screen.findByRole('heading', {
-    name: 'Pseudonymous telemetry is currently enabled',
+    name: 'Core telemetry gate is currently enabled',
   })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Manage in Settings' }));
   expect(await screen.findByRole('dialog', { name: 'Admin Access' })).toBeInTheDocument();
@@ -108,7 +108,7 @@ describe('App telemetry Settings authentication handoff', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', {
-      name: 'Pseudonymous telemetry is currently enabled',
+      name: 'Core telemetry gate is currently enabled',
     })).toBeInTheDocument();
     const inertApplication = document.querySelector('[inert]');
     expect(inertApplication).not.toBeNull();
@@ -116,7 +116,7 @@ describe('App telemetry Settings authentication handoff', () => {
     await user.click(screen.getByRole('button', { name: 'Manage in Settings' }));
 
     expect(screen.getByRole('heading', {
-      name: 'Pseudonymous telemetry is currently enabled',
+      name: 'Core telemetry gate is currently enabled',
     })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Admin Access' })).not.toBeInTheDocument();
     expect(document.querySelector('[inert]')).toBe(inertApplication);
@@ -133,15 +133,54 @@ describe('App telemetry Settings authentication handoff', () => {
     expect(await screen.findByText('Setup code rejected by test Core')).toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: 'Admin Access' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', {
-      name: 'Pseudonymous telemetry is currently enabled',
+      name: 'Core telemetry gate is currently enabled',
     })).not.toBeInTheDocument();
     expect(localStorage.getItem(TELEMETRY_NOTICE_STORAGE_KEY)).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Close admin access dialog' }));
     expect(await screen.findByRole('heading', {
-      name: 'Pseudonymous telemetry is currently enabled',
+      name: 'Core telemetry gate is currently enabled',
     })).toBeInTheDocument();
     expect(localStorage.getItem(TELEMETRY_NOTICE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('does not complete a cancelled Settings handoff after initial-admin creation succeeds', async () => {
+    const creation = deferred();
+    const response = jsonResponse({ token: 'late-created-admin-test-token' });
+    const defaultAuthFetch = api.authFetch.getMockImplementation();
+    api.authFetch.mockImplementation((url, options = {}) => {
+      if (url === '/api/v1/auth/tokens' && options.method === 'POST') {
+        return creation.promise;
+      }
+      return defaultAuthFetch(url, options);
+    });
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    const user = userEvent.setup();
+    render(<App />);
+    await openTelemetryAdminPrompt(user);
+
+    await user.click(screen.getByRole('button', { name: 'Create Initial Admin Token' }));
+    expect(api.authFetch).toHaveBeenCalledWith(
+      '/api/v1/auth/tokens',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Close admin access dialog' }));
+    expect(await screen.findByRole('heading', {
+      name: 'Core telemetry gate is currently enabled',
+    })).toBeInTheDocument();
+
+    await act(async () => {
+      creation.resolve(response);
+      await creation.promise;
+    });
+    await waitFor(() => expect(response.json).toHaveBeenCalledTimes(1));
+
+    expect(api.token).toBe('late-created-admin-test-token');
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('heading', { name: 'Settings' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Admin Access' })).not.toBeInTheDocument();
+    expect(localStorage.getItem(TELEMETRY_NOTICE_STORAGE_KEY)).toBeNull();
+    alertSpy.mockRestore();
   });
 
   it('keeps the application inert and focus trapped throughout Admin Access', async () => {
@@ -165,7 +204,7 @@ describe('App telemetry Settings authentication handoff', () => {
 
     await user.click(first);
     expect(await screen.findByRole('heading', {
-      name: 'Pseudonymous telemetry is currently enabled',
+      name: 'Core telemetry gate is currently enabled',
     })).toBeInTheDocument();
     expect(document.querySelector('[inert]')).not.toBeNull();
     expect(localStorage.getItem(TELEMETRY_NOTICE_STORAGE_KEY)).toBeNull();

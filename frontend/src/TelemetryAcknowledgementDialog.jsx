@@ -66,8 +66,9 @@ function DisclosureCopy({ phase, setting }) {
           </p>
           <TelemetryPrivacyBoundary conditional />
           <p>
-            Verify or change the live setting in Settings. For a process-level hard stop before
-            the telemetry daemon reads Core data or performs network egress, set{' '}
+            The dashboard setting controls Core's live contribution gate for a running telemetry
+            service; it does not stop that service process. For a process-level hard stop before
+            the daemon reads Core data or performs network egress, set{' '}
             <code className="text-gray-200">VEDETTA_TELEMETRY_OPTIN=false</code> on the telemetry
             service and restart it.
           </p>
@@ -75,14 +76,18 @@ function DisclosureCopy({ phase, setting }) {
       ) : setting?.effective === false ? (
         <>
           <p>
-            Pseudonymous telemetry is currently disabled on this Core. No community contributions
-            are sent while it remains disabled.
+            Core's live pseudonymous-telemetry gate is currently disabled. No community
+            contributions are sent while this Core gate remains disabled.
           </p>
           <TelemetryPrivacyBoundary conditional />
         </>
       ) : (
         <>
-          <p>Pseudonymous telemetry is enabled on this Core.</p>
+          <p>
+            Core's live pseudonymous-telemetry gate is currently enabled. Contributions can occur
+            only while the separate telemetry-service process is running and its environment hard
+            stop is not active.
+          </p>
           <TelemetryPrivacyBoundary />
         </>
       )}
@@ -163,8 +168,8 @@ export function TelemetryAcknowledgementDialog({
     : phase === 'error'
       ? 'Telemetry status could not be verified'
       : setting?.effective === false
-        ? 'Telemetry is currently disabled'
-        : 'Pseudonymous telemetry is currently enabled';
+        ? 'Core telemetry gate is currently disabled'
+        : 'Core telemetry gate is currently enabled';
 
   return (
     <div
