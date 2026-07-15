@@ -79,10 +79,13 @@ anything.
   with `duplicate: true`, no re-processing (002 contract §1).
 - FR-3: Ingest validates every signal against the contract (schema version, required
   fields per kind, confidence in [0,1], counts ≥ 0, hour-bucket timestamps) and
-  server-side re-applies the privacy gate: a batch containing any signal with
-  private/special-use/single-label names, raw IP literals, or asset identifiers is
-  rejected whole with `422` (002 contract §5), even though Core should never send
-  them (defense in depth).
+  server-side re-applies the privacy gate. Unknown fields, IP- or MAC-shaped values,
+  configured special-use/internal or single-label names, and URL syntax reject the
+  whole batch with `422` (002 contract §5). Invalid DNS names or lengths, Public
+  Suffix List reduction failures, candidate values that are not eTLD+1, and known-bad
+  eTLD+1 mismatches skip only the offending signal and increment the rejected count.
+  Core should never send either class (defense in depth). These concrete checks cannot
+  recognize every possible identifier embedded in an otherwise valid public domain.
 - FR-4: Accepted signals are deduplicated on `(reporter_id, kind, indicator, time_bucket)`
   — one row per reporter per indicator per hour window — plus batch/signal-id replay
   dedup, and stored in SQLite.
@@ -103,9 +106,14 @@ anything.
 - FR-8: Abuse resistance ships with the feature, not after it: per-reporter and per-IP
   rate limits, max batch size, daily per-reporter signal and distinct-indicator caps,
   allowlist (top-domains) poisoning detection, and a reporter denylist.
-- FR-9: No PII at rest: no operator identity, no source-IP persistence (per-IP limits
-  are in-memory only), no asset identifiers, counts-only fields, hour-bucket times.
-  Raw signals retained ≤30 days; only aggregates/feed items live longer.
+- FR-9: No direct device/operator identifiers at rest: no operator account, persistent
+  source-IP storage, or asset identifier. Per-IP rate-limit keys and last-access times
+  remain in memory while active and until swept after 30 idle minutes; they do not enter
+  SQLite or application logs. The service does
+  store a stable reporter pseudonym and version/capabilities/times; linked signal domains,
+  hourly event buckets, confidence/reasons/counts, and exact receipt/merge times; and batch
+  receipts. Signal rows and receipts are retained ≤30 days. Reporter rows/counters,
+  computed aggregates, and feed items have separate or incomplete expiry.
 - FR-10: `GET /api/v1/status` reports health and schema version (already stubbed; kept).
 
 ### Non-Functional

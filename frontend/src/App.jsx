@@ -5,6 +5,13 @@ import { useFindings } from './findings/useFindings';
 import { eventAssetKey, eventBelongsToDevice, eventOutcome, stableDeviceID } from './identity/deviceEvents';
 import { fetchDeviceThreatEvents } from './identity/api';
 import { IdentityPanel } from './identity/IdentityPanel';
+import { TelemetryAcknowledgementDialog, TelemetryInertBackground } from './TelemetryAcknowledgementDialog';
+import {
+  readTelemetryDisclosureSetting,
+  TELEMETRY_STATUS_UNAVAILABLE_MESSAGE,
+  telemetrySettingsAccessAction,
+} from './telemetryDisclosure';
+import { useAdminPromptFocus, useTelemetryDisclosureFlow } from './useTelemetryDisclosureFlow';
 
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
@@ -84,15 +91,19 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   // First-run telemetry disclosure (issue #37c): telemetry is ON by default
-  // (opt-out), so we must surface a visible notice on first dashboard load
-  // before relying on the silent default. Acknowledgement persists per browser.
-  const [showTelemetryNotice, setShowTelemetryNotice] = useState(() => {
-    try { return localStorage.getItem('vedetta_telemetry_notice_ack') !== '1'; } catch { return true; }
-  });
-  const dismissTelemetryNotice = () => {
-    try { localStorage.setItem('vedetta_telemetry_notice_ack', '1'); } catch {}
-    setShowTelemetryNotice(false);
-  };
+  // (opt-out), so on first dashboard load we present a blocking, one-time
+  // acknowledgement the user must accept before using the dashboard.
+  // Acknowledgement is versioned and persists per browser origin.
+  const {
+    showTelemetryNotice,
+    settingsHandoffPending,
+    acknowledgeTelemetry,
+    beginTelemetrySettingsHandoff,
+    completeTelemetrySettingsHandoff,
+    cancelTelemetrySettingsHandoff,
+  } = useTelemetryDisclosureFlow();
+  const [telemetryDisclosure, setTelemetryDisclosure] = useState({ phase: 'loading', setting: null });
+  const [telemetryDisclosureAttempt, setTelemetryDisclosureAttempt] = useState(0);
   const [defaultCIDR, setDefaultCIDR] = useState('');
   const [threatEvents, setThreatEvents] = useState([]);
   const [threatStats, setThreatStats] = useState(null);
@@ -104,6 +115,9 @@ export default function App() {
   const [adminToken, setAdminTokenState] = useState(() => getAdminToken());
   const findingsState = useFindings({ pollMs: 10_000, refreshKey: adminToken });
   const canAdmin = findingsState.canAdmin;
+  const [focusTelemetrySettings, setFocusTelemetrySettings] = useState(false);
+  const [telemetrySettingsNeedsPrompt, setTelemetrySettingsNeedsPrompt] = useState(false);
+  const [telemetryAdminScopeRejected, setTelemetryAdminScopeRejected] = useState(false);
   const [focusedDeviceID, setFocusedDeviceID] = useState(null);
   const [showTokenPrompt, setShowTokenPrompt] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
@@ -114,13 +128,115 @@ export default function App() {
   // field when /auth/setup-status reports needs_setup_code=true.
   const [needsSetupCode, setNeedsSetupCode] = useState(false);
   const [setupCode, setSetupCode] = useState('');
+  const adminPromptCloseRef = useRef(null);
+  const adminSetupCodeRef = useRef(null);
+  const adminTokenInputRef = useRef(null);
+  const pendingAdminView = settingsHandoffPending ? 'settings' : null;
+
+  useAdminPromptFocus({
+    promptVisible: showTokenPrompt,
+    blockingNoticeVisible: showTelemetryNotice,
+    preferSetupCode: !adminToken && needsSetupCode,
+    setupCodeRef: adminSetupCodeRef,
+    tokenInputRef: adminTokenInputRef,
+    fallbackRef: adminPromptCloseRef,
+  });
+
+  // The disclosure describes the effective Core setting, not merely the product
+  // default. Time out into an honest unknown state instead of blocking forever.
+  useEffect(() => {
+    if (!showTelemetryNotice) return;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    let cancelled = false;
+    setTelemetryDisclosure({ phase: 'loading', setting: null });
+    readTelemetryDisclosureSetting(authFetch, { signal: controller.signal })
+      .then((setting) => {
+        if (!cancelled) setTelemetryDisclosure({ phase: 'ready', setting });
+      })
+      .catch(() => {
+        if (!cancelled) setTelemetryDisclosure({ phase: 'error', setting: null });
+      })
+      .finally(() => window.clearTimeout(timeout));
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [adminToken, showTelemetryNotice, telemetryDisclosureAttempt]);
 
   // Keep local state in sync with the lib (in case of external clear)
   const updateAdminToken = useCallback((token) => {
     setAdminToken(token);
     setAdminTokenState(token || '');
+    setTelemetryAdminScopeRejected(false);
     setAuthError('');
   }, []);
+
+  const navigateToTelemetrySettings = useCallback(() => {
+    setTelemetrySettingsNeedsPrompt(false);
+    completeTelemetrySettingsHandoff();
+    setShowTokenPrompt(false);
+    setView('settings');
+    setFocusTelemetrySettings(true);
+  }, [completeTelemetrySettingsHandoff]);
+
+  useEffect(() => {
+    if (pendingAdminView !== 'settings') return;
+    if (telemetrySettingsNeedsPrompt) {
+      setShowTokenPrompt(true);
+      return;
+    }
+    const action = telemetrySettingsAccessAction({
+      canAdmin,
+      tokenPresent: !!adminToken,
+      session: findingsState.session,
+      phase: findingsState.phase,
+    });
+    if (action === 'navigate') navigateToTelemetrySettings();
+    else if (action === 'prompt') {
+      setTelemetrySettingsNeedsPrompt(true);
+      if (findingsState.session?.authenticated && !canAdmin) {
+        setAuthError('This token has read-only scope. An admin token is required to change telemetry.');
+      }
+      setShowTokenPrompt(true);
+    }
+  }, [adminToken, canAdmin, findingsState.phase, findingsState.session, navigateToTelemetrySettings, pendingAdminView, telemetrySettingsNeedsPrompt]);
+
+  useEffect(() => {
+    if (view !== 'settings' || !focusTelemetrySettings) return;
+    const timer = window.setTimeout(() => {
+      const target = document.getElementById('telemetry-settings');
+      target?.focus();
+      target?.scrollIntoView?.({ block: 'center' });
+      setFocusTelemetrySettings(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [focusTelemetrySettings, view]);
+
+  const manageTelemetrySettings = () => {
+    const action = telemetrySettingsAccessAction({
+      canAdmin,
+      tokenPresent: !!adminToken,
+      session: findingsState.session,
+      phase: findingsState.phase,
+    });
+    const needsPrompt = showTokenPrompt || telemetryAdminScopeRejected || action === 'prompt';
+    setTelemetrySettingsNeedsPrompt(needsPrompt);
+    beginTelemetrySettingsHandoff();
+    if (action === 'navigate' && !needsPrompt) {
+      navigateToTelemetrySettings();
+      return;
+    }
+    if (needsPrompt) setShowTokenPrompt(true);
+  };
+
+  const closeAdminPrompt = useCallback(() => {
+    setShowTokenPrompt(false);
+    setTelemetrySettingsNeedsPrompt(false);
+    setAuthError('');
+    cancelTelemetrySettingsHandoff();
+  }, [cancelTelemetrySettingsHandoff]);
 
   // Create the very first admin token (only works in bootstrap mode)
   const createInitialAdminToken = async () => {
@@ -157,17 +273,25 @@ export default function App() {
           'Copy this token and store it safely. It will not be shown again.\n' +
           'You can always create additional admin tokens from the Settings page if you have an active session.'
         );
+        if (settingsHandoffPending) {
+          navigateToTelemetrySettings();
+        }
         // Refresh data now that we are authenticated
         fetchStatus();
         fetchSensors();
       }
     } catch (e) {
       setAuthError(e.message || 'Failed to create admin token');
+      if (settingsHandoffPending) {
+        setTelemetrySettingsNeedsPrompt(false);
+        setShowTokenPrompt(false);
+        cancelTelemetrySettingsHandoff();
+      }
     }
   };
 
   // Allow user to paste an existing admin token (recovery / multi-device)
-  const submitPastedToken = () => {
+  const submitPastedToken = async () => {
     const t = tokenInput.trim();
     if (!t) {
       setAuthError('Please paste a valid admin token');
@@ -175,8 +299,37 @@ export default function App() {
     }
     updateAdminToken(t);
     setTokenInput('');
-    setShowTokenPrompt(false);
     setAuthError('');
+
+    if (settingsHandoffPending) {
+      // Do not trust the previous useFindings session after a prompt (it may be
+      // stale from a rejected token). Validate this exact replacement token
+      // directly, and persist the telemetry acknowledgement only after the
+      // authoritative session confirms admin scope.
+      try {
+        const session = await authFetchJSON('/api/v1/auth/session');
+        if (session?.authenticated !== true || session?.can_admin !== true) {
+          setTelemetryAdminScopeRejected(session?.authenticated === true);
+          setAuthError(session?.authenticated
+            ? 'This token has read-only scope. An admin token is required to change telemetry.'
+            : 'The token could not be authenticated. An admin token is required to change telemetry.');
+          setTelemetrySettingsNeedsPrompt(false);
+          setShowTokenPrompt(false);
+          cancelTelemetrySettingsHandoff();
+          return;
+        }
+        navigateToTelemetrySettings();
+      } catch (e) {
+        updateAdminToken('');
+        setAuthError(e.message || 'The admin token could not be verified.');
+        setTelemetrySettingsNeedsPrompt(false);
+        setShowTokenPrompt(false);
+        cancelTelemetrySettingsHandoff();
+      }
+      return;
+    }
+
+    setShowTokenPrompt(false);
     // Re-fetch everything with the new token
     setTimeout(() => {
       fetchStatus();
@@ -322,13 +475,24 @@ export default function App() {
   useEffect(() => {
     const onUnauthorized = () => {
       if (hasAdminToken()) {
-        setAuthError('Your admin token is no longer valid. Please re-enter it.');
-        setShowTokenPrompt(true);
+        const message = 'Your admin token is no longer valid. Please re-enter it.';
+        if (settingsHandoffPending) {
+          // A failed deferred Settings authentication is not an
+          // acknowledgement. Remove the rejected token and restore the notice.
+          updateAdminToken('');
+          setAuthError(message);
+          setTelemetrySettingsNeedsPrompt(false);
+          setShowTokenPrompt(false);
+          cancelTelemetrySettingsHandoff();
+        } else {
+          setAuthError(message);
+          setShowTokenPrompt(true);
+        }
       }
     };
     window.addEventListener('vedetta:auth:unauthorized', onUnauthorized);
     return () => window.removeEventListener('vedetta:auth:unauthorized', onUnauthorized);
-  }, []);
+  }, [cancelTelemetrySettingsHandoff, settingsHandoffPending, updateAdminToken]);
 
   useEffect(() => {
     fetchStatus();
@@ -409,6 +573,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
+      <TelemetryInertBackground active={showTelemetryNotice}>
       {/* Sensor setup guide */}
       {showSetup && (
         <SensorSetupDialog onDismiss={() => setShowSetup(false)} onAdminCreated={updateAdminToken} />
@@ -416,11 +581,23 @@ export default function App() {
 
       {/* Admin Token Prompt / Recovery Modal */}
       {showTokenPrompt && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="admin-access-title"
+        >
           <div className="bg-gray-900 border border-gray-700 rounded-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-white">Admin Access</h3>
-              <button onClick={() => { setShowTokenPrompt(false); setAuthError(''); }} className="text-gray-400 hover:text-white">✕</button>
+              <h3 id="admin-access-title" className="text-lg font-semibold text-white">Admin Access</h3>
+              <button
+                ref={adminPromptCloseRef}
+                onClick={closeAdminPrompt}
+                className="text-gray-400 hover:text-white"
+                aria-label="Close admin access dialog"
+              >
+                ✕
+              </button>
             </div>
 
             {!adminToken && (
@@ -432,6 +609,7 @@ export default function App() {
                   <div className="space-y-1.5">
                     <label className="text-xs text-gray-400 block">Setup code (first admin only)</label>
                     <input
+                      ref={adminSetupCodeRef}
                       type="text"
                       value={setupCode}
                       onChange={(e) => setSetupCode(e.target.value)}
@@ -457,6 +635,7 @@ export default function App() {
             <div className="space-y-2">
               <label className="text-xs text-gray-400 block">Paste admin token (recovery / other device)</label>
               <input
+                ref={adminTokenInputRef}
                 type="text"
                 value={tokenInput}
                 onChange={(e) => setTokenInput(e.target.value)}
@@ -601,26 +780,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* First-run telemetry disclosure (issue #37c): honest, visible notice that
-          pseudonymous / privacy-reduced telemetry is ON by default before we rely
-          on the silent default. */}
-      {showTelemetryNotice && (
-        <div className="bg-amber-950/40 border-b border-amber-900/60 px-6 py-3">
-          <div className="max-w-7xl mx-auto flex items-start gap-3 text-sm">
-            <svg className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <div className="flex-1 text-amber-100/90">
-              <span className="font-medium text-amber-100">Pseudonymous telemetry is on by default.</span>{' '}
-              Vedetta contributes privacy-reduced, advisory-only signals — source IPs, MACs, and hostnames are stripped at the source, but a stable per-instance reporter pseudonym is retained server-side, so this is pseudonymous, not anonymous — to improve community threat detection. You can turn it off at any time.{' '}
-              <button onClick={() => { setView('settings'); }} className="underline hover:text-white">Manage in Settings</button>{' · '}
-              <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" className="underline hover:text-white">Read the privacy notice</a>
-            </div>
-            <button onClick={dismissTelemetryNotice} className="text-amber-300 hover:text-white text-xs px-2 py-1 rounded flex-shrink-0">Dismiss</button>
-          </div>
-        </div>
-      )}
-
       <main className="max-w-7xl mx-auto px-6 py-8">
         {view === 'dashboard' ? (
           <DashboardView
@@ -671,6 +830,19 @@ export default function App() {
           />
         )}
       </main>
+      </TelemetryInertBackground>
+
+      {/* First-run telemetry disclosure (issue #37c). It is outside the inert
+          application subtree so assistive technology cannot reach background UI. */}
+      {showTelemetryNotice && (
+        <TelemetryAcknowledgementDialog
+          phase={telemetryDisclosure.phase}
+          setting={telemetryDisclosure.setting}
+          onAcknowledge={acknowledgeTelemetry}
+          onManageSettings={manageTelemetrySettings}
+          onRetry={() => setTelemetryDisclosureAttempt((attempt) => attempt + 1)}
+        />
+      )}
     </div>
   );
 }
@@ -4147,24 +4319,31 @@ function TelemetrySettings() {
     }
   };
 
-  const effective = state ? state.effective : true; // default on (opt-out) when unknown
+  const effective = state ? state.effective : null;
   const sourceLabel = state
     ? (state.source === 'env' ? 'from environment' : 'saved setting')
     : '';
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+    <div
+      id="telemetry-settings"
+      tabIndex={-1}
+      className="bg-gray-900 border border-gray-800 rounded-lg p-5 focus:outline-none focus:ring-2 focus:ring-amber-500/70"
+    >
       <h3 className="text-sm font-medium mb-1">Pseudonymous Telemetry</h3>
-      <p className="text-xs text-gray-500 mb-3">
-        Telemetry is <span className="text-gray-300 font-medium">on by default</span> (opt-out). Vedetta contributes privacy-reduced, advisory-only signals to improve community threat detection; source IPs, MACs, and hostnames are stripped at the source, but a stable per-instance reporter pseudonym is kept server-side — this is <span className="text-gray-300">pseudonymous, not anonymous</span>.{' '}
+      <p className="text-xs text-gray-500 mb-2">
+        Telemetry is <span className="text-gray-300 font-medium">on by default</span> (opt-out). For beta, signals contain the matched public known-bad domain and eTLD+1; hourly event bucket; observation, distinct-asset, and blocked counts; local confidence and fixed reason codes; and random signal/batch IDs with schema, batch-generation, and collection-window metadata. Registration sends a random install UUID, Vedetta version, and capability names, then receives a stable reporter pseudonym. No internal/device IP, MAC, hostname, raw query, or per-asset hash is sent.{' '}
         <a href="https://github.com/MahdiHedhli/vedetta/blob/main/PRIVACY.md" target="_blank" rel="noreferrer" className="text-teal-400 hover:text-teal-300 underline">Privacy notice</a>
+      </p>
+      <p className="text-xs text-gray-500 mb-3">
+        The server does not retain the install UUID, but stores the reporter pseudonym and version/capabilities, reporter creation/last-seen timing, linked signal data with receipt/first-received/last-merge times, and batch receipt counts. Signals and receipts expire after 30 days; reporter and derived-record expiry is incomplete. Cloudflare observes the public connection address and timing; the community service also holds that address and its last-access time only in an in-memory rate-limit bucket while active and until swept after 30 idle minutes, not in SQLite or application logs. Turning telemetry off stops contributions only — local monitoring and public threat-feed downloads continue normally.
       </p>
 
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${effective ? 'bg-green-400' : 'bg-gray-500'}`} />
-          <span className={`text-sm ${effective ? 'text-gray-300' : 'text-gray-400'}`}>
-            {loading ? 'Checking…' : (effective ? 'Enabled' : 'Disabled')}
+          <span className={`w-2 h-2 rounded-full ${loading ? 'bg-amber-400' : effective === true ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`text-sm ${effective === true ? 'text-gray-300' : 'text-gray-400'}`}>
+            {loading ? 'Checking…' : state ? (effective ? 'Enabled' : 'Disabled') : 'Status unavailable'}
           </span>
           {state && !loading && (
             <span className="text-[10px] text-gray-500 ml-1">· {sourceLabel}</span>
@@ -4175,13 +4354,13 @@ function TelemetrySettings() {
         <button
           type="button"
           role="switch"
-          aria-checked={effective}
+          aria-checked={effective === true}
           disabled={!state || !isAdmin || saving || loading}
           onClick={toggle}
-          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${effective ? 'bg-green-500' : 'bg-gray-600'}`}
-          title={!isAdmin ? 'Admin token required to change this setting' : (effective ? 'Turn telemetry off' : 'Turn telemetry on')}
+          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${effective === true ? 'bg-green-500' : 'bg-gray-600'}`}
+          title={!isAdmin ? 'Admin token required to change this setting' : !state ? 'Telemetry status unavailable' : (effective ? 'Turn telemetry off' : 'Turn telemetry on')}
         >
-          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${effective ? 'translate-x-6' : 'translate-x-1'}`} />
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${effective === true ? 'translate-x-6' : 'translate-x-1'}`} />
         </button>
       </div>
 
@@ -4189,7 +4368,11 @@ function TelemetrySettings() {
         <p className="text-[10px] text-amber-400/80 mt-2">An admin token is required to change this setting.</p>
       )}
       {!state && !loading && (
-        <p className="text-[10px] text-gray-500 mt-2">Live control needs a Core build that exposes <span className="font-mono">/settings/telemetry</span>. Until then the opt-out default (on) applies; set <span className="font-mono">VEDETTA_TELEMETRY_OPTIN=false</span> to disable.</p>
+        <p className="text-[10px] text-gray-500 mt-2">
+          {TELEMETRY_STATUS_UNAVAILABLE_MESSAGE} Authenticate if needed or{' '}
+          <button type="button" onClick={load} className="underline hover:text-gray-300">retry</button>.
+          {' '}To force opt-out, set <span className="font-mono">VEDETTA_TELEMETRY_OPTIN=false</span> and restart.
+        </p>
       )}
       {error && (
         <div className="text-xs text-red-400 bg-red-950/50 border border-red-900 rounded p-2 mt-2">{error}</div>
