@@ -4424,7 +4424,8 @@ function TelemetrySettings() {
         <p className="text-[10px] text-gray-500 mt-2">
           {TELEMETRY_STATUS_UNAVAILABLE_MESSAGE} Authenticate if needed or{' '}
           <button type="button" onClick={load} className="underline hover:text-gray-300">retry</button>.
-          {' '}For a process-level hard stop before Core reads or network egress, set{' '}
+          {' '}For a process-level hard stop before the telemetry daemon reads Core data or performs
+          network egress, set{' '}
           <span className="font-mono">VEDETTA_TELEMETRY_OPTIN=false</span> on the telemetry service
           and restart it. A saved dashboard setting independently controls Core's live telemetry gate.
         </p>
