@@ -247,6 +247,37 @@ stop_volume_users() {
 # volume_still_mounted — true if any running container still has the volume.
 volume_still_mounted() { [ -n "$(docker ps -q --filter "volume=${VOL_DATA}" 2>/dev/null)" ]; }
 
+# stop_project_core_containers — stop every running container of THIS compose
+# project except profile-gated services (outside a Core upgrade's scope).
+# Catches containers whose service was renamed/removed by the target ref and
+# which therefore appear in NO current service list — compose stop and the
+# volume filter both miss e.g. an old frontend that mounts nothing.
+stop_project_core_containers() {
+  local core all profile_only ids id svc
+  core="$(core_services)" && [ -n "$core" ] || return 1
+  all="$(COMPOSE_PROFILES='*' docker compose config --services 2>/dev/null || true)"
+  profile_only="$(printf '%s\n' "$all" | grep -Fxv "$core" 2>/dev/null || true)"
+  ids="$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT}" 2>/dev/null)" || return 1
+  [ -z "$ids" ] && return 0
+  for id in $ids; do
+    svc="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.service" }}' "$id" 2>/dev/null || true)"
+    if [ -n "$svc" ] && [ -n "$profile_only" ] && printf '%s\n' "$profile_only" | grep -Fxq "$svc"; then
+      continue   # profile-gated (e.g. threat-network) — never touched by a Core upgrade
+    fi
+    docker stop "$id" >/dev/null || return 1
+  done
+  return 0
+}
+
+# quiesce_core — the full stop sequence: orderly compose stop of the current
+# service set, then project-wide sweep (renamed/removed services), then any
+# remaining volume users (containers outside the project mounting the volume).
+quiesce_core() {
+  compose_stop_core || return 1
+  stop_project_core_containers || return 1
+  stop_volume_users || return 1
+}
+
 # remove_temp_backup — delete the in-volume online-backup temp file. `exec`
 # needs a RUNNING backend; if it crashed/restarted between the copy and this
 # cleanup, fall back to a helper container mounting the volume — otherwise a
@@ -413,6 +444,20 @@ restore_main_volume() {
   esac
 }
 
+# restore_aux_volume <compose-key> — restore an auxiliary volume from its
+# snapshot tarball. Succeeds silently when there is nothing to restore (the
+# volume or its snapshot doesn't exist — e.g. --skip-aux was used).
+restore_aux_volume() {
+  local key="$1" vol art
+  vol="$(resolve_volume "$key" || true)"
+  art="${SNAP_DIR}/${key}-${TS}.tar.gz"
+  { [ -n "$vol" ] && [ -f "$art" ]; } || return 0
+  docker run --rm -v "${vol}:/data" -v "${SNAP_DIR}:/backup:ro" "$HELPER_IMAGE" \
+    sh -ec 'rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true
+            tar xzf "/backup/$1" -C /data' _ "$(basename "$art")" \
+    && ok "Restored ${key} from the pre-upgrade snapshot."
+}
+
 # halt_rollback <why> — a rollback step failed in a way where STARTING ANYTHING
 # is the dangerous move (volume not restored, or the compose image is still the
 # bad upgraded build). Leave the stack DOWN with the snapshot intact and tell
@@ -502,7 +547,7 @@ do_rollback() {
   # we started is running (cold path, pre-start failure), a down failure — e.g.
   # the failed target's broken compose file — must not turn a recoverable
   # pre-start failure into a halt: no restore follows in that state.
-  if ! compose_stop_core; then
+  if ! quiesce_core; then
     if [ "$NEW_STACK_UP" = "1" ]; then
       halt_rollback "stopping the Core services failed — containers may still have the data volume mounted; restoring over live files would corrupt them"
       return 1
@@ -519,7 +564,14 @@ do_rollback() {
       halt_rollback "containers still have ${VOL_DATA} mounted after stopping — refusing to restore over live files"
       return 1
     fi
-    if restore_main_volume; then ok "Restored Core DB from the pre-upgrade snapshot."
+    if restore_main_volume; then
+      ok "Restored Core DB from the pre-upgrade snapshot."
+      # telemetry-state holds VERSIONED files the upgraded telemetry may have
+      # rewritten; the previous telemetry can reject newer state. Best-effort:
+      # the Core DB restore above is the critical one.
+      if restore_aux_volume telemetry-state; then :; else
+        warn "could not restore the telemetry-state snapshot — the previous telemetry may need a state reset."
+      fi
     else
       # The volume may still hold the migrated/corrupt DB. Booting ANY version
       # against it is exactly what this script exists to prevent.
@@ -690,11 +742,8 @@ else
   STACK_WAS_STOPPED=1
   # A failed down means something may still be writing to the volume; tarring
   # it anyway could produce a corrupt backup the rollback would then trust.
-  compose_stop_core \
+  quiesce_core \
     || fail "stopping the Core services failed — refusing to snapshot a volume that may still be written to"
-  # Also stop any off-list container mounting the volume (renamed/removed
-  # services, one-offs) and prove the volume is quiet before tarring it.
-  stop_volume_users || true
   if volume_still_mounted; then
     fail "containers still have ${VOL_DATA} mounted — refusing to snapshot a volume that may still be written to"
   fi
@@ -758,7 +807,7 @@ if [ "$WARM" = "1" ]; then
   # gap: `up` with the TARGET ref's service names would leave an old-name
   # container running as a second writer while the new service migrates the DB.
   STACK_WAS_STOPPED=1   # from here, rollback must not treat the stack as untouched
-  stop_volume_users || true
+  quiesce_core || true
   if volume_still_mounted; then
     fail "containers still have ${VOL_DATA} mounted after stopping — refusing to start the upgraded stack alongside a live writer"
   fi
