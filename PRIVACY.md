@@ -92,7 +92,7 @@ otherwise valid public domain can be recognized.
 This is **pseudonymous, not anonymous**. The current server stores:
 
 - a reporter row containing the stable `reporter_id`, a one-way secret hash,
-  capability names, coarse version, exact creation and last-successful-auth times,
+  capability names, coarse version, exact creation and last-seen times,
   status, and any denylist reason. The registration `install_id` is validated but
   is **not persisted**;
 - signal rows linked to the reporter ID, including the domain/eTLD+1, hourly event

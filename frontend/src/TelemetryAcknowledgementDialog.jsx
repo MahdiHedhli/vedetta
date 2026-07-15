@@ -66,8 +66,10 @@ function DisclosureCopy({ phase, setting }) {
           </p>
           <TelemetryPrivacyBoundary conditional />
           <p>
-            Verify or change the setting in Settings. You can also set{' '}
-            <code className="text-gray-200">VEDETTA_TELEMETRY_OPTIN=false</code> and restart to opt out.
+            Verify or change the live setting in Settings. For a process-level hard stop before
+            Core reads or network egress, set{' '}
+            <code className="text-gray-200">VEDETTA_TELEMETRY_OPTIN=false</code> on the telemetry
+            service and restart it.
           </p>
         </>
       ) : setting?.effective === false ? (

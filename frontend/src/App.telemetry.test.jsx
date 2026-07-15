@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -142,6 +142,50 @@ describe('App telemetry Settings authentication handoff', () => {
       name: 'Pseudonymous telemetry is currently enabled',
     })).toBeInTheDocument();
     expect(localStorage.getItem(TELEMETRY_NOTICE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('keeps the application inert and focus trapped throughout Admin Access', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await openTelemetryAdminPrompt(user);
+
+    const dialog = screen.getByRole('dialog', { name: 'Admin Access' });
+    const inertApplication = document.querySelector('[inert]');
+    expect(inertApplication).not.toBeNull();
+    expect(inertApplication).not.toContainElement(dialog);
+    expect(document.body.style.overflow).toBe('hidden');
+
+    const first = screen.getByRole('button', { name: 'Close admin access dialog' });
+    const last = screen.getByRole('button', { name: 'Use This Token' });
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab' });
+    expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(last).toHaveFocus();
+
+    await user.click(first);
+    expect(await screen.findByRole('heading', {
+      name: 'Pseudonymous telemetry is currently enabled',
+    })).toBeInTheDocument();
+    expect(document.querySelector('[inert]')).not.toBeNull();
+    expect(localStorage.getItem(TELEMETRY_NOTICE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('restores the opener after ordinary Admin Access closes', async () => {
+    localStorage.setItem(TELEMETRY_NOTICE_STORAGE_KEY, TELEMETRY_NOTICE_VERSION);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const opener = await screen.findByRole('button', { name: 'No admin token' });
+    await user.click(opener);
+    expect(await screen.findByRole('dialog', { name: 'Admin Access' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', {
+      name: 'Paste admin token (recovery / other device)',
+    })).toHaveFocus();
+
+    await user.click(screen.getByRole('button', { name: 'Close admin access dialog' }));
+    expect(screen.queryByRole('dialog', { name: 'Admin Access' })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
   });
 
   it('keeps invalid and read-only pasted-token errors visible for correction', async () => {

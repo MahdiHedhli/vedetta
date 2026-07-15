@@ -11,7 +11,7 @@ import {
   TELEMETRY_STATUS_UNAVAILABLE_MESSAGE,
   telemetrySettingsAccessAction,
 } from './telemetryDisclosure';
-import { useAdminPromptFocus, useTelemetryDisclosureFlow } from './useTelemetryDisclosureFlow';
+import { useAdminPromptFocus, useBlockingDialogFocus, useTelemetryDisclosureFlow } from './useTelemetryDisclosureFlow';
 
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
@@ -134,14 +134,21 @@ export default function App() {
   const [needsSetupCode, setNeedsSetupCode] = useState(false);
   const [setupCode, setSetupCode] = useState('');
   const adminPromptCloseRef = useRef(null);
+  const adminPromptDialogRef = useRef(null);
   const adminSetupCodeRef = useRef(null);
   const adminTokenInputRef = useRef(null);
   const telemetryTokenValidationSequence = useRef(0);
   const pendingAdminView = settingsHandoffPending ? 'settings' : null;
+  // A background 401 may queue the Admin Access prompt while the telemetry
+  // disclosure still owns modality. Mount only one accessible dialog at a time.
+  const adminPromptVisible = showTokenPrompt && !showTelemetryNotice;
 
+  // Capture the opener before the autofocus hook moves focus into the dialog,
+  // so closing ordinary (non-telemetry) Admin Access restores it correctly.
+  useBlockingDialogFocus({ active: adminPromptVisible, dialogRef: adminPromptDialogRef });
   useAdminPromptFocus({
-    promptVisible: showTokenPrompt,
-    blockingNoticeVisible: showTelemetryNotice,
+    promptVisible: adminPromptVisible,
+    blockingNoticeVisible: false,
     preferSetupCode: !adminToken && needsSetupCode,
     setupCodeRef: adminSetupCodeRef,
     tokenInputRef: adminTokenInputRef,
@@ -613,95 +620,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
-      <TelemetryInertBackground active={showTelemetryNotice}>
+      <TelemetryInertBackground active={showTelemetryNotice || adminPromptVisible}>
       {/* Sensor setup guide */}
       {showSetup && (
         <SensorSetupDialog onDismiss={() => setShowSetup(false)} onAdminCreated={updateAdminToken} />
-      )}
-
-      {/* Admin Token Prompt / Recovery Modal */}
-      {showTokenPrompt && (
-        <div
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="admin-access-title"
-        >
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 id="admin-access-title" className="text-lg font-semibold text-white">Admin Access</h3>
-              <button
-                ref={adminPromptCloseRef}
-                onClick={closeAdminPrompt}
-                className="text-gray-400 hover:text-white"
-                aria-label="Close admin access dialog"
-              >
-                ✕
-              </button>
-            </div>
-
-            {!adminToken && (
-              <div className="space-y-3">
-                <p className="text-sm text-gray-400">
-                  No admin token found in this browser. Create one (first time only) or paste an existing one.
-                </p>
-                {needsSetupCode && (
-                  <div className="space-y-1.5">
-                    <label htmlFor="admin-setup-code" className="text-xs text-gray-400 block">Setup code (first admin only)</label>
-                    <input
-                      id="admin-setup-code"
-                      ref={adminSetupCodeRef}
-                      type="text"
-                      value={setupCode}
-                      onChange={(e) => setSetupCode(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') createInitialAdminToken(); }}
-                      placeholder="Paste setup code..."
-                      className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500"
-                    />
-                    <p className="text-[10px] text-gray-500">
-                      Printed to the Core logs on first start. Run <span className="font-mono text-gray-400">docker logs &lt;core-container&gt;</span> and copy the setup code.
-                    </p>
-                  </div>
-                )}
-                <button
-                  onClick={createInitialAdminToken}
-                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-lg font-medium transition-colors"
-                >
-                  Create Initial Admin Token
-                </button>
-                <div className="text-center text-xs text-gray-500">— or —</div>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <label htmlFor="admin-token-input" className="text-xs text-gray-400 block">Paste admin token (recovery / other device)</label>
-              <input
-                id="admin-token-input"
-                ref={adminTokenInputRef}
-                type="text"
-                value={tokenInput}
-                onChange={(e) => setTokenInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') submitPastedToken(); }}
-                placeholder="64-character hex token..."
-                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-amber-500"
-              />
-              <button
-                onClick={submitPastedToken}
-                className="w-full bg-gray-800 hover:bg-gray-700 text-white py-2 rounded-lg text-sm transition-colors"
-              >
-                Use This Token
-              </button>
-            </div>
-
-            {authError && (
-              <div className="text-sm text-red-400 bg-red-950/50 border border-red-900 rounded p-2">{authError}</div>
-            )}
-
-            <p className="text-[10px] text-gray-500">
-              Tokens are stored only in your browser (localStorage). Create additional admin tokens from the Settings view after logging in.
-            </p>
-          </div>
-        </div>
       )}
 
       {/* Header */}
@@ -873,6 +795,95 @@ export default function App() {
         )}
       </main>
       </TelemetryInertBackground>
+
+      {/* Admin Token Prompt / Recovery Modal. It is a sibling of the inert
+          application subtree, so keyboard and assistive-technology users cannot
+          reach dashboard controls while authentication is blocking. */}
+      {adminPromptVisible && (
+        <div
+          ref={adminPromptDialogRef}
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="admin-access-title"
+          tabIndex={-1}
+        >
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl max-w-md w-full p-6 space-y-4 max-h-[90dvh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h3 id="admin-access-title" className="text-lg font-semibold text-white">Admin Access</h3>
+              <button
+                ref={adminPromptCloseRef}
+                onClick={closeAdminPrompt}
+                className="text-gray-400 hover:text-white"
+                aria-label="Close admin access dialog"
+              >
+                ✕
+              </button>
+            </div>
+
+            {!adminToken && (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-400">
+                  No admin token found in this browser. Create one (first time only) or paste an existing one.
+                </p>
+                {needsSetupCode && (
+                  <div className="space-y-1.5">
+                    <label htmlFor="admin-setup-code" className="text-xs text-gray-400 block">Setup code (first admin only)</label>
+                    <input
+                      id="admin-setup-code"
+                      ref={adminSetupCodeRef}
+                      type="text"
+                      value={setupCode}
+                      onChange={(e) => setSetupCode(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') createInitialAdminToken(); }}
+                      placeholder="Paste setup code..."
+                      className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                    <p className="text-[10px] text-gray-500">
+                      Printed to the Core logs on first start. Run <span className="font-mono text-gray-400">docker logs &lt;core-container&gt;</span> and copy the setup code.
+                    </p>
+                  </div>
+                )}
+                <button
+                  onClick={createInitialAdminToken}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-lg font-medium transition-colors"
+                >
+                  Create Initial Admin Token
+                </button>
+                <div className="text-center text-xs text-gray-500">— or —</div>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label htmlFor="admin-token-input" className="text-xs text-gray-400 block">Paste admin token (recovery / other device)</label>
+              <input
+                id="admin-token-input"
+                ref={adminTokenInputRef}
+                type="text"
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitPastedToken(); }}
+                placeholder="64-character hex token..."
+                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-amber-500"
+              />
+              <button
+                onClick={submitPastedToken}
+                className="w-full bg-gray-800 hover:bg-gray-700 text-white py-2 rounded-lg text-sm transition-colors"
+              >
+                Use This Token
+              </button>
+            </div>
+
+            {authError && (
+              <div className="text-sm text-red-400 bg-red-950/50 border border-red-900 rounded p-2">{authError}</div>
+            )}
+
+            <p className="text-[10px] text-gray-500">
+              Tokens are stored only in your browser (localStorage). Create additional admin tokens from the Settings view after logging in.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* First-run telemetry disclosure (issue #37c). It is outside the inert
           application subtree so assistive technology cannot reach background UI. */}
@@ -4413,7 +4424,9 @@ function TelemetrySettings() {
         <p className="text-[10px] text-gray-500 mt-2">
           {TELEMETRY_STATUS_UNAVAILABLE_MESSAGE} Authenticate if needed or{' '}
           <button type="button" onClick={load} className="underline hover:text-gray-300">retry</button>.
-          {' '}To force opt-out, set <span className="font-mono">VEDETTA_TELEMETRY_OPTIN=false</span> and restart.
+          {' '}For a process-level hard stop before Core reads or network egress, set{' '}
+          <span className="font-mono">VEDETTA_TELEMETRY_OPTIN=false</span> on the telemetry service
+          and restart it. A saved dashboard setting independently controls Core's live telemetry gate.
         </p>
       )}
       {error && (
