@@ -13,10 +13,11 @@ local instance of the exact production binary, fed synthetic data.
 Two questions were tested:
 
 1. **Can threat data be sent** through the zero-inbound path end-to-end?
-2. **What residual linkage remains** — which *direct* source identifiers (a
-   household IP, a device MAC, a hostname) are removed by construction, and what
-   *pseudonymous* linkage (a stable `reporter_id` mapped to "which reporter saw
-   what, at which hour") an adversary can still reconstruct?
+2. **What residual linkage remains** — which payload/device identifiers (internal
+   IP, device MAC, hostname) are removed by construction, what *pseudonymous*
+   linkage (a stable `reporter_id` mapped to what it reported, event hour, and
+   exact server receipt/merge/last-seen timing) remains, and which public source
+   address/timing metadata the network intermediary still observes?
 
 ---
 
@@ -39,7 +40,8 @@ only via the outbound tunnel; no public IP, no inbound port.
 
 ## 2. Residual linkability — what an adversary can observe
 
-Three surfaces an attacker could reach, and every field on each:
+Three application-data surfaces an attacker could reach, plus network-intermediary
+metadata:
 
 ### a) Public community feed (anyone can download it)
 `feed_id`(random UUID) · `kind` · `indicator` · `indicator_type` · `confidence` ·
@@ -49,34 +51,57 @@ Three surfaces an attacker could reach, and every field on each:
 threat — never a victim. The only "who" signal is an **aggregate count**. No IP,
 no MAC, no reporter id. Live prod feed scanned: **0 IPv4, 0 MAC**.
 
-### b) Ingest wire format (attacker runs a reporter or MITMs the payload)
-`schema_version` · `batch_id` · `generated_at` · `window_start/end` ·
-`signals[{signal_id, kind, time_bucket, domain, etld_plus_one, local_confidence,
-local_reasons, observation_count, distinct_asset_count}]`.
+### b) Registration and ingest wire format (attacker runs a reporter or MITMs the payload)
+Registration sends `schema_version` · random `install_id` · coarse
+`vedetta_version` · capability names. The service returns a stable random
+`reporter_id`, one-time reporter secret, and upload limits. Current server code
+validates but does not persist the `install_id`.
+
+Signed ingest headers carry `reporter_id` · exact Unix request timestamp · random
+nonce · HMAC signature. The body carries `schema_version` · random `batch_id` ·
+exact `generated_at` · exact `window_start/end` · `signals[{signal_id, kind,
+time_bucket, domain, etld_plus_one, local_confidence, local_reasons,
+observation_count, distinct_asset_count, blocked_count}]`.
 → **No `ip` / `mac` / `hostname` field exists in the schema.** Device involvement
 is a bare integer (`distinct_asset_count`). The `reporter_id` carries no operator
 identity (no name/IP/email), but it is **stable per instance and reused across
 submissions** — so it is a **pseudonym**, not an anonymous nonce: the server can
-link everything one reporter sends over time under that one id.
+link everything one reporter sends over time under that one id. Event times are
+hour-bucketed, but request, batch-generation, and collection-window timestamps
+are transmitted at finer precision.
 
 ### c) Full server store compromise (worst case — attacker dumps the SQLite DB)
-Scanned **all 9 tables** for IPv4 / MAC / hostname patterns → **0 matches.**
+The 2026-07-09 live test scanned **all 9 then-production tables** for IPv4 / MAC /
+hostname patterns → **0 matches.** The current-schema field audit is summarized below.
 
 | Table | Source-identifying content |
 |-------|----------------------------|
-| `reporters` | random UUID + `secret_hash` (one-way) + capabilities + version. **No name/IP/email.** |
-| `signals` | random reporter UUID + attacker domain + counts (`observation_count`, `distinct_asset_count`). |
-| `ingest_receipts` | reporter UUID + batch id + counts. **Client IP never persisted** (confirmed). |
+| `reporters` | stable random UUID + `secret_hash` (one-way) + capabilities + version + status/denylist reason + exact creation and last-seen times. **No name/IP/email.** Registration `install_id` is not persisted. |
+| `signals` | reporter UUID + indicator/domain/eTLD+1 + hourly event bucket + confidence/reason codes + observation/distinct-asset/blocked counts + exact immutable first-received and merge-updated `received_at` times. |
+| `ingest_receipts` | reporter UUID + batch id + exact receipt time + submitted/accepted/rejected counts. **Client IP never persisted** (confirmed). |
 | `feed_items` | published indicator + aggregate counts + timestamps. |
-| others | allowlist domains, nonces, counters, migrations — no PII. |
+| others | allowlist domains, 24-hour reporter-linked nonces, reporter/day counters, computed aggregates, migrations, and corpus tables — no direct device/operator identifiers, but some pseudonymous/derived records lack complete expiry. |
 
 Even a total server breach yields: *stable pseudonymous reporter UUIDs reported
-some bad domains, N of them, at hour-granularity.* It does **not** yield the
-reporters' real-world identity, their IPs, their devices, or any victim — but it
-**does** yield a per-pseudonym history: because each `reporter_id` is stable and
-reused, a DB dump lets an adversary group "everything this one reporter ever
-reported, and when." That is the residual **linkability** (a pseudonym trail),
-distinct from the absent **direct identifiers**.
+some bad domains, N of them, with hourly event buckets and precise server-side
+receipt/merge/last-seen timing.* It does **not** directly yield the reporters'
+real-world identity, internal/device IPs, MACs, or hostnames — but it **does**
+yield a per-pseudonym history. Because each `reporter_id` is stable and reused, a
+DB dump can group what one reporter sent and when. That is the residual
+**linkability** (a pseudonym trail), distinct from the absent direct identifiers.
+Application logs also record successful reporter IDs, batch IDs, counts, and
+errors; their retention depends on the deployment's logging environment.
+
+### d) Network intermediary
+The Cloudflare tunnel terminates the public connection and can observe the
+reporter's WAN/public source address and connection timing. That metadata is not
+inside the telemetry JSON or SQLite store, but it is a residual disclosure and
+must not be folded into a claim that source IPs are universally unobservable.
+The Vedetta service also extracts the trusted forwarded address (or direct socket
+peer) as its in-memory registration/ingest rate-limit key. The process retains the
+address and last-access time while active and until its five-minute sweeper removes
+the bucket after 30 idle minutes; the key is not written to SQLite or application
+logs.
 
 ---
 
@@ -112,22 +137,28 @@ defence in depth.
 
 - **Stable pseudonym, linkable over time (the primary residual).** Each instance
   registers one stable `reporter_id`, reused for every submission. The server
-  stores the relationship between that id and the indicators it reported, at
-  hourly time-bucket granularity — so contributions are **linkable to a pseudonym
-  over time** ("the same reporter reported X at hour H and Y at hour H+3"). This
-  is why the model is **pseudonymous, not anonymous**. The pseudonym carries no
-  name, IP, or device, but it is not a fresh nonce per submission.
+  stores that ID with signal data, hourly event buckets, and precise receipt,
+  first-received, last-merge, creation, and last-seen timing — so contributions
+  are **linkable to a pseudonym over time**. This is why the model is
+  **pseudonymous, not anonymous**. The pseudonym carries no name, internal/device
+  IP, MAC, or hostname, but it is not a fresh nonce per submission.
 - **Cloudflare sees the connection.** Submissions egress over an outbound-only
   Cloudflare tunnel, so Cloudflare (as the network intermediary) observes each
   reporter's **connection source address and timing**, independent of the payload.
-- **Retention/expiry is incomplete today.** Reporter identities and the stored
-  aggregates do **not** yet have complete, enforced expiry, so the pseudonymous
-  linkage above is retained rather than aged out.
+  Vedetta also transiently holds that public address and last-access time in its
+  in-memory rate limiter until swept after 30 idle minutes, not in SQLite or
+  application logs.
+- **Retention/expiry is partial today.** Signal rows expire 30 days after their
+  immutable first-received time, ingest receipts expire after 30 days, and replay
+  nonces expire after 24 hours. Reporter rows, reporter/day counters, computed
+  aggregates, live feed records, and operational logs do **not** share one complete
+  enforced expiry policy, so some pseudonymous linkage and derived history remain.
 - **Aggregate counts are intentional.** `sources_observed` reveals "≥2 pseudonymous
   reporters saw X." That is the point of consensus and leaks nothing about a
   reporter's real-world identity.
-- **Traffic analysis** of a very rare indicator seen by exactly 2 sources tells an
-  observer only that two pseudonymous reporters exist — no linkage to a household.
+- **Traffic analysis** of a very rare indicator seen by exactly 2 sources tells a
+  feed-only observer that two pseudonymous reporters exist. Correlation with the
+  intermediary's public-source/timing view remains a separate residual risk.
 - **Not yet tested live:** an end-to-end run through `telemetry/export/strip.go`
   with realistic raw input (the strip step that produces the export candidate).
   The structural guarantee — an allowlisted `ExportCandidate` that *cannot* carry
@@ -139,14 +170,17 @@ defence in depth.
 ## Verdict
 
 ✅ **Data sends** end-to-end over the zero-inbound path.
-✅ **No observable surface** (feed, wire, or full DB) carries a *direct* source
-identifier — no IP, MAC, or hostname.
+✅ **No application payload/store surface** (feed, wire body, or full DB) carries
+an internal/device IP, MAC, or hostname. Cloudflare still observes the public
+connection source and timing; Vedetta transiently uses that address as an in-memory
+rate-limit key as stated above.
 ⚠️ **A stable pseudonym remains.** The wire and the server store carry a stable
-per-instance `reporter_id`; the server links it to the indicators/hour it
-reported. Sharing is therefore **pseudonymous, not anonymous** — reconstructable
-to a pseudonym over time, though not to a real-world identity. Cloudflare (the
-outbound tunnel) additionally sees connection source/timing, and reporter
-identities/aggregates lack complete expiry today.
+per-instance `reporter_id`; the server links it to signals plus exact receipt,
+merge, and last-seen timing. Sharing is therefore **pseudonymous, not anonymous**
+— reconstructable to a pseudonym over time, though the payload/store contains no
+direct device/operator identifier. Cloudflare additionally sees public connection
+source/timing. Signal rows and receipts expire after 30 days, but reporter and
+derived-record expiry remains incomplete.
 ✅ **The one internal hashed source identifier is unforwarded AND 256-bit-salted**
 — reversal of *that* value is computationally infeasible (it is never exposed).
 

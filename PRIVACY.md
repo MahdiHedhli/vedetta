@@ -1,6 +1,6 @@
 # Privacy Notice
 
-_Last updated: 2026-07-09 · Vedetta is in public beta; this notice will evolve._
+_Last updated: 2026-07-15 · Vedetta is in public beta; this notice will evolve._
 
 This notice covers two separate things: the **vedettas.com website**, and the
 **Vedetta software** you self-host.
@@ -24,8 +24,8 @@ Vedetta is **local-first**. When you run it, your network data — devices,
 events, DNS/firewall logs, scan results — stays in **your** Core's database on
 **your** infrastructure. The project operators never receive that data, with one
 narrow, controllable exception: the **community telemetry** described immediately
-below, which (while enabled) shares only privacy-reduced known-bad indicators and
-aggregate counts — never your devices, logs, or query history.
+below. While enabled, telemetry sends the narrow, allowlisted pseudonymous record
+described here — never your device records, raw logs, or raw query history.
 
 ### Community telemetry (on by default, opt-out)
 
@@ -39,45 +39,95 @@ Vedetta contributes to a **community threat feed** by default. This is:
   and timing. Set `VEDETTA_COMMUNITY_FEED_ENABLED=false` to disable the Vedetta
   community download as well. We default contribution on because the shared feed
   only becomes useful when instances contribute, and what they contribute is
-  **privacy-reduced and pseudonymous** — never your device identities (below);
-- **privacy-reduced at the source**: source IP addresses, MAC addresses, and
-  hostnames are stripped before anything leaves your network and are **never
-  transmitted**. What is shared for a known-bad hit is the **matched indicator from
-  the public block-list** — never the raw observed query name (which could embed a
-  hostname or address) — plus coarse aggregate counts. **For beta,
-  telemetry shares ONLY these Core-confirmed block-list matches** — the
-  query-derived high-confidence-candidate (eTLD+1) and behavior-summary signals are
-  temporarily DISABLED pending a trust-model redesign. To be precise: the aggregate
-  counts and the hourly bucket *are* derived from your traffic (they report **that**,
-  and how often, a public known-bad indicator was observed), but **no query-derived
-  or caller-supplied domain string is exported beyond the matched public block-list
-  indicator itself** — your raw query names never leave the node;
-- **salted-HMAC counting stays local**: the per-source identifier used to count
-  distinct assets is a salted HMAC computed locally with a 256-bit per-instance
-  secret and is **never forwarded**; the published feed exposes only the indicator
-  and an aggregate source count, never a device;
-- **pseudonymous, not anonymous** — the honest residual model. We do **not** claim
-  mathematical anonymity. Direct device identifiers (IP/MAC/hostname) are removed by
-  construction, but a **stable per-instance `reporter_id`** accompanies each
-  submission and the threat-network server **stores the relationship between that
-  reporter ID and the indicators it reported, at hourly time-bucket granularity**.
-  That makes contributions *linkable over time to a pseudonym* — the server can tell
-  that "the same reporter reported X at hour H and Y at hour H+3," even though the
-  pseudonym carries no name, IP, or device. In addition:
-  - **Cloudflare sees the connection.** Submissions reach the feed over an
-    outbound-only Cloudflare tunnel, so Cloudflare (as the network intermediary)
-    observes each reporter's **connection source address and timing**, independent
-    of the payload.
-  - **Retention/expiry is incomplete today.** Reporter identities and the stored
-    aggregates do **not** yet have complete, enforced expiry, so the pseudonymous
-    linkage above is retained rather than aged out.
+  **privacy-reduced and pseudonymous** — never your device identities (below).
 
-  The exact guarantees, the coarse metadata that *is* shared today (the matched
-  known-bad indicator and its eTLD+1, aggregate counts, a coarse version string,
-  and an hourly time bucket — the candidate eTLD+1 is **not** currently shared, as
-  the `high_confidence_domain_candidate` signal is disabled for beta), and this
-  residual linkability model are documented and independently reviewed in
-  [specs/003-threat-network/anonymization-proof.md](specs/003-threat-network/anonymization-proof.md).
+#### Exactly what is sent
+
+On first registration, the client sends:
+
+- wire schema version;
+- a locally generated random `install_id` UUID;
+- a coarse Vedetta software version; and
+- supported signal-kind names. The capability list currently names all three v1
+  contract kinds even though only `known_bad_domain_hit` is emitted during beta.
+
+The service returns a random, stable `reporter_id`, a one-time reporter secret,
+and upload limits. Later signed requests carry that stable reporter ID, an exact
+Unix request timestamp, a random nonce, and an HMAC signature.
+
+For beta, every exported signal is a Core-confirmed `known_bad_domain_hit`. The
+JSON body contains:
+
+- the matched public block-list domain and its eTLD+1 — not a caller-supplied or
+  otherwise query-derived candidate domain;
+- an hour-aligned event `time_bucket`;
+- `observation_count`, `distinct_asset_count`, and optional `blocked_count`;
+- local confidence and one or more fixed-vocabulary local reason codes; and
+- a random `signal_id`.
+
+Its batch envelope also contains a random `batch_id`, wire schema version, exact
+batch-generation time, and exact collection-window start/end times. The latter
+timestamps describe the batch; only the event bucket is hour-aligned. The
+query-derived `high_confidence_domain_candidate` and `behavior_summary` kinds
+remain disabled pending a trust-model redesign.
+
+#### What is not sent
+
+Internal or device IP addresses, MAC addresses, hostnames, raw query names,
+resolved/server IPs, device inventories, network segments, SSIDs, free-form
+metadata, and per-asset identifiers are not serialized. The per-source value used
+for distinct counting is a salted HMAC computed locally with a random 256-bit
+per-instance secret. It is reduced to `distinct_asset_count` and discarded before
+egress; the hash and salt never leave the node.
+
+This boundary is structural: the export candidate has an explicit field allowlist.
+The community server independently checks unknown fields, IP- or MAC-shaped values,
+single-label and configured special-use/internal names, invalid domain/URL syntax,
+and Public Suffix List reduction. A signal that fails PSL reduction (or whose
+declared eTLD+1 disagrees with that reduction) is skipped and included in the
+batch's `rejected` count; other valid signals in that batch remain eligible for
+acceptance. The batch response reports the skip; a PSL failure alone does not make
+the batch poison or a retry candidate. Hard forbidden content such as an IP/MAC or
+private name, and unknown schema fields, still rejects the whole batch. These are
+concrete schema/content checks, not a claim that every possible identifier embedded
+in an otherwise valid public domain can be recognized.
+
+#### What the community service stores and for how long
+
+This is **pseudonymous, not anonymous**. The current server stores:
+
+- a reporter row containing the stable `reporter_id`, a one-way secret hash,
+  capability names, coarse version, exact creation and last-seen times,
+  status, and any denylist reason. The registration `install_id` is validated but
+  is **not persisted**;
+- signal rows linked to the reporter ID, including the domain/eTLD+1, hourly event
+  bucket, confidence, reason codes, counts, an immutable exact first-received time,
+  and an exact `received_at` time that is updated on each merge; and
+- ingest receipts linked to the reporter ID, including `batch_id`, exact receipt
+  time, and submitted/accepted/rejected counts.
+
+The current server validates but does not persist each `signal_id` or the batch's
+client-generated/window timestamps. Signal rows expire 30 days after their
+immutable first-received time, and ingest receipts expire after 30 days. Replay
+nonces expire after 24 hours. Reporter rows, reporter counters, computed aggregates,
+and live feed records do **not** yet share a complete enforced expiry policy, so
+some pseudonymous linkage and derived history can remain after signal/receipt purge.
+Successful ingest logs also contain reporter ID, batch ID, acceptance counts, and
+errors; log retention depends on the service operator's logging environment.
+
+The server can therefore link submissions to the same stable pseudonym and observe
+precise server receipt/merge timing even though it receives no operator name,
+internal/device IP, MAC, or hostname. Submissions traverse an outbound-only
+Cloudflare tunnel, so Cloudflare can observe each connection's public source address
+and timing independently of the payload. Vedetta's community service also consumes
+that forwarded public address (or the direct socket-peer address) as an in-memory
+rate-limit key. The key and its last-access time remain in process while active and
+until a background sweep after 30 idle minutes (the sweep runs every five minutes);
+they are not written to SQLite or Vedetta application logs. Infrastructure-level
+Cloudflare or hosting logs remain governed by those providers/operators.
+
+The exact guarantees and residual-linkability analysis are documented in
+[specs/003-threat-network/anonymization-proof.md](specs/003-threat-network/anonymization-proof.md).
 
 The community feed itself is **advisory-only**: it never instructs or performs a
 block; operators decide what to do.
@@ -89,8 +139,8 @@ infrastructure, e.g. a malicious domain), a confidence score, severity, and
 aggregate counts. The public feed itself carries **no** subscriber IPs, MACs,
 hostnames, or reporter identities. Note this is a statement about the *published*
 artifact only: as described above, the threat-network **server** still stores the
-pseudonymous `reporter_id`↔indicator/hour linkage that consensus is computed from —
-it is simply not exposed in the downloadable feed.
+pseudonymous reporter/signal linkage and precise server receipt/merge/last-seen
+timing described above — it is simply not exposed in the downloadable feed.
 
 ## Security
 

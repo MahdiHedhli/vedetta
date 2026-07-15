@@ -181,8 +181,10 @@ requires an admin-minted reset code bound to that exact ID.
 
 ### Threat Network (separate Go + SQLite service)
 
-- Receives privacy-reduced, pseudonymous known-bad indicator aggregates from
-  nodes with telemetry enabled (on by default, opt-out).
+- Receives privacy-reduced, pseudonymous known-bad signal records from nodes with
+  telemetry enabled (on by default, opt-out). The exact signal/batch/registration
+  fields, reporter linkage, precise server timing, and retention are documented in
+  [`PRIVACY.md`](../PRIVACY.md).
 - Internal source IPs, MACs, hostnames, and raw DNS query names are not serialized.
 - Core independently downloads the public snapshot every 15 minutes by default;
   community matches are advisory/corroborating and cannot create or raise a

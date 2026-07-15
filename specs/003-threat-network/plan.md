@@ -76,13 +76,16 @@ End to end (naming exact endpoints, tables, services):
 4. **Validation + privacy re-gate:** each signal is validated per kind (required
    fields, `local_confidence` ∈ [0,1], counts ≥ 0, `time_bucket` on an hour boundary
    within the batch window); signals failing these structural checks are rejected
-   individually and reflected in the `rejected` count. Privacy-gate violations reject
-   the ENTIRE batch with `422` and body `{error, rule, detail, batch_id}` (002
-   contract §5; the producer never retries a 4xx batch): any indicator that is a
-   private/special-use/single-label name (`.local`, `.lan`, `.home`, `.internal`,
-   `.corp`, `home.arpa`, `in-addr.arpa`/`ip6.arpa`, bare labels — the full
-   002-contract §5 rule-4 list), an IP literal, or any field that smells like an
-   asset identifier. This duplicates Core's export gate on purpose — defense in depth.
+   individually and reflected in the `rejected` count. Unknown fields, IP- or
+   MAC-shaped values, private/special-use/single-label names (`.local`, `.lan`,
+   `.home`, `.internal`, `.corp`, `home.arpa`, `in-addr.arpa`/`ip6.arpa`, bare labels
+   — the full 002-contract §5 rule-4 list), and URL syntax reject the ENTIRE batch
+   with `422` and body `{error, rule, detail, batch_id}`; the producer never retries a
+   4xx batch. Invalid DNS names or lengths, Public Suffix List reduction failures,
+   candidate values that are not eTLD+1, and known-bad eTLD+1 mismatches skip only the
+   offending signal and increment the rejected count. These are concrete checks and
+   cannot identify every possible identifier embedded in an otherwise valid public
+   domain. This duplicates Core's export gate on purpose — defense in depth.
 5. **Dedup + store:** compute `indicator_key` = exact domain (kind 1), `etld_plus_one`
    (kind 2), or `behavior` (kind 3). Insert into `signals` with
    `UNIQUE(reporter_id, kind, indicator_key, time_bucket)`; conflicting rows update
@@ -272,11 +275,14 @@ Validation loop before the feed is called "supported":
 The spec's constitution table holds for this technical approach. Points of tension
 checked:
 
-- **Privacy/opt-in (strongest constraint):** the design stores no PII (random
-  reporter_id + secret hash only; per-IP limiter is memory-only; counts-only signal
-  fields; hour buckets; server-side privacy re-gate rejects anything resembling
-  internal names or IP literals). Feed output contains only aggregate, corroborated
-  indicators. Complies.
+- **Privacy/opt-in (strongest constraint):** the implementation stores no direct
+  device/operator identifier (the per-IP limiter holds public addresses and last-access
+  times in memory until swept after 30 idle minutes, never SQLite/application logs; the
+  server-side privacy re-gate rejects internal names/IP literals), but it does store a stable
+  reporter pseudonym, version/capabilities, public threat domains, hourly event buckets,
+  confidence/reasons/counts, and exact server receipt/merge/last-seen timing. Signal rows
+  and receipts expire after 30 days; reporter/counter/derived-record expiry is incomplete.
+  Feed output contains only aggregate, corroborated indicators. See `PRIVACY.md`.
 - **Local value first:** service is additive infrastructure; no Core code path gains a
   dependency on it. Complies.
 - **Migrations rule:** constitution names `siem/migrations/` for schema changes; this

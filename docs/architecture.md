@@ -128,7 +128,11 @@ a finding. Findings aggregate recurrence by stable device, explicit detector, an
 normalized observable; Raw Events remains the immutable evidence surface.
 
 Telemetry contribution and community-feed consumption are independent controls:
-`VEDETTA_TELEMETRY_OPTIN=false` stops contributions, while
+`VEDETTA_TELEMETRY_OPTIN=false` on the telemetry service plus a restart is a
+process-level hard stop before the telemetry daemon reads Core data or performs
+network egress. The dashboard's
+saved telemetry setting independently controls Core's live gate; its persisted
+value overrides only Core's environment default. By contrast,
 `VEDETTA_COMMUNITY_FEED_ENABLED=false` stops public snapshot downloads. Local
 detection works without either. See
 [threat-network-operations.md](threat-network-operations.md).
@@ -148,8 +152,12 @@ That makes Vedetta a good fit today for homelabs, technical home users, consulta
 
 - the local deployment is the primary product
 - the local deployment should stay useful even with no cloud dependency
-- telemetry is on by default and opt-out (`VEDETTA_TELEMETRY_OPTIN=false` or the dashboard toggle, with a first-run disclosure banner), and the shared feed is advisory-only
-- community sharing is **privacy-reduced and pseudonymous, not anonymous**: it strips source IPs, MACs, and hostnames at the source and shares only the matched known-bad threat indicator and aggregate counts (for beta, the query-derived high-confidence-candidate and behavior signals are temporarily disabled pending a trust-model redesign); a per-instance salted HMAC stays local for distinct-asset counting and never leaves the node. The residual: a stable per-instance `reporter_id` is stored server-side against the indicators/hour it reported (linkable to a pseudonym over time), Cloudflare's outbound tunnel sees connection source/timing, and reporter identities/aggregates lack complete expiry today (see [PRIVACY.md](../PRIVACY.md) and [specs/003-threat-network/anonymization-proof.md](../specs/003-threat-network/anonymization-proof.md)); opting out is trivial
+- telemetry is on by default and opt-out
+- `VEDETTA_TELEMETRY_OPTIN=false` on the telemetry service plus restart is the process-level hard stop
+- the dashboard toggle controls Core's live telemetry gate
+- the versioned first-run acknowledgement is browser-origin-local: direct continue records it immediately; **Manage in Settings** records it only after an authenticated admin reaches Settings; cancellation or failed authentication records nothing and returns the notice
+- the shared feed is advisory-only
+- community sharing is **privacy-reduced and pseudonymous, not anonymous**: beta signals contain the matched public block-list domain/eTLD+1, hourly event bucket, observation/distinct-asset/blocked counts, local confidence/fixed reasons, random IDs, and batch/window timing; registration sends a random install UUID, version, and capability names. Internal/device IPs, MACs, hostnames, raw queries, and the local distinct-count HMAC are not serialized. The server does not retain the install UUID, but its stable `reporter_id` links signal rows and exact receipt/merge/last-seen timing; signal rows and receipts expire after 30 days, while reporter/counter/derived-record expiry is incomplete. Cloudflare sees the public connection source/timing, and the service transiently uses that public address as an in-memory rate-limit key until swept after 30 idle minutes (not SQLite/application logs). Query-derived candidate/behavior signals remain disabled for beta (see [PRIVACY.md](../PRIVACY.md) and [specs/003-threat-network/anonymization-proof.md](../specs/003-threat-network/anonymization-proof.md)); an administrator can opt out in Settings, or use the telemetry-service environment hard stop and restart it
 
 ## Auth Model (Public Beta)
 
