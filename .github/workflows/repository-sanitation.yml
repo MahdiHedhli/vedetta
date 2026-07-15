@@ -1,0 +1,53 @@
+name: Repository sanitation (all refs)
+
+# Best-effort detection for branch and tag push events whose pushed ref contains
+# this workflow and checker. GitHub Actions runs ref-owned workflow code only
+# after Git accepts a push: an old ref without this workflow, or a ref that
+# alters it, cannot be made trustworthy here. The trusted PR inspection is the
+# base-owned trusted-repository-sanitation.yml workflow and is enforced through
+# the exact-run owner gate described in docs/data-sanitization.md.
+on:
+  push:
+    branches: ["**"]
+    tags: ["**"]
+
+permissions:
+  contents: read
+
+# Deliberately no concurrency group: GitHub may replace an older pending job in
+# the same group even when cancel-in-progress is false. Every workflow run that
+# is emitted needs its own history scan so add-then-delete commits are retained.
+
+jobs:
+  sanitation:
+    name: tracked-data and history scan
+    # A deletion publishes no tree. Avoid trying to check out its all-zero SHA.
+    if: ${{ !github.event.deleted }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.after }}
+      - name: Select the complete pushed range
+        id: sanitation-range
+        shell: bash
+        env:
+          SANITATION_EVENT_NAME: push
+          SANITATION_REF_TYPE: ${{ github.ref_type }}
+          SANITATION_REF_NAME: ${{ github.ref_name }}
+          SANITATION_BEFORE_SHA: ${{ github.event.before }}
+          SANITATION_HEAD_SHA: ${{ github.event.after }}
+          SANITATION_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: bash scripts/select-sanitation-range.sh
+      - name: Detect tracked lab data and unsanitized fixture history
+        if: steps.sanitation-range.outputs.should_scan == 'true'
+        env:
+          SANITATION_RANGE: ${{ steps.sanitation-range.outputs.range }}
+        run: |
+          bash scripts/check-repo-sanitization.sh
+          bash scripts/check-repo-sanitization.sh --history-range "$SANITATION_RANGE"
+          bash scripts/tests/repo-sanitization-test.sh
+          bash scripts/tests/deploy-sanitation-test.sh
+          bash scripts/tests/trusted-pr-sanitation-test.sh

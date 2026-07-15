@@ -31,8 +31,10 @@ jobs:
       run:
         working-directory: ${{ matrix.module }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           # 'stable' tracks the latest patched Go, which also ships the fixed
           # standard library — govulncheck's stdlib advisories are cleared by
@@ -96,8 +98,10 @@ jobs:
     env:
       CGO_ENABLED: "0" # the Windows sensor is driver-free: no cgo, no Npcap, no pcap
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: stable
           cache-dependency-path: sensor/go.sum
@@ -130,8 +134,10 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: npm
@@ -153,7 +159,9 @@ jobs:
     name: collector
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
       - name: Install Lua
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
       # BLOCKING: the syslog/CEF parser regex correctness guard is interpreter-
@@ -193,11 +201,30 @@ jobs:
     name: secret-scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
+
+  # This executes candidate test code on the same read-only runner model as the
+  # build jobs above. It catches accidental checker/deployer regressions, but is
+  # deliberately NON-AUTHORITATIVE: a candidate can edit these copies. The
+  # base-owned pull_request_target inspection is the data-policy trust boundary.
+  sanitation-regressions:
+    name: sanitation regressions (candidate, non-authoritative)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run candidate regression suites
+        run: |
+          bash scripts/tests/repo-sanitization-test.sh
+          bash scripts/tests/deploy-sanitation-test.sh
+          bash scripts/tests/trusted-pr-sanitation-test.sh

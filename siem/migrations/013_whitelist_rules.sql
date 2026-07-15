@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS whitelist_rules (
     name TEXT NOT NULL,
     description TEXT DEFAULT '',
     domain_pattern TEXT DEFAULT '',      -- glob pattern: *.apple.com, *.local
-    source_ip_pattern TEXT DEFAULT '',   -- glob or exact: 192.168.1.1, 10.0.0.*
+    source_ip_pattern TEXT DEFAULT '',   -- glob or exact: 192.0.2.1, 198.51.100.*
     tag_match TEXT DEFAULT '',           -- match events with this tag: beaconing, known_bad
     category TEXT DEFAULT 'custom',      -- mdns, apple, gateway, os_updates, cloud, iot, custom
     is_default BOOLEAN DEFAULT FALSE,    -- shipped with Vedetta vs user-created

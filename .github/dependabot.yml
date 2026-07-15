@@ -1,7 +1,8 @@
 version: 2
 
-# Weekly, grouped updates keep all shipped dependency trees visible without
-# creating a separate PR for every transitive change.
+# Weekly minor/patch groups keep routine updates reviewable without coupling
+# unrelated major migrations. Dependabot still opens majors individually so a
+# framework, runtime, or action contract change cannot hide in a bulk PR.
 updates:
   - package-ecosystem: gomod
     directory: /backend
@@ -10,6 +11,7 @@ updates:
     groups:
       backend-go:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: gomod
@@ -19,6 +21,7 @@ updates:
     groups:
       sensor-go:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: gomod
@@ -28,6 +31,7 @@ updates:
     groups:
       telemetry-go:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: gomod
@@ -37,6 +41,7 @@ updates:
     groups:
       threat-network-go:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: gomod
@@ -46,6 +51,7 @@ updates:
     groups:
       simulator-go:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 3
 
   - package-ecosystem: npm
@@ -55,6 +61,7 @@ updates:
     groups:
       frontend-npm:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: docker
@@ -94,4 +101,5 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 3

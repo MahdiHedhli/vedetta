@@ -125,13 +125,13 @@ FAKE_BIN="${TMP_DIR}/bin"
 mkdir "${FAKE_BIN}"
 printf '%s\n' '#!/bin/sh' \
   'printf "%s\n" "LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*"' \
-  'i=0; while [ "$i" -lt 5000 ]; do printf "%s\n" "LISTEN 0 128 192.168.1.80:3107 0.0.0.0:*"; i=$((i + 1)); done' >"${FAKE_BIN}/ss"
+  'i=0; while [ "$i" -lt 5000 ]; do printf "%s\n" "LISTEN 0 128 192.0.2.80:3107 0.0.0.0:*"; i=$((i + 1)); done' >"${FAKE_BIN}/ss"
 printf '%s\n' '#!/bin/sh' \
-  'printf "%s\n" "tcp4 0 0 10.0.0.5.55000 93.184.216.34.8080 ESTABLISHED"' \
+  'printf "%s\n" "tcp4 0 0 192.0.2.5.55000 203.0.113.34.8080 ESTABLISHED"' \
   'printf "%s\n" "tcp4 0 0 127.0.0.1.3107 *.* LISTEN"' \
   'printf "%s\n" "udp4 0 0 *.5140 *.*"' >"${FAKE_BIN}/netstat"
 printf '%s\n' '#!/bin/sh' \
-  'printf "%s\n" "p101" "n10.0.0.5:55000->93.184.216.34:8080"' \
+  'printf "%s\n" "p101" "n192.0.2.5:55000->203.0.113.34:8080"' \
   'printf "%s\n" "p102" "n127.0.0.1:3107"' >"${FAKE_BIN}/lsof"
 chmod +x "${FAKE_BIN}/ss" "${FAKE_BIN}/netstat" "${FAKE_BIN}/lsof"
 PATH="${FAKE_BIN}:${PATH}"

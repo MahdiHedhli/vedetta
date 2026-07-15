@@ -735,7 +735,7 @@ func containsNetworkIdentifier(value string) bool {
 // containsNetworkIdentifierInVersionValue allows only the bounded numeric core
 // of a syntactically valid semantic version to resemble a shortened IPv4 form.
 // Prerelease/build text remains untrusted free text and is scanned separately;
-// otherwise a value such as v1.2-192.168.1.1 would hide an address behind the
+// otherwise a version prefix could hide a dotted address behind the
 // semantic-version exception. Accepting the numeric core is a deliberate
 // recoding ambiguity under the trusted-curator + exact-preview threat model,
 // not a claim of irreversibility against a malicious curator.

@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS scan_targets (
     target_id   TEXT PRIMARY KEY,
     name        TEXT NOT NULL,                -- e.g. "IoT Network", "Guest WiFi"
-    cidr        TEXT NOT NULL,                -- e.g. "10.0.50.0/24"
+    cidr        TEXT NOT NULL,                -- e.g. "192.0.2.0/24"
     segment     TEXT NOT NULL DEFAULT 'default' CHECK (segment IN ('default', 'iot', 'guest')),
     scan_ports  BOOLEAN NOT NULL DEFAULT FALSE,
     enabled     BOOLEAN NOT NULL DEFAULT TRUE,

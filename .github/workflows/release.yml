@@ -7,8 +7,9 @@ name: Release
 # target is built NATIVELY on its own runner (amd64 + arm64). The Windows sensor is
 # driver-free (DNS via ETW, discovery via native ICMP/ARP), so it builds cgo-free and
 # is cross-compiled from an ubuntu runner (no MinGW). We then assemble a single DRAFT
-# release + checksums. The release is always a draft — a human reviews and publishes
-# it. Nothing here runs until a `v*` tag is pushed.
+# release + checksums. The workflow refuses to modify an already-published release;
+# a human reviews and publishes the draft. No build runs unless a `v*` tag exists and
+# is either pushed or selected by a manual dispatch.
 
 on:
   push:
@@ -16,15 +17,100 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Git ref (tag) to build"
+        description: "Existing v* tag name to build (not a branch or commit)"
         required: true
+        type: string
 
 permissions:
-  contents: write # create the draft release
+  contents: read
 
 jobs:
+  validate-tag:
+    name: validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+      tag_object_sha: ${{ steps.validate.outputs.tag_object_sha }}
+      commit_sha: ${{ steps.validate.outputs.commit_sha }}
+    steps:
+      - name: Require an existing v* tag
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ github.event.inputs.ref || github.ref_name }}
+        run: |
+          if [[ ! "$REQUESTED_TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "::error::Release ref must be a v-prefixed tag name containing only letters, numbers, dot, underscore, or hyphen"
+            exit 1
+          fi
+          if ! tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${REQUESTED_TAG}" \
+            --jq '[.object.type, .object.sha] | @tsv')"; then
+            echo "::error::Tag '${REQUESTED_TAG}' does not exist in ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+          IFS=$'\t' read -r object_type tag_object_sha <<< "$tag_ref"
+          if [[ ! "$tag_object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Tag '${REQUESTED_TAG}' has an invalid Git object SHA"
+            exit 1
+          fi
+
+          # Resolve the exact tag ref, never the ambiguous /commits/{name}
+          # endpoint (which prefers a same-named branch). Lightweight tags point
+          # directly to a commit; annotated tags can legally point to another
+          # annotated tag, so peel the immutable Git objects with a depth bound.
+          commit_sha="$tag_object_sha"
+          for _ in {1..16}; do
+            case "$object_type" in
+              commit)
+                break
+                ;;
+              tag)
+                if ! tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${commit_sha}" \
+                  --jq '[.object.type, .object.sha] | @tsv')"; then
+                  echo "::error::Could not peel annotated tag '${REQUESTED_TAG}'"
+                  exit 1
+                fi
+                IFS=$'\t' read -r object_type commit_sha <<< "$tag_target"
+                if [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                  echo "::error::Annotated tag '${REQUESTED_TAG}' has an invalid target SHA"
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "::error::Tag '${REQUESTED_TAG}' ultimately targets unsupported Git object type '${object_type}'"
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$object_type" != "commit" ]; then
+            echo "::error::Tag '${REQUESTED_TAG}' exceeds the 16-level annotated-tag depth limit"
+            exit 1
+          fi
+          printf 'tag=%s\n' "$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+          printf 'tag_object_sha=%s\n' "$tag_object_sha" >> "$GITHUB_OUTPUT"
+          printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to rebuild an already-published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          # action-gh-release preserves an existing release's published state;
+          # `draft: true` does not turn a published release back into a draft.
+          # Reject it before any matrix build or artifact upload can start.
+          release_rows="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.id, .tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r release_id release_tag is_draft; do
+            if [ "$release_tag" = "$RELEASE_TAG" ] && [ "$is_draft" != "true" ]; then
+              echo "::error::Release '${RELEASE_TAG}' (id ${release_id}) is already published; refusing to replace live assets"
+              exit 1
+            fi
+          done <<< "$release_rows"
+
   build-sensor:
     name: build sensor (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: validate-tag
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -35,13 +121,18 @@ jobs:
           # Windows is cgo-free (ETW + native ICMP/ARP) → cross-compile on ubuntu.
           - { runner: ubuntu-latest, goos: windows, goarch: amd64, cgo: "0" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
-      - uses: actions/setup-go@v5
+          # Build the immutable commit resolved by validate-tag. Matrix jobs must
+          # never resolve a mutable tag independently.
+          ref: ${{ needs.validate-tag.outputs.commit_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: stable
-          cache-dependency-path: sensor/go.sum
+          # Release runs are rare and privileged. Do not restore a cache written
+          # by a lower-trust workflow context.
+          cache: false
       - name: Install libpcap (cgo dependency)
         if: matrix.cgo == '1'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpcap-dev
@@ -51,9 +142,8 @@ jobs:
           CGO_ENABLED: ${{ matrix.cgo }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          # The tag being released: github.ref_name on a tag push (e.g. v1.2.3),
-          # or the workflow_dispatch ref input for a manual run.
-          VERSION: ${{ github.event.inputs.ref || github.ref_name }}
+          # The validated, existing tag shared by checkout and release assembly.
+          VERSION: ${{ needs.validate-tag.outputs.tag }}
         run: |
           bin=vedetta-sensor
           [ "$GOOS" = "windows" ] && bin=vedetta-sensor.exe
@@ -67,7 +157,9 @@ jobs:
           # (the amd64 Linux job's --version check is the authoritative proof the
           # -X path works); here we assert the tag string is embedded in the binary.
           if [ "$GOOS" = "windows" ]; then
-            strings -a "$bin" | grep -qF "${VERSION}" \
+            # Consume the complete strings output. With pipefail, grep -q can
+            # close early and make strings exit on SIGPIPE even on a match.
+            strings -a "$bin" | grep -F "${VERSION}" >/dev/null \
               || { echo "::error::version stamp '${VERSION}' not embedded in ${bin}"; exit 1; }
             zip -q "vedetta-sensor_${GOOS}_${GOARCH}.zip" "$bin"
           else
@@ -79,7 +171,7 @@ jobs:
             fi
             tar -czf "vedetta-sensor_${GOOS}_${GOARCH}.tar.gz" "$bin"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sensor-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -88,10 +180,12 @@ jobs:
 
   release:
     name: assemble draft release
-    needs: build-sensor
+    needs: [validate-tag, build-sensor]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create or refresh a draft release only in this job
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
           merge-multiple: true
@@ -100,12 +194,74 @@ jobs:
         run: |
           sha256sum vedetta-sensor_*.tar.gz vedetta-sensor_*.zip > checksums.txt
           cat checksums.txt
+      - name: Verify release tag has not moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+          EXPECTED_TAG_OBJECT: ${{ needs.validate-tag.outputs.tag_object_sha }}
+        run: |
+          current_tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.sha)"
+          if [ "$current_tag_object" != "$EXPECTED_TAG_OBJECT" ]; then
+            echo "::error::Tag '${RELEASE_TAG}' moved during the build: expected ref object ${EXPECTED_TAG_OBJECT}, got ${current_tag_object}"
+            exit 1
+          fi
+      - name: Re-verify release is still unpublished
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          # The draft could be published while the matrix is building. Check
+          # again immediately before the release action can mutate any assets.
+          release_rows="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.id, .tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r release_id release_tag is_draft; do
+            if [ "$release_tag" = "$RELEASE_TAG" ] && [ "$is_draft" != "true" ]; then
+              echo "::error::Release '${RELEASE_TAG}' (id ${release_id}) was published during the build; refusing to replace live assets"
+              exit 1
+            fi
+          done <<< "$release_rows"
       - name: Create/refresh DRAFT release
-        uses: softprops/action-gh-release@v2
+        id: draft-release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
+          tag_name: ${{ needs.validate-tag.outputs.tag }}
+          target_commitish: ${{ needs.validate-tag.outputs.commit_sha }}
           draft: true # never auto-publish — review and publish by hand
           fail_on_unmatched_files: true
           files: |
             dist/vedetta-sensor_*.tar.gz
             dist/vedetta-sensor_*.zip
             dist/checksums.txt
+      - name: Require the assembled release to remain a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ needs.validate-tag.outputs.tag }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.id }}
+        run: |
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Release action returned an invalid release id"
+            exit 1
+          fi
+          release_state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            --jq '[.tag_name, .draft] | @tsv')"
+          IFS=$'\t' read -r actual_tag is_draft <<< "$release_state"
+          if [ "$actual_tag" != "$EXPECTED_TAG" ]; then
+            echo "::error::Release action returned tag '${actual_tag}', expected '${EXPECTED_TAG}'"
+            exit 1
+          fi
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::Release '${EXPECTED_TAG}' is published; refusing a successful asset-refresh run"
+            exit 1
+          fi
+      - name: Verify release tag remained fixed through assembly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+          EXPECTED_TAG_OBJECT: ${{ needs.validate-tag.outputs.tag_object_sha }}
+        run: |
+          current_tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.sha)"
+          if [ "$current_tag_object" != "$EXPECTED_TAG_OBJECT" ]; then
+            echo "::error::Tag '${RELEASE_TAG}' moved during release assembly: expected ref object ${EXPECTED_TAG_OBJECT}, got ${current_tag_object}"
+            exit 1
+          fi

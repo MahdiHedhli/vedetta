@@ -11,7 +11,7 @@
     - Core is loopback-only by default; a REMOTE sensor must point -Core at the TLS
       reverse proxy (https://...), not http://<core-ip>:8080.
     - Pin a release with -Tag v0.1.0-beta.2 (the release page lists the exact tag).
-    - Override LAN auto-detection with -CIDR 192.168.1.0/24 if discovery looks wrong.
+    - Override LAN auto-detection with -CIDR <LAN-CIDR> if discovery looks wrong.
 #>
 [CmdletBinding()]
 param(
