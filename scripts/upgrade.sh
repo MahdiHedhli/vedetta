@@ -649,14 +649,15 @@ do_rollback() {
 }
 
 fail() {
+  # MASK interrupts FIRST (do not restore defaults): a second Ctrl-C or
+  # SIGTERM while the restore is rewriting the volume must not kill the
+  # recovery halfway — that is the one moment the script must be
+  # uninterruptible, and the mask must be up before anything else runs.
+  trap '' INT TERM
   local msg="$*"
   if [ "$FAILED" = "1" ]; then err "nested failure while recovering: $msg"; exit 1; fi
   FAILED=1
   trap - ERR
-  # MASK interrupts (do not restore defaults): a second Ctrl-C or SIGTERM
-  # while the restore is rewriting the volume must not kill the recovery
-  # halfway — that is the one moment the script must be uninterruptible.
-  trap '' INT TERM
   set +e
   err "UPGRADE FAILED: $msg"
   # do_rollback handles every state: stack untouched → restore tree + retag and
@@ -803,10 +804,12 @@ compose_build_core || fail "docker compose build failed"
 # would pass every check while the real data stayed stranded in ${VOL_DATA}.
 backend_mounts_data_volume() {
   docker compose config 2>/dev/null | awk '
-    /^  [^ ]/ { inb = ($0 ~ /^  backend:$/) }
+    /^  [^ ]/      { inb = ($0 ~ /^  backend:$/) }
+    inb && /^ *- / { s = 0; t = 0 }   # new mount entry — the pair must co-occur
     inb && /source: vedetta-data$/ { s = 1 }
     inb && /target: \/data$/       { t = 1 }
-    END { exit !(s && t) }
+    inb && s && t  { found = 1 }
+    END { exit !found }
   '
 }
 if ! backend_mounts_data_volume; then
