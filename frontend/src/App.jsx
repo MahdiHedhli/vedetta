@@ -118,6 +118,11 @@ export default function App() {
   const [focusTelemetrySettings, setFocusTelemetrySettings] = useState(false);
   const [telemetrySettingsNeedsPrompt, setTelemetrySettingsNeedsPrompt] = useState(false);
   const [telemetryAdminScopeRejected, setTelemetryAdminScopeRejected] = useState(false);
+  // A newly created token response or a direct /auth/session check can prove
+  // admin scope before useFindings has refreshed its session. Preserve that
+  // authoritative handoff just for the Settings destination so the generic
+  // stale-session view guard cannot bounce the operator back to the dashboard.
+  const [telemetryAdminHandoffToken, setTelemetryAdminHandoffToken] = useState('');
   const [focusedDeviceID, setFocusedDeviceID] = useState(null);
   const [showTokenPrompt, setShowTokenPrompt] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
@@ -131,6 +136,7 @@ export default function App() {
   const adminPromptCloseRef = useRef(null);
   const adminSetupCodeRef = useRef(null);
   const adminTokenInputRef = useRef(null);
+  const telemetryTokenValidationSequence = useRef(0);
   const pendingAdminView = settingsHandoffPending ? 'settings' : null;
 
   useAdminPromptFocus({
@@ -173,8 +179,10 @@ export default function App() {
     setAuthError('');
   }, []);
 
-  const navigateToTelemetrySettings = useCallback(() => {
+  const navigateToTelemetrySettings = useCallback(({ verifiedToken = '' } = {}) => {
+    telemetryTokenValidationSequence.current += 1;
     setTelemetrySettingsNeedsPrompt(false);
+    setTelemetryAdminHandoffToken(verifiedToken);
     completeTelemetrySettingsHandoff();
     setShowTokenPrompt(false);
     setView('settings');
@@ -232,6 +240,7 @@ export default function App() {
   };
 
   const closeAdminPrompt = useCallback(() => {
+    telemetryTokenValidationSequence.current += 1;
     setShowTokenPrompt(false);
     setTelemetrySettingsNeedsPrompt(false);
     setAuthError('');
@@ -274,7 +283,9 @@ export default function App() {
           'You can always create additional admin tokens from the Settings page if you have an active session.'
         );
         if (settingsHandoffPending) {
-          navigateToTelemetrySettings();
+          // This endpoint just minted the requested admin-scoped token, which
+          // is authoritative even though useFindings has not refreshed yet.
+          navigateToTelemetrySettings({ verifiedToken: data.token });
         }
         // Refresh data now that we are authenticated
         fetchStatus();
@@ -282,11 +293,9 @@ export default function App() {
       }
     } catch (e) {
       setAuthError(e.message || 'Failed to create admin token');
-      if (settingsHandoffPending) {
-        setTelemetrySettingsNeedsPrompt(false);
-        setShowTokenPrompt(false);
-        cancelTelemetrySettingsHandoff();
-      }
+      // Keep a pending telemetry Settings handoff open so the operator can see
+      // the setup-code error and correct it. Only an explicit close cancels the
+      // handoff and restores the acknowledgement notice.
     }
   };
 
@@ -297,6 +306,12 @@ export default function App() {
       setAuthError('Please paste a valid admin token');
       return;
     }
+    const validationSequence = telemetryTokenValidationSequence.current + 1;
+    telemetryTokenValidationSequence.current = validationSequence;
+    const validationIsCurrent = () => (
+      telemetryTokenValidationSequence.current === validationSequence &&
+      getAdminToken() === t
+    );
     updateAdminToken(t);
     setTokenInput('');
     setAuthError('');
@@ -308,23 +323,24 @@ export default function App() {
       // authoritative session confirms admin scope.
       try {
         const session = await authFetchJSON('/api/v1/auth/session');
+        if (!validationIsCurrent()) return;
         if (session?.authenticated !== true || session?.can_admin !== true) {
           setTelemetryAdminScopeRejected(session?.authenticated === true);
+          if (session?.authenticated !== true) updateAdminToken('');
           setAuthError(session?.authenticated
             ? 'This token has read-only scope. An admin token is required to change telemetry.'
             : 'The token could not be authenticated. An admin token is required to change telemetry.');
-          setTelemetrySettingsNeedsPrompt(false);
-          setShowTokenPrompt(false);
-          cancelTelemetrySettingsHandoff();
+          setTelemetrySettingsNeedsPrompt(true);
+          setShowTokenPrompt(true);
           return;
         }
-        navigateToTelemetrySettings();
+        navigateToTelemetrySettings({ verifiedToken: t });
       } catch (e) {
+        if (!validationIsCurrent()) return;
         updateAdminToken('');
         setAuthError(e.message || 'The admin token could not be verified.');
-        setTelemetrySettingsNeedsPrompt(false);
-        setShowTokenPrompt(false);
-        cancelTelemetrySettingsHandoff();
+        setTelemetrySettingsNeedsPrompt(true);
+        setShowTokenPrompt(true);
       }
       return;
     }
@@ -475,15 +491,17 @@ export default function App() {
   useEffect(() => {
     const onUnauthorized = () => {
       if (hasAdminToken()) {
+        telemetryTokenValidationSequence.current += 1;
+        setTelemetryAdminHandoffToken('');
         const message = 'Your admin token is no longer valid. Please re-enter it.';
         if (settingsHandoffPending) {
           // A failed deferred Settings authentication is not an
-          // acknowledgement. Remove the rejected token and restore the notice.
+          // acknowledgement. Keep the prompt visible with its error so the
+          // operator can retry; explicitly closing it restores the notice.
           updateAdminToken('');
           setAuthError(message);
-          setTelemetrySettingsNeedsPrompt(false);
-          setShowTokenPrompt(false);
-          cancelTelemetrySettingsHandoff();
+          setTelemetrySettingsNeedsPrompt(true);
+          setShowTokenPrompt(true);
         } else {
           setAuthError(message);
           setShowTokenPrompt(true);
@@ -492,7 +510,16 @@ export default function App() {
     };
     window.addEventListener('vedetta:auth:unauthorized', onUnauthorized);
     return () => window.removeEventListener('vedetta:auth:unauthorized', onUnauthorized);
-  }, [cancelTelemetrySettingsHandoff, settingsHandoffPending, updateAdminToken]);
+  }, [settingsHandoffPending, updateAdminToken]);
+
+  useEffect(() => {
+    if (
+      telemetryAdminHandoffToken &&
+      (canAdmin || view !== 'settings' || adminToken !== telemetryAdminHandoffToken)
+    ) {
+      setTelemetryAdminHandoffToken('');
+    }
+  }, [adminToken, canAdmin, telemetryAdminHandoffToken, view]);
 
   useEffect(() => {
     fetchStatus();
@@ -514,11 +541,17 @@ export default function App() {
   }, [fetchStatus, fetchDevices, fetchTargets, fetchSensors, fetchThreatData]);
 
   useEffect(() => {
-    if (!canAdmin && ['sensors', 'scan targets', 'logs', 'whitelist', 'settings'].includes(view)) {
+    const verifiedSettingsHandoff = (
+      view === 'settings' &&
+      telemetryAdminHandoffToken !== '' &&
+      adminToken === telemetryAdminHandoffToken &&
+      getAdminToken() === telemetryAdminHandoffToken
+    );
+    if (!canAdmin && !verifiedSettingsHandoff && ['sensors', 'scan targets', 'logs', 'whitelist', 'settings'].includes(view)) {
       setView('dashboard');
       setShowMenu(false);
     }
-  }, [canAdmin, view]);
+  }, [adminToken, canAdmin, telemetryAdminHandoffToken, view]);
 
   const triggerScan = () => {
     if (!canAdmin) return;
@@ -607,8 +640,9 @@ export default function App() {
                 </p>
                 {needsSetupCode && (
                   <div className="space-y-1.5">
-                    <label className="text-xs text-gray-400 block">Setup code (first admin only)</label>
+                    <label htmlFor="admin-setup-code" className="text-xs text-gray-400 block">Setup code (first admin only)</label>
                     <input
+                      id="admin-setup-code"
                       ref={adminSetupCodeRef}
                       type="text"
                       value={setupCode}
@@ -633,8 +667,9 @@ export default function App() {
             )}
 
             <div className="space-y-2">
-              <label className="text-xs text-gray-400 block">Paste admin token (recovery / other device)</label>
+              <label htmlFor="admin-token-input" className="text-xs text-gray-400 block">Paste admin token (recovery / other device)</label>
               <input
+                id="admin-token-input"
                 ref={adminTokenInputRef}
                 type="text"
                 value={tokenInput}

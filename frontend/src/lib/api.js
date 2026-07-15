@@ -119,6 +119,7 @@ export async function authFetch(url, options = {}) {
   const token = getAdminToken();
   const headers = new Headers(options.headers || {});
   const resolvedUrl = resolveCoreUrl(url);
+  let attachedCoreToken = '';
 
   // The origin gate must run on a plain-string URL, whatever fetch-input shape
   // the caller passed (string / URL / Request). Extract that string first; if we
@@ -135,6 +136,7 @@ export async function authFetch(url, options = {}) {
     isCoreUrl(urlStr, resolveCoreUrl(urlStr))
   ) {
     headers.set('Authorization', `Bearer ${token}`);
+    attachedCoreToken = token;
   }
 
   // Ensure JSON content-type for POST/PUT when body is object
@@ -153,8 +155,14 @@ export async function authFetch(url, options = {}) {
   const response = await fetch(resolvedUrl, finalOptions);
 
   // Global 401 handling hook (UI can listen via a custom event if desired)
-  if (response.status === 401) {
-    // Token is invalid or expired — let the app decide what to do
+  if (
+    response.status === 401 &&
+    attachedCoreToken !== '' &&
+    getAdminToken() === attachedCoreToken
+  ) {
+    // Only the request that carried the browser's CURRENT Core bearer may
+    // invalidate that browser session. A late tokenless request or a response
+    // for a replaced token must not clear the newer credential.
     window.dispatchEvent(new CustomEvent('vedetta:auth:unauthorized', { detail: { url } }));
   }
 
