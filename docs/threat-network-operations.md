@@ -17,7 +17,8 @@
 - **The telemetry client runs by default.** In the default `docker-compose.yml` stack it is
   on (contributing privacy-reduced signals to `https://feed.vedettas.com`) and is opt-out:
   set `VEDETTA_TELEMETRY_OPTIN=false` (only the exact value `false` disables it) or flip the
-  dashboard telemetry toggle. A first-run disclosure banner surfaces this on first launch.
+  dashboard telemetry toggle. A versioned, browser-origin-local first-run acknowledgement
+  dialog surfaces the effective state; material disclosure revisions re-prompt that origin.
   The threat-network **server** is **off-node** — it is *not* meant to run on your Raspberry Pi.
 - **Most users configure nothing.** Telemetry is preconfigured in the default stack, and the
   other value for a normal deployment is *consuming* the advisory feed. Hosting your own
@@ -82,18 +83,25 @@ Go standard library (no third-party deps).
 A single Go binary with a service-local SQLite DB. It:
 
 - **Registers reporters** pseudonymously (`POST /api/v1/reporters/register`) — it stores an
-  id and a hash of a secret, never an account, email, or operator identity.
+  id, secret hash, capability names, software version, status, and exact creation/last-seen
+  timing, never an account, email, or operator identity. The random registration
+  `install_id` is validated but not persisted.
 - **Ingests signed batches** (`POST /api/v1/ingest`): verifies the HMAC signature, rejects
   timestamps outside ±300 s and reused nonces, treats a duplicate `batch_id` as an
-  idempotent replay, **re-applies the privacy gate server-side** (any batch containing a
-  private/special-use/single-label name, a raw IP literal, or an asset identifier is
-  rejected whole), and dedups.
+  idempotent replay, **re-applies the privacy gate server-side**, and dedups. Unknown
+  fields, IP- or MAC-shaped values, configured special-use/internal or single-label
+  names, and URL syntax reject the whole batch. Invalid DNS names or lengths, Public
+  Suffix List reduction failures, candidate values that are not eTLD+1, and known-bad
+  eTLD+1 mismatches skip only the offending signal and increment the rejected count.
+  These are concrete checks; the gate cannot recognize every possible identifier
+  embedded in an otherwise valid public domain.
 - **Builds consensus**: an indicator is promoted only when **multiple distinct matured
   reporter credentials** corroborate it — a single credential (or a burst of
   freshly-registered credentials that have not aged past the maturation delay) can never
   cause promotion. This raises the cost of manufacturing agreement but does not by itself
   prove reporter independence, which is why the feed is mechanically advisory-only. It
-  stores **no PII at rest**.
+  stores no direct device/operator identifiers, but does store pseudonymous signal,
+  receipt, reporter, and timing data described below.
 - **Serves an advisory-only feed** (`GET /api/v1/feed/community`, public read like an
   abuse.ch list): every item carries `advisory: true` / `recommended_action: "advise"`.
   Consumers must never auto-block on feed membership — it may only add context or nudge
@@ -102,19 +110,21 @@ A single Go binary with a service-local SQLite DB. It:
 
 ---
 
-## Privacy guarantees (what leaves your network)
+## Privacy boundary (wire and storage)
 
-| Never leaves | What can leave (aggregate only) |
+| Surface | Current data |
 | --- | --- |
-| Raw internal/WAN IPs, MACs, hostnames, SSIDs | Domain indicators for the 3 signal kinds (exact domain only for known-bad; eTLD+1 for candidates) |
-| Your device inventory or per-device identifiers | Counts (`distinct_asset_count`, observation counts) — never a host list |
-| Query history, internal domain names | A hash of your reporter secret (pseudonymous identity) |
-| Operator identity, account, email | Coarse behavior summaries with no domain |
+| Not serialized | Internal/device IPs, MACs, hostnames, raw query names, resolved/server IPs, inventories, segments/SSIDs, free-form metadata, and per-asset hashes. The local salted HMAC is reduced to `distinct_asset_count` and discarded. |
+| Registration/auth | Random `install_id`, schema version, coarse Vedetta version, capability names; then stable `reporter_id`, exact request timestamp, random nonce, and HMAC signature. The server does not persist `install_id`. |
+| Beta signal and batch | Matched public block-list domain + eTLD+1, hourly event bucket, observation/distinct-asset/optional blocked counts, local confidence, fixed reason codes, random signal/batch IDs, schema version, and exact batch-generation/collection-window timestamps. |
+| Server storage | Stable reporter row with version/capabilities and exact creation/last-seen timing; linked signal rows with exact first-received/last-merge timing; batch receipts with exact receipt time and counts. Signals and receipts expire after 30 days; reporter/counter/derived-record expiry is incomplete. |
+| Public connection metadata | Cloudflare observes each connection's public source/timing. Vedetta also uses the forwarded address (or direct socket peer) as an in-memory rate-limit key with last-access time while active and until swept after 30 idle minutes; it is not written to SQLite or application logs. |
 
-> **Beta:** only `known_bad_domain_hit` (the matched block-list indicator + its eTLD+1) is
-> exported today. The candidate-eTLD+1 and behavior-summary rows above are **disabled for
-> beta** pending a trust-model redesign; the kinds remain in the frozen contract for when
-> they re-enable.
+> **Beta:** only `known_bad_domain_hit` is exported. Query-derived candidate-eTLD+1 and
+> behavior-summary signals are disabled pending a trust-model redesign; those kinds remain
+> in the frozen contract and advertised capability list. Signal IDs and client batch/window
+> timestamps are validated but not persisted by the current server; batch IDs are retained
+> with ingest receipts for 30 days. See [PRIVACY.md](../PRIVACY.md) for the exhaustive model.
 
 Two independent gates enforce this: structural stripping on the client (spec 002) **and**
 a server-side privacy re-check on ingest (spec 003). A batch that violates either is
@@ -275,9 +285,10 @@ the separate `ops/threat-network-dashboard` branch. It is not part of product
 - **Implemented:** the Core-side feed consumer (Role 1 wiring) and Cloudflare Tunnel
   deployment path. A sustained operational/SNR validation on an owner's real
   environment remains tracked as VED-014; fixtures and CI use only synthetic data.
-- **On by default (opt-out), advisory-only, no PII at rest** — the shared feed is advisory
-  only and is never a production dependency. Deployments that disable telemetry lose nothing
-  locally.
+- **On by default (opt-out), advisory-only, no direct device/operator identifiers at
+  rest** — the server does retain the pseudonymous reporter/signal/receipt/timing data
+  documented above. The shared feed is advisory only and is never a production dependency.
+  Deployments that disable telemetry lose nothing locally.
 
 ## Decisions this doc is asking you to make
 

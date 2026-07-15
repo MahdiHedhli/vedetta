@@ -44,7 +44,7 @@ against the [project constitution](../.specify/memory/constitution.md).
 
 ### Community defaults (independent controls)
 
-- **Telemetry service** ([specs/002](../specs/002-telemetry-service/)): **on by default, opt-out** (`VEDETTA_TELEMETRY_OPTIN=false`, or the dashboard telemetry toggle, disables it; a first-run banner discloses it); source IPs, MACs, and hostnames are stripped at the source, aggregate-only signed export.
+- **Telemetry service** ([specs/002](../specs/002-telemetry-service/)): **on by default, opt-out** (`VEDETTA_TELEMETRY_OPTIN=false`, or the dashboard telemetry toggle, disables it; a versioned first-run acknowledgement dialog discloses the effective state). Beta exports are allowlisted, pseudonymous records: matched public block-list domain/eTLD+1, hourly event bucket, counts, local confidence/fixed reasons, signal/batch IDs, timing/schema metadata, plus reporter registration/version/capabilities. Internal/device IPs, MACs, hostnames, raw queries, and per-asset hashes are not serialized; see [PRIVACY.md](../PRIVACY.md) for server linkage and retention.
 - **Community threat network** ([specs/003](../specs/003-threat-network/)): implemented advisory-only community feed with reporter-consensus confidence and abuse resistance.
 - **Core feed consumption** is on by default and independently disabled with `VEDETTA_COMMUNITY_FEED_ENABLED=false`; community evidence is corroborating only and cannot independently create or raise a finding.
 
@@ -90,7 +90,7 @@ Vedetta is not yet positioned as a mass-market consumer appliance. The current i
 
 - **Self-hosted first.** The local deployment should stand on its own.
 - **Local value first.** Device discovery, DNS visibility, and local detections work without a cloud dependency.
-- **Telemetry is on by default and opt-out** (`VEDETTA_TELEMETRY_OPTIN=false` or the dashboard telemetry toggle); it strips source IPs, MACs, and hostnames at the source and exports only aggregate, advisory-only signals.
+- **Telemetry is on by default and opt-out** (`VEDETTA_TELEMETRY_OPTIN=false` or the dashboard telemetry toggle); beta exports are allowlisted pseudonymous known-bad records with domain/eTLD+1, hourly event bucket, counts, confidence/fixed reasons, IDs, and timing/schema/registration metadata. Internal/device IPs, MACs, hostnames, raw queries, and per-asset hashes are not serialized; [PRIVACY.md](../PRIVACY.md) documents server linkage and retention.
 - **Community sharing is not the core promise.** The community threat network is implemented and advisory-only, but it is a secondary layer, not the present-tense reason to adopt Vedetta.
 
 ## Known Product Limits

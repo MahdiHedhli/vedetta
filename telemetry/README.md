@@ -19,8 +19,9 @@ signal, exactly like the prior stub.
 
 ## What leaves the node
 
-Only three aggregate signal kinds, all counts-and-domains-only. The exhaustive,
-one-page trust boundary is the contract file. In short:
+The v1 contract defines three privacy-reduced signal kinds. During beta, the
+client emits only the first kind. The exhaustive trust boundary is the contract
+file; the current signal-kind boundary is:
 
 | Kind | Domain material | Notes |
 | --- | --- | --- |
@@ -35,12 +36,32 @@ one-page trust boundary is the contract file. In short:
 > writer could forge (GHSA-hx86), so they are temporarily disabled pending a
 > trust-model redesign. The kinds remain in the contract for when they re-enable.
 
+Each beta signal sends the matched public block-list domain and its eTLD+1; an
+hour-aligned event bucket; observation, distinct-asset, and optional blocked
+counts; local confidence; fixed-vocabulary reason codes; and a random signal ID.
+The batch envelope adds a random batch ID, schema version, exact generation time,
+and exact collection-window start/end times. Signed request headers also carry the
+stable reporter ID, exact request timestamp, random nonce, and HMAC signature.
+
+Initial registration sends a random install UUID, coarse Vedetta version, and the
+three supported contract capability names. The server does not persist that
+install UUID; it returns a stable reporter ID and one-time secret. See
+[PRIVACY.md](../PRIVACY.md) for the server fields, precise timing/linkability, and
+retention boundary.
+
+Cloudflare observes each public connection's source and timing. The Vedetta
+service also uses that public address (forwarded by the trusted proxy, or the
+direct socket peer) as an in-memory rate-limit key with last-access time while
+active and until swept after 30 idle minutes. It is not written to SQLite or
+application logs.
+
 **Never exported:** raw source IPs, resolved/server IPs, MAC addresses,
 hostnames, device inventories/vendors/models, network segments, SSIDs, exact
-per-event timestamps (hour buckets only), raw query history, free-form metadata,
-geo, or any per-asset identifier. `source_hash` is an HMAC used *inside* the node
-to compute `distinct_asset_count` and is discarded before egress — it is never
-serialized.
+per-event timestamps (event times are hour-bucketed), raw query history, free-form
+metadata, geo, or any per-asset identifier. Batch/window and request timestamps
+are transmitted as described above; they are not event timestamps. `source_hash`
+is an HMAC used *inside* the node to compute `distinct_asset_count` and is
+discarded before egress — it is never serialized.
 
 This is enforced **structurally**: the `ExportCandidate` type
 (`internal/export/candidate.go`) has no field capable of holding a forbidden
@@ -103,9 +124,10 @@ Set `VEDETTA_TELEMETRY_OPTIN=false` (exact string — any other value leaves it 
 or flip the dashboard telemetry toggle off, then restart the container. The daemon
 returns to fully inert on next start. To sever the local half of the pseudonymous
 reporter identity, also delete `reporter.json` and `salt` from the state dir.
-Note the **community-side linkage does not yet age out**: retention/expiry is
-incomplete today, so the server-side `reporter_id`↔indicator/hour linkage is
-**retained**, not aged out (see PRIVACY.md).
+Note that **community-side retention/expiry is incomplete today**. Signal rows
+and ingest receipts expire after 30 days, but the
+reporter row, reporter counters, computed aggregates, and feed records do not yet
+share a complete enforced expiry policy (see [PRIVACY.md](../PRIVACY.md)).
 
 ## Failure behavior (best-effort by design)
 
