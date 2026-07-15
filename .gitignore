@@ -11,15 +11,23 @@
 # docs, PII, testing configs, and anything that
 # should never touch a remote.
 /internal/
+/internal-*/
+/internal_*/
+/internal.*/
+/private/
+/private-*/
+/private_*/
+/private.*/
 
 # ----- Secrets & Credentials -----
-# .env (and .env.* except .env.example) must stay ignored.
+# Dotenv files and named variants must stay ignored case-independently.
+# The already-tracked root `.env.example` remains usable; new templates need
+# an explicit force-add followed by the repository sanitation gate.
 # This protects files containing GITHUB_PAT and other secrets.
 # Confirmed present before any recovery commits.
-.env
-.env.*
-.env.lab
-!.env.example
+.[eE][nN][vV]*
+*.[eE][nN][vV]
+*.[eE][nN][vV].*
 *.pem
 *.key
 *.crt
@@ -41,11 +49,20 @@ service-account*.json
 gcp-credentials*.json
 aws-credentials*
 .aws/
+.aws-*/
+.aws_*/
+.aws.*/
 .gcp/
+.gcp-*/
+.gcp_*/
+.gcp.*/
 kubeconfig
 *.tfstate
 *.tfstate.backup
 .terraform/
+.terraform-*/
+.terraform_*/
+.terraform.*/
 
 # ----- API Keys & Config Overrides -----
 config.local.*
@@ -111,10 +128,59 @@ frontend/dist/
 .settings/
 .classpath
 
+# ----- Python tooling -----
+__pycache__/
+*.py[cod]
+
 # ----- Data & Databases -----
 *.db
 *.sqlite
 *.sqlite3
+*.db3
+*.s3db
+*.sl3
+*.sqlite3-wal
+*.sqlite3-wal.*
+*.sqlite3-shm
+*.sqlite3-shm.*
+*.sqlite3-journal
+*.sqlite3-journal.*
+*.db3-wal
+*.db3-wal.*
+*.db3-shm
+*.db3-shm.*
+*.db3-journal
+*.db3-journal.*
+*.s3db-wal
+*.s3db-wal.*
+*.s3db-shm
+*.s3db-shm.*
+*.s3db-journal
+*.s3db-journal.*
+*.sl3-wal
+*.sl3-wal.*
+*.sl3-shm
+*.sl3-shm.*
+*.sl3-journal
+*.sl3-journal.*
+*.db-wal
+*.db-wal.*
+*.db-shm
+*.db-shm.*
+*.db-journal
+*.db-journal.*
+*.sqlite-wal
+*.sqlite-wal.*
+*.sqlite-shm
+*.sqlite-shm.*
+*.sqlite-journal
+*.sqlite-journal.*
+*.db.*
+*.sqlite.*
+*.sqlite3.*
+*.db3.*
+*.s3db.*
+*.sl3.*
 data/
 # ...but this data/ file is an embedded SOURCE file (//go:embed in
 # threat-network/internal/store/allowlist.go), not runtime data. It MUST be
@@ -125,15 +191,126 @@ data/
 # ----- Docker -----
 docker-compose.override.yml
 .docker/
+.docker-*/
+.docker_*/
+.docker.*/
 
 # ----- Logs -----
 *.log
 logs/
+logs-*/
+logs_*/
+logs.*/
 # ...but the UniFi collector test corpus ships SYNTHETIC syslog inputs as *.log
 # fixtures (RFC 5737 doc IPs, example MACs, placeholder hostnames — no real
 # network data). The Lua golden suite (collector/test/run_tests.lua) reads them,
 # so they MUST be tracked or the suite fails on a clean checkout (issue #40).
 !specs/001-unifi-log-ingestion/corpus/inputs/*.log
+
+# ----- Network / Lab Artifacts -----
+# Raw captures, browser exports, event streams, scanner output, and host dumps
+# can contain device identifiers even when they do not contain credentials.
+*.pcap
+*.pcapng
+*.cap
+*.pcap.*
+*.pcapng.*
+*.cap.*
+*.har
+*.har.*
+*.ndjson
+*.jsonl
+*.nmap
+*.gnmap
+*.etl
+*.evtx
+*.dmp
+*.log.*
+*.dump
+*.bak
+*.backup
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+captures/
+capture/
+exports/
+export/
+captures.*/
+capture.*/
+exports.*/
+export.*/
+# `export` is also the name of telemetry's application-source package. Keep
+# everything in that directory ignored by default, then re-include only direct
+# Go source; the sanitation gate independently requires the exact lowercase
+# `.go` suffix and a regular file mode.
+!telemetry/internal/export/
+telemetry/internal/export/**
+!telemetry/internal/export/*.go
+captures-*/
+captures_*/
+capture-*/
+capture_*/
+exports-*/
+exports_*/
+export-*/
+export_*/
+inventory-*/
+inventory_*/
+inventory.*/
+inventory/
+inventories/
+inventories-*/
+inventories_*/
+inventories.*/
+backup/
+backups/
+backup-*/
+backup_*/
+backup.*/
+backups-*/
+backups_*/
+backups.*/
+dump/
+dumps/
+dump-*/
+dump_*/
+dump.*/
+dumps-*/
+dumps_*/
+dumps.*/
+scan/
+scans/
+scan-*/
+scan_*/
+scan.*/
+scans-*/
+scans_*/
+scans.*/
+pcap/
+pcaps/
+pcap-*/
+pcap_*/
+pcap.*/
+pcaps-*/
+pcaps_*/
+pcaps.*/
+packet-capture/
+packet-captures/
+packet-capture-*/
+packet-capture_*/
+packet-capture.*/
+packet-captures-*/
+packet-captures_*/
+packet-captures.*/
 
 # ----- Coverage & Profiling -----
 coverage/
@@ -155,18 +332,45 @@ INSTRUCTIONS.md
 .cursorrules
 .windsurfrules
 .cursor/
+.cursor-*/
+.cursor_*/
+.cursor.*/
 .codex/
+.codex-*/
+.codex_*/
+.codex.*/
 .claude/
+.claude-*/
+.claude_*/
+.claude.*/
 .github/copilot-instructions.md
 
 # Agent / analysis scratch (environment data must never be tracked)
 analysis-notes/
+analysis-notes-*/
+analysis-notes_*/
+analysis-notes.*/
 agent-scratch/
+agent-scratch-*/
+agent-scratch_*/
+agent-scratch.*/
 scratch/
+scratch-*/
+scratch_*/
+scratch.*/
 
 # Local-only environment data: homelab creds, real IPs/MACs, live captures.
 # NEVER committed. Per .specify/memory/constitution.md.
 .local/
-*.env
-!.env.example
-/lab/
+# Dotenv files and variants are covered under Secrets & Credentials above.
+lab/
+labs/
+lab-*/
+lab_*/
+lab.*/
+labs-*/
+labs_*/
+labs.*/
+.local-*/
+.local_*/
+.local.*/

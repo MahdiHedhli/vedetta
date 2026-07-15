@@ -1,0 +1,42 @@
+name: Trusted repository sanitation
+
+# Security boundary: unlike pull_request, pull_request_target loads this
+# workflow definition from the trusted default branch. The job then checks out
+# policy from the exact event base SHA. Candidate objects are fetched and parsed
+# strictly as Git data; they are never checked out, sourced, imported, built, or
+# otherwise executed.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trusted-repository-sanitation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  sanitation:
+    name: trusted-data-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact trusted base policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Inspect candidate Git objects without executing candidate code
+        env:
+          VEDETTA_REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          VEDETTA_REPOSITORY_TOKEN: ${{ github.token }}
+          VEDETTA_PR_NUMBER: ${{ github.event.pull_request.number }}
+          VEDETTA_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          VEDETTA_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          VEDETTA_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VEDETTA_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: bash scripts/run-trusted-pr-sanitation.sh

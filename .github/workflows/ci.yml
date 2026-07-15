@@ -210,3 +210,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
+
+  # This executes candidate test code on the same read-only runner model as the
+  # build jobs above. It catches accidental checker/deployer regressions, but is
+  # deliberately NON-AUTHORITATIVE: a candidate can edit these copies. The
+  # base-owned pull_request_target inspection is the data-policy trust boundary.
+  sanitation-regressions:
+    name: sanitation regressions (candidate, non-authoritative)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run candidate regression suites
+        run: |
+          bash scripts/tests/repo-sanitization-test.sh
+          bash scripts/tests/deploy-sanitation-test.sh
+          bash scripts/tests/trusted-pr-sanitation-test.sh
