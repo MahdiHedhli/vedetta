@@ -441,6 +441,10 @@ do_rollback() {
   # cause downtime by tearing down a healthy stack. Just restore the tree if
   # the script had moved it.
   if [ "$NEW_STACK_UP" != "1" ] && [ "$STACK_WAS_STOPPED" != "1" ]; then
+    # tags_ok: may we safely start containers from the current compose tags?
+    # Yes if no build ran, or if the retag repair below succeeds at a good ref.
+    local tags_ok
+    tags_ok=1; [ "$BUILD_STARTED" = "1" ] && tags_ok=0
     # Repair whenever a DISTINCT known-good ref exists — the target-ref flow
     # (tree moved) and in-place mode with --from (tree never moved, but a
     # partial build may still have retagged some service images) both qualify.
@@ -457,15 +461,36 @@ do_rollback() {
       # the known-good ref so the compose tags point back at known-good builds —
       # otherwise a later plain `docker compose up -d` would recreate containers
       # onto the failed build. Containers are NOT restarted.
-      if ! compose_build_core; then
+      if compose_build_core; then
+        tags_ok=1
+      else
+        tags_ok=0
         err "WARNING: rebuild at ${PREV_DESC} failed — compose image tags may still"
         err "point at the failed build. The running stack is unaffected, but do"
         err "NOT run 'docker compose up -d' until 'docker compose build' succeeds here."
       fi
-    else
+    elif [ "$tags_ok" = "0" ]; then
       # In-place mode with no --from: no good ref exists to repair tags with.
       warn "Note: a partial build may have retagged some service images. Do not run"
       warn "'docker compose up -d' until 'docker compose build' succeeds on this checkout."
+    fi
+    # We never touched the stack — but the backend may have died ON ITS OWN
+    # during the attempt (e.g. a crash between the health probe and the
+    # snapshot copy). Don't claim it "stays up" while it's down: restart it
+    # when the tags are provably safe, otherwise say exactly where things are.
+    if ! backend_running; then
+      if [ "$tags_ok" = "1" ]; then
+        warn "The backend went down on its own during the attempt — restarting the previous version…"
+        compose_up_core || { err "restart failed — run: docker compose up -d"; return 1; }
+        if wait_health 60; then ok "Backend is back up (previous version)."
+        else warn "Backend restarted but not healthy within 60s — check: docker compose logs backend"; fi
+      else
+        err "The backend is DOWN (it exited during the attempt) and the compose image"
+        err "tags may point at the failed build — refusing to auto-start. Fix the build,"
+        err "then run: docker compose up -d"
+        return 1
+      fi
+      return 0
     fi
     ok "The running stack was never touched — it stays up as-is."
     return 0
