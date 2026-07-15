@@ -787,13 +787,33 @@ docker compose up -d</code></pre>
           <article class="code-card">
             <div class="eyebrow">2. Sensor</div>
             <h3>Install the native sensor</h3>
-            <p>The public installer supports macOS and Linux (<code>install.sh</code>) and Windows (<code>install.ps1</code>, run as Administrator &mdash; driver-free, no Npcap or nmap). Review the script before running it, and pass the enrollment code from the wizard: <code>--enroll-code</code> on macOS/Linux, <code>-EnrollCode</code> on Windows.</p>
-            <pre><code>curl -fsSL -o /tmp/vedetta-sensor-install.sh \
-  https://raw.githubusercontent.com/MahdiHedhli/vedetta/main/sensor/deploy/install.sh
-
-sudo bash /tmp/vedetta-sensor-install.sh \
-  --core https://vedetta.example.com \
-  --enroll-code &lt;ENROLL_CODE&gt;</code></pre>
+            <p>The public installer supports macOS and Linux (<code>install.sh</code>) and Windows (<code>install.ps1</code>, run as Administrator &mdash; driver-free, no Npcap or nmap). The flow below verifies the pinned release asset against its published checksum before elevation. On macOS/Linux, provide the wizard's enrollment code through the installer's private-file or stdin option; on Windows, omit the code from the command and enter it at the masked secure prompt.</p>
+            <pre><code>(
+  set -e
+  umask 077
+  RELEASE_TAG=v0.1.0-beta.3
+  RELEASE_BASE="https://github.com/MahdiHedhli/vedetta/releases/download/${RELEASE_TAG}"
+  INSTALLER="$(mktemp "$HOME/.vedetta-sensor-install.XXXXXXXX")"
+  CHECKSUMS="$(mktemp "$HOME/.vedetta-sensor-checksums.XXXXXXXX")"
+  cleanup_vedetta_install() { /bin/rm -f -- "$INSTALLER" "$CHECKSUMS"; }
+  trap cleanup_vedetta_install EXIT
+  /usr/bin/curl -fsSL -o "$INSTALLER" "${RELEASE_BASE}/install.sh"
+  /usr/bin/curl -fsSL -o "$CHECKSUMS" "${RELEASE_BASE}/checksums.txt"
+  EXPECTED="$(/usr/bin/awk 'NF == 2 && $2 == "install.sh" { print $1; found++ } END { if (found != 1) exit 1 }' "$CHECKSUMS")"
+  case "$EXPECTED" in ''|*[!0-9a-fA-F]*) printf 'Invalid install.sh checksum manifest\n'; exit 1 ;; esac
+  [ "${#EXPECTED}" -eq 64 ] || { printf 'Invalid install.sh checksum length\n'; exit 1; }
+  if [ -x /usr/bin/sha256sum ]; then
+    ACTUAL="$(/usr/bin/sha256sum "$INSTALLER" | /usr/bin/awk '{print $1}')"
+  elif [ -x /usr/bin/shasum ]; then
+    ACTUAL="$(/usr/bin/shasum -a 256 "$INSTALLER" | /usr/bin/awk '{print $1}')"
+  else
+    printf 'A SHA-256 utility is required\n'; exit 1
+  fi
+  [ "$ACTUAL" = "$EXPECTED" ] || { printf 'install.sh checksum verification failed\n'; exit 1; }
+  sudo env VEDETTA_RELEASE_TAG="$RELEASE_TAG" bash "$INSTALLER" \
+    --core https://vedetta.example.com \
+    --enroll-code-stdin
+)</code></pre>
             <p>Core binds to <code>127.0.0.1</code> (loopback) only. For a sensor on the <strong>same host</strong>, use the Core API URL printed by <code>gen-env.sh</code> (its port is <code>VEDETTA_BACKEND_PORT</code> in <code>.env</code>); for a <strong>remote</strong> sensor, front Core with the <a href="https://github.com/MahdiHedhli/vedetta/blob/main/docs/reverse-proxy.md" target="_blank" rel="noreferrer">TLS reverse proxy</a> and point <code>--core</code> at that HTTPS hostname (e.g. <code>https://vedetta.example.com</code>). Don't send tokens over plaintext <code>http://&lt;CORE_IP&gt;:&lt;PORT&gt;</code>.</p>
           </article>
         </div>

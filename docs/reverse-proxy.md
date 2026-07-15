@@ -21,6 +21,7 @@ Core's bind address is controlled by one environment variable:
 | --- | --- | --- |
 | `VEDETTA_LISTEN_ADDR` | `127.0.0.1` | Interface Core binds. Loopback by default. |
 | `VEDETTA_PORT` | `8080` | TCP port Core listens on. |
+| `VEDETTA_TRUSTED_PROXIES` | empty | Comma-separated IPs/CIDRs of controlled proxy hops whose forwarded client-IP headers Core may trust for per-source rate limits. |
 
 So out of the box Core listens on `127.0.0.1:8080`.
 
@@ -75,6 +76,40 @@ that does not touch the `Authorization` header:
 > the sensor out. mTLS as a proxy control is only workable for a browser/admin
 > surface that never carries sensor traffic. Use network policy for remote
 > sensors instead.
+
+### Preserve per-client rate limits
+
+Sensor enrollment and installer credential checks are rate-limited per source IP.
+Core deliberately ignores `X-Forwarded-For` and `X-Real-IP` by default; otherwise a
+direct client could forge those headers to evade the limit. Without explicit proxy
+trust, requests relayed through one proxy safely share that proxy's bucket. That is
+usually harmless for a single-admin homelab, but it can let one allowed client consume
+the bucket for other installers.
+
+Set `VEDETTA_TRUSTED_PROXIES` only to the **controlled proxy socket peers**, never to
+the client/LAN ranges being proxied. Include every controlled hop that appears at the
+right side of the forwarded chain. Core then walks the chain from right to left,
+skips only those trusted hops, and keys the limiter on the closest untrusted client.
+
+For a same-host bare-metal proxy, the value is normally the exact loopback peer(s):
+
+```sh
+VEDETTA_TRUSTED_PROXIES=127.0.0.1/32,::1/128
+```
+
+For Compose, `docker-compose.yml` passes the variable through to Core and the bundled
+frontend now appends a standards-compatible `X-Forwarded-For` chain. Trust the exact
+frontend container address plus any controlled outer TLS-proxy hop represented in that
+chain. Container addresses can change on recreation, so either pin them in a dedicated
+Compose override/network or update the value and restart Core when they change. Obtain
+the current frontend address without treating an arbitrary client range as trusted:
+
+```sh
+docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' vedetta-frontend
+```
+
+If you cannot keep the trusted-hop list exact, leave it empty and retain the safe
+shared bucket. Never trust `0.0.0.0/0`, `::/0`, or a whole user/client subnet.
 
 ---
 

@@ -185,14 +185,24 @@ jobs:
     permissions:
       contents: write # create or refresh a draft release only in this job
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Installer assets must come from the same immutable commit validated
+          # for the binaries, never from the workflow runner's default branch.
+          ref: ${{ needs.validate-tag.outputs.commit_sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
           merge-multiple: true
-      - name: Checksums (the file install.sh / install.ps1 verify against)
+      - name: Stage installers from the validated tag commit
+        run: |
+          install -m 0755 sensor/deploy/install.sh dist/install.sh
+          install -m 0644 sensor/deploy/install.ps1 dist/install.ps1
+      - name: Checksums (binaries and public installer trust anchors)
         working-directory: dist
         run: |
-          sha256sum vedetta-sensor_*.tar.gz vedetta-sensor_*.zip > checksums.txt
+          sha256sum install.sh install.ps1 vedetta-sensor_*.tar.gz vedetta-sensor_*.zip > checksums.txt
           cat checksums.txt
       - name: Verify release tag has not moved
         env:
@@ -232,6 +242,8 @@ jobs:
           files: |
             dist/vedetta-sensor_*.tar.gz
             dist/vedetta-sensor_*.zip
+            dist/install.sh
+            dist/install.ps1
             dist/checksums.txt
       - name: Require the assembled release to remain a draft
         env:

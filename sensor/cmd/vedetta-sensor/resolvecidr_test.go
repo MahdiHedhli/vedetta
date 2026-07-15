@@ -16,10 +16,19 @@ func TestResolveScanCIDR(t *testing.T) {
 
 	t.Run("explicit cidr never calls the detector", func(t *testing.T) {
 		bestSubnet = func(string) string { t.Fatal("detector must not run for an explicit CIDR"); return "" }
-		r := &sensorRun{cidrFlag: "192.168.5.0/24"}
+		r := &sensorRun{cidrFlag: "192.0.2.0/24"}
 		got, err := r.resolveScanCIDR(context.Background(), true)
-		if err != nil || got != "192.168.5.0/24" {
-			t.Fatalf("got (%q,%v), want (192.168.5.0/24,nil)", got, err)
+		if err != nil || got != "192.0.2.0/24" {
+			t.Fatalf("got (%q,%v), want (192.0.2.0/24,nil)", got, err)
+		}
+	})
+
+	t.Run("invalid explicit target fails before enrollment", func(t *testing.T) {
+		bestSubnet = func(string) string { t.Fatal("detector must not run for an explicit CIDR"); return "" }
+		for _, target := range []string{"2001:db8::/64", "999.0.0.1", "0.0.0.0/0", "host.example"} {
+			if _, err := (&sensorRun{cidrFlag: target}).resolveScanCIDR(context.Background(), false); err == nil {
+				t.Errorf("invalid explicit target %q accepted", target)
+			}
 		}
 	})
 
@@ -38,12 +47,12 @@ func TestResolveScanCIDR(t *testing.T) {
 			if calls < 3 {
 				return "" // no address yet
 			}
-			return "10.0.30.0/24" // DHCP assigned
+			return "198.51.100.0/24" // synthetic DHCP-assigned subnet
 		}
 		r := &sensorRun{cidrFlag: "auto"}
 		got, err := r.resolveScanCIDR(context.Background(), true)
-		if err != nil || got != "10.0.30.0/24" {
-			t.Fatalf("got (%q,%v) after %d tries, want (10.0.30.0/24,nil)", got, err, calls)
+		if err != nil || got != "198.51.100.0/24" {
+			t.Fatalf("got (%q,%v) after %d tries, want (198.51.100.0/24,nil)", got, err, calls)
 		}
 		if calls < 3 {
 			t.Fatalf("expected retries, got %d calls", calls)
@@ -52,7 +61,7 @@ func TestResolveScanCIDR(t *testing.T) {
 
 	t.Run("wait: cancel aborts promptly (never hangs, never fatal)", func(t *testing.T) {
 		bestSubnet = func(string) string { return "" } // never resolves
-		subnetRetryDelay = time.Hour                    // would hang if cancel were ignored
+		subnetRetryDelay = time.Hour                   // would hang if cancel were ignored
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		done := make(chan struct{})

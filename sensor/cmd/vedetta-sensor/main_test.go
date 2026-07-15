@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,260 @@ import (
 )
 
 // Synthetic values only (constitution): RFC 5737 IPs, 00:00:5E:00:53:xx MACs.
+
+func testTokenPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "Vedetta", "sensor-token")
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", path)
+	if _, err := client.New("http://127.0.0.1:8080"); err != nil {
+		t.Fatalf("prepare protected test token directory: %v", err)
+	}
+	return path
+}
+
+func makeSelfCheckScannerAvailable(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return // the Windows scanner is native and has no external executable
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nmap")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestRunSelfCheckUsesReadOnlyAuthEndpoint(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-self-check-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+
+	var healthChecks, authChecks int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
+			healthChecks++
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sensor/auth-check":
+			authChecks++
+			if got := r.Header.Get("Authorization"); got != "Bearer synthetic-self-check-token" {
+				t.Errorf("auth-check bearer = %q", got)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("self-check made mutating/unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if code := runSelfCheck(server.URL, "auto", true); code != 0 {
+		t.Fatalf("self-check exit = %d, want 0", code)
+	}
+	if healthChecks != 1 || authChecks != 1 {
+		t.Fatalf("self-check requests: health=%d auth=%d, want 1/1", healthChecks, authChecks)
+	}
+}
+
+func TestRunSelfCheckRequireTokenRejectsMissingToken(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", testTokenPath(t))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			t.Errorf("missing-token check unexpectedly requested %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if code := runSelfCheck(server.URL, "auto", true); code != 1 {
+		t.Fatalf("self-check exit = %d, want 1 for missing required token", code)
+	}
+}
+
+func TestRunSelfCheckRejectsInvalidTokenWhenCoreIsReachable(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-revoked-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path != "/api/v1/sensor/auth-check" {
+			t.Errorf("unexpected invalid-token check request: %s %s", r.Method, r.URL.Path)
+		}
+		http.Error(w, "invalid or revoked token", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	if code := runSelfCheck(server.URL, "auto", true); code != 1 {
+		t.Fatalf("self-check exit = %d, want 1 for rejected token", code)
+	}
+}
+
+func TestRunSelfCheckResetPreflightDoesNotValidateObsoleteToken(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-revoked-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+	var authChecks int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v1/sensor/auth-check":
+			authChecks++
+			http.Error(w, "synthetic revoked token", http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if code := runSelfCheck(server.URL, "auto", false); code != 0 {
+		t.Fatalf("reset-mode self-check exit = %d, want 0", code)
+	}
+	if authChecks != 0 {
+		t.Fatalf("reset-mode self-check validated obsolete bearer %d time(s)", authChecks)
+	}
+}
+
+func TestRunSelfCheckAllowsOfflineCoreWithRequiredLocalToken(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-offline-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+	server := httptest.NewServer(http.NotFoundHandler())
+	url := server.URL
+	server.Close()
+
+	if code := runSelfCheck(url, "auto", true); code != 0 {
+		t.Fatalf("self-check exit = %d, want 0 while Core is offline and local token exists", code)
+	}
+}
+
+func TestRunSelfCheckRejectsMalformedCoreURL(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-malformed-url-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+
+	if code := runSelfCheck("://malformed", "auto", true); code != 1 {
+		t.Fatalf("self-check exit = %d, want 1 for malformed Core URL", code)
+	}
+}
+
+func TestRunSelfCheckRejectsInvalidExplicitCorePort(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-invalid-port-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+
+	if code := runSelfCheck("http://127.0.0.1:99999", "auto", true); code != 1 {
+		t.Fatalf("self-check exit = %d, want 1 for an out-of-range Core port", code)
+	}
+}
+
+func TestRunSelfCheckRejectsHostlessAndUnsupportedCoreURLs(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", testTokenPath(t))
+	for _, rawURL := range []string{"http://", "ftp://127.0.0.1"} {
+		t.Run(rawURL, func(t *testing.T) {
+			if code := runSelfCheck(rawURL, "auto", false); code != 1 {
+				t.Fatalf("self-check exit = %d, want 1 for %q", code, rawURL)
+			}
+		})
+	}
+}
+
+func TestRunSelfCheckRejectsInvalidExplicitScanTarget(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", testTokenPath(t))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			t.Errorf("unexpected preflight request: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if code := runSelfCheck(server.URL, "0.0.0.0/0", false); code != 1 {
+		t.Fatalf("self-check exit = %d, want 1 for an over-broad scan target", code)
+	}
+}
+
+func TestValidateResetEnrollmentRequiresBoundCodeForExplicitCore(t *testing.T) {
+	if err := validateResetEnrollment(true, true, ""); err == nil {
+		t.Fatal("explicit reset without a bound code was accepted")
+	}
+	if err := validateResetEnrollment(true, true, " SYNTHETIC-BOUND-RESET "); err != nil {
+		t.Fatalf("explicit reset with bound code rejected: %v", err)
+	}
+	if err := validateResetEnrollment(true, false, ""); err != nil {
+		t.Fatalf("bare destructive reset unexpectedly rejected: %v", err)
+	}
+}
+
+func TestRunSelfCheckRejectsUntrustedCoreTLSCertificate(t *testing.T) {
+	makeSelfCheckScannerAvailable(t)
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-untrusted-tls-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	defer server.Close()
+
+	if code := runSelfCheck(server.URL, "auto", true); code != 1 {
+		t.Fatalf("self-check exit = %d, want 1 for untrusted Core TLS certificate", code)
+	}
+}
+
+func TestClearPersistedSensorTokenKeepsBareResetSemantics(t *testing.T) {
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-reset-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+
+	if err := clearPersistedSensorToken(); err != nil {
+		t.Fatalf("clear persisted token: %v", err)
+	}
+	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
+		t.Fatalf("bare reset left token in place: %v", err)
+	}
+}
+
+func TestClearPersistedSensorTokenReportsRemovalFailure(t *testing.T) {
+	tokenPath := testTokenPath(t)
+	if err := os.Mkdir(tokenPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tokenPath, "block-removal"), []byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", tokenPath)
+
+	if err := clearPersistedSensorToken(); err == nil {
+		t.Fatal("clearPersistedSensorToken reported success although the token path remained")
+	}
+}
 
 // TestMergePassiveHostPreservesFriendlyName verifies the enriched mDNS metadata
 // (friendly name, model, services) survives folding with a later bare
@@ -111,8 +366,8 @@ func TestShutdownCapturesClosesDNSChannel(t *testing.T) {
 	}
 }
 
-func TestSensorLoopHeartbeatsBeforeDefaultScanInterval(t *testing.T) {
-	tokenPath := filepath.Join(t.TempDir(), "sensor-token")
+func TestHeartbeatLoopRunsIndependentlyOfScanScheduler(t *testing.T) {
+	tokenPath := testTokenPath(t)
 	if err := os.WriteFile(tokenPath, []byte("synthetic-loop-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +399,7 @@ func TestSensorLoopHeartbeatsBeforeDefaultScanInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		run.loop(ctx)
+		run.heartbeatLoop(ctx)
 		close(done)
 	}()
 
@@ -153,12 +408,37 @@ func TestSensorLoopHeartbeatsBeforeDefaultScanInterval(t *testing.T) {
 		cancel()
 	case <-time.After(time.Second):
 		cancel()
-		t.Fatal("sensor loop did not heartbeat before its scan interval")
+		t.Fatal("independent heartbeat loop did not tick")
 	}
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("sensor loop did not stop after heartbeat cancellation")
+	}
+}
+
+func TestHeartbeatStopCancelsBeforeWaitingDuringPanic(t *testing.T) {
+	previous := sensorHeartbeatInterval
+	sensorHeartbeatInterval = time.Hour
+	t.Cleanup(func() { sensorHeartbeatInterval = previous })
+
+	// The same stop function serve defers must cancel the child heartbeat during
+	// panic unwinding rather than wait forever on a live parent context.
+	done := make(chan any, 1)
+	go func() {
+		defer func() { done <- recover() }()
+		stopHeartbeat := (&sensorRun{}).startHeartbeat(context.Background())
+		defer stopHeartbeat()
+		panic("synthetic downstream panic")
+	}()
+
+	select {
+	case recovered := <-done:
+		if recovered == nil {
+			t.Fatal("serve returned without the expected synthetic panic")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serve deadlocked waiting for heartbeat during panic unwinding")
 	}
 }
 
@@ -173,7 +453,7 @@ func testDNSPushConfig() dnsPushConfig {
 
 func testAuthenticatedCore(t *testing.T, baseURL, sensorID string) *client.CoreClient {
 	t.Helper()
-	tokenPath := filepath.Join(t.TempDir(), "sensor-token")
+	tokenPath := testTokenPath(t)
 	if err := os.WriteFile(tokenPath, []byte("synthetic-sensor-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +639,7 @@ func TestPushDNSQueries_ShutdownCancelsStalledDelivery(t *testing.T) {
 // backend can hand the sensor its token back — rather than discarding the code or
 // switching to a fresh one.
 func TestRegisterWithRetryReusesEnrollmentCode(t *testing.T) {
-	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", filepath.Join(t.TempDir(), "sensor-token"))
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", testTokenPath(t))
 	old := registerRetryBaseDelay
 	registerRetryBaseDelay = time.Millisecond
 	defer func() { registerRetryBaseDelay = old }()
@@ -412,7 +692,7 @@ func TestRegisterWithRetryReusesEnrollmentCode(t *testing.T) {
 // while unregistered it retries (reusing the enrollment code) and, once a token is
 // persisted, becomes a no-op that does not hit the network again (issue #44).
 func TestEnsureRegisteredRecoversThenIsNoOp(t *testing.T) {
-	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", filepath.Join(t.TempDir(), "sensor-token"))
+	t.Setenv("VEDETTA_SENSOR_TOKEN_FILE", testTokenPath(t))
 
 	var registerHits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -15,6 +15,10 @@ import (
 // (GHSA-wx5m). Overridable via VEDETTA_RATELIMIT_MAX_KEYS.
 const defaultMaxRateLimitKeys = 50000
 
+// sensorAuthCheckRequestsPerMinute leaves ample headroom for installer
+// preflights and service restarts while bounding unauthenticated token probes.
+const sensorAuthCheckRequestsPerMinute = 60
+
 type ipRateLimiter struct {
 	mu      sync.Mutex
 	clients map[string]rateLimitEntry

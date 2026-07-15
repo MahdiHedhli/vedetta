@@ -28,6 +28,10 @@ services:
       # 'vedetta' network. Host exposure is governed solely by the loopback port
       # mapping above; siblings reach Core by service name (http://backend:8080).
       VEDETTA_LISTEN_ADDR: "0.0.0.0"
+      # Core ignores forwarded client-IP headers unless every controlled proxy hop
+      # is explicitly trusted. Set this only when following docs/reverse-proxy.md;
+      # an empty value is the fail-closed default.
+      VEDETTA_TRUSTED_PROXIES: "${VEDETTA_TRUSTED_PROXIES:-}"
       VEDETTA_DB_PATH: "/data/vedetta.db"
       VEDETTA_FRONTEND_DIR: "/frontend"
       VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-auto}"
