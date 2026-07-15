@@ -2,6 +2,7 @@ package fingerprint
 
 import (
 	"strings"
+	"sync"
 )
 
 // OUIResult contains vendor and device type information from a MAC prefix lookup.
@@ -160,8 +161,6 @@ var ouiDatabase = map[string]OUIResult{
 	"54:a0:50": {Vendor: "Google Chromecast", DeviceType: "media_player"},
 
 	// Xbox (00:04:4b is shared — Nvidia/Xbox/DirecTV, using game console as most common home device)
-
-
 
 	// PlayStation
 	"00:04:1f": {Vendor: "Sony PlayStation", DeviceType: "game_console"},
@@ -505,29 +504,76 @@ var ouiDatabase = map[string]OUIResult{
 	// "f4:54:6b": {Vendor: "Element", DeviceType: "smart_speaker"},  // REMOVED: duplicate key
 }
 
+// normalizeOUIKey lowercases a MAC/prefix and strips the usual separators so keys
+// compare regardless of ":" / "-" / " " formatting.
+func normalizeOUIKey(mac string) string {
+	mac = strings.ToLower(mac)
+	mac = strings.ReplaceAll(mac, ":", "")
+	mac = strings.ReplaceAll(mac, "-", "")
+	mac = strings.ReplaceAll(mac, " ", "")
+	return mac
+}
+
+var (
+	curatedOUIOnce sync.Once
+	curatedOUI     map[string]OUIResult // 6-hex prefix (no separators) -> curated result
+
+	ieeeOUIOnce sync.Once
+	ieeeOUI     map[string]string // 6-hex prefix (no separators) -> IEEE vendor
+)
+
+// curatedIndex normalizes the human-authored ouiDatabase (whose literal keys carry
+// colons, e.g. "ac:bc:32") into separator-free 6-hex keys so it actually matches the
+// stripped lookup key. Without this the curated overlay never matched and was dead code.
+func curatedIndex() map[string]OUIResult {
+	curatedOUIOnce.Do(func() {
+		idx := make(map[string]OUIResult, len(ouiDatabase))
+		for k, v := range ouiDatabase {
+			key := normalizeOUIKey(k)
+			if len(key) < 6 {
+				continue
+			}
+			idx[key[:6]] = v
+		}
+		curatedOUI = idx
+	})
+	return curatedOUI
+}
+
+// ieeeIndex lazily loads the embedded (or overridden) IEEE MA-L table, built once.
+func ieeeIndex() map[string]string {
+	ieeeOUIOnce.Do(func() {
+		ieeeOUI = loadIEEEOUI()
+	})
+	return ieeeOUI
+}
+
 // Lookup returns vendor and device type for a given MAC address.
 // MAC should be in format "XX:XX:XX" or "XXXXXX", case-insensitive.
-// Returns nil if no match found.
+// The curated overlay is consulted first (it carries device-type hints for common
+// home/SMB gear); the full IEEE MA-L table is the vendor-only fallback. Returns nil if
+// neither matches.
 func (e *Engine) Lookup(mac string) *OUIResult {
 	if mac == "" {
 		return nil
 	}
 
 	// Normalize: extract first 6 hex characters (first 3 octets)
-	mac = strings.ToLower(mac)
-	mac = strings.ReplaceAll(mac, ":", "")
-	mac = strings.ReplaceAll(mac, "-", "")
-	mac = strings.ReplaceAll(mac, " ", "")
-
-	if len(mac) < 6 {
+	norm := normalizeOUIKey(mac)
+	if len(norm) < 6 {
 		return nil
 	}
+	oui := norm[:6]
 
-	// Use first 6 characters as OUI
-	oui := mac[:6]
-	if result, ok := ouiDatabase[oui]; ok {
+	// Curated overlay first — cleaner vendor names + device-type hints.
+	if result, ok := curatedIndex()[oui]; ok {
 		result.Confidence = 0.2 // OUI-only match
 		return &result
+	}
+
+	// IEEE MA-L fallback — vendor only, no device type.
+	if vendor, ok := ieeeIndex()[oui]; ok {
+		return &OUIResult{Vendor: vendor, Confidence: 0.2}
 	}
 
 	return nil
