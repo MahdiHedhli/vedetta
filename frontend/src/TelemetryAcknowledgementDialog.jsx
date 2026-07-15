@@ -149,8 +149,10 @@ export function TelemetryAcknowledgementDialog({
   }, [phase]);
 
   const manageSettings = () => {
-    restoreFocusRef.current = false;
-    onManageSettings();
+    // The parent may decline the handoff while admin scope is still loading.
+    // Only suppress normal dialog focus restoration once another blocking
+    // destination (Settings or Admin Access) has actually taken ownership.
+    if (onManageSettings() !== false) restoreFocusRef.current = false;
   };
 
   const isLoading = phase === 'loading';

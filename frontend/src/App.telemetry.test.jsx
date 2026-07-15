@@ -20,16 +20,19 @@ vi.mock('./lib/api', () => ({
 }));
 
 const findings = vi.hoisted(() => ({
+  canAdmin: false,
+  phase: 'healthy',
   refresh: vi.fn(),
+  session: null,
 }));
 
 vi.mock('./findings/useFindings', () => ({
   useFindings: () => ({
-    canAdmin: false,
+    canAdmin: findings.canAdmin,
     findings: [],
-    phase: 'healthy',
+    phase: findings.phase,
     refresh: findings.refresh,
-    session: null,
+    session: findings.session,
   }),
 }));
 
@@ -90,8 +93,34 @@ describe('App telemetry Settings authentication handoff', () => {
       return jsonResponse({});
     });
     api.authFetchJSON.mockReset();
+    findings.canAdmin = false;
+    findings.phase = 'healthy';
     findings.refresh.mockReset();
+    findings.session = null;
     localStorage.clear();
+  });
+
+  it('keeps the disclosure blocking while a stored token session check hangs', async () => {
+    api.token = 'stored-admin-test-token';
+    findings.phase = 'loading';
+    findings.session = null;
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole('heading', {
+      name: 'Pseudonymous telemetry is currently enabled',
+    })).toBeInTheDocument();
+    const inertApplication = document.querySelector('[inert]');
+    expect(inertApplication).not.toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Manage in Settings' }));
+
+    expect(screen.getByRole('heading', {
+      name: 'Pseudonymous telemetry is currently enabled',
+    })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Admin Access' })).not.toBeInTheDocument();
+    expect(document.querySelector('[inert]')).toBe(inertApplication);
+    expect(localStorage.getItem(TELEMETRY_NOTICE_STORAGE_KEY)).toBeNull();
   });
 
   it('keeps an initial-admin failure visible until explicit cancel restores the notice', async () => {

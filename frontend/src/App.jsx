@@ -229,14 +229,21 @@ export default function App() {
       session: findingsState.session,
       phase: findingsState.phase,
     });
+    // A persisted token is not proof of admin scope. While /auth/session is
+    // unresolved, keep the disclosure mounted (and the application inert) rather
+    // than beginning a handoff that has no destination yet. The operator can retry
+    // once the session check completes; a hung check must never create an
+    // acknowledgement-free escape hatch into the dashboard.
+    if (action === 'wait') return false;
     const needsPrompt = showTokenPrompt || telemetryAdminScopeRejected || action === 'prompt';
     setTelemetrySettingsNeedsPrompt(needsPrompt);
     beginTelemetrySettingsHandoff();
     if (action === 'navigate' && !needsPrompt) {
       navigateToTelemetrySettings();
-      return;
+      return true;
     }
     if (needsPrompt) setShowTokenPrompt(true);
+    return true;
   };
 
   const closeAdminPrompt = useCallback(() => {

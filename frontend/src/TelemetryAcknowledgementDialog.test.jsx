@@ -140,6 +140,36 @@ describe('TelemetryAcknowledgementDialog', () => {
     expect(document.body.style.overflow).toBe('');
   });
 
+  it('retains normal focus restoration when a Settings handoff is deferred', async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open deferred notice</button>
+          {open && (
+            <TelemetryAcknowledgementDialog
+              {...readyOn}
+              onAcknowledge={() => setOpen(false)}
+              onManageSettings={() => false}
+              onRetry={vi.fn()}
+            />
+          )}
+        </>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(<Harness />);
+    const trigger = screen.getByRole('button', { name: 'Open deferred notice' });
+    await user.click(trigger);
+    await user.click(screen.getByRole('button', { name: 'Manage in Settings' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'ACKNOWLEDGED' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
   it('preserves an explicit focus handoff when opening Settings', async () => {
     function Harness() {
       const [open, setOpen] = useState(true);
