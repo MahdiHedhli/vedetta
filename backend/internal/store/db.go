@@ -188,6 +188,9 @@ func (db *DB) migrate() error {
 	if err := db.ensureSensorLifecycleSchema(); err != nil {
 		return fmt.Errorf("ensure sensor lifecycle schema: %w", err)
 	}
+	if err := db.ensureSensorReportTimeSchema(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -272,6 +275,11 @@ func applyMigrationFile(ctx context.Context, conn *sql.Conn, filename, script st
 			retErr = errors.Join(retErr, fmt.Errorf("rollback migration %s: %w", filename, err))
 		}
 	}()
+	if filename == "028_asset_identity_strength_history.sql" {
+		if err := validateAssetTemporalParents(ctx, tx); err != nil {
+			return fmt.Errorf("preflight %s: %w", filename, err)
+		}
+	}
 
 	// Execute statement-by-statement. Per-statement tolerance is essential: an
 	// already-applied ALTER must not skip later statements in the same file.
@@ -463,6 +471,9 @@ func (db *DB) applyInlineFallback() error {
 	}
 	if err := db.ensureSensorLifecycleSchema(); err != nil {
 		return fmt.Errorf("ensure inline sensor lifecycle schema: %w", err)
+	}
+	if err := db.ensureSensorReportTimeSchema(); err != nil {
+		return err
 	}
 	log.Println("Inline fallback migration applied")
 	return nil

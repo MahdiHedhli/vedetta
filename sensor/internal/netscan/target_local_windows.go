@@ -2,13 +2,13 @@
 
 package netscan
 
-// ValidateLocalTarget additionally proves the native Windows backend can enumerate
-// the complete target. It must fail before enrollment rather than accepting a /21+
-// that later produces a healthy-looking service with no discovery results.
+// ValidateLocalTarget additionally proves the native Windows backend can represent
+// the complete target as one source-bound local scope. Numeric Nmap ranges/lists are
+// valid for the Unix backend but can span disjoint links, so Windows rejects them
+// before enrollment/work execution instead of accepting a target that later fails.
 func ValidateLocalTarget(target string) error {
 	if err := ValidateTarget(target); err != nil {
 		return err
 	}
-	_, err := enumerateHosts(target)
-	return err
+	return validateSourceBoundWindowsTarget(target)
 }

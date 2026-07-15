@@ -3,14 +3,10 @@
 package netscan
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,26 +19,57 @@ import (
 // filter helpers (enumerateHosts, isRealNeighbor, …) live in discovery_util.go.
 const sweepConcurrency = 64
 
-const (
-	windowsARPTimeout   = 3 * time.Second
-	maxWindowsARPOutput = 1 << 20
-)
-
 // Scanner is the native Windows discovery backend. Unlike the Unix nmap scanner it
-// needs no external binary and no Npcap: host liveness comes from IcmpSendEcho
-// (iphlpapi, in-process) and MACs from the system ARP table.
+// needs no external binary and no Npcap. Every production scan first resolves one
+// directly-connected link, then binds ICMP to that link's IPv4 source address. The
+// separately polling ARP Source and the scan use the same preferred-interface input.
 type Scanner struct {
 	BinaryPath string // "native" — kept for API parity with the nmap scanner
+
+	preferredInterface   string
+	corroborateNeighbors bool
+
+	// Private seams keep the source/link/neighbor contract deterministic in Windows CI.
+	detectSubnets  func() ([]DetectedSubnet, error)
+	interfaceIndex func(string) (int, error)
+	readNeighbors  func() ([]neighbor, error)
+	sweepBound     func(context.Context, []string, string) ([]string, error)
 }
 
 // NewScanner returns the native Windows scanner. It never errors on a missing tool.
 func NewScanner() (*Scanner, error) {
-	return &Scanner{BinaryPath: "native"}, nil
+	return &Scanner{
+		BinaryPath:    "native",
+		detectSubnets: DetectSubnets,
+		interfaceIndex: func(name string) (int, error) {
+			iface, err := net.InterfaceByName(name)
+			if err != nil {
+				return 0, err
+			}
+			return iface.Index, nil
+		},
+		readNeighbors: readNeighbors,
+		sweepBound:    icmpSweepBound,
+	}, nil
 }
 
-// Scan discovers live hosts in cidr with a bounded, concurrent ICMP echo sweep
-// (which also warms the ARP cache), then attaches MACs from the ARP table.
-// withPorts is ignored — port scanning is the optional Npcap/nmap Phase-3 tier.
+// ConfigureNativeDiscovery aligns active Windows discovery with the passive neighbor
+// source. preferredInterface is empty for auto-resolution or an operator-pinned OS
+// interface. corroborateNeighbors follows --arp-discovery exactly: disabling that
+// switch retains bound liveness but performs no neighbor-cache identity lookup.
+func (s *Scanner) ConfigureNativeDiscovery(preferredInterface string, corroborateNeighbors bool) {
+	if s == nil {
+		return
+	}
+	s.preferredInterface = strings.TrimSpace(preferredInterface)
+	s.corroborateNeighbors = corroborateNeighbors
+}
+
+// Scan discovers live hosts with source-bound ICMP. A target that is off-link,
+// ambiguous, or whose selected interface disappears fails closed; the scanner never
+// falls back to an unbound route-selected probe. A safe same-generation neighbor row
+// can add a MAC and native_icmp_arp source. Otherwise the result is explicitly
+// native_icmp_bound and remains IP-only.
 func (s *Scanner) Scan(cidr string, withPorts bool) (*ScanResult, error) {
 	return s.ScanContext(context.Background(), cidr, withPorts)
 }
@@ -59,54 +86,121 @@ func (s *Scanner) Check(ctx context.Context) error {
 
 func (s *Scanner) SelfCheck(ctx context.Context) error { return s.Check(ctx) }
 
-// ScanContext is the cancellable form of Scan. Individual ICMP calls are
-// bounded by the native 500 ms timeout; cancellation prevents new calls and
-// discards a partial sweep instead of reporting it as complete.
+// ScanContext is the cancellable native discovery entry point. IcmpSendEcho2Ex is a
+// synchronous bounded call (500 ms), so cancellation stops new calls immediately and
+// waits at most for the already-running generation to return.
 func (s *Scanner) ScanContext(ctx context.Context, cidr string, withPorts bool) (*ScanResult, error) {
 	if ctx == nil {
 		return nil, errors.New("scan context is nil")
 	}
-	start := time.Now()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	_ = withPorts // native port scanning remains a later optional tier
+	if s == nil {
+		return nil, fmt.Errorf("nil native scanner")
+	}
+	if err := ValidateLocalTarget(cidr); err != nil {
+		return nil, err
+	}
+	target, err := parseIPv4Scope(cidr)
+	if err != nil {
+		return nil, err
+	}
 	hosts, err := enumerateHosts(cidr)
 	if err != nil {
 		return nil, err
 	}
-	live, err := icmpSweepContext(ctx, hosts)
+	if len(hosts) == 0 {
+		return &ScanResult{ScanTime: time.Now().UTC()}, nil
+	}
+	detect := s.detectSubnets
+	if detect == nil {
+		detect = DetectSubnets
+	}
+	index := s.interfaceIndex
+	if index == nil {
+		index = func(name string) (int, error) {
+			iface, lookupErr := net.InterfaceByName(name)
+			if lookupErr != nil {
+				return 0, lookupErr
+			}
+			return iface.Index, nil
+		}
+	}
+	link, err := resolveLocalScope(target, s.preferredInterface, detect, index)
+	if err != nil {
+		return nil, fmt.Errorf("resolve source-bound ICMP link for %q: %w", cidr, err)
+	}
+	if link.ifIndex <= 0 || net.ParseIP(link.ownIP).To4() == nil {
+		return nil, fmt.Errorf("resolved source-bound ICMP link for %q has no stable IPv4/interface index", cidr)
+	}
+
+	start := time.Now().UTC()
+	sweep := s.sweepBound
+	if sweep == nil {
+		sweep = icmpSweepBound
+	}
+	live, err := sweep(ctx, hosts, link.ownIP)
 	if err != nil {
 		return nil, err
 	}
-	// The sweep's L2 resolution populates the ARP cache for every reachable host on
-	// the segment — including ones whose firewall drops the ICMP echo — so the ARP
-	// table catches hosts the ping sweep alone misses.
-	macs := arpTableContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	result := &ScanResult{ScanTime: start}
-	seen := map[string]bool{}
-	for _, ip := range live {
-		seen[ip] = true
-		h := DiscoveredHost{IPAddress: ip, Status: "up", DiscoverySource: "native_icmp"}
-		if mac, ok := macs[ip]; ok {
-			h.MACAddress = mac
+	// Detect a link removal/re-address/ambiguity during the sweep. Every individual
+	// echo was source-bound, but a changed topology invalidates the generation as a
+	// whole and must not be attributed to the previously selected segment.
+	current, currentErr := resolveLocalScope(target, s.preferredInterface, detect, index)
+	if currentErr != nil || !sameLocalScope(link, current) {
+		if currentErr != nil {
+			return nil, fmt.Errorf("source-bound ICMP link changed during scan of %q: %w", cidr, currentErr)
 		}
-		result.Hosts = append(result.Hosts, h)
+		return nil, fmt.Errorf("source-bound ICMP link changed during scan of %q", cidr)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
-	// Add ARP-known neighbors within the CIDR that did not answer ICMP (e.g. ping
-	// blocked by the host firewall). Skip broadcast/multicast pseudo-entries.
-	for ip, mac := range macs {
-		if seen[ip] || !isRealNeighbor(ip, mac) {
-			continue
+	macs := map[string]string{}
+	if s.corroborateNeighbors && len(live) > 0 {
+		reader := s.readNeighbors
+		if reader == nil {
+			reader = readNeighbors
 		}
-		if !ipv4TargetContains(cidr, ip) {
-			continue
+		rows, readErr := reader()
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		seen[ip] = true
-		result.Hosts = append(result.Hosts, DiscoveredHost{
-			IPAddress: ip, MACAddress: mac, Status: "up", DiscoverySource: "arp",
-		})
+		if readErr == nil {
+			// The cache read is a separate OS operation and may outlive a route or
+			// address change. Revalidate once more before attaching any link-layer
+			// identity so rows from the old interface generation cannot be joined
+			// to otherwise valid source-bound liveness.
+			postCache, postCacheErr := resolveLocalScope(target, s.preferredInterface, detect, index)
+			if postCacheErr != nil || !sameLocalScope(link, postCache) {
+				if postCacheErr != nil {
+					return nil, fmt.Errorf("source-bound ICMP link changed during neighbor read for %q: %w", cidr, postCacheErr)
+				}
+				return nil, fmt.Errorf("source-bound ICMP link changed during neighbor read for %q", cidr)
+			}
+			macs = corroborateLiveNeighbors(live, rows, target, link)
+		}
+		// A cache read failure does not erase proven liveness; it only withholds MAC
+		// evidence. The result remains native_icmp_bound and IP-only.
+	}
+
+	result := &ScanResult{ScanTime: start}
+	for _, ip := range live {
+		host := DiscoveredHost{
+			IPAddress: ip, Status: "up", DiscoverySource: "native_icmp_bound", ObservedAt: start,
+		}
+		if mac := macs[ip]; mac != "" {
+			host.MACAddress = mac
+			host.DiscoverySource = "native_icmp_arp"
+		}
+		result.Hosts = append(result.Hosts, host)
 	}
 	result.Duration = time.Since(start)
 	return result, nil
@@ -116,7 +210,7 @@ var (
 	iphlpapi            = windows.NewLazySystemDLL("iphlpapi.dll")
 	procIcmpCreateFile  = iphlpapi.NewProc("IcmpCreateFile")
 	procIcmpCloseHandle = iphlpapi.NewProc("IcmpCloseHandle")
-	procIcmpSendEcho    = iphlpapi.NewProc("IcmpSendEcho")
+	procIcmpSendEcho2Ex = iphlpapi.NewProc("IcmpSendEcho2Ex")
 )
 
 // icmpEchoReply mirrors ICMP_ECHO_REPLY (iphlpapi). Only Address and Status are
@@ -139,43 +233,38 @@ type ipOptionInformation struct {
 	OptionsData uintptr
 }
 
-// icmpSweep pings each host concurrently and returns those that replied. Each
-// worker uses its own ICMP handle (IcmpSendEcho is not safe on a shared handle).
-func icmpSweep(hosts []string) []string {
-	live, _ := icmpSweepContext(context.Background(), hosts)
-	return live
-}
-
-func icmpSweepContext(ctx context.Context, hosts []string) ([]string, error) {
+// icmpSweepBound pings each host concurrently from one explicit local IPv4 address.
+// Each worker uses its own ICMP handle (the API is not safe on a shared handle).
+func icmpSweepBound(ctx context.Context, hosts []string, sourceIP string) ([]string, error) {
+	if ctx == nil {
+		return nil, errors.New("ICMP sweep context is nil")
+	}
 	var (
 		mu   sync.Mutex
 		live []string
 		wg   sync.WaitGroup
 	)
 	sem := make(chan struct{}, sweepConcurrency)
-	canceled := false
-	for _, h := range hosts {
+	cancelled := false
+	for _, host := range hosts {
 		select {
-		case sem <- struct{}{}:
 		case <-ctx.Done():
-			canceled = true
+			cancelled = true
+		case sem <- struct{}{}:
 		}
-		if canceled {
+		if cancelled {
 			break
 		}
 		wg.Add(1)
-		go func(ipStr string) {
+		go func(ip string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if ctx.Err() != nil {
-				return
-			}
-			if pingICMP(ipStr) {
+			if ctx.Err() == nil && pingICMPBound(sourceIP, ip) {
 				mu.Lock()
-				live = append(live, ipStr)
+				live = append(live, ip)
 				mu.Unlock()
 			}
-		}(h)
+		}(host)
 	}
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
@@ -184,10 +273,20 @@ func icmpSweepContext(ctx context.Context, hosts []string) ([]string, error) {
 	return live, nil
 }
 
-// pingICMP sends one ICMP echo to ipStr and reports whether it replied (Status 0).
-func pingICMP(ipStr string) bool {
-	ip := net.ParseIP(ipStr).To4()
+func ipAddrDWORD(ipStr string) (uint32, bool) {
+	ip := net.ParseIP(strings.TrimSpace(ipStr)).To4()
 	if ip == nil {
+		return 0, false
+	}
+	return uint32(ip[0]) | uint32(ip[1])<<8 | uint32(ip[2])<<16 | uint32(ip[3])<<24, true
+}
+
+// pingICMPBound sends one synchronous echo with IcmpSendEcho2Ex's SourceAddress set.
+// Windows therefore cannot silently route the probe through a VPN/other interface.
+func pingICMPBound(sourceIP, destinationIP string) bool {
+	source, sourceOK := ipAddrDWORD(sourceIP)
+	destination, destinationOK := ipAddrDWORD(destinationIP)
+	if !sourceOK || !destinationOK {
 		return false
 	}
 	h, _, _ := procIcmpCreateFile.Call()
@@ -197,79 +296,26 @@ func pingICMP(ipStr string) bool {
 	}
 	defer procIcmpCloseHandle.Call(uintptr(handle))
 
-	dest := uint32(ip[0]) | uint32(ip[1])<<8 | uint32(ip[2])<<16 | uint32(ip[3])<<24
-	var reqData [32]byte
-	replySize := uint32(unsafe.Sizeof(icmpEchoReply{})) + uint32(len(reqData)) + 8
+	var requestData [32]byte
+	replySize := uint32(unsafe.Sizeof(icmpEchoReply{})) + uint32(len(requestData)) + 8
 	reply := make([]byte, replySize)
-
-	ret, _, _ := procIcmpSendEcho.Call(
+	ret, _, _ := procIcmpSendEcho2Ex.Call(
 		uintptr(handle),
-		uintptr(dest),
-		uintptr(unsafe.Pointer(&reqData[0])),
-		uintptr(len(reqData)),
+		0, // synchronous: no event
+		0, // no APC callback
+		0, // no APC context
+		uintptr(source),
+		uintptr(destination),
+		uintptr(unsafe.Pointer(&requestData[0])),
+		uintptr(len(requestData)),
 		0, // no IP options
 		uintptr(unsafe.Pointer(&reply[0])),
 		uintptr(replySize),
-		uintptr(500), // timeout ms
+		uintptr(500),
 	)
 	if ret == 0 {
-		return false // no reply within the timeout
+		return false
 	}
-	r := (*icmpEchoReply)(unsafe.Pointer(&reply[0]))
-	return r.Status == 0 // IP_SUCCESS
-}
-
-var arpLineRe = regexp.MustCompile(`(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-fA-F]{2}(?:[-:][0-9a-fA-F]{2}){5})`)
-
-// arpTable returns IP -> MAC (colon-lowercased) from the system ARP cache.
-func arpTable() map[string]string {
-	return arpTableContext(context.Background())
-}
-
-func arpTableContext(ctx context.Context) map[string]string {
-	out := map[string]string{}
-	systemDirectory, err := windows.GetSystemDirectory()
-	if err != nil {
-		return out
-	}
-	runCtx, cancel := context.WithTimeout(ctx, windowsARPTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(runCtx, filepath.Join(systemDirectory, "arp.exe"), "-a")
-	buf := &windowsBoundedBuffer{limit: maxWindowsARPOutput}
-	cmd.Stdout = buf
-	if err := cmd.Run(); err != nil {
-		return out
-	}
-	if buf.truncated {
-		return out
-	}
-	sc := bufio.NewScanner(buf)
-	for sc.Scan() {
-		if m := arpLineRe.FindStringSubmatch(sc.Text()); m != nil {
-			out[m[1]] = strings.ToLower(strings.ReplaceAll(m[2], "-", ":"))
-		}
-	}
-	return out
-}
-
-type windowsBoundedBuffer struct {
-	bytes.Buffer
-	limit     int
-	truncated bool
-}
-
-func (b *windowsBoundedBuffer) Write(data []byte) (int, error) {
-	written := len(data)
-	remaining := b.limit - b.Len()
-	if remaining > 0 {
-		keep := len(data)
-		if keep > remaining {
-			keep = remaining
-		}
-		_, _ = b.Buffer.Write(data[:keep])
-	}
-	if len(data) > remaining {
-		b.truncated = true
-	}
-	return written, nil
+	replyHeader := (*icmpEchoReply)(unsafe.Pointer(&reply[0]))
+	return replyHeader.Status == 0
 }

@@ -75,7 +75,8 @@ func TestIsGenericHostname(t *testing.T) {
 func TestConfidenceTableCoversDiscoverySources(t *testing.T) {
 	// Every discovery_source value the sensor can send must map to a known signal
 	// source with a non-zero confidence.
-	sources := []string{"passive_arp", "passive_dhcp", "passive_mdns", "passive_ssdp", "nmap_active"}
+	sources := []string{"passive_arp", "arp_cache", "passive_dhcp", "passive_mdns", "passive_ssdp",
+		"nmap_active", "native_icmp", nativeICMPBoundSource, arpLiveFusionSource}
 	for _, ds := range sources {
 		sig := discoverySourceToSignal(ds)
 		if ConfidenceForSource(sig) <= 0 {

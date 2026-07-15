@@ -104,13 +104,47 @@ Tags are freeform strings, but the following are recognized by Vedetta's detecti
 Core also maintains:
 
 - `device_address_history`: timestamped IP/MAC ownership by segment and sensor.
+- `device_address_binding_strength`: append-only confidence/source changes used
+  for event-time address resolution; the parent row remains the current aggregate.
+- `device_address_binding_validity`: compact unions of 24-hour observation
+  freshness windows. Continuous polling extends one row; real stale gaps remain
+  separate so later refreshes cannot change historical resolution.
 - `device_identity_evidence`: locally HMACed DHCP client IDs, SSDP UUIDs,
   selected mDNS evidence, MAC/hostname context, provenance, and confidence.
+- `device_identity_evidence_strength`: append-only confidence/source/confirmation
+  changes used to prevent later corroboration from changing an older event.
+- `device_identity_evidence_validity`: compact unions of seven-day identity
+  freshness windows used for event-time alias resolution.
+- `arp_cache_delivery_epochs` / `arp_cache_states`: authenticated sensor-process
+  ordering plus latest cache-only state per sensor, segment, and IP. Registration
+  issues an inactive epoch candidate; the first report carrying it activates it,
+  so a delayed registration response from a dead process cannot displace the live
+  process. The first accepted `(sensor, segment, IP, epoch, sequence)` generation
+  is immutable. Exact retries are idempotent; a changed MAC/state/timestamp under
+  the same key is an acknowledged protocol conflict and cannot rewrite projections.
+  A legitimate transition advances the sequence. Older known sequences and retired
+  epochs are terminal stale no-ops before any provisional or identity projection.
+  Same-report contradictions are pre-collapsed to ambiguity before the first write. Unique MACs are stored here
+  only as node-local HMACs; ambiguous/blank transitions are durable so a stale
+  cache row cannot be promoted after proxy ARP. The local, non-secret delivery
+  metadata is never exported by telemetry.
+  `ever_activated_at` preserves retired-session history so only never-received
+  registration candidates are eligible for bounded pruning.
 - `device_identity_actions`: audited operator confirmations and reversible soft
   merge redirects. A beta "split" undoes an exact recorded merge; it does not
   repartition arbitrary historical evidence.
 
 Existing event rows are not backfilled from a device's current IP.
+
+Sensor report timestamp normalization uses `sensor_report_time_normalizations`
+for exact broken-clock mappings and `sensor_report_time_raw_epochs` for bounded,
+rotating receipt-plausible ranges. Classification is writer-serialized and exact
+mappings take precedence over raw ranges, so the first durable classification is
+stable across retries and concurrent delivery. `sensor_report_time_receipts`
+keeps each sensor's receipt watermark monotonic. Raw timestamps up to 90 days old
+remain plausible for offline delivery; older timestamps are normalized as broken
+clock evidence. All normalization state is retained for 90 days. Raw epochs rotate
+after seven days of upstream span and are capped at 32 rows per sensor.
 
 ## Detection Evidence And Findings
 

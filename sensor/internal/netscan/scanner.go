@@ -63,6 +63,11 @@ type Scanner struct {
 	maxStderr                   int64
 }
 
+// ConfigureNativeDiscovery is a no-op for nmap. It exists on both scanner backends
+// so the shared lifecycle can configure Windows' source-bound ICMP/neighbor path
+// without runtime OS branches.
+func (s *Scanner) ConfigureNativeDiscovery(_ string, _ bool) {}
+
 // NewScanner creates a Scanner, verifying nmap is available.
 func NewScanner() (*Scanner, error) {
 	configuredPath := strings.TrimSpace(os.Getenv("VEDETTA_NMAP_PATH"))
@@ -122,10 +127,14 @@ func (s *Scanner) Scan(cidr string, withPorts bool) (*ScanResult, error) {
 // TCP-connect probes only against the discovered IPs. Root is used solely for
 // a fixed, no-DNS/no-port ARP discovery command, and only when the exact system
 // nmap executable and the requested directly-attached IPv4 target pass all
-// trust checks.
+// trust checks. Cancellation terminates the nmap process group, so a child
+// process cannot keep shutdown or Ctrl+C waiting after its parent exits.
 func (s *Scanner) ScanContext(ctx context.Context, cidr string, withPorts bool) (*ScanResult, error) {
 	if ctx == nil {
 		return nil, errors.New("scan context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	// Re-validate the target here: it originates from Core work items and has
 	// crossed a trust boundary. The literal "--" below stops nmap from

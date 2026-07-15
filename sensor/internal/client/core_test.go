@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/vedetta-network/vedetta/sensor/internal/netscan"
 )
 
 func testTokenDir(t *testing.T) string {
@@ -72,18 +74,20 @@ func TestCoreClientRegisterPersistsAndReloadsToken(t *testing.T) {
 				t.Fatalf("expected first registration to be anonymous, got %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(sensorRegistrationResponse{
-				Status:    "registered",
-				SensorID:  "sensor-test",
-				AuthToken: "bootstrap-token",
-				TokenID:   "token-1",
+				Status:        "registered",
+				SensorID:      "sensor-test",
+				AuthToken:     "bootstrap-token",
+				TokenID:       "token-1",
+				DeliveryEpoch: "core-issued-epoch-one",
 			})
 		case 2:
 			if got := r.Header.Get("Authorization"); got != "Bearer bootstrap-token" {
 				t.Fatalf("expected persisted bearer token on re-registration, got %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(sensorRegistrationResponse{
-				Status:   "registered",
-				SensorID: "sensor-test",
+				Status:        "registered",
+				SensorID:      "sensor-test",
+				DeliveryEpoch: "core-issued-epoch-two",
 			})
 		default:
 			t.Fatalf("unexpected extra registration request #%d", requestCount)
@@ -102,6 +106,9 @@ func TestCoreClientRegisterPersistsAndReloadsToken(t *testing.T) {
 	}
 	if !core.TokenConfigured() {
 		t.Fatal("expected token to be configured after registration")
+	}
+	if got := core.DeliveryEpoch(); got != "core-issued-epoch-one" {
+		t.Fatalf("delivery epoch after enrollment = %q", got)
 	}
 
 	// Verify the persisted token is locked down. The check is platform-specific:
@@ -128,6 +135,9 @@ func TestCoreClientRegisterPersistsAndReloadsToken(t *testing.T) {
 	}
 	if err := reloaded.Register(context.Background(), "192.168.1.0/24", true, nil); err != nil {
 		t.Fatalf("re-register sensor: %v", err)
+	}
+	if got := reloaded.DeliveryEpoch(); got != "core-issued-epoch-two" {
+		t.Fatalf("delivery epoch after re-registration = %q", got)
 	}
 }
 
@@ -265,7 +275,6 @@ func TestCoreClientAuthCheckUsesBoundSensorAuthentication(t *testing.T) {
 		received <- struct{}{}
 	}))
 	defer server.Close()
-
 	core, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -502,6 +511,78 @@ func TestNormalizeBaseURLValidatesExplicitPort(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got, err := normalizeBaseURL(rawURL); err == nil {
 				t.Fatalf("normalizeBaseURL(%q) = %q, want invalid-port error", rawURL, got)
+			}
+		})
+	}
+}
+
+func TestHTTPStatusErrorClassificationSurvivesWrapping(t *testing.T) {
+	tokenPath := testTokenPath(t)
+	if err := os.WriteFile(tokenPath, []byte("synthetic-revoked-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "revoked sensor", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	core, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.SensorID = "sensor-revoked-client"
+	err = core.Heartbeat(context.Background())
+	if err == nil || !IsAuthorizationError(fmt.Errorf("wrapped operation: %w", err)) {
+		t.Fatalf("authorization classification lost: %v", err)
+	}
+	var statusErr *HTTPStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status error = %#v, want HTTP 401", statusErr)
+	}
+}
+
+func TestPushDevicesRejectsEveryPartialSuccessSignal(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		statusCode int
+		failed     int
+		wantError  bool
+	}{
+		{name: "207 status", statusCode: http.StatusMultiStatus, failed: 0, wantError: true},
+		{name: "failed body", statusCode: http.StatusOK, failed: 1, wantError: true},
+		{name: "complete", statusCode: http.StatusOK, failed: 0, wantError: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tokenPath := testTokenPath(t)
+			if err := os.WriteFile(tokenPath, []byte("synthetic-device-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/sensor/devices" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.statusCode)
+				_ = json.NewEncoder(w).Encode(deviceReportResponse{Accepted: 1, Failed: tc.failed})
+			}))
+			defer server.Close()
+
+			core, err := New(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			core.SensorID = "sensor-device-report"
+			err = core.PushDevices(context.Background(), &netscan.ScanResult{
+				ScanTime: time.Now().UTC(),
+				Hosts: []netscan.DiscoveredHost{{
+					IPAddress:       "192.0.2.80",
+					DiscoverySource: "arp_cache",
+					ObservedAt:      time.Now().UTC(),
+				}},
+			}, "192.0.2.0/24")
+			if (err != nil) != tc.wantError {
+				t.Fatalf("PushDevices error = %v, wantError=%v", err, tc.wantError)
 			}
 		})
 	}

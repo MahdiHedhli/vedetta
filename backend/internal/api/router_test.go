@@ -62,13 +62,17 @@ func registerTestSensor(t *testing.T, router http.Handler, sensorID string) stri
 	}
 
 	var resp struct {
-		AuthToken string `json:"auth_token"`
+		AuthToken     string `json:"auth_token"`
+		DeliveryEpoch string `json:"delivery_epoch"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode register response: %v", err)
 	}
 	if resp.AuthToken == "" {
 		t.Fatal("expected bootstrap auth token in registration response")
+	}
+	if resp.DeliveryEpoch == "" {
+		t.Fatal("expected Core-issued delivery epoch in registration response")
 	}
 
 	return resp.AuthToken

@@ -45,8 +45,22 @@ The Windows sensor needs **no Npcap, no nmap, and no cgo** — it is a single pu
   own queries (event 3006) and responses (3008). This is **host-scoped**: it sees this
   machine's DNS, not other devices' traffic. A real-time ETW session needs an elevated token,
   which the LocalSystem service has. Every query is attributed to this host's primary IP.
-- **Discovery:** native `IcmpSendEcho` sweep + `arp -a`, unioned with the ARP neighbor table so
-  firewalled hosts that drop ICMP but still answer ARP are found.
+- **Discovery:** the active scanner resolves exactly one directly connected interface and
+  uses `IcmpSendEcho2Ex` with that link's IPv4 source address. It revalidates the link after
+  each generation and fails closed on ambiguity, re-addressing, or disappearance. With
+  `--arp-discovery` enabled, it then reads `GetIpNetTable` once for the exact live IP set;
+  only a unique, same-interface, non-proxy mapping becomes `native_icmp_arp`. Other live
+  results remain IP-only `native_icmp_bound`. A separate change-only ARP poller reports
+  cache edges as `arp_cache` observations, never liveness. Disabling ARP discovery disables
+  both cache paths but not source-bound ICMP. Core issues a non-secret process epoch at
+  authenticated registration and activates it only after the sensor returns it; the local
+  sequence then orders retries and backward clock steps. Each scoped epoch/sequence payload
+  is immutable after first acceptance: exact retries are idempotent, changed duplicates are
+  acknowledged without changing identity, and real transitions advance the sequence. Once
+  superseded, older known sequences/epochs stop before any inventory projection and are
+  acknowledged as stale; retired-epoch history remains durable while never-received
+  registration candidates are bounded. Same-report conflicts are collapsed to ambiguous before persistence. Core never uses
+  unsequenced legacy cache rows for MAC fusion.
 - **Service:** runs under the Windows Service Control Manager (installed by `install.ps1`); the
   token lives at `%ProgramData%\Vedetta\sensor-token`, ACL-locked to SYSTEM + Administrators
   (NTFS ACLs, since `chmod` is a no-op there).
@@ -122,6 +136,9 @@ Vedetta now chooses packet-capture interfaces at runtime instead of relying on a
 - tunnel, VPN, loopback, and side-channel interfaces such as `utun*`, `awdl*`, `llw*`, and `ap*` are strongly de-prioritized in auto mode
 
 This matters most on laptops and developer machines where Wi-Fi, Ethernet, Docker, and VPN interfaces can all coexist.
+For an unrecognized or custom virtual adapter, pin both `--cidr` and `--passive-iface`:
+the interface override constrains capture and source-bound discovery, but it does not
+change which subnet `--cidr auto` selects.
 
 For diagnostics:
 
@@ -139,7 +156,10 @@ fixed-argument, no-port/no-DNS ARP discovery on Linux when Nmap is the root-owne
 binary and the IPv4 target is directly attached on a broadcast-capable interface. macOS
 and custom Nmap paths use connect discovery; existing neighbor-cache entries enrich hosts
 that Nmap confirms live, but quiet devices may require passive discovery. Active scanning
-is IPv4-only in this beta; IPv6/hostname scan targets fail explicitly. The
+is IPv4-only in this beta; IPv6/hostname scan targets fail explicitly. Numeric Nmap
+range/list targets remain available on Unix; the source-bound Windows scanner requires
+one bare IPv4 address or CIDR so every generation maps to one unambiguous directly
+connected link. The
 installed sensor defaults to `/Library/Vedetta/bin/vedetta-sensor` on macOS and
 `/usr/local/libexec/vedetta/vedetta-sensor` on Linux. Failed upgrades restore the prior
 binary and service definition instead of leaving a new crash loop active.
@@ -159,6 +179,14 @@ The sensor auth loop is now closed for the machine-to-machine path:
 - the sensor persists that token locally with user-only permissions
 - every later `devices`, `dns`, and `work` call uses `Authorization: Bearer <sensor token>`
 - once a sensor already has an active token, registration updates must present that token instead of silently minting a second one
+- a token file is not treated as authenticated state: the process must receive a successful
+  registration response before scanning, and a later 401/403 from scan work, heartbeat,
+  DNS delivery, or passive-host delivery closes that gate and returns the operator to bound
+  reset-code guidance; capture workers stop retrying the rejected credential and safely
+  drain/drop new observations until shutdown and restart
+- interactive `--once` uses signal-aware finite delivery attempts and exits non-zero on
+  blackholes, repeated partial acceptance, or credential rejection; service delivery keeps
+  retrying transient failures until shutdown
 - initial registration is rate-limited per source IP to reduce unauthenticated abuse on local networks
 
 Threat-model note:

@@ -13,7 +13,11 @@ import (
 // There is no OS service manager on the Unix path — systemd/launchd deliver SIGTERM
 // on stop, which cancels ctx and triggers the graceful capture drain inside run.serve.
 func runFrontend(run *sensorRun) {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := interactiveContext()
 	defer stop()
 	run.serve(ctx)
+}
+
+func interactiveContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }

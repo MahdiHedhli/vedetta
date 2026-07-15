@@ -1041,21 +1041,21 @@ func TestFullMigrationChain_PopulatedLegacyDB_FKSafe(t *testing.T) {
 		t.Fatalf("close 018 db: %v", err)
 	}
 
-	// Phase 2: complete the chain (019..026) and re-open. The real runner now applies
+	// Phase 2: complete the chain (019..030) and re-open. The real runner now applies
 	// the events+devices rebuilds to the POPULATED DB. Pre-fix this returned
 	// "FOREIGN KEY constraint failed" at 019; post-fix it must succeed.
 	stageMigrations(t, tmp)
 	db, err := Open(dbPath)
 	if err != nil {
-		t.Fatalf("store.Open over 019..026 on a POPULATED legacy DB failed (the FK-on rebuild regression): %v", err)
+		t.Fatalf("store.Open over 019..030 on a POPULATED legacy DB failed (the FK-on rebuild regression): %v", err)
 	}
 	defer db.Close()
 
 	if err := db.QueryRow(`SELECT MAX(id) FROM schema_migrations`).Scan(&head); err != nil {
 		t.Fatalf("read migration head after full chain: %v", err)
 	}
-	if !strings.HasPrefix(head, "026") {
-		t.Errorf("migration head = %q, want 026_*", head)
+	if !strings.HasPrefix(head, "030") {
+		t.Errorf("migration head = %q, want 030_*", head)
 	}
 
 	// The seeded device + child row survived the rebuilds.

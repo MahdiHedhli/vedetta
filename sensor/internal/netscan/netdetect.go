@@ -40,31 +40,9 @@ func DetectSubnets() ([]DetectedSubnet, error) {
 			if !ok {
 				continue
 			}
-
-			ip := ipNet.IP
-			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-				continue
+			if subnet, ok := detectedIPv4Subnet(iface.Name, ipNet); ok {
+				subnets = append(subnets, subnet)
 			}
-
-			// IPv4 only for now
-			if ip.To4() == nil {
-				continue
-			}
-
-			// Skip Docker/virtual interfaces
-			if isVirtualNetwork(iface.Name, ip) {
-				continue
-			}
-
-			network := ipNet.IP.Mask(ipNet.Mask)
-			ones, _ := ipNet.Mask.Size()
-			cidr := fmt.Sprintf("%s/%d", network.String(), ones)
-
-			subnets = append(subnets, DetectedSubnet{
-				Interface: iface.Name,
-				IPAddress: ip.String(),
-				CIDR:      cidr,
-			})
 		}
 	}
 
@@ -78,6 +56,32 @@ func DetectSubnets() ([]DetectedSubnet, error) {
 	return subnets, nil
 }
 
+func detectedIPv4Subnet(interfaceName string, ipNet *net.IPNet) (DetectedSubnet, bool) {
+	if ipNet == nil {
+		return DetectedSubnet{}, false
+	}
+	ip := ipNet.IP
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.To4() == nil {
+		return DetectedSubnet{}, false
+	}
+	// Skip interfaces whose identity marks them as container/VM plumbing. Never
+	// infer "virtual" from the address itself: 172.17-31/16 and 192.168.65/24 are
+	// perfectly valid physical LAN ranges too.
+	if isVirtualInterface(interfaceName) {
+		return DetectedSubnet{}, false
+	}
+	network := ipNet.IP.Mask(ipNet.Mask)
+	ones, bits := ipNet.Mask.Size()
+	if ones < 0 || bits != 32 {
+		return DetectedSubnet{}, false
+	}
+	return DetectedSubnet{
+		Interface: interfaceName,
+		IPAddress: ip.String(),
+		CIDR:      fmt.Sprintf("%s/%d", network.String(), ones),
+	}, true
+}
+
 // BestSubnet returns the most likely LAN CIDR, or fallback.
 func BestSubnet(fallback string) string {
 	subnets, err := DetectSubnets()
@@ -87,31 +91,26 @@ func BestSubnet(fallback string) string {
 	return subnets[0].CIDR
 }
 
-func isVirtualNetwork(name string, ip net.IP) bool {
-	// Docker bridge interfaces
-	virtualPrefixes := []string{"docker0", "br-", "veth", "virbr", "vmnet", "vboxnet"}
-	lower := strings.ToLower(name)
+func isVirtualInterface(name string) bool {
+	// Common container, CNI, VPN, WSL, and desktop-hypervisor interface names.
+	// Keep this identity-based: private IP ranges do not reveal whether a link is
+	// physical or virtual. This is necessarily a conservative name classifier;
+	// operators with renamed/custom adapters can pin the intended LAN interface.
+	virtualPrefixes := []string{
+		"docker", "br-", "veth", "virbr", "vmnet", "vboxnet",
+		"cni", "flannel", "cali", "tunl", "vxlan.calico", "weave", "kube-ipvs", "podman",
+		"vethernet", "wsl", "utun", "tun", "tap", "tailscale", "wg", "zt",
+		"awdl", "llw", "gif", "stf",
+	}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "bridge100" { // macOS Internet Sharing / VM bridge
+		return true
+	}
 	for _, prefix := range virtualPrefixes {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}
-
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return false
-	}
-
-	// Docker default bridge 172.17-31.x.x
-	if ip4[0] == 172 && ip4[1] >= 17 && ip4[1] <= 31 {
-		return true
-	}
-
-	// Docker Desktop VM network (macOS/Windows)
-	if ip4[0] == 192 && ip4[1] == 168 && ip4[2] == 65 {
-		return true
-	}
-
 	return false
 }
 

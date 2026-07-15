@@ -11,6 +11,17 @@ import (
 // any platform, even though only the Windows native scanner uses them today.
 const maxSweepHosts = 1024
 
+// validateSourceBoundWindowsTarget is kept untagged so its stricter target
+// grammar is exercised on every CI platform. Unlike Unix Nmap, one Windows
+// generation must resolve to exactly one bare IPv4/CIDR scope.
+func validateSourceBoundWindowsTarget(target string) error {
+	if _, err := parseIPv4Scope(target); err != nil {
+		return fmt.Errorf("numeric range/list scan target %q is unsupported by the source-bound Windows scanner; use one IPv4 address or CIDR", target)
+	}
+	_, err := enumerateHosts(target)
+	return err
+}
+
 // enumerateHosts lists the usable IPv4 host addresses in cidr (excluding network and
 // broadcast). A bare IPv4 address returns itself; IPv6 is rejected explicitly. A subnet with more
 // than maxSweepHosts usable addresses is REJECTED with an error rather than silently
@@ -94,17 +105,80 @@ func incIP(ip net.IP) {
 	}
 }
 
-// isRealNeighbor filters out broadcast and multicast ARP pseudo-entries so they are
-// not reported as discovered devices.
+// ipv4Scope is the exact IPv4 address range an ARP-cache source is allowed to
+// report. ARP is link-local, so accepting cache entries outside this scope would
+// mis-attribute Docker, VPN, or another interface's neighbors to the configured
+// Vedetta segment.
+type ipv4Scope struct {
+	network *net.IPNet
+	single  net.IP
+}
+
+func parseIPv4Scope(target string) (ipv4Scope, error) {
+	if ip := net.ParseIP(strings.TrimSpace(target)); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			return ipv4Scope{single: append(net.IP(nil), v4...)}, nil
+		}
+		return ipv4Scope{}, fmt.Errorf("ARP cache discovery supports IPv4 only: %q", target)
+	}
+	_, ipnet, err := net.ParseCIDR(strings.TrimSpace(target))
+	if err != nil {
+		return ipv4Scope{}, fmt.Errorf("parse ARP discovery CIDR %q: %w", target, err)
+	}
+	if ipnet.IP.To4() == nil {
+		return ipv4Scope{}, fmt.Errorf("ARP cache discovery supports IPv4 only: %q", target)
+	}
+	ipnet.IP = ipnet.IP.Mask(ipnet.Mask).To4()
+	return ipv4Scope{network: ipnet}, nil
+}
+
+// containsHost applies the actual prefix when excluding network/broadcast
+// addresses. The old last-octet-is-255 heuristic incorrectly dropped .255 hosts
+// on wider prefixes and missed broadcasts such as .63 on a /26. /31 and /32 are
+// intentionally allowed per RFC 3021/single-host semantics.
+func (s ipv4Scope) containsHost(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil || ip.To4() == nil {
+		return false
+	}
+	ip = ip.To4()
+	if s.single != nil {
+		return ip.Equal(s.single)
+	}
+	if s.network == nil || !s.network.Contains(ip) {
+		return false
+	}
+	ones, bits := s.network.Mask.Size()
+	if bits != 32 || ones >= 31 {
+		return true
+	}
+	network := s.network.IP.Mask(s.network.Mask).To4()
+	broadcast := append(net.IP(nil), network...)
+	for i := range broadcast {
+		broadcast[i] |= ^s.network.Mask[i]
+	}
+	return !ip.Equal(network) && !ip.Equal(broadcast)
+}
+
+// isRealNeighbor structurally validates an IPv4/unicast-MAC neighbor. Prefix-aware
+// network/broadcast filtering is deliberately handled by ipv4Scope.containsHost.
 func isRealNeighbor(ip, mac string) bool {
-	if mac == "ff:ff:ff:ff:ff:ff" || strings.HasPrefix(mac, "01:00:5e") || strings.HasPrefix(mac, "33:33") {
+	hw, err := net.ParseMAC(strings.TrimSpace(mac))
+	if err != nil || len(hw) != 6 || hw[0]&1 != 0 {
+		return false
+	}
+	allZero := true
+	for _, b := range hw {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
 		return false
 	}
 	p := net.ParseIP(ip)
-	if p == nil || p.IsMulticast() || p.Equal(net.IPv4bcast) {
-		return false
-	}
-	if v4 := p.To4(); v4 != nil && v4[3] == 255 { // directed broadcast
+	if p == nil || p.To4() == nil || p.IsUnspecified() || p.IsLoopback() || p.IsMulticast() || p.Equal(net.IPv4bcast) {
 		return false
 	}
 	return true
