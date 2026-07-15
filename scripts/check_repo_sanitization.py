@@ -3261,7 +3261,7 @@ def oui_table_failures(path: str, contents: str) -> list[str]:
     records, valid_csv = csv_records_with_spans(contents, ",")
     if not valid_csv or not records:
         return [f"{display_path(path)}: OUI table could not be decoded safely"]
-    header = [value.strip().lstrip("﻿").lower() for value, _s, _e in records[0]]
+    header = [value.strip().lstrip("\ufeff").lower() for value, _s, _e in records[0]]
     if header != ["prefix", "vendor"]:
         return [f"{display_path(path)}: OUI table header must be exactly 'prefix,vendor'"]
     for row_number, row in enumerate(records[1:], start=2):
