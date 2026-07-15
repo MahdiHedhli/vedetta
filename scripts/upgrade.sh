@@ -652,7 +652,11 @@ fail() {
   local msg="$*"
   if [ "$FAILED" = "1" ]; then err "nested failure while recovering: $msg"; exit 1; fi
   FAILED=1
-  trap - ERR INT TERM
+  trap - ERR
+  # MASK interrupts (do not restore defaults): a second Ctrl-C or SIGTERM
+  # while the restore is rewriting the volume must not kill the recovery
+  # halfway — that is the one moment the script must be uninterruptible.
+  trap '' INT TERM
   set +e
   err "UPGRADE FAILED: $msg"
   # do_rollback handles every state: stack untouched → restore tree + retag and
@@ -790,12 +794,23 @@ step "Building Core images${NO_CACHE:+ (--no-cache)}…"
 BUILD_STARTED=1
 compose_build_core || fail "docker compose build failed"
 
-# The target's compose file must still define the Core data volume: a ref that
-# renamed/removed the `vedetta-data` key would make `up` create a FRESH empty
-# volume — health and integrity checks would then pass against an empty DB and
-# report success while the real data stayed stranded in ${VOL_DATA}.
-if ! docker compose config --volumes 2>/dev/null | grep -Fxq "vedetta-data"; then
-  fail "the target ref's compose file no longer defines the 'vedetta-data' volume — its backend would start on a different, empty volume while your data stayed in ${VOL_DATA}"
+# The target's RENDERED backend service must still mount the vedetta-data
+# volume at /data — checking only the top-level volume declaration is not
+# enough (a ref can keep the key while remapping backend to another volume).
+# If the strings pair up wrong (e.g. vedetta-data remounted elsewhere), the
+# fail-closed backend cannot find its DB and the normal health-timeout
+# rollback runs; this guard blocks the SILENT case where an empty volume
+# would pass every check while the real data stayed stranded in ${VOL_DATA}.
+backend_mounts_data_volume() {
+  docker compose config 2>/dev/null | awk '
+    /^  [^ ]/ { inb = ($0 ~ /^  backend:$/) }
+    inb && /source: vedetta-data$/ { s = 1 }
+    inb && /target: \/data$/       { t = 1 }
+    END { exit !(s && t) }
+  '
+}
+if ! backend_mounts_data_volume; then
+  fail "the target ref's backend no longer mounts the 'vedetta-data' volume at /data — it would start on a different, empty database while your data stayed in ${VOL_DATA}"
 fi
 
 # ─── 3. Warm snapshot (immediately before the swap) ──────────────────────────
