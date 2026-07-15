@@ -170,7 +170,7 @@ commit_candidate() {
 publish_pr() {
     local merge_tree="${1:-}"
     HEAD_SHA="$(git -C "$CANDIDATE" rev-parse HEAD)"
-    [[ -n "$merge_tree" ]] || merge_tree="$(git -C "$CANDIDATE" rev-parse HEAD^{tree})"
+    [[ -n "$merge_tree" ]] || merge_tree="$(git -C "$CANDIDATE" rev-parse "HEAD^{tree}")"
     MERGE_SHA="$(printf '%s\n' merge | git -C "$CANDIDATE" commit-tree "$merge_tree" -p "$BASE_SHA" -p "$HEAD_SHA")"
     git -C "$CANDIDATE" push -q --force origin \
         "$HEAD_SHA:refs/pull/$PR_NUMBER/head" \
@@ -352,7 +352,7 @@ new_candidate wrong-merge-parents
 printf '%s\n' '{"ip":"198.51.100.11"}' >"$CANDIDATE/corpus/head.json"
 commit_candidate safe-head
 HEAD_SHA="$(git -C "$CANDIDATE" rev-parse HEAD)"
-TREE="$(git -C "$CANDIDATE" rev-parse HEAD^{tree})"
+TREE="$(git -C "$CANDIDATE" rev-parse "HEAD^{tree}")"
 MERGE_SHA="$(printf '%s\n' merge | git -C "$CANDIDATE" commit-tree "$TREE" -p "$HEAD_SHA" -p "$BASE_SHA")"
 git -C "$CANDIDATE" push -q --force origin \
     "$HEAD_SHA:refs/pull/$PR_NUMBER/head" \
@@ -360,6 +360,24 @@ git -C "$CANDIDATE" push -q --force origin \
 run_scan
 ok test "$SCAN_RC" -ne 0 "merge commit with reversed or unexpected parents fails closed"
 ok grep -Fq 'exact event base and head parents' "$OUTPUT" "merge-parent mismatch is explicit"
+
+# GitHub regenerates refs/pull/N/merge (new commit timestamp -> new SHA) between the event
+# and the scan even when nothing changed; the live ref then differs from the event's
+# merge_commit_sha but keeps identical [base, head] parents and tree. That must still pass.
+new_candidate regenerated-merge-ref
+printf '%s\n' '{"ip":"198.51.100.14"}' >"$CANDIDATE/corpus/head.json"
+commit_candidate safe-head
+HEAD_SHA="$(git -C "$CANDIDATE" rev-parse HEAD)"
+TREE="$(git -C "$CANDIDATE" rev-parse "HEAD^{tree}")"
+EVENT_MERGE="$(printf '%s\n' merge | git -C "$CANDIDATE" commit-tree "$TREE" -p "$BASE_SHA" -p "$HEAD_SHA")"
+REGENERATED_MERGE="$(printf '%s\n' 'merge regenerated' | git -C "$CANDIDATE" commit-tree "$TREE" -p "$BASE_SHA" -p "$HEAD_SHA")"
+ok test "$EVENT_MERGE" != "$REGENERATED_MERGE" "regenerated merge fixture differs from the event merge"
+git -C "$CANDIDATE" push -q --force origin \
+    "$HEAD_SHA:refs/pull/$PR_NUMBER/head" \
+    "$REGENERATED_MERGE:refs/pull/$PR_NUMBER/merge"
+run_scan "$HEAD_SHA" "$EVENT_MERGE"
+ok test "$SCAN_RC" -eq 0 "a regenerated merge ref with identical base/head parents still passes"
+ok grep -Fq "merge=$REGENERATED_MERGE" "$OUTPUT" "the live regenerated merge ref is the one inspected"
 
 new_candidate missing-merge-ref
 printf '%s\n' '{"ip":"198.51.100.12"}' >"$CANDIDATE/corpus/head.json"
