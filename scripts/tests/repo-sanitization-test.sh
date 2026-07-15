@@ -1622,4 +1622,40 @@ git -C "$repo" commit -q -m 'remove transient fixture'
 assert_failure add-delete-history "$history_path" "$repo" --history-range "$clean_commit..HEAD"
 assert_failure recreated-default-history "$history_path" "$repo" --history-range HEAD
 
+# Like expect_failure, but also assert the specific diagnostic so the intended checker
+# (not some unrelated rejection) is what fired. assert_failure, invoked by expect_failure,
+# leaves the checker output in the global $failure_output.
+expect_failure_message() {
+  name="$1"
+  path="$2"
+  contents="$3"
+  needle="$4"
+  expect_failure "$name" "$path" "$contents"
+  if ! printf '%s' "$failure_output" | grep -Fq -- "$needle"; then
+    printf 'FAIL: %s did not surface the expected diagnostic: %s\n%s\n' \
+      "$name" "$needle" "$failure_output" >&2
+    exit 1
+  fi
+}
+
+# The embedded IEEE OUI table is public reference data exempted from the identity scans:
+# real vendor names such as "MFG.CORP." look like hostnames but must be accepted, while
+# the table's structural contract (a prefix,vendor header + 6-hex prefixes) is enforced.
+# The failure cases assert the dedicated oui_table_failures() diagnostics so an unrelated
+# rejection can't make them pass spuriously.
+oui_table_path='backend/internal/fingerprint/data/oui.csv'
+expect_success oui-table-public-vendors "$oui_table_path" \
+  'prefix,vendor
+000000,XEROX CORPORATION
+00abcd,"CHUNG-HSIN ELECTRIC & MACHINERY MFG.CORP."
+acbc32,"Apple, Inc."'
+expect_failure_message oui-table-nonhex-prefix "$oui_table_path" \
+  'prefix,vendor
+nothex,Bogus Vendor' \
+  'OUI prefix must be 6 lowercase hex digits'
+expect_failure_message oui-table-wrong-header "$oui_table_path" \
+  'mac,vendor
+acbc32,Apple' \
+  "OUI table header must be exactly 'prefix,vendor'"
+
 printf 'repo sanitation tests passed\n'

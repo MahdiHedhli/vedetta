@@ -236,6 +236,11 @@ RISK_SOURCE_SUFFIXES = {
 ALLOWED_LOG_PREFIXES = ("specs/001-unifi-log-ingestion/corpus/inputs/",)
 JSON_LINES_PREFIXES = ("specs/001-unifi-log-ingestion/corpus/expected/",)
 PUBLIC_DOMAIN_LIST_PATH = "threat-network/internal/store/data/allowlist.txt"
+# The embedded IEEE OUI table is public reference data (24-bit vendor prefixes + vendor
+# names), not homelab inventory. Many IEEE vendor names legitimately contain ".com",
+# ".corp", "&", etc., which would trip the identity scans, so it gets a dedicated
+# structural validator instead — see oui_table_failures / inspect_data.
+OUI_TABLE_PATH = "backend/internal/fingerprint/data/oui.csv"
 ALLOWED_SQL_PREFIXES = ("siem/migrations/", "threat-network/internal/store/migrations/")
 ALLOWED_SQL_FILES = {"scripts/db-health.sql", "scripts/seed-snr-validation.sql"}
 LEGACY_SQL_SHA256 = {
@@ -3240,6 +3245,42 @@ def inventory_format_failures(path: str, contents: str) -> list[str]:
     return []
 
 
+OUI_PREFIX_RE = re.compile(r"^[0-9a-f]{6}$")
+
+
+def oui_table_failures(path: str, contents: str) -> list[str]:
+    """Validate the embedded IEEE OUI table's safe shape.
+
+    This is public IEEE reference data, so it is exempt from the identity scans (its
+    vendor names legitimately look like hostnames). In their place we enforce the
+    structural contract that keeps it safe: a fixed ``prefix,vendor`` header, exactly two
+    columns per row, and a 6-hex-digit prefix in column one. That guarantees the
+    identity-bearing column cannot carry an IP/MAC/hostname while accepting arbitrary
+    public vendor text in column two.
+    """
+    records, valid_csv = csv_records_with_spans(contents, ",")
+    if not valid_csv or not records:
+        return [f"{display_path(path)}: OUI table could not be decoded safely"]
+    # Compare the header literally \u2014 the generator emits exactly "prefix,vendor", so a
+    # case- or whitespace-variant header is drift worth catching. Tolerate only a leading
+    # UTF-8 BOM on the first cell.
+    header = [value for value, _s, _e in records[0]]
+    if header:
+        header[0] = header[0].lstrip("\ufeff")
+    if header != ["prefix", "vendor"]:
+        return [f"{display_path(path)}: OUI table header must be exactly 'prefix,vendor'"]
+    for row_number, row in enumerate(records[1:], start=2):
+        if len(row) != 2:
+            return [f"{display_path(path)}:{row_number}: OUI row must have exactly two columns"]
+        prefix = row[0][0].strip()
+        vendor = row[1][0].strip()
+        if not OUI_PREFIX_RE.match(prefix):
+            return [f"{display_path(path)}:{row_number}: OUI prefix must be 6 lowercase hex digits"]
+        if not vendor:
+            return [f"{display_path(path)}:{row_number}: OUI row has an empty vendor"]
+    return []
+
+
 def public_domain_list_failures(path: str, contents: str) -> list[str]:
     """Validate the one embedded newline-delimited public-domain allowlist."""
     if path != PUBLIC_DOMAIN_LIST_PATH:
@@ -4687,6 +4728,11 @@ def inspect_data(path: str, contents: str) -> list[str]:
     }.get(suffix)
     if size_limit is not None and len(contents.encode("utf-8")) > size_limit:
         return [f"{display_path(path)}: structured data exceeds its safe parser limit"]
+
+    if path == OUI_TABLE_PATH:
+        # Public IEEE reference data: validate its structural shape instead of running the
+        # identity scans, which false-positive on real vendor names. See OUI_TABLE_PATH.
+        return oui_table_failures(path, contents)
 
     sql_analysis: tuple[list[tuple[str, str, int, int]], list[tuple[int, str]]] | None = None
     xml_analysis: tuple[
