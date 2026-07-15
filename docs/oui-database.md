@@ -43,7 +43,7 @@ binary — no network call at runtime, no third-party fingerprint service.
 
 The file is the registry normalized to a compact two-column shape:
 
-```
+```csv
 prefix,vendor
 000000,XEROX CORPORATION
 acbc32,"Apple, Inc."

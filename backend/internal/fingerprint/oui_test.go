@@ -53,6 +53,30 @@ func TestLookup_IEEEFallback(t *testing.T) {
 	}
 }
 
+func TestExtractOUI(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"ac:bc:32", "acbc32", true},
+		{"AC-BC-32", "acbc32", true},          // uppercase + dashes
+		{"ac bc 32", "acbc32", true},          // spaces
+		{"acbc32", "acbc32", true},            // no separators
+		{"ac:bc:32:de:ad:be", "acbc32", true}, // full MAC — stops after 6
+		{"AcBc32dead", "acbc32", true},        // mixed case, early stop
+		{"ab:cd", "", false},                  // fewer than 6 hex
+		{"", "", false},                       // empty
+		{":::::", "", false},                  // only separators
+	}
+	for _, c := range cases {
+		got, ok := extractOUI(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("extractOUI(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 func TestLookup_Rejects(t *testing.T) {
 	e := NewEngine()
 	for _, in := range []string{"", "ab:cd", "zz:zz:zz"} {

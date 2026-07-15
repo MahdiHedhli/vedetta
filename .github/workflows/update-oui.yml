@@ -26,6 +26,10 @@ jobs:
       pull-requests: write # open/refresh the update PR
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Don't leave the workflow token in .git/config for the whole job; the push
+          # step authenticates explicitly with GH_TOKEN right before it pushes.
+          persist-credentials: false
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
@@ -64,6 +68,10 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Authenticate the push explicitly (checkout used persist-credentials: false), so
+          # the token is introduced only here at the end of the job, not left in .git/config
+          # for earlier/added steps to read.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}"
           git checkout -b "$BRANCH"
           git add "$FILE"
           git commit -m "chore(fingerprint): refresh IEEE OUI table (${ROWS} entries)"

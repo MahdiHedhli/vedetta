@@ -1,9 +1,6 @@
 package fingerprint
 
-import (
-	"strings"
-	"sync"
-)
+import "sync"
 
 // OUIResult contains vendor and device type information from a MAC prefix lookup.
 type OUIResult struct {
@@ -504,14 +501,27 @@ var ouiDatabase = map[string]OUIResult{
 	// "f4:54:6b": {Vendor: "Element", DeviceType: "smart_speaker"},  // REMOVED: duplicate key
 }
 
-// normalizeOUIKey lowercases a MAC/prefix and strips the usual separators so keys
-// compare regardless of ":" / "-" / " " formatting.
-func normalizeOUIKey(mac string) string {
-	mac = strings.ToLower(mac)
-	mac = strings.ReplaceAll(mac, ":", "")
-	mac = strings.ReplaceAll(mac, "-", "")
-	mac = strings.ReplaceAll(mac, " ", "")
-	return mac
+// extractOUI returns the first 6 hex characters of a MAC/prefix, lowercased, skipping
+// separators (":", "-", " ") and stopping as soon as 6 are collected. It avoids the
+// intermediate allocations of a full lowercase-and-strip on this hot lookup path.
+func extractOUI(mac string) (string, bool) {
+	var buf [6]byte
+	idx := 0
+	for i := 0; i < len(mac); i++ {
+		c := mac[i]
+		if c == ':' || c == '-' || c == ' ' {
+			continue
+		}
+		if c >= 'A' && c <= 'Z' {
+			c = c - 'A' + 'a'
+		}
+		buf[idx] = c
+		idx++
+		if idx == 6 {
+			return string(buf[:]), true
+		}
+	}
+	return "", false
 }
 
 var (
@@ -529,11 +539,9 @@ func curatedIndex() map[string]OUIResult {
 	curatedOUIOnce.Do(func() {
 		idx := make(map[string]OUIResult, len(ouiDatabase))
 		for k, v := range ouiDatabase {
-			key := normalizeOUIKey(k)
-			if len(key) < 6 {
-				continue
+			if key, ok := extractOUI(k); ok {
+				idx[key] = v
 			}
-			idx[key[:6]] = v
 		}
 		curatedOUI = idx
 	})
@@ -558,12 +566,11 @@ func (e *Engine) Lookup(mac string) *OUIResult {
 		return nil
 	}
 
-	// Normalize: extract first 6 hex characters (first 3 octets)
-	norm := normalizeOUIKey(mac)
-	if len(norm) < 6 {
+	// Extract the OUI (first 3 octets) without allocating on this hot path.
+	oui, ok := extractOUI(mac)
+	if !ok {
 		return nil
 	}
-	oui := norm[:6]
 
 	// Curated overlay first — cleaner vendor names + device-type hints.
 	if result, ok := curatedIndex()[oui]; ok {
