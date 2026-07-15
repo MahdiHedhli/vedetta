@@ -1622,4 +1622,20 @@ git -C "$repo" commit -q -m 'remove transient fixture'
 assert_failure add-delete-history "$history_path" "$repo" --history-range "$clean_commit..HEAD"
 assert_failure recreated-default-history "$history_path" "$repo" --history-range HEAD
 
+# The embedded IEEE OUI table is public reference data exempted from the identity scans:
+# real vendor names such as "MFG.CORP." look like hostnames but must be accepted, while
+# the table's structural contract (a prefix,vendor header + 6-hex prefixes) is enforced.
+oui_table_path='backend/internal/fingerprint/data/oui.csv'
+expect_success oui-table-public-vendors "$oui_table_path" \
+  'prefix,vendor
+000000,XEROX CORPORATION
+00abcd,"CHUNG-HSIN ELECTRIC & MACHINERY MFG.CORP."
+acbc32,"Apple, Inc."'
+expect_failure oui-table-nonhex-prefix "$oui_table_path" \
+  'prefix,vendor
+nothex,Bogus Vendor'
+expect_failure oui-table-wrong-header "$oui_table_path" \
+  'mac,vendor
+acbc32,Apple'
+
 printf 'repo sanitation tests passed\n'
