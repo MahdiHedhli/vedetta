@@ -652,7 +652,7 @@ fail() {
   local msg="$*"
   if [ "$FAILED" = "1" ]; then err "nested failure while recovering: $msg"; exit 1; fi
   FAILED=1
-  trap - ERR
+  trap - ERR INT TERM
   set +e
   err "UPGRADE FAILED: $msg"
   # do_rollback handles every state: stack untouched → restore tree + retag and
@@ -790,6 +790,14 @@ step "Building Core images${NO_CACHE:+ (--no-cache)}…"
 BUILD_STARTED=1
 compose_build_core || fail "docker compose build failed"
 
+# The target's compose file must still define the Core data volume: a ref that
+# renamed/removed the `vedetta-data` key would make `up` create a FRESH empty
+# volume — health and integrity checks would then pass against an empty DB and
+# report success while the real data stayed stranded in ${VOL_DATA}.
+if ! docker compose config --volumes 2>/dev/null | grep -Fxq "vedetta-data"; then
+  fail "the target ref's compose file no longer defines the 'vedetta-data' volume — its backend would start on a different, empty volume while your data stayed in ${VOL_DATA}"
+fi
+
 # ─── 3. Warm snapshot (immediately before the swap) ──────────────────────────
 if [ "$WARM" = "1" ]; then
   step "Snapshotting (online, no downtime) before the swap…"
@@ -868,7 +876,10 @@ fi
 ok "integrity_check: ok."
 
 # ─── Success ──────────────────────────────────────────────────────────────────
-trap - ERR
+# Clear ALL rollback triggers: a Ctrl-C/SIGTERM during pruning or reporting
+# must not stop the already-verified stack or roll back from a snapshot that
+# may be mid-deletion.
+trap - ERR INT TERM
 cat <<EOF
 
 ═══════════════════════════════════════════════════════════
