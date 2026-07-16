@@ -123,6 +123,27 @@ func TestRefresh_DeviceDBDoesNotAdvertiseDowngradeOrInvalidTag(t *testing.T) {
 	}
 }
 
+func TestRefresh_DeviceDBChoosesHighestTagNotLatestPublication(t *testing.T) {
+	releases := []ghRelease{
+		{ID: 2, TagName: "db-2026.07", PublishedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)},
+		{ID: 1, TagName: "db-2026.08", PublishedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	srv := serveReleases(t, "o/r", releases)
+	c, err := New(Config{
+		Enabled: true, Repo: "o/r", APIBaseURL: srv.URL, CurrentVersion: "dev",
+		InstalledDBTag: func() string { return "db-2026.07" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Status().DeviceDB; got.Latest != "db-2026.08" || !got.UpdateAvailable {
+		t.Fatalf("device DB = %+v, want highest tag db-2026.08 despite older publication", got)
+	}
+}
+
 func TestRefresh_BetaBuildSeesNewerPrerelease(t *testing.T) {
 	releases := []ghRelease{
 		{ID: 4, TagName: "v0.1.0-beta.4", Prerelease: true, PublishedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)},

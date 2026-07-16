@@ -221,7 +221,7 @@ func (c *Checker) Refresh(ctx context.Context) error {
 	if c.cfg.InstalledDBTag != nil {
 		installedDB = strings.TrimSpace(c.cfg.InstalledDBTag())
 	}
-	if rel := firstMatch(releases, deviceDBTagPrefix, isDeviceDBTag); rel != nil {
+	if rel := latestDeviceDBMatch(releases); rel != nil {
 		updateAvailable := installedDB == ""
 		if installedDB != "" {
 			comparison, ok := dbupdate.CompareReleaseTags(rel.TagName, installedDB)
@@ -241,11 +241,6 @@ func (c *Checker) Refresh(ctx context.Context) error {
 	c.status = status
 	c.mu.Unlock()
 	return nil
-}
-
-func isDeviceDBTag(tag string) bool {
-	_, ok := dbupdate.CompareReleaseTags(tag, tag)
-	return ok
 }
 
 // listReleases fetches a bounded set of published releases. The GitHub API does not
@@ -297,21 +292,28 @@ func (c *Checker) listReleases(ctx context.Context) ([]ghRelease, error) {
 	return releases, nil
 }
 
-// firstMatch returns the first published (non-draft, non-prerelease) release whose tag has
-// the given prefix and, optionally, satisfies extra. Refresh sorts releases newest-first
-// before calling it.
-func firstMatch(releases []ghRelease, prefix string, extra func(string) bool) *ghRelease {
+// latestDeviceDBMatch returns the highest valid, published calendar-versioned DB release.
+// Publication order is deliberately irrelevant: republishing an older bundle must not
+// hide a newer signed database or advertise a downgrade.
+func latestDeviceDBMatch(releases []ghRelease) *ghRelease {
+	var best *ghRelease
 	for i := range releases {
 		r := &releases[i]
-		if r.Draft || r.Prerelease || !strings.HasPrefix(r.TagName, prefix) {
+		if r.Draft || r.Prerelease || !strings.HasPrefix(r.TagName, deviceDBTagPrefix) {
 			continue
 		}
-		if extra != nil && !extra(r.TagName) {
+		if _, valid := dbupdate.CompareReleaseTags(r.TagName, r.TagName); !valid {
 			continue
 		}
-		return r
+		if best == nil {
+			best = r
+			continue
+		}
+		if comparison, valid := dbupdate.CompareReleaseTags(r.TagName, best.TagName); valid && comparison > 0 {
+			best = r
+		}
 	}
-	return nil
+	return best
 }
 
 // latestSoftwareMatch returns the highest semantic software version visible to the
