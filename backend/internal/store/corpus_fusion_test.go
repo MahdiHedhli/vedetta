@@ -133,6 +133,62 @@ func TestCorpusFusionDoesNotBorrowFutureEvidenceForDelayedReport(t *testing.T) {
 	}
 }
 
+func TestCorpusFusionDoesNotBackdateFutureProtocolProvenance(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	at := time.Now().UTC()
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.54", DiscoverySource: "nmap_active", Status: "up",
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.54").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	observations := []struct {
+		time       time.Time
+		source     string
+		confidence float64
+	}{
+		{time: at, source: "legacy_import", confidence: 0.4},
+		{time: at.Add(time.Hour), source: "passive_mdns", confidence: 0.9},
+	}
+	for _, observation := range observations {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
+			DeviceIdentityEvidenceInput{
+				Type: "mdns_service", Value: "_future._tcp", DisplayValue: "_future._tcp",
+				Source: observation.source, Confidence: observation.confidence,
+			}, observation.time, false)
+		if err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.MDNSServices) != 0 {
+		t.Fatalf("future passive-mDNS provenance was backdated: %+v", obs.MDNSServices)
+	}
+}
+
 func TestCorpusDerivedSignalsCapsConfidenceAtVariantConfidence(t *testing.T) {
 	dir := t.TempDir()
 	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","model":"Player","device_type":"media_player"},"variants":[{"variant_id":"v","confidence_bp":4200,"shape":{"schema_version":1,"ssdp_server_tokens":["example/player"]}}]}]}`

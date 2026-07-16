@@ -146,9 +146,16 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 		  AND EXISTS (SELECT 1 FROM device_identity_evidence_validity v
 		    WHERE v.evidence_id = device_identity_evidence.evidence_id
 		      AND v.valid_from <= ? AND ? <= v.valid_until)
-		  AND ((evidence_type = 'mdns_service' AND source = 'passive_mdns')
-		    OR (evidence_type = 'ssdp_device_type' AND source = 'passive_ssdp'))`,
-		deviceID, observedAt, cutoff, observedAt, observedAt, observedAt, observedAt)
+		  AND ((evidence_type = 'mdns_service' AND EXISTS
+		    (SELECT 1 FROM device_identity_evidence_strength s
+		      WHERE s.evidence_id = device_identity_evidence.evidence_id
+		        AND s.source = 'passive_mdns' AND s.observed_at <= ?))
+		    OR (evidence_type = 'ssdp_device_type' AND EXISTS
+		    (SELECT 1 FROM device_identity_evidence_strength s
+		      WHERE s.evidence_id = device_identity_evidence.evidence_id
+		        AND s.source = 'passive_ssdp' AND s.observed_at <= ?)))`,
+		deviceID, observedAt, cutoff, observedAt, observedAt, observedAt, observedAt,
+		observedAt, observedAt)
 	if err != nil {
 		return obs, fmt.Errorf("read retained typed signals: %w", err)
 	}

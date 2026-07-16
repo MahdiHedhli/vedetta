@@ -226,15 +226,17 @@ func recordIdentityEvidenceStrengthTx(tx *sql.Tx, evidenceID, source string, con
 	source = strings.TrimSpace(source)
 
 	var priorConfidence sql.NullFloat64
-	var priorConfirmed int
+	var priorConfirmed, priorSource int
 	if err := tx.QueryRow(`SELECT MAX(confidence),
-		COALESCE(MAX(CASE WHEN operator_confirmed THEN 1 ELSE 0 END), 0)
+		COALESCE(MAX(CASE WHEN operator_confirmed THEN 1 ELSE 0 END), 0),
+		COALESCE(MAX(CASE WHEN source = ? THEN 1 ELSE 0 END), 0)
 		FROM device_identity_evidence_strength
-		WHERE evidence_id = ? AND observed_at <= ?`, evidenceID, observedAt).
-		Scan(&priorConfidence, &priorConfirmed); err != nil {
+		WHERE evidence_id = ? AND observed_at <= ?`, source, evidenceID, observedAt).
+		Scan(&priorConfidence, &priorConfirmed, &priorSource); err != nil {
 		return fmt.Errorf("read identity evidence strength history: %w", err)
 	}
-	if priorConfidence.Valid && confidence <= priorConfidence.Float64 && (!operatorConfirmed || priorConfirmed != 0) {
+	if priorConfidence.Valid && confidence <= priorConfidence.Float64 &&
+		(!operatorConfirmed || priorConfirmed != 0) && priorSource != 0 {
 		return nil
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO device_identity_evidence_strength
