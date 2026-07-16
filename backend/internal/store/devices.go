@@ -728,6 +728,28 @@ func (db *DB) IssueARPCacheDeliveryEpoch(sensorID string) (string, error) {
 	return epoch, nil
 }
 
+// HasARPCacheDeliveryEpoch reports whether epoch was issued by Core for this authenticated
+// sensor. The API uses this read-only classification before collapsing duplicate cache
+// rows; unknown caller-supplied strings must fall back to legacy observation-time grouping
+// rather than creating attacker-chosen generation keys.
+func (db *DB) HasARPCacheDeliveryEpoch(sensorID, epoch string) (bool, error) {
+	sensorID = strings.TrimSpace(sensorID)
+	epoch, _ = normalizeCacheDelivery(epoch, 1)
+	if sensorID == "" || epoch == "" {
+		return false, nil
+	}
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM arp_cache_delivery_epochs
+		WHERE sensor_id=? AND delivery_epoch=?`, sensorID, epoch).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check ARP cache delivery epoch: %w", err)
+	}
+	return true, nil
+}
+
 func (db *DB) cacheDeliveryEpochOrderTx(tx *sql.Tx, sensorID, epoch string) (int64, error) {
 	if sensorID == "" || epoch == "" {
 		return 0, nil

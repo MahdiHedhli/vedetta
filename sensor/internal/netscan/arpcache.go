@@ -43,7 +43,7 @@ const linuxARPPermanentFlag = 0x4
 // testable on any OS.
 //
 // Columns: IP address | HW type | Flags | HW address | Mask | Device
-func parseProcNetARP(r io.Reader) []neighbor {
+func parseProcNetARP(r io.Reader) ([]neighbor, error) {
 	var out []neighbor
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
@@ -69,5 +69,5 @@ func parseProcNetARP(r io.Reader) []neighbor {
 		}
 		out = append(out, neighbor{ip: f[0], mac: mac, iface: f[5], state: state})
 	}
-	return out
+	return out, sc.Err()
 }

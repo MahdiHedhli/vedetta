@@ -297,7 +297,10 @@ func pingICMPBound(sourceIP, destinationIP string) bool {
 	defer procIcmpCloseHandle.Call(uintptr(handle))
 
 	var requestData [32]byte
-	replySize := uint32(unsafe.Sizeof(icmpEchoReply{})) + uint32(len(requestData)) + 8
+	// Microsoft requires room for the reply header, echoed request, eight ICMP error
+	// bytes, and an IO_STATUS_BLOCK even though this call uses synchronous completion.
+	replySize := int(unsafe.Sizeof(icmpEchoReply{})) + len(requestData) + 8 +
+		int(unsafe.Sizeof(windows.IO_STATUS_BLOCK{}))
 	reply := make([]byte, replySize)
 	ret, _, _ := procIcmpSendEcho2Ex.Call(
 		uintptr(handle),

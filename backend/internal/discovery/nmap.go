@@ -153,7 +153,8 @@ func parseNmapXML(data []byte, scanTime time.Time, duration time.Duration) (*Nma
 		}
 
 		host := DiscoveredHost{
-			Status: h.Status.State,
+			Status:     h.Status.State,
+			ObservedAt: scanTime.UTC(),
 		}
 
 		for _, addr := range h.Addresses {

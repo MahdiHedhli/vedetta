@@ -376,12 +376,15 @@ func TestHandleSensorDevicesExtremeFutureSkewPartialReplayPreservesCacheOrder(t 
 
 func TestHandleSensorDevicesPrecollapsesSameGenerationCacheConflict(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		macs []string
+		name   string
+		macs   []string
+		epochs []string
 	}{
 		{name: "different macs", macs: []string{"00:00:5E:00:53:74", "00:00:5E:00:53:75"}},
 		{name: "unique then blank", macs: []string{"00:00:5E:00:53:74", ""}},
 		{name: "blank then unique", macs: []string{"", "00:00:5E:00:53:74"}},
+		{name: "different unissued epochs", macs: []string{"00:00:5E:00:53:74", "00:00:5E:00:53:75"},
+			epochs: []string{"attacker-generation-a", "attacker-generation-b"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, db := setupTestServer(t)
@@ -396,6 +399,10 @@ func TestHandleSensorDevicesPrecollapsesSameGenerationCacheConflict(t *testing.T
 				WHERE sensor_id=? ORDER BY epoch_order DESC LIMIT 1`, sensorID).Scan(&epoch); err != nil {
 				t.Fatal(err)
 			}
+			epochs := []string{epoch, epoch}
+			if tc.epochs != nil {
+				epochs = tc.epochs
+			}
 			body := map[string]any{
 				"sensor_id": sensorID,
 				"segment":   "lan",
@@ -408,12 +415,12 @@ func TestHandleSensorDevicesPrecollapsesSameGenerationCacheConflict(t *testing.T
 					{
 						"ip_address": ip, "mac_address": tc.macs[0], "status": "observed",
 						"discovery_source": "arp_cache", "observed_at": generation,
-						"delivery_epoch": epoch, "delivery_sequence": 1,
+						"delivery_epoch": epochs[0], "delivery_sequence": 1,
 					},
 					{
 						"ip_address": ip, "mac_address": tc.macs[1], "status": "observed",
 						"discovery_source": "arp_cache", "observed_at": generation,
-						"delivery_epoch": epoch, "delivery_sequence": 1,
+						"delivery_epoch": epochs[1], "delivery_sequence": 1,
 					},
 				},
 			}

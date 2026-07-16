@@ -1669,10 +1669,36 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		return strings.ToUpper(mac.String())
 	}
+	// Delivery epochs are untrusted request fields until they are tied to this sensor in
+	// Core's issuance ledger. Classify every candidate before the first device write so
+	// arbitrary strings cannot split one equal-time conflict into attacker-chosen keys.
+	issuedEpochs := make(map[string]bool)
+	checkedEpochs := make(map[string]struct{})
+	for _, host := range body.Hosts {
+		source := strings.ToLower(strings.TrimSpace(host.DiscoverySource))
+		if source != "arp_cache" && source != "arp" {
+			continue
+		}
+		epoch := strings.TrimSpace(host.DeliveryEpoch)
+		if epoch == "" || len(epoch) > 64 || host.DeliverySequence == 0 || host.DeliverySequence > uint64(1<<63-1) {
+			continue
+		}
+		if _, checked := checkedEpochs[epoch]; checked {
+			continue
+		}
+		checkedEpochs[epoch] = struct{}{}
+		issued, err := s.DB.HasARPCacheDeliveryEpoch(body.SensorID, epoch)
+		if err != nil {
+			log.Printf("Failed to classify ARP delivery epoch from sensor %s: %v", body.SensorID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to classify sensor delivery epoch"})
+			return
+		}
+		issuedEpochs[epoch] = issued
+	}
 	cacheKey := func(index int, ipAddress, deliveryEpoch string, deliverySequence uint64) cacheGenerationKey {
 		key := cacheGenerationKey{ip: normalizeIP(ipAddress), observedAt: hostObservedTimes[index]}
 		epoch := strings.TrimSpace(deliveryEpoch)
-		if epoch != "" && len(epoch) <= 64 && deliverySequence > 0 && deliverySequence <= uint64(1<<63-1) {
+		if issuedEpochs[epoch] && deliverySequence > 0 && deliverySequence <= uint64(1<<63-1) {
 			key.observedAt = time.Time{}
 			key.epoch = epoch
 			key.sequence = deliverySequence

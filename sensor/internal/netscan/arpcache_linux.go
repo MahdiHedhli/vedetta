@@ -14,5 +14,5 @@ func readNeighbors() ([]neighbor, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return parseProcNetARP(f), nil
+	return parseProcNetARP(f)
 }

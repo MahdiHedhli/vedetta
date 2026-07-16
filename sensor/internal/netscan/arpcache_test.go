@@ -1,6 +1,8 @@
 package netscan
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -21,7 +23,10 @@ func TestParseProcNetARP(t *testing.T) {
 short garbage line
 192.0.2.14       0x1         0x6         aa:bb:cc:dd:ee:04     *        wlan0
 `
-	got := parseProcNetARP(strings.NewReader(table))
+	got, err := parseProcNetARP(strings.NewReader(table))
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := map[string]neighbor{
 		"192.0.2.10":  {ip: "192.0.2.10", mac: "aa:bb:cc:dd:ee:01", iface: "eth0", state: neighborStateDynamic},
 		"192.0.2.11":  {ip: "192.0.2.11", mac: "aa:bb:cc:dd:ee:02", iface: "eth0", state: neighborStateDynamic}, // uppercase normalized
@@ -44,11 +49,35 @@ short garbage line
 }
 
 func TestParseProcNetARP_EmptyAndHeaderOnly(t *testing.T) {
-	if got := parseProcNetARP(strings.NewReader("")); len(got) != 0 {
+	if got, err := parseProcNetARP(strings.NewReader("")); err != nil || len(got) != 0 {
 		t.Errorf("empty input: got %+v, want none", got)
 	}
 	const headerOnly = "IP address       HW type     Flags       HW address            Mask     Device\n"
-	if got := parseProcNetARP(strings.NewReader(headerOnly)); len(got) != 0 {
+	if got, err := parseProcNetARP(strings.NewReader(headerOnly)); err != nil || len(got) != 0 {
 		t.Errorf("header-only: got %+v, want none", got)
+	}
+}
+
+type failingARPReader struct {
+	data []byte
+	done bool
+}
+
+func (r *failingARPReader) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(p, r.data), nil
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+func TestParseProcNetARP_ReturnsScannerErrorWithPartialRows(t *testing.T) {
+	reader := &failingARPReader{data: []byte("192.0.2.10 0x1 0x2 aa:bb:cc:dd:ee:01 * eth0\n")}
+	got, err := parseProcNetARP(reader)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("scanner error = %v, want io.ErrUnexpectedEOF", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("partial rows = %+v, want one parsed row for diagnostic parity", got)
 	}
 }
