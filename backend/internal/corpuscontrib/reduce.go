@@ -1,17 +1,16 @@
-// Package corpuscontrib is the local, opt-in device-fingerprint contribution path (spec 008
-// Phase 5 / #52). This piece implements only the LOCAL SHADOW MODE (#57 staged-delivery step
-// 1): it reduces a device's observed signals to the anonymized CanonicalShapeV1 that WOULD be
-// contributed, keeps it entirely local, and is off by default. NOTHING is transmitted here.
+// Package corpuscontrib defines a local-only, default-off shadow candidate for a future
+// privacy-preserving device-fingerprint contribution path (spec 008 / #52). Nothing in this
+// package stores or transmits a candidate.
 //
-// A contribution must never be linkable to a specific install, user/device ID, or IP (#52).
-// The reduction enforces that structurally: the output is only the domain-free class shape —
-// a 24-bit OUI prefix (not a full MAC), mDNS/SSDP service *types* and product/vendor tokens,
-// the DHCP option-55 sequence and vendor class, and the port shape. Hostnames are excluded on
-// purpose: a concrete hostname can carry PII and templatizing it needs its own analysis
-// before it could ever be contributed.
+// Stage 1 is intentionally narrower than the curated public corpus. It keeps only bounded
+// numeric shapes and a globally administered 24-bit OUI. Raw hostnames, mDNS/SSDP strings,
+// DHCP vendor classes, models, and vendors are device-controlled and therefore excluded:
+// local syntax checks cannot prove that those strings contain product data rather than a
+// person, room, serial, address, or other identifying value.
 package corpuscontrib
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,87 +19,53 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 )
 
-// Reduce projects a device observation into the anonymized CanonicalShapeV1 candidate that
-// local shadow mode records (and that a future, privacy-reviewed transport could contribute).
-func Reduce(host discovery.DiscoveredHost) corpusmatch.CanonicalShapeV1 {
+// Reduce projects an observation into the stage-1 structural allowlist and validates the
+// result before returning it. Conflicting DHCP option-55 observations are rejected instead
+// of selecting one by input order.
+func Reduce(host discovery.DiscoveredHost) (corpusmatch.CanonicalShapeV1, error) {
 	shape := corpusmatch.CanonicalShapeV1{SchemaVersion: 1}
 	if oui := normOUI(host.MACAddress); oui != "" {
 		shape.OUIPrefixes = []string{oui}
 	}
 
-	mdnsServices := append([]string(nil), host.Services...)
-	var mdnsModels, mdnsVendors, ssdpTypes, dhcpVC []string
-	if host.Model != "" {
-		mdnsModels = append(mdnsModels, host.Model)
-	}
 	for _, ev := range host.IdentityEvidence {
-		switch ev.Type {
-		case "mdns_service":
-			mdnsServices = append(mdnsServices, ev.Value)
-		case "mdns_txt_model":
-			mdnsModels = append(mdnsModels, ev.Value)
-		case "mdns_txt_vendor":
-			mdnsVendors = append(mdnsVendors, ev.Value)
-		case "ssdp_device_type":
-			ssdpTypes = append(ssdpTypes, ev.Value)
-		case "dhcp_vendor_class":
-			dhcpVC = append(dhcpVC, ev.Value)
-		case "dhcp_option_55":
-			shape.DHCPOption55 = parseOption55(ev.Value) // order is the fingerprint
+		if ev.Type != "dhcp_option_55" {
+			continue
 		}
+		candidate := parseOption55(ev.Value)
+		if len(candidate) == 0 {
+			continue
+		}
+		if len(shape.DHCPOption55) != 0 && !equalU16(shape.DHCPOption55, candidate) {
+			return corpusmatch.CanonicalShapeV1{}, fmt.Errorf("corpuscontrib: conflicting dhcp_option_55 observations")
+		}
+		shape.DHCPOption55 = candidate
 	}
-	shape.MDNSServices = sortedUniqueLower(mdnsServices)
-	shape.MDNSModels = sortedUniqueLower(mdnsModels)
-	shape.MDNSVendors = sortedUniqueLower(mdnsVendors)
-	shape.SSDPDeviceTypes = sortedUniqueLower(ssdpTypes)
-	shape.DHCPVendorClasses = sortedUniqueLower(dhcpVC)
 	shape.TCPPorts = sortedUniqueU16(host.OpenPorts)
-	return shape
+	if err := ValidateCandidate(shape); err != nil {
+		return corpusmatch.CanonicalShapeV1{}, err
+	}
+	return shape, nil
 }
 
-// Contributable reports whether a shape carries enough distinguishing signal to be worth
-// contributing — the client side of the corpus publish bar: a product-specific signal, or at
-// least two independent signal families. It keeps low-signal, non-identifying shapes (e.g. a
-// bare OUI) out of the candidate set.
+// Contributable reports whether a validated candidate has at least two independent signal
+// families. Stage 1 deliberately has no single-field product-signature exception because all
+// raw product-bearing strings are outside the contribution allowlist.
 func Contributable(s corpusmatch.CanonicalShapeV1) bool {
-	productSig := len(s.DHCPVendorClasses) > 0 || len(s.MDNSModels) > 0
+	if ValidateCandidate(s) != nil {
+		return false
+	}
 	families := 0
 	if len(s.OUIPrefixes) > 0 {
 		families++
 	}
-	if len(s.DHCPOption55) > 0 || len(s.DHCPVendorClasses) > 0 {
+	if len(s.DHCPOption55) > 0 {
 		families++
 	}
-	if len(s.MDNSServices) > 0 || len(s.MDNSModels) > 0 || len(s.MDNSVendors) > 0 {
+	if len(s.TCPPorts) > 0 {
 		families++
 	}
-	if len(s.SSDPDeviceTypes) > 0 || len(s.SSDPServerTokens) > 0 {
-		families++
-	}
-	if len(s.TCPPorts) > 0 || len(s.UDPPorts) > 0 {
-		families++
-	}
-	return productSig || families >= 2
-}
-
-// --- normalization (mirrors the corpus canonicalization) ---
-
-func sortedUniqueLower(values []string) []string {
-	set := map[string]struct{}{}
-	for _, v := range values {
-		if n := strings.ToLower(strings.Join(strings.Fields(v), " ")); n != "" {
-			set[n] = struct{}{}
-		}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(set))
-	for v := range set {
-		out = append(out, v)
-	}
-	sort.Strings(out)
-	return out
+	return families >= 2
 }
 
 func sortedUniqueU16(ports []int) []uint16 {
@@ -134,10 +99,8 @@ func normOUI(v string) string {
 		return ""
 	}
 	s = s[:6]
-	for i := 0; i < 6; i++ {
-		if c := s[i]; !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return ""
-		}
+	if !isGlobalUnicastOUI(s) {
+		return ""
 	}
 	return s
 }
@@ -150,4 +113,16 @@ func parseOption55(v string) []uint16 {
 		}
 	}
 	return out
+}
+
+func equalU16(a, b []uint16) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

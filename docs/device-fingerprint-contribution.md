@@ -1,58 +1,69 @@
-# Device-Fingerprint Contribution (design)
+# Device-Fingerprint Contribution (research gate; no transport)
 
-How a Vedetta instance can help grow the community device-recognition corpus
-([spec 008](../specs/008-device-fingerprint-corpus/) / #52) **without** any contribution
-being linkable to a specific install, user/device ID, or IP. This document is a **design and
-review artifact**; it does not authorize real-data contribution. Real contribution stays
-disabled until the acceptance gates below — including an independent privacy review of the
-exact deployed design — are met.
+This document records what must be solved before a Vedetta instance can help grow the
+community device-recognition corpus ([spec 008](../specs/008-device-fingerprint-corpus/) /
+#52). It does **not** authorize real-data contribution, and no contribution transport or
+shadow persistence exists in this change.
 
-Owner direction (#52): anonymized device fingerprinting for the recognition database is
-allowed, adapting #57's contract, but **never linked to a specific install, UID, or IP**.
+Owner direction requires a contribution to be unlinkable to an install, user/device ID,
+source IP, or household. That is a stronger property than removing obvious identifiers from
+JSON. A rare, high-dimensional fingerprint can itself be identifying when combined with
+outside knowledge. Privacy Pass and Oblivious HTTP do not solve that content-uniqueness risk.
 
-## Stage 1 — local shadow mode (built)
+## Stage 1 — local structural candidate (built, inert)
 
-`backend/internal/corpuscontrib` reduces a device's observed signals to the anonymized
-`CanonicalShapeV1` that would be contributed (`Reduce`), gates on a contribution-worthiness bar
-(`Contributable`), and enforces the #52 invariant (`AssertAnonymized`: 24-bit OUI prefixes
-only, no MAC/IP/UUID in any field; hostnames excluded). **Off by default, no network, no
-reporter identity.** This freezes the vector and lets the value be studied on synthetic or
-explicitly consented data before anything leaves a household.
+`backend/internal/corpuscontrib` can reduce an in-memory observation to a deliberately narrow
+candidate for synthetic study. It is not wired into Core and does not store or transmit data.
 
-## Stage 2 — unlinkable transport (design; gated, not implemented)
+The v1 candidate permits only:
 
-A contribution is a single `CanonicalShapeV1` submitted so that **no server surface can link
-it to a contributor or a household**:
+- one globally administered, unicast 24-bit OUI prefix (never a full or randomized MAC);
+- a bounded ordered DHCP option-55 sequence; and
+- a bounded sorted set of observed TCP ports.
 
-- **Unlinkable authorization** — Privacy Pass–style tokens ([RFC 9576](https://www.rfc-editor.org/rfc/rfc9576.html))
-  provide contribution bounds (one report per task/epoch) without a stable reporter identity.
-  They do **not** prove one token = one independent household (advisory-only Sybil posture).
-- **Addressing/content separation** — Oblivious HTTP ([RFC 9458](https://www.rfc-editor.org/rfc/rfc9458.html))
-  through an independent relay so the aggregator never sees the source address and the relay
-  never sees the payload, under the stated non-collusion assumptions. Fixed-size padded
-  envelopes, fresh contexts, delayed/batched delivery, and replay controls remain required.
-- **No linkable metadata** — the existing signed telemetry path is explicitly **not** reused
-  for contributions, because it carries a stable pseudonymous `reporter_id`. A fingerprint
-  submission carries no install UUID, reporter pseudonym, timestamp, or source hash.
-- **Staging, not the corpus** — accepted submissions land in a **staging store separate from
-  the curated corpus**; only a curator promotes a shape into a published profile. A community
-  submission is advisory and can never auto-create, suppress, resolve, or reprioritize a
-  finding.
+It rejects every device-controlled string field, including hostname templates, DHCP vendor
+classes, mDNS services/models/vendors, and SSDP device types/server tokens. Those values are
+useful for recognition but can carry a person, room, serial, address, or custom identifier;
+no local regex can prove that arbitrary device text is a public product token. A future
+revision may admit values only through a separately reviewed fixed public allowlist.
 
-## Acceptance gates (before any real-data contribution)
+The structural validator also rejects locally administered/multicast OUIs, conflicting DHCP
+sequences, duplicate/out-of-range option codes, UDP claims the current observation model
+cannot distinguish, unsorted/duplicate ports, excessive list sizes, and all unsupported
+fields. This is a **direct-carrier reduction**, not an anonymity proof: option sequences and
+port combinations may still be rare or deliberately encode data.
 
-Mirroring #57's discipline, adapted for the (potentially product-bearing) fingerprint shape:
+## Stage 2 — unlinkable release (unresolved; not implemented)
 
-- Approved data dictionary + canonical examples; the shape's no-carriable-field property is
-  fuzzed at the producer, relay/gateway, and staging boundaries.
-- No server surface can reconstruct contributor→shape or shape→household under the documented
-  non-collusion assumptions.
-- Enforced one-report/task/epoch bounds, replay/double-spend rejection, fixed manifests +
-  padding, delayed batching, collection limits, and exercised kill switches.
-- Poisoning / Sybil / malformed-submission red team; a curation model that resists seeded
-  false shapes.
-- Explicit opt-in consent that accurately describes residual metadata and the advisory-only
-  trust limit.
-- **Independent cryptographic/privacy review of the exact deployed design.**
+Two different use cases need different privacy mechanisms:
 
-Until then: shadow mode only, off by default, synthetic transport pilots only.
+1. **Corroborating a known public corpus variant.** A client could report a predeclared,
+   coarse variant bucket through a Prio/DAP-style aggregate. Only cohort totals would be
+   released; no collector would receive an individual plaintext report. This cannot discover
+   a brand-new fingerprint shape.
+2. **Discovering a new shape.** An open-ended fingerprint cannot use the same fixed-bucket
+   aggregation. It would require a reviewed non-colluding shuffle/threshold-decryption design
+   that batches fixed-size ciphertexts, exposes no per-report metadata, releases a shape only
+   after a minimum cohort, and expires unreleased singleton/small-cohort ciphertexts. OHTTP
+   may separate source addressing from ciphertext delivery, but is only one component.
+
+The earlier idea of sending each plaintext shape to a staging database is rejected: even
+without reporter IDs, that server would observe singleton fingerprints and could not meet the
+hard shape-to-household unlinkability requirement.
+
+## Acceptance gates before any real-data contribution
+
+- A precise threat model covering relay/aggregator non-collusion, traffic analysis, rare-shape
+  auxiliary knowledge, malicious devices, poisoning, Sybil attacks, replay, and operator
+  compromise.
+- An approved field dictionary and structural proof at producer, envelope, aggregation, and
+  release boundaries; no free-text or extensible metadata maps.
+- Fixed-size padding, delayed batches, minimum-cohort release, bounded retention, deletion of
+  unreleased cohorts, rate/replay controls, and exercised client/server kill switches.
+- Explicit opt-in consent that states residual fingerprint uniqueness honestly.
+- Community output remains advisory and can never override `user_corrected`, create/suppress/
+  resolve a finding, or silently change detection priority.
+- Independent cryptographic and privacy review of the exact deployed protocol and operations.
+
+Until all gates pass, the only permitted work is local synthetic evaluation. Real collection,
+storage, transport, and dashboard submission remain disabled.
