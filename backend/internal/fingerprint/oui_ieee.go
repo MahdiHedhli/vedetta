@@ -123,8 +123,9 @@ func loadIEEEOUI() map[string]string {
 	return parseOUICSV(bytes.NewReader(embeddedOUICSV))
 }
 
-// EnableManagedIEEEOUI activates a signed updater's stable generation pointer. Callers
-// must invoke this only after dbupdate.New succeeds. A valid existing generation is loaded
+// EnableManagedIEEEOUI activates a signed updater's stable generation pointer. Core passes
+// it through dbupdate.Updater.ActivateConsumer, which validates pointer ownership/state
+// before this callback can read existing bytes. A valid existing generation is loaded
 // immediately; an absent first generation starts from the embedded baseline. An unusable
 // existing generation fails without changing the active source or index.
 func EnableManagedIEEEOUI(installDir string) error {
@@ -135,6 +136,9 @@ func EnableManagedIEEEOUI(installDir string) error {
 	path := filepath.Join(installDir, "oui.csv")
 	next, err := loadOUICSVFile(path)
 	if errors.Is(err, os.ErrNotExist) {
+		if _, statErr := os.Lstat(installDir); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("activate managed OUI generation %s: %w", path, err)
+		}
 		next = parseOUICSV(bytes.NewReader(embeddedOUICSV))
 	} else if err != nil {
 		return fmt.Errorf("activate managed OUI generation %s: %w", path, err)

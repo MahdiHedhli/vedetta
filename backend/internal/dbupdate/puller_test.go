@@ -371,6 +371,65 @@ func TestNew_RejectsRepoDotSegments(t *testing.T) {
 	}
 }
 
+func TestActivateConsumerEnforcesManagedPointerState(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	root := t.TempDir()
+	u, err := New(Config{InstallDir: filepath.Join(root, "current"), PublicKey: pub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activations := 0
+	activate := func(path string) error {
+		if path != u.InstallDir() {
+			t.Fatalf("activation path = %q, want %q", path, u.InstallDir())
+		}
+		activations++
+		return nil
+	}
+
+	if err := u.ActivateConsumer(activate); err != nil {
+		t.Fatalf("absent first-run pointer: %v", err)
+	}
+	if err := os.Mkdir(u.InstallDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.ActivateConsumer(activate); err == nil {
+		t.Fatal("accepted a precreated real install directory")
+	}
+	if err := os.Remove(u.InstallDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	danglingTarget := ".current-release-db-2026.07-dangling"
+	if err := os.Symlink(danglingTarget, u.InstallDir()); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := u.ActivateConsumer(activate); err == nil {
+		t.Fatal("accepted a dangling managed pointer")
+	}
+	if err := os.Remove(u.InstallDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	validTarget := ".current-release-db-2026.07-valid"
+	validGeneration := filepath.Join(root, validTarget)
+	if err := os.Mkdir(validGeneration, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(validGeneration, stateFileName), []byte("db-2026.07\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(validTarget, u.InstallDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.ActivateConsumer(activate); err != nil {
+		t.Fatalf("valid managed pointer: %v", err)
+	}
+	if activations != 2 {
+		t.Fatalf("activation callback ran %d times, want 2", activations)
+	}
+}
+
 func TestCanonicalInstallDirResolvesExistingAliasWithoutCreatingMissingParent(t *testing.T) {
 	root := t.TempDir()
 	realParent := filepath.Join(root, "real")

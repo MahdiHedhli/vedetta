@@ -23,7 +23,9 @@ valid older bundle cannot be replayed as a newer release or installed as a downg
 - With no public key configured the client **fails closed** — it never applies an
   unverifiable update, and a persisted managed generation is not activated merely because
   updater environment variables are present. Core activates that source only after updater
-  construction validates the compiled trust root and configuration.
+  construction validates the compiled trust root and configuration and confirms the install
+  path is absent (first run) or an updater-owned, non-dangling generation pointer with valid
+  installed release state.
 
 ## One-time setup (maintainer)
 

@@ -216,10 +216,13 @@ func TestEnableManagedIEEEOUIRequiresProcessLocalActivation(t *testing.T) {
 func TestEnableManagedIEEEOUIRejectsUnusableExistingGeneration(t *testing.T) {
 	resetManagedOUIState(t)
 	dir := t.TempDir()
+	t.Setenv(ouiDBOverrideEnv, "")
+	if err := EnableManagedIEEEOUI(dir); err == nil {
+		t.Fatal("expected an existing empty install directory to fail activation")
+	}
 	if err := os.WriteFile(filepath.Join(dir, "oui.csv"), []byte("prefix,vendor\naabbcc,Partial\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(ouiDBOverrideEnv, "")
 	if err := EnableManagedIEEEOUI(dir); err == nil {
 		t.Fatal("expected unusable managed generation to fail activation")
 	}

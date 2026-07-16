@@ -172,6 +172,41 @@ func (u *Updater) InstallDir() string {
 	return u.cfg.InstallDir
 }
 
+// ActivateConsumer validates that an existing install path is one of this updater's
+// managed generation pointers before allowing a consumer to read it. An absent path is the
+// clean first-run state. This keeps consumer startup behind the same ownership boundary as
+// installGeneration instead of letting a precreated directory bypass it.
+func (u *Updater) ActivateConsumer(activate func(string) error) error {
+	if activate == nil {
+		return errors.New("dbupdate: consumer activation callback is required")
+	}
+	target, exists, err := managedLinkTarget(u.cfg.InstallDir, filepath.Base(u.cfg.InstallDir))
+	if err != nil {
+		return err
+	}
+	if exists {
+		generation := filepath.Join(filepath.Dir(u.cfg.InstallDir), target)
+		info, err := os.Stat(generation)
+		if err != nil {
+			return fmt.Errorf("dbupdate: inspect installed generation: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("dbupdate: installed generation %s is not a directory", generation)
+		}
+		tag, err := u.installedTag()
+		if err != nil {
+			return fmt.Errorf("dbupdate: read installed release: %w", err)
+		}
+		if _, ok := parseDBReleaseVersion(tag); !ok {
+			return fmt.Errorf("dbupdate: installed release tag %q is invalid", tag)
+		}
+	}
+	if err := activate(u.cfg.InstallDir); err != nil {
+		return fmt.Errorf("dbupdate: activate consumer: %w", err)
+	}
+	return nil
+}
+
 func validRepoSlug(repo string) bool {
 	if !repoRE.MatchString(repo) {
 		return false
