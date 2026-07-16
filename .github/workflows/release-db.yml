@@ -5,7 +5,7 @@ name: release-db
 # publish. The opt-in client selects the highest published db-* calendar version and verifies the
 # ed25519 signature + per-file SHA-256 before applying. Signing uses the
 # VEDETTA_DB_SIGNING_KEY secret, streamed to the signer via stdin so it never lands on disk
-# or argv. Mirrors release.yml: draft only, never auto-published.
+# or argv. The workflow creates one new draft and never auto-publishes it.
 
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ jobs:
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     permissions:
-      contents: write # create/refresh a DRAFT release only
+      contents: write # create a new DRAFT release only
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -70,17 +70,17 @@ jobs:
                   raise SystemExit(1)
           PY
 
-      - name: Refuse to replace an already-published release
+      - name: Refuse to reuse an existing release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
           rows="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '.[] | [.tag_name, .draft] | @tsv')"
-          while IFS=$'\t' read -r tag is_draft; do
-            if [ "$tag" = "$TAG" ] && [ "$is_draft" != "true" ]; then
-              echo "::error::release '$TAG' is already published; refusing to replace live assets"
+            --jq '.[] | [.id, .tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r release_id tag is_draft; do
+            if [ "$tag" = "$TAG" ]; then
+              echo "::error::release '$TAG' already exists (id $release_id, draft=$is_draft); refusing by-tag refresh"
               exit 1
             fi
           done <<< "$rows"
@@ -114,40 +114,79 @@ jobs:
           unset signing_key
           ls -la "$ROOT/dist"
 
-      - name: Re-verify release is still unpublished
+      - name: Re-verify release still does not exist
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          # A maintainer may publish the draft while this signing job is running.
-          # draft: true does not turn an existing published release back into a draft,
-          # so fail immediately before the release action can mutate live assets.
+          # The workflow is deliberately one-shot: it never looks up an existing release
+          # by tag for asset mutation. A prior draft must be reviewed or deleted explicitly.
           rows="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '.[] | [.tag_name, .draft] | @tsv')"
-          while IFS=$'\t' read -r tag is_draft; do
-            if [ "$tag" = "$TAG" ] && [ "$is_draft" != "true" ]; then
-              echo "::error::release '$TAG' was published during the build; refusing to replace live assets"
+            --jq '.[] | [.id, .tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r release_id tag is_draft; do
+            if [ "$tag" = "$TAG" ]; then
+              echo "::error::release '$TAG' appeared during the build (id $release_id, draft=$is_draft); refusing by-tag refresh"
               exit 1
             fi
           done <<< "$rows"
 
-      - name: Create/refresh DRAFT release
+      - name: Create empty DRAFT release
         id: draft-release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
-        with:
-          tag_name: ${{ github.event.inputs.tag }}
-          draft: true # never auto-publish — review and publish by hand
-          fail_on_unmatched_files: true
-          name: "Device DB ${{ github.event.inputs.tag }}"
-          body: |
-            Signed device-DB bundle. The opt-in client puller verifies the ed25519 signature
-            and per-file SHA-256 before applying anything. Review the assets and publish to
-            make it eligible for clients to select by signed monotonic `db-*` version.
-          files: |
-            dist/oui.csv
-            dist/manifest.json
-            dist/manifest.json.sig
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          body='Signed device-DB bundle. The opt-in client verifies the ed25519 signature and per-file SHA-256 before applying anything. Review the assets and publish to make it eligible for clients.'
+          release_json="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+            --raw-field "tag_name=$TAG" \
+            --raw-field "name=Device DB $TAG" \
+            --raw-field "body=$body" \
+            --field draft=true \
+            --field prerelease=false)"
+          release_id="$(jq -r '.id' <<< "$release_json")"
+          actual_tag="$(jq -r '.tag_name' <<< "$release_json")"
+          is_draft="$(jq -r '.draft' <<< "$release_json")"
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]] || [ "$actual_tag" != "$TAG" ] || [ "$is_draft" != "true" ]; then
+            echo "::error::GitHub did not create the expected draft release"
+            exit 1
+          fi
+          printf 'id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload assets to the exact draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ github.event.inputs.tag }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.id }}
+        run: |
+          set -euo pipefail
+          api_token="$GH_TOKEN"
+          unset GH_TOKEN
+          for asset in dist/oui.csv dist/manifest.json dist/manifest.json.sig; do
+            # Bind every mutation to the release ID returned by our create call and
+            # re-check draft state immediately before it. We never refresh by tag.
+            release_json="$(GH_TOKEN="$api_token" gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+            actual_tag="$(jq -r '.tag_name' <<< "$release_json")"
+            is_draft="$(jq -r '.draft' <<< "$release_json")"
+            if [ "$actual_tag" != "$EXPECTED_TAG" ] || [ "$is_draft" != "true" ]; then
+              echo "::error::release ${RELEASE_ID} is no longer the expected draft; refusing to upload $(basename "$asset")"
+              exit 1
+            fi
+            upload_url="$(jq -r '.upload_url' <<< "$release_json")"
+            upload_base="${upload_url%%\{*}"
+            expected_base="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets"
+            if [ "$upload_base" != "$expected_base" ]; then
+              echo "::error::release ${RELEASE_ID} returned an unexpected asset upload URL"
+              exit 1
+            fi
+            # Read the ephemeral Actions token through curl's stdin config so it is
+            # neither written to disk nor exposed in the process argument list.
+            printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/octet-stream"\n' "$api_token" | \
+              curl --config - --fail-with-body --silent --show-error \
+                --proto '=https' --tlsv1.2 --request POST \
+                --data-binary "@$asset" "${upload_base}?name=$(basename "$asset")" >/dev/null
+          done
 
       - name: Require the assembled release to remain a draft
         env:
@@ -157,17 +196,23 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::release action returned an invalid release id"
+            echo "::error::draft creation returned an invalid release id"
             exit 1
           fi
-          release_state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-            --jq '[.tag_name, .draft] | @tsv')"
-          IFS=$'\t' read -r actual_tag is_draft <<< "$release_state"
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          actual_tag="$(jq -r '.tag_name' <<< "$release_json")"
+          is_draft="$(jq -r '.draft' <<< "$release_json")"
           if [ "$actual_tag" != "$EXPECTED_TAG" ]; then
-            echo "::error::release action returned tag '$actual_tag', expected '$EXPECTED_TAG'"
+            echo "::error::created release returned tag '$actual_tag', expected '$EXPECTED_TAG'"
             exit 1
           fi
           if [ "$is_draft" != "true" ]; then
-            echo "::error::release '$EXPECTED_TAG' is published; refusing a successful asset-refresh run"
+            echo "::error::release '$EXPECTED_TAG' is published; refusing a successful draft-creation run"
+            exit 1
+          fi
+          actual_assets="$(jq -r '[.assets[].name] | sort | join(",")' <<< "$release_json")"
+          expected_assets='manifest.json,manifest.json.sig,oui.csv'
+          if [ "$actual_assets" != "$expected_assets" ]; then
+            echo "::error::release '$EXPECTED_TAG' has unexpected assets: $actual_assets"
             exit 1
           fi

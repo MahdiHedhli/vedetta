@@ -50,11 +50,14 @@ Run workflow) with a monotonically increasing calendar tag such as `db-2026.07`,
 1. bundles the current `oui.csv`, builds the manifest, and signs it with the secret (the
    key is streamed to the signer via stdin — never on disk or argv);
 2. validates the same schema and size limits used by clients and self-verifies the signature;
-3. publishes a **draft** release with `oui.csv`, `manifest.json`, and `manifest.json.sig`.
+3. creates a new **draft** release with `oui.csv`, `manifest.json`, and
+   `manifest.json.sig`.
 
 Review the draft and **publish** it by hand. Clients ignore product releases, drafts, and
 prereleases and select the highest published valid `db-*` calendar version. The workflow
-refuses to overwrite an already-published release. Never reuse or decrease a DB tag.
+refuses to reuse any existing draft or published release, and asset overwrite is disabled.
+If a run leaves an unusable draft, delete that draft before retrying the same tag. Never
+reuse a tag after publication or decrease a DB tag.
 
 ## Enabling updates (operator, opt-in)
 
@@ -64,7 +67,7 @@ on. Enable it with:
 | Env var | Default | Meaning |
 | ------- | ------- | ------- |
 | `VEDETTA_DB_UPDATE_ENABLED` | *(off)* | Set to `true` to enable the opt-in updater. |
-| `VEDETTA_OUI_DB_PATH` | *(unset)* | Stable OUI path inside the updater-owned generation pointer. With Compose this is `/data/device-db/current/oui.csv`. For a host install, use e.g. `/var/lib/vedetta/device-db/current/oui.csv`. |
+| `VEDETTA_DB_UPDATE_INSTALL_DIR` | *(unset)* | Stable updater-owned generation pointer. Compose supplies `/data/device-db/current`; for a host install, use e.g. `/var/lib/vedetta/device-db/current`. |
 | `VEDETTA_DB_UPDATE_INTERVAL` | `24h` | Re-check cadence (Go duration). |
 | `VEDETTA_DB_UPDATE_REPO` | official repo | `owner/repo` to pull releases from. |
 
@@ -73,7 +76,9 @@ published release only after full verification. The directory containing `curren
 writable by Core; `current` itself must be absent or a pointer previously created by the
 updater. Core reloads the OUI index after a successful switch without requiring restart.
 When disabled (the default), the embedded table—refreshed monthly in-repo by the
-`update-oui` workflow—is authoritative.
+`update-oui` workflow—is authoritative even if a prior managed generation remains on disk.
+The separate `VEDETTA_OUI_DB_PATH` variable remains available for a deliberate, manually
+managed OUI override; Compose does not set it.
 
 Dashboard notification for newer device-DB or Vedetta releases is planned separately; it is
 not part of this updater or the current operator UI.

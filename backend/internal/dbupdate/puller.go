@@ -60,7 +60,8 @@ type Config struct {
 	Interval time.Duration
 	// InstallDir is the stable path through which verified bundle files are read. The updater
 	// owns this path and atomically switches it between immutable release directories. Point
-	// VEDETTA_OUI_DB_PATH at "<InstallDir>/oui.csv".
+	// VEDETTA_DB_UPDATE_INSTALL_DIR at this path; consumers read "<InstallDir>/oui.csv"
+	// only while signed updates are enabled.
 	InstallDir string
 	// PublicKey is the trust root. Defaults to the compiled-in TrustedKey(); an unset or
 	// invalid key makes New fail so a build without a trust root never pulls.

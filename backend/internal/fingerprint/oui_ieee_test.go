@@ -35,6 +35,8 @@ zzzzzz,Bad Prefix
 }
 
 func TestLoadIEEEOUI_EmbeddedBaseline(t *testing.T) {
+	t.Setenv(dbUpdateEnabledEnv, "false")
+	t.Setenv(dbUpdateInstallDirEnv, "")
 	t.Setenv(ouiDBOverrideEnv, "")
 	m := loadIEEEOUI()
 	if len(m) < 30000 {
@@ -89,6 +91,8 @@ func TestLoadIEEEOUI_EnvOverrideReplacesBaseline(t *testing.T) {
 	if err := os.WriteFile(p, override, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(dbUpdateEnabledEnv, "false")
+	t.Setenv(dbUpdateInstallDirEnv, "")
 	t.Setenv(ouiDBOverrideEnv, p)
 	m := loadIEEEOUI()
 	if m["000000"] != "Env Override Co" {
@@ -105,6 +109,8 @@ func TestLoadIEEEOUI_PartialOverrideFallsBack(t *testing.T) {
 	if err := os.WriteFile(p, []byte("prefix,vendor\naabbcc,Partial Override\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(dbUpdateEnabledEnv, "false")
+	t.Setenv(dbUpdateInstallDirEnv, "")
 	t.Setenv(ouiDBOverrideEnv, p)
 	m := loadIEEEOUI()
 	if len(m) < minimumFullOUIRows {
@@ -126,6 +132,8 @@ func TestReloadIEEEOUI_AtomicallyPublishesOverride(t *testing.T) {
 	if err := os.WriteFile(path, override, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(dbUpdateEnabledEnv, "false")
+	t.Setenv(dbUpdateInstallDirEnv, "")
 	t.Setenv(ouiDBOverrideEnv, path)
 	if err := ReloadIEEEOUI(); err != nil {
 		t.Fatal(err)
@@ -156,5 +164,38 @@ func TestReloadIEEEOUI_AtomicallyPublishesOverride(t *testing.T) {
 	t.Setenv(ouiDBOverrideEnv, "")
 	if err := ReloadIEEEOUI(); err != nil {
 		t.Fatalf("restore embedded index: %v", err)
+	}
+}
+
+func TestReloadIEEEOUI_DisablingUpdatesRestoresEmbeddedBaseline(t *testing.T) {
+	t.Cleanup(func() { _ = ReloadIEEEOUI() })
+	dir := t.TempDir()
+	managedPath := filepath.Join(dir, "oui.csv")
+	managed := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Managed Update Vendor"), 1)
+	if bytes.Equal(managed, embeddedOUICSV) {
+		t.Fatal("test fixture did not replace the baseline vendor")
+	}
+	if err := os.WriteFile(managedPath, managed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(ouiDBOverrideEnv, "")
+	t.Setenv(dbUpdateInstallDirEnv, dir)
+	t.Setenv(dbUpdateEnabledEnv, "true")
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || got.Vendor != "Managed Update Vendor" {
+		t.Fatalf("enabled updater generation not loaded: %#v", got)
+	}
+
+	// The generation deliberately remains on disk. The flag alone is the authority
+	// boundary: disabling updates must stop using those persisted downloaded bytes.
+	t.Setenv(dbUpdateEnabledEnv, "false")
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || !strings.Contains(got.Vendor, "XEROX") {
+		t.Fatalf("disabled updater did not restore embedded baseline: %#v", got)
 	}
 }

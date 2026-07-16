@@ -39,7 +39,7 @@ services:
       VEDETTA_DB_UPDATE_ENABLED: "${VEDETTA_DB_UPDATE_ENABLED:-false}"
       VEDETTA_DB_UPDATE_INTERVAL: "${VEDETTA_DB_UPDATE_INTERVAL:-24h}"
       VEDETTA_DB_UPDATE_REPO: "${VEDETTA_DB_UPDATE_REPO:-MahdiHedhli/vedetta}"
-      VEDETTA_OUI_DB_PATH: "/data/device-db/current/oui.csv"
+      VEDETTA_DB_UPDATE_INSTALL_DIR: "/data/device-db/current"
       VEDETTA_FRONTEND_DIR: "/frontend"
       VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-auto}"
       VEDETTA_SCAN_INTERVAL: "${VEDETTA_SCAN_INTERVAL:-5m}"

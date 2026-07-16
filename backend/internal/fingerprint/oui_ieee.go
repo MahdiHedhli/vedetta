@@ -9,20 +9,48 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 const (
-	// ouiDBOverrideEnv names an optional on-disk OUI table that supersedes the
-	// compiled-in baseline. The Phase-3 signed-bundle puller installs a refreshed table
-	// at this path.
+	// ouiDBOverrideEnv names an optional operator-managed OUI table that supersedes
+	// the compiled-in baseline independently of signed automatic updates.
 	ouiDBOverrideEnv = "VEDETTA_OUI_DB_PATH"
+	// dbUpdateEnabledEnv and dbUpdateInstallDirEnv describe the signed updater's
+	// managed generation pointer. Keeping this separate from ouiDBOverrideEnv means
+	// turning the updater off immediately restores the embedded baseline instead of
+	// continuing to trust a previously downloaded generation.
+	dbUpdateEnabledEnv    = "VEDETTA_DB_UPDATE_ENABLED"
+	dbUpdateInstallDirEnv = "VEDETTA_DB_UPDATE_INSTALL_DIR"
 
 	// minimumFullOUIRows keeps a truncated but syntactically valid override from
 	// silently replacing the complete embedded registry with a handful of entries.
 	// Keep this aligned with the updater's production OUI_MIN_ROWS default.
 	minimumFullOUIRows = 30000
 )
+
+// configuredOUIDBPath resolves the table that should supersede the embedded baseline.
+// A managed generation is eligible only while signed updates are explicitly enabled.
+// VEDETTA_OUI_DB_PATH remains an independent, operator-managed override for backwards
+// compatibility and is never populated automatically by Compose.
+func configuredOUIDBPath() string {
+	if envEnabled(os.Getenv(dbUpdateEnabledEnv)) {
+		if installDir := strings.TrimSpace(os.Getenv(dbUpdateInstallDirEnv)); installDir != "" {
+			return filepath.Join(installDir, "oui.csv")
+		}
+	}
+	return strings.TrimSpace(os.Getenv(ouiDBOverrideEnv))
+}
+
+func envEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 // embeddedOUICSV is the full IEEE MA-L (24-bit OUI) vendor table, refreshed monthly by
 // the update-oui workflow. Shape: "prefix,vendor" with a header row (see data/oui.csv).
@@ -89,10 +117,10 @@ func loadOUICSVFile(path string) (map[string]string, error) {
 	return m, nil
 }
 
-// loadIEEEOUI returns the IEEE OUI vendor table: the on-disk override
-// (VEDETTA_OUI_DB_PATH) when present and valid, otherwise the compiled-in baseline.
+// loadIEEEOUI returns the IEEE OUI vendor table: an eligible signed generation or
+// explicit manual override when present and valid, otherwise the compiled-in baseline.
 func loadIEEEOUI() map[string]string {
-	if path := strings.TrimSpace(os.Getenv(ouiDBOverrideEnv)); path != "" {
+	if path := configuredOUIDBPath(); path != "" {
 		if m, err := loadOUICSVFile(path); err == nil {
 			log.Printf("[fingerprint] loaded %d OUI entries from override %s", len(m), path)
 			return m
@@ -111,7 +139,7 @@ func loadIEEEOUI() map[string]string {
 // is an error: the signed updater uses this as its post-switch acceptance check and rolls
 // the generation pointer back rather than silently claiming an update while using fallback.
 func ReloadIEEEOUI() error {
-	path := strings.TrimSpace(os.Getenv(ouiDBOverrideEnv))
+	path := configuredOUIDBPath()
 	var next map[string]string
 	if path == "" {
 		next = parseOUICSV(bytes.NewReader(embeddedOUICSV))

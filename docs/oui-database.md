@@ -80,8 +80,9 @@ then opens — or force-refreshes — a single `automation/oui-update` pull requ
 
 ## Runtime override
 
-`Lookup` prefers an on-disk table at `VEDETTA_OUI_DB_PATH` over the embedded baseline,
-falling back to the baseline if that file is missing or unusable. An override must contain
-at least 30,000 unique valid MA-L rows; a tiny or truncated file cannot silently erase the
-embedded registry's coverage. This is the install path for the signed device-DB bundle
-delivered by a later phase; unset, the embedded table is authoritative.
+`Lookup` prefers an explicitly operator-managed table at `VEDETTA_OUI_DB_PATH` over the
+embedded baseline, falling back to the baseline if that file is missing or unusable. An
+override must contain at least 30,000 unique valid MA-L rows; a tiny or truncated file
+cannot silently erase the embedded registry's coverage. Signed automatic updates use the
+separate `VEDETTA_DB_UPDATE_INSTALL_DIR` generation pointer only while the updater is
+enabled; see [Signed Device-DB Releases](device-db-releases.md).
