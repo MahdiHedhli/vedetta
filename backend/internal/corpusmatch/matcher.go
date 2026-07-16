@@ -73,8 +73,9 @@ func NewMatcher(snapshot *Snapshot) *Matcher {
 }
 
 // Match returns the best class-level match for obs, if any qualifies (>=2 independent signal
-// families agree, OR one product-specific signal agrees). Ties break on more families, then a
-// product signature, then higher confidence.
+// families agree, OR one product-specific signal agrees). Product-specific evidence ranks
+// above generic multi-family evidence, then more agreeing families and curator confidence
+// rank candidates. An equally ranked conflicting class is ambiguous and produces no match.
 func (m *Matcher) Match(obs ObservedSignals) (MatchResult, bool) {
 	if m == nil || len(m.refs) == 0 {
 		return MatchResult{}, false
@@ -89,6 +90,7 @@ func (m *Matcher) Match(obs ObservedSignals) (MatchResult, bool) {
 
 	var best MatchResult
 	found := false
+	ambiguous := false
 	for idx := range seen {
 		ref := m.refs[idx]
 		families, productSig := evaluate(obs, &ref.variant.Shape)
@@ -106,26 +108,45 @@ func (m *Matcher) Match(obs ObservedSignals) (MatchResult, bool) {
 			Families:      families,
 			ProductSig:    productSig,
 		}
-		if !found || better(cand, best) {
-			best, found = cand, true
+		if !found || strongerEvidence(cand, best) {
+			best, found, ambiguous = cand, true, false
+			continue
+		}
+		if sameEvidenceRank(cand, best) {
+			if !sameClass(cand, best) {
+				ambiguous = true
+			} else if cand.ConfidenceBP > best.ConfidenceBP ||
+				(cand.ConfidenceBP == best.ConfidenceBP && cand.VariantID < best.VariantID) {
+				best = cand
+			}
 		}
 	}
-	return best, found
+	return best, found && !ambiguous
 }
 
-// better reports whether a should rank above b: more families, then a product signature,
-// then higher confidence, then a stable variant-id tiebreak for determinism.
-func better(a, b MatchResult) bool {
-	if a.Families != b.Families {
-		return a.Families > b.Families
-	}
+// strongerEvidence reports whether a has a strictly stronger evidence rank than b. Product-specific
+// evidence comes first because the corpus publication contract treats it as sufficient on
+// its own; generic signals require corroboration and must not displace it merely by count.
+// Curator confidence deliberately does not resolve a class conflict when the local evidence
+// is indistinguishable; the corpus contract requires that ambiguity to remain visible.
+func strongerEvidence(a, b MatchResult) bool {
 	if a.ProductSig != b.ProductSig {
 		return a.ProductSig
 	}
-	if a.ConfidenceBP != b.ConfidenceBP {
-		return a.ConfidenceBP > b.ConfidenceBP
+	if a.Families != b.Families {
+		return a.Families > b.Families
 	}
-	return a.VariantID < b.VariantID
+	return false
+}
+
+func sameEvidenceRank(a, b MatchResult) bool {
+	return a.ProductSig == b.ProductSig && a.Families == b.Families
+}
+
+func sameClass(a, b MatchResult) bool {
+	return a.Manufacturer == b.Manufacturer && a.Model == b.Model &&
+		a.ProductFamily == b.ProductFamily && a.DeviceType == b.DeviceType &&
+		a.OSFamily == b.OSFamily
 }
 
 // evaluate counts how many independent signal families agree between obs and shape, and
@@ -273,8 +294,10 @@ func intersectsStr(a, b []string) bool {
 		}
 	}
 	for _, v := range a {
-		if _, ok := set[normToken(v)]; ok && normToken(v) != "" {
-			return true
+		if n := normToken(v); n != "" {
+			if _, ok := set[n]; ok {
+				return true
+			}
 		}
 	}
 	return false

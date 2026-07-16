@@ -450,15 +450,10 @@ func main() {
 			cfg := dbupdate.Config{
 				Enabled:    true,
 				InstallDir: installDir,
-				// Reload both managed consumers after a generation switch; a failure rolls the
-				// pointer back. The OUI table is the primary payload; the device corpus is an
-				// optional file in the same signed bundle.
-				OnInstalled: func() error {
-					if err := fingerprint.ReloadIEEEOUI(); err != nil {
-						return err
-					}
-					return corpusmatch.ReloadCorpus()
-				},
+				// Prepare both managed consumers after a generation switch, then publish both
+				// only if every file validates. A failure leaves the old in-process pair intact
+				// while the updater rolls the generation pointer back.
+				OnInstalled: reloadDeviceDBConsumers,
 			}
 			if repo := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_REPO")); repo != "" {
 				cfg.Repo = repo
@@ -472,12 +467,7 @@ func main() {
 			}
 			if updater, err := dbupdate.New(cfg); err != nil {
 				log.Printf("WARNING: device-DB updater not started: %v", err)
-			} else if err := updater.ActivateConsumer(func(dir string) error {
-				if err := fingerprint.EnableManagedIEEEOUI(dir); err != nil {
-					return err
-				}
-				return corpusmatch.EnableManagedCorpus(dir)
-			}); err != nil {
+			} else if err := updater.ActivateConsumer(activateDeviceDBConsumers); err != nil {
 				log.Printf("WARNING: device-DB updater not started: %v", err)
 			} else {
 				installedDBTag = updater.InstalledTag
@@ -531,6 +521,39 @@ func main() {
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// activateDeviceDBConsumers validates every consumer against the same stable generation
+// before publishing either one. Activate calls are infallible immutable-pointer swaps, so a
+// corrupt optional corpus cannot leave a new OUI table paired with the previous corpus.
+func activateDeviceDBConsumers(installDir string) error {
+	oui, err := fingerprint.PrepareManagedIEEEOUI(installDir)
+	if err != nil {
+		return err
+	}
+	corpus, err := corpusmatch.PrepareManagedCorpus(installDir)
+	if err != nil {
+		return err
+	}
+	oui.Activate()
+	corpus.Activate()
+	return nil
+}
+
+// reloadDeviceDBConsumers stages the currently switched generation for both consumers.
+// The updater restores its symlink if preparation fails; active process state is untouched.
+func reloadDeviceDBConsumers() error {
+	oui, err := fingerprint.PrepareReloadIEEEOUI()
+	if err != nil {
+		return err
+	}
+	corpus, err := corpusmatch.PrepareReloadCorpus()
+	if err != nil {
+		return err
+	}
+	oui.Activate()
+	corpus.Activate()
+	return nil
 }
 
 func envEnabled(value string) bool {

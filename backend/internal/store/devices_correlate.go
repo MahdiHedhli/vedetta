@@ -47,7 +47,7 @@ const (
 var sourceConfidence = map[string]float64{
 	SourceUserCorrected:   1.0,
 	SourceMDNSTxt:         0.9,
-	SourceCorpus:          0.85, // corroborated class match: below a device's own mDNS TXT, above single passive signals; always below user_corrected
+	SourceCorpus:          0.85, // ceiling for a corpus match; effective confidence is also capped by the curated variant
 	SourceSSDP:            0.75,
 	SourceDHCPHostname:    0.7,
 	SourceMDNSPtr:         0.65, // PTR service type: weaker than TXT model, stronger than vendor class

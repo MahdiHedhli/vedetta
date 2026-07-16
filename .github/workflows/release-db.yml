@@ -1,7 +1,7 @@
 name: release-db
 
-# Builds and signs a device-DB bundle (the embedded IEEE OUI table today; the fingerprint
-# corpus later) and publishes it as a DRAFT GitHub release for a human to review and
+# Builds and signs a device-DB bundle (the IEEE OUI table plus an optional curated fingerprint
+# corpus) and publishes it as a DRAFT GitHub release for a human to review and
 # publish. The opt-in client selects the highest published db-* calendar version and verifies the
 # ed25519 signature + per-file SHA-256 before applying. Signing uses the
 # VEDETTA_DB_SIGNING_KEY secret, streamed to the signer via stdin so it never lands on disk
@@ -99,46 +99,54 @@ jobs:
             echo "::error::VEDETTA_DB_SIGNING_KEY is not set — mint a keypair with 'go run ./cmd/dbkeygen' (in backend/) and add the private key as this secret"
             exit 1
           fi
+
+          # De-export the secret before launching any child process. It remains a shell-only
+          # variable until the final stdin pipe into the signer.
+          signing_key="$VEDETTA_DB_SIGNING_KEY"
+          unset VEDETTA_DB_SIGNING_KEY
           ROOT="$PWD"
+          signer="$RUNNER_TEMP/vedetta-dbbundle"
+          runtime_checker="$RUNNER_TEMP/vedetta-corpus-runtime-check"
+          privacy_checker="$RUNNER_TEMP/vedetta-corpus-privacy-check"
+          trap 'rm -f "$signer" "$runtime_checker" "$privacy_checker"' EXIT
+          (cd backend && go build -trimpath -o "$signer" ./cmd/dbbundle)
           mkdir -p "$ROOT/dist"
           cp backend/internal/fingerprint/data/oui.csv "$ROOT/dist/oui.csv"
           file_args=(-file "oui.csv=$ROOT/dist/oui.csv")
 
           # Optionally fetch + include the device-corpus snapshot. It rides the same signed
-          # bundle; the client verifies it and treats it as optional. Fetch bounded, over
-          # https only, and sanity-check the schema before trusting it into the bundle.
+          # bundle; the client verifies it and treats it as optional. Fetch over HTTPS with
+          # strict bounds, then run both canonical privacy and exact runtime validation.
           if [ -n "${CORPUS_SNAPSHOT_URL:-}" ]; then
             case "$CORPUS_SNAPSHOT_URL" in
               https://*) ;;
               *) echo "::error::corpus_snapshot_url must be https"; exit 1 ;;
             esac
             curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
-              --max-filesize 33554432 -o "$ROOT/dist/corpus.json" "$CORPUS_SNAPSHOT_URL"
-            python3 - "$ROOT/dist/corpus.json" <<'PY'
-          import json, sys
-          try:
-              doc = json.load(open(sys.argv[1]))
-          except Exception as exc:
-              raise SystemExit(f"::error::corpus snapshot is not valid JSON: {exc}")
-          if doc.get("schema_version") != 1:
-              raise SystemExit("::error::corpus snapshot schema_version must be 1")
-          PY
+              --connect-timeout 10 --max-time 60 --max-filesize 33554432 \
+              -o "$ROOT/dist/corpus.json" "$CORPUS_SNAPSHOT_URL"
+            snapshot_bytes="$(wc -c < "$ROOT/dist/corpus.json" | tr -d ' ')"
+            if [ "$snapshot_bytes" -gt 33554432 ]; then
+              echo "::error::corpus snapshot exceeds the 32 MiB runtime limit"
+              exit 1
+            fi
+            # The threat-network validator enforces the exact public allowlist, canonical
+            # privacy contract, types, provenance, IDs, and shape hashes. The Core validator
+            # separately enforces its tighter Pi/runtime profile and variant bounds.
+            (cd threat-network && go build -trimpath -o "$privacy_checker" ./cmd/corpuscheck)
+            (cd backend && go build -trimpath -o "$runtime_checker" ./cmd/corpuscheck)
+            "$privacy_checker" "$ROOT/dist/corpus.json"
+            "$runtime_checker" "$ROOT/dist/corpus.json"
             file_args+=(-file "corpus.json=$ROOT/dist/corpus.json")
           fi
 
           # Stream the key via stdin so it never touches disk or argv. Remove the
-          # exported secret before launching go tooling so descendants cannot read it
-          # from their environment.
-          signing_key="$VEDETTA_DB_SIGNING_KEY"
-          unset VEDETTA_DB_SIGNING_KEY
-          signer="$RUNNER_TEMP/vedetta-dbbundle"
-          (cd backend && go build -trimpath -o "$signer" ./cmd/dbbundle)
+          # shell-only copy immediately after use.
           printf '%s' "$signing_key" | "$signer" \
             -key - \
             -release "$TAG" \
             -out "$ROOT/dist" \
             "${file_args[@]}"
-          rm -f "$signer"
           unset signing_key
           ls -la "$ROOT/dist"
 

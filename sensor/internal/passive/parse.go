@@ -624,6 +624,10 @@ func hostFromSSDPPayload(payload []byte, srcIP string) *netscan.DiscoveredHost {
 
 	if server := strings.TrimSpace(req.Header.Get("SERVER")); server != "" {
 		host.Vendor = server
+		// SERVER is a product-class banner, not a device-unique identifier. Preserve it
+		// as typed evidence so Core can compare it locally with an exact curated token.
+		addIdentityEvidence(&host, netscan.IdentityEvidence{Type: "ssdp_server_token", Value: server,
+			Source: "passive_ssdp", Confidence: 0.65})
 	}
 	if location := strings.TrimSpace(req.Header.Get("LOCATION")); location != "" {
 		if parsedHost := hostFromURL(location); parsedHost != "" && net.ParseIP(parsedHost) == nil {

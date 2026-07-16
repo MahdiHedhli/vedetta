@@ -15,6 +15,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 )
 
 // snapshotSchemaVersion is the corpus schema this matcher understands.
@@ -90,18 +92,55 @@ func ParseSnapshot(data []byte) (*Snapshot, error) {
 	if err := dec.Decode(&s); err != nil {
 		return nil, fmt.Errorf("corpusmatch: decode snapshot: %w", err)
 	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("corpusmatch: snapshot contains trailing JSON")
+		}
+		return nil, fmt.Errorf("corpusmatch: decode trailing snapshot data: %w", err)
+	}
 	if s.SchemaVersion != snapshotSchemaVersion {
 		return nil, fmt.Errorf("corpusmatch: unsupported snapshot schema %d", s.SchemaVersion)
+	}
+	if s.CorpusRevision < 0 {
+		return nil, fmt.Errorf("corpusmatch: corpus_revision cannot be negative")
 	}
 	if len(s.Profiles) > maxProfiles {
 		return nil, fmt.Errorf("corpusmatch: snapshot lists too many profiles (%d)", len(s.Profiles))
 	}
+	profileIDs := make(map[string]struct{}, len(s.Profiles))
+	variantIDs := make(map[string]struct{})
 	total := 0
-	for i := range s.Profiles {
-		total += len(s.Profiles[i].Variants)
-	}
-	if total > maxVariants {
-		return nil, fmt.Errorf("corpusmatch: snapshot lists too many variants (%d)", total)
+	for pi := range s.Profiles {
+		profile := &s.Profiles[pi]
+		if profile.ProfileID == "" || strings.TrimSpace(profile.ProfileID) != profile.ProfileID {
+			return nil, fmt.Errorf("corpusmatch: profiles[%d].profile_id is required and cannot have surrounding whitespace", pi)
+		}
+		if _, duplicate := profileIDs[profile.ProfileID]; duplicate {
+			return nil, fmt.Errorf("corpusmatch: duplicate profile_id %q", profile.ProfileID)
+		}
+		profileIDs[profile.ProfileID] = struct{}{}
+		total += len(profile.Variants)
+		if total > maxVariants {
+			return nil, fmt.Errorf("corpusmatch: snapshot lists too many variants (%d)", total)
+		}
+		for vi := range profile.Variants {
+			variant := &profile.Variants[vi]
+			path := fmt.Sprintf("profiles[%d].variants[%d]", pi, vi)
+			if variant.VariantID == "" || strings.TrimSpace(variant.VariantID) != variant.VariantID {
+				return nil, fmt.Errorf("corpusmatch: %s.variant_id is required and cannot have surrounding whitespace", path)
+			}
+			if _, duplicate := variantIDs[variant.VariantID]; duplicate {
+				return nil, fmt.Errorf("corpusmatch: duplicate variant_id %q", variant.VariantID)
+			}
+			variantIDs[variant.VariantID] = struct{}{}
+			if variant.ConfidenceBP < 0 || variant.ConfidenceBP > 10000 {
+				return nil, fmt.Errorf("corpusmatch: %s.confidence_bp must be 0..10000", path)
+			}
+			if variant.Shape.SchemaVersion != snapshotSchemaVersion {
+				return nil, fmt.Errorf("corpusmatch: %s.shape has unsupported schema_version %d", path, variant.Shape.SchemaVersion)
+			}
+		}
 	}
 	return &s, nil
 }

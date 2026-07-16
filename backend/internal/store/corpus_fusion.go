@@ -33,6 +33,8 @@ func corpusObservedSignals(host discovery.DiscoveredHost) corpusmatch.ObservedSi
 			obs.MDNSVendors = append(obs.MDNSVendors, ev.Value)
 		case "ssdp_device_type":
 			obs.SSDPDeviceTypes = append(obs.SSDPDeviceTypes, ev.Value)
+		case "ssdp_server_token":
+			obs.SSDPServerTokens = append(obs.SSDPServerTokens, ev.Value)
 		case "dhcp_vendor_class":
 			obs.DHCPVendorClasses = append(obs.DHCPVendorClasses, ev.Value)
 		case "dhcp_option_55":
@@ -43,15 +45,20 @@ func corpusObservedSignals(host discovery.DiscoveredHost) corpusmatch.ObservedSi
 }
 
 // corpusDerivedSignals runs the active corpus matcher over an observation and returns the
-// descriptive signal upserts for a class match, at SourceCorpus confidence (below a device's
-// own mDNS TXT and below user_corrected, so it can never override a stronger passive source or
-// an operator's correction). Returns nil when no corpus is loaded or nothing matches.
+// descriptive signal upserts for a class match. Confidence is capped by both SourceCorpus
+// (below a device's own mDNS TXT and user_corrected) and the curated variant's confidence, so
+// it cannot inflate a weak corpus claim. Returns nil when no corpus is loaded or nothing matches.
 func corpusDerivedSignals(host discovery.DiscoveredHost) []signalUpsert {
 	res, ok := corpusmatch.Active().Match(corpusObservedSignals(host))
 	if !ok {
 		return nil
 	}
-	conf := ConfidenceForSource(SourceCorpus)
+	// Source trust is a ceiling, not a replacement for the curator's variant
+	// confidence. A low-confidence corpus record must not become a 0.85 signal.
+	conf := min(ConfidenceForSource(SourceCorpus), float64(res.ConfidenceBP)/10000)
+	if conf <= 0 {
+		return nil
+	}
 	var out []signalUpsert
 	add := func(field, value string) {
 		if value != "" {

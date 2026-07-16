@@ -48,3 +48,27 @@ func TestCorpusDerivedSignals(t *testing.T) {
 		t.Errorf("a non-match should yield nil, got %+v", s)
 	}
 }
+
+func TestCorpusDerivedSignalsCapsConfidenceAtVariantConfidence(t *testing.T) {
+	dir := t.TempDir()
+	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","model":"Player","device_type":"media_player"},"variants":[{"variant_id":"v","confidence_bp":4200,"shape":{"schema_version":1,"ssdp_server_tokens":["example/player"]}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "corpus.json"), []byte(snap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := corpusmatch.EnableManagedCorpus(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = corpusmatch.EnableManagedCorpus(t.TempDir()) })
+
+	sigs := corpusDerivedSignals(discovery.DiscoveredHost{IdentityEvidence: []discovery.IdentityEvidence{{
+		Type: "ssdp_server_token", Value: "Example/Player",
+	}}})
+	if len(sigs) == 0 {
+		t.Fatal("SSDP server token did not reach the corpus matcher")
+	}
+	for _, sig := range sigs {
+		if sig.confidence != 0.42 {
+			t.Fatalf("signal confidence = %v, want curator cap 0.42", sig.confidence)
+		}
+	}
+}

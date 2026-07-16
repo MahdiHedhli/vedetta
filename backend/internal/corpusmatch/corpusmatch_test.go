@@ -1,6 +1,7 @@
 package corpusmatch
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -100,6 +101,56 @@ func TestMatch_PrefersMoreFamilies(t *testing.T) {
 	}
 }
 
+func TestMatch_ProductSignatureOutranksGenericFamilies(t *testing.T) {
+	snap := chromecastSnapshot()
+	snap.Profiles = append(snap.Profiles, Profile{
+		ProfileID: "generic-appliance",
+		Labels:    Labels{Manufacturer: "Generic", Model: "Appliance", DeviceType: "iot"},
+		Variants: []Variant{{
+			VariantID: "generic-variant", ConfidenceBP: 10000,
+			Shape: CanonicalShapeV1{SchemaVersion: 1, OUIPrefixes: []string{"acbc32"}, MDNSServices: []string{"_googlecast._tcp"}, TCPPorts: []uint16{8009}},
+		}},
+	})
+	res, ok := NewMatcher(snap).Match(ObservedSignals{
+		OUIPrefixes: []string{"acbc32"}, MDNSServices: []string{"_googlecast._tcp"},
+		MDNSModels: []string{"Chromecast"}, TCPPorts: []uint16{8009},
+	})
+	if !ok || res.Model != "Chromecast" || !res.ProductSig {
+		t.Fatalf("product signature did not outrank generic families: ok=%v result=%+v", ok, res)
+	}
+}
+
+func TestMatch_ConflictingEqualRankIsAmbiguous(t *testing.T) {
+	snap := chromecastSnapshot()
+	snap.Profiles = append(snap.Profiles, Profile{
+		ProfileID: "lookalike",
+		Labels:    Labels{Manufacturer: "Other", Model: "Lookalike", DeviceType: "media_player"},
+		Variants: []Variant{{
+			// Different curator confidence cannot identify which class produced the same
+			// local evidence; the corpus contract requires ambiguity to remain.
+			VariantID: "lookalike-variant", ConfidenceBP: 7000,
+			Shape: CanonicalShapeV1{SchemaVersion: 1, OUIPrefixes: []string{"acbc32"}, MDNSServices: []string{"_googlecast._tcp"}},
+		}},
+	})
+	obs := ObservedSignals{OUIPrefixes: []string{"acbc32"}, MDNSServices: []string{"_googlecast._tcp"}}
+	if result, ok := NewMatcher(snap).Match(obs); ok {
+		t.Fatalf("equally ranked conflicting classes must remain ambiguous, got %+v", result)
+	}
+}
+
+func TestMatch_EqualRankSameClassIsDeterministic(t *testing.T) {
+	snap := chromecastSnapshot()
+	duplicate := snap.Profiles[0]
+	duplicate.ProfileID = "same-class"
+	duplicate.Variants = append([]Variant(nil), duplicate.Variants...)
+	duplicate.Variants[0].VariantID = "a-variant"
+	snap.Profiles = append(snap.Profiles, duplicate)
+	res, ok := NewMatcher(snap).Match(ObservedSignals{OUIPrefixes: []string{"acbc32"}, MDNSServices: []string{"_googlecast._tcp"}})
+	if !ok || res.VariantID != "a-variant" {
+		t.Fatalf("same-class tie should select stable variant id: ok=%v result=%+v", ok, res)
+	}
+}
+
 func TestMatch_Option55ExactSequence(t *testing.T) {
 	snap := &Snapshot{SchemaVersion: 1, Profiles: []Profile{{
 		Labels: Labels{Manufacturer: "Apple", Model: "iPhone", DeviceType: "phone"},
@@ -141,5 +192,50 @@ func TestParseSnapshot(t *testing.T) {
 	}
 	if _, err := ParseSnapshot([]byte(strings.Repeat("x", maxSnapshotBytes+1))); err == nil {
 		t.Error("expected an oversize rejection")
+	}
+}
+
+func TestParseSnapshot_RejectsIncompleteRuntimeContract(t *testing.T) {
+	validShape := `"shape":{"schema_version":1,"oui_prefixes":["acbc32"]}`
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"trailing JSON", `{"schema_version":1,"profiles":[]} {}`},
+		{"negative revision", `{"schema_version":1,"corpus_revision":-1,"profiles":[]}`},
+		{"empty profile id", `{"schema_version":1,"profiles":[{"profile_id":"","variants":[]}]}`},
+		{"duplicate profile id", `{"schema_version":1,"profiles":[{"profile_id":"p","variants":[]},{"profile_id":"p","variants":[]}]}`},
+		{"empty variant id", `{"schema_version":1,"profiles":[{"profile_id":"p","variants":[{"variant_id":"","confidence_bp":1,` + validShape + `}]}]}`},
+		{"duplicate variant id", `{"schema_version":1,"profiles":[{"profile_id":"p","variants":[{"variant_id":"v","confidence_bp":1,` + validShape + `},{"variant_id":"v","confidence_bp":2,` + validShape + `}]}]}`},
+		{"negative confidence", `{"schema_version":1,"profiles":[{"profile_id":"p","variants":[{"variant_id":"v","confidence_bp":-1,` + validShape + `}]}]}`},
+		{"excess confidence", `{"schema_version":1,"profiles":[{"profile_id":"p","variants":[{"variant_id":"v","confidence_bp":10001,` + validShape + `}]}]}`},
+		{"unsupported shape schema", `{"schema_version":1,"profiles":[{"profile_id":"p","variants":[{"variant_id":"v","confidence_bp":1,"shape":{"schema_version":2,"oui_prefixes":["acbc32"]}}]}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseSnapshot([]byte(tt.raw)); err == nil {
+				t.Fatalf("ParseSnapshot accepted %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestParseSnapshot_EnforcesCountBounds(t *testing.T) {
+	profiles := make([]Profile, maxProfiles+1)
+	raw, err := json.Marshal(Snapshot{SchemaVersion: 1, Profiles: profiles})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseSnapshot(raw); err == nil || !strings.Contains(err.Error(), "too many profiles") {
+		t.Fatalf("profile bound error = %v", err)
+	}
+
+	variants := make([]Variant, maxVariants+1)
+	raw, err = json.Marshal(Snapshot{SchemaVersion: 1, Profiles: []Profile{{ProfileID: "p", Variants: variants}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseSnapshot(raw); err == nil || !strings.Contains(err.Error(), "too many variants") {
+		t.Fatalf("variant bound error = %v", err)
 	}
 }

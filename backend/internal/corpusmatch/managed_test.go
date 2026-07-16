@@ -60,3 +60,34 @@ func TestManagedCorpus_BadSnapshotErrors(t *testing.T) {
 		t.Error("a present-but-unparseable snapshot must error (so OnInstalled can roll back)")
 	}
 }
+
+func TestPrepareManagedCorpusDoesNotPublishBeforeActivate(t *testing.T) {
+	setActive(NewMatcher(nil))
+	managedPath.Store(nil)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, managedCorpusFile), []byte(sampleSnapshotJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareManagedCorpus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := ObservedSignals{OUIPrefixes: []string{"acbc32"}, MDNSServices: []string{"_googlecast._tcp"}}
+	if _, ok := Active().Match(observed); ok {
+		t.Fatal("prepare changed active matcher before Activate")
+	}
+	prepared.Activate()
+	if result, ok := Active().Match(observed); !ok || result.Manufacturer != "Google" {
+		t.Fatalf("Activate did not publish staged matcher: ok=%v result=%+v", ok, result)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, managedCorpusFile), []byte(`{"schema_version":2}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareReloadCorpus(); err == nil {
+		t.Fatal("invalid replacement corpus prepared successfully")
+	}
+	if result, ok := Active().Match(observed); !ok || result.Manufacturer != "Google" {
+		t.Fatalf("failed prepare changed last-good matcher: ok=%v result=%+v", ok, result)
+	}
+}

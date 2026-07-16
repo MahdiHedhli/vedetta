@@ -213,6 +213,38 @@ func TestEnableManagedIEEEOUIRequiresProcessLocalActivation(t *testing.T) {
 	}
 }
 
+func TestPrepareManagedIEEEOUIDoesNotPublishBeforeActivate(t *testing.T) {
+	resetManagedOUIState(t)
+	t.Setenv(ouiDBOverrideEnv, "")
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	before := (&Engine{}).Lookup("00:00:00:00:00:01")
+	if before == nil {
+		t.Fatal("embedded baseline lookup is missing")
+	}
+
+	dir := t.TempDir()
+	managed := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Staged Vendor"), 1)
+	if bytes.Equal(managed, embeddedOUICSV) {
+		t.Fatal("test fixture did not replace the baseline vendor")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "oui.csv"), managed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareManagedIEEEOUI(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || got.Vendor != before.Vendor {
+		t.Fatalf("prepare changed active OUI before Activate: before=%#v after=%#v", before, got)
+	}
+	prepared.Activate()
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || got.Vendor != "Staged Vendor" {
+		t.Fatalf("Activate did not publish staged OUI: %#v", got)
+	}
+}
+
 func TestEnableManagedIEEEOUIRejectsUnusableExistingGeneration(t *testing.T) {
 	resetManagedOUIState(t)
 	dir := t.TempDir()
