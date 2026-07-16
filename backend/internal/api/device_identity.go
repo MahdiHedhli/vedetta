@@ -113,7 +113,7 @@ func sensorIdentityEvidenceType(kind string) bool {
 		return true
 	}
 	switch kind {
-	case "mdns_txt_model", "mdns_txt_vendor", "mdns_txt_id":
+	case "mdns_txt_model", "mdns_txt_vendor", "mdns_txt_id", "ssdp_server_token":
 		return true
 	default:
 		return false

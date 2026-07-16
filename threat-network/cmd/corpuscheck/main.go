@@ -39,9 +39,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: corpuscheck <corpus.json>")
 		os.Exit(2)
 	}
-	data, err := os.ReadFile(os.Args[1])
+	f, err := os.Open(os.Args[1])
 	if err == nil {
-		err = validateSnapshot(data)
+		defer f.Close()
+		var data []byte
+		data, err = io.ReadAll(io.LimitReader(f, maxSnapshotBytes+1))
+		if err == nil {
+			err = validateSnapshot(data)
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "corpuscheck: %v\n", err)

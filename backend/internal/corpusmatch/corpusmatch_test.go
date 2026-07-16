@@ -103,6 +103,10 @@ func TestMatch_PrefersMoreFamilies(t *testing.T) {
 
 func TestMatch_ProductSignatureOutranksGenericFamilies(t *testing.T) {
 	snap := chromecastSnapshot()
+	snap.Profiles[0].Variants[0].Shape = CanonicalShapeV1{
+		SchemaVersion: 1,
+		MDNSModels:    []string{"Chromecast"},
+	}
 	snap.Profiles = append(snap.Profiles, Profile{
 		ProfileID: "generic-appliance",
 		Labels:    Labels{Manufacturer: "Generic", Model: "Appliance", DeviceType: "iot"},

@@ -84,7 +84,7 @@ func allowedIdentityEvidenceType(kind string) bool {
 	switch kind {
 	case "dhcp_client_id", "dhcp_option_55", "ssdp_uuid", "ssdp_device_type",
 		"mdns_name", "mdns_service", "mdns_txt_model", "mdns_txt_vendor", "mdns_txt_id",
-		"hostname", "mac":
+		"ssdp_server_token", "hostname", "mac":
 		return true
 	default:
 		return false

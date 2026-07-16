@@ -481,7 +481,7 @@ func supportedIdentityEvidenceType(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "mac", "hostname", "oui", "dhcp_client_id", "dhcp_option_55", "dhcp_vendor_class",
 		"ssdp_uuid", "ssdp_device_type", "mdns_name", "mdns_service",
-		"mdns_txt_model", "mdns_txt_vendor", "mdns_txt_id":
+		"mdns_txt_model", "mdns_txt_vendor", "mdns_txt_id", "ssdp_server_token":
 		return true
 	default:
 		return false

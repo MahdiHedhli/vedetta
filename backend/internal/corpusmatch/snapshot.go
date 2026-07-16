@@ -24,7 +24,9 @@ const snapshotSchemaVersion = 1
 
 // Bounds guard against a malformed or oversized snapshot exhausting a Pi-4.
 const (
-	maxSnapshotBytes = 32 << 20 // 32 MiB on disk
+	// MaxSnapshotBytes is the on-disk limit shared by the runtime loader and release checker.
+	MaxSnapshotBytes = 32 << 20 // 32 MiB on disk
+	maxSnapshotBytes = MaxSnapshotBytes
 	maxProfiles      = 20000
 	maxVariants      = 60000
 )

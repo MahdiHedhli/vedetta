@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/vedetta-network/vedetta/backend/internal/corpusmatch"
@@ -14,9 +15,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: corpuscheck <corpus.json>")
 		os.Exit(2)
 	}
-	data, err := os.ReadFile(os.Args[1])
+	f, err := os.Open(os.Args[1])
 	if err == nil {
-		_, err = corpusmatch.ParseSnapshot(data)
+		defer f.Close()
+		var data []byte
+		data, err = io.ReadAll(io.LimitReader(f, corpusmatch.MaxSnapshotBytes+1))
+		if err == nil {
+			_, err = corpusmatch.ParseSnapshot(data)
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "corpuscheck: %v\n", err)

@@ -56,8 +56,8 @@ Run workflow) with a monotonically increasing calendar tag such as `db-2026.07`,
    key is streamed to the signer via stdin — never on disk or argv);
 2. for an included corpus, runs both the canonical Threat Network privacy/publication gate
    and Core's exact bounded runtime parser, then self-verifies the signed bundle;
-3. creates a new **draft** release with `oui.csv`, `manifest.json`, and
-   `manifest.json.sig`.
+3. creates a new **draft** release with `oui.csv`, `manifest.json`,
+   `manifest.json.sig`, and `corpus.json` when a corpus was included.
 
 Review the draft and **publish** it by hand. Clients ignore product releases, drafts, and
 prereleases and select the highest published valid `db-*` calendar version. The workflow
