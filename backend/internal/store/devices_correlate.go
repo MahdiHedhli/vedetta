@@ -30,9 +30,10 @@ import (
 const (
 	SourceUserCorrected   = "user_corrected"
 	SourceMDNSTxt         = "mdns_txt"
-	SourceMDNSPtr         = "mdns_ptr"
+	SourceCorpus          = "corpus" // community device-corpus class match (spec 008)
 	SourceSSDP            = "ssdp"
 	SourceDHCPHostname    = "dhcp_hostname"
+	SourceMDNSPtr         = "mdns_ptr"
 	SourceDHCPVendorClass = "dhcp_vendor_class"
 	SourceHostnamePattern = "hostname_pattern"
 	SourceOUI             = "oui"
@@ -46,6 +47,7 @@ const (
 var sourceConfidence = map[string]float64{
 	SourceUserCorrected:   1.0,
 	SourceMDNSTxt:         0.9,
+	SourceCorpus:          0.85, // ceiling for a corpus match; effective confidence is also capped by the curated variant
 	SourceSSDP:            0.75,
 	SourceDHCPHostname:    0.7,
 	SourceMDNSPtr:         0.65, // PTR service type: weaker than TXT model, stronger than vendor class

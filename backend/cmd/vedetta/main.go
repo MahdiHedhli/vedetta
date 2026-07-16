@@ -13,6 +13,7 @@ import (
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
+	"github.com/vedetta-network/vedetta/backend/internal/corpusmatch"
 	"github.com/vedetta-network/vedetta/backend/internal/dbupdate"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsingest"
@@ -437,7 +438,7 @@ func main() {
 	// installedDBTag lets the update notifier report the running signed device-DB generation.
 	// It stays nil unless the opt-in updater below is active.
 	var installedDBTag func() string
-
+	managedCorpusActive := false
 	// Opt-in signed device-DB updater. Off unless VEDETTA_DB_UPDATE_ENABLED is set; even
 	// then it stays inert (fails closed) until a trust root is compiled in. It verifies a
 	// release's signature + hashes before applying and keeps the last-good DB otherwise.
@@ -447,9 +448,12 @@ func main() {
 			log.Printf("WARNING: VEDETTA_DB_UPDATE_ENABLED is set but VEDETTA_DB_UPDATE_INSTALL_DIR is empty; device-DB updater not started")
 		} else {
 			cfg := dbupdate.Config{
-				Enabled:     true,
-				InstallDir:  installDir,
-				OnInstalled: fingerprint.ReloadIEEEOUI,
+				Enabled:    true,
+				InstallDir: installDir,
+				// Prepare both managed consumers after a generation switch, then publish both
+				// only if every file validates. A failure leaves the old in-process pair intact
+				// while the updater rolls the generation pointer back.
+				OnInstalled: func() error { return reloadDeviceDBConsumers(db) },
 			}
 			if repo := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_REPO")); repo != "" {
 				cfg.Repo = repo
@@ -463,13 +467,23 @@ func main() {
 			}
 			if updater, err := dbupdate.New(cfg); err != nil {
 				log.Printf("WARNING: device-DB updater not started: %v", err)
-			} else if err := updater.ActivateConsumer(fingerprint.EnableManagedIEEEOUI); err != nil {
+			} else if err := updater.ActivateConsumer(func(installDir string) error {
+				return activateDeviceDBConsumers(db, installDir)
+			}); err != nil {
 				log.Printf("WARNING: device-DB updater not started: %v", err)
 			} else {
+				managedCorpusActive = true
 				installedDBTag = updater.InstalledTag
 				go updater.Run(context.Background())
 				log.Printf("Device-DB updater started (opt-in); installing into %s", updater.InstallDir())
 			}
+		}
+	}
+	if !managedCorpusActive {
+		// No signed managed corpus is active (disabled, misconfigured, or rejected).
+		// Remove versioned projections so quiet devices cannot retain stale labels.
+		if err := db.ClearCorpusSignals(); err != nil {
+			log.Fatalf("Failed to clear inactive device-corpus projections: %v", err)
 		}
 	}
 
@@ -517,6 +531,44 @@ func main() {
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// activateDeviceDBConsumers validates every consumer against the same stable generation
+// before publishing either one. Activate calls are infallible immutable-pointer swaps, so a
+// corrupt optional corpus cannot leave a new OUI table paired with the previous corpus.
+func activateDeviceDBConsumers(db *store.DB, installDir string) error {
+	oui, err := fingerprint.PrepareManagedIEEEOUI(installDir)
+	if err != nil {
+		return err
+	}
+	corpus, err := corpusmatch.PrepareManagedCorpus(installDir)
+	if err != nil {
+		return err
+	}
+	return db.ActivateCorpusGeneration(corpus.GenerationID(), func() {
+		oui.Activate()
+		corpus.Activate()
+	})
+}
+
+// reloadDeviceDBConsumers stages the currently switched generation for both consumers.
+// The updater restores its symlink if preparation fails; active process state is untouched.
+func reloadDeviceDBConsumers(db *store.DB) error {
+	oui, err := fingerprint.PrepareReloadIEEEOUI()
+	if err != nil {
+		return err
+	}
+	corpus, err := corpusmatch.PrepareReloadCorpus()
+	if err != nil {
+		return err
+	}
+	// Reconcile database projections with the validated corpus bytes and publish both
+	// infallible swaps while observations are excluded. If reconciliation fails, process
+	// state is untouched and the updater rolls back.
+	return db.ActivateCorpusGeneration(corpus.GenerationID(), func() {
+		oui.Activate()
+		corpus.Activate()
+	})
 }
 
 func envEnabled(value string) bool {

@@ -20,8 +20,9 @@ import (
 // DB wraps the SQLite connection.
 type DB struct {
 	*sql.DB
-	identityKeyMu sync.RWMutex
-	identityKey   []byte
+	identityKeyMu      sync.RWMutex
+	identityKey        []byte
+	corpusProjectionMu sync.RWMutex
 }
 
 // Open opens (or creates) the SQLite database and runs migrations.

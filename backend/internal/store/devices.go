@@ -81,6 +81,13 @@ func (db *DB) UpsertDevice(host discovery.DiscoveredHost, scanTime time.Time, se
 // identity and observation time are retained in temporal address/evidence rows;
 // UpsertDevice above remains source compatible for legacy callers.
 func (db *DB) ObserveDevice(observation DeviceObservation) (bool, error) {
+	// A corpus generation switch clears persisted projections and swaps the active
+	// matcher under the write side of this lock. Hold the read side through commit
+	// so an observation matched by the old generation cannot reinsert stale labels
+	// after the clear.
+	db.corpusProjectionMu.RLock()
+	defer db.corpusProjectionMu.RUnlock()
+
 	host := observation.Host
 	host.DiscoverySource = strings.ToLower(strings.TrimSpace(host.DiscoverySource))
 	if host.DiscoverySource == "arp" {
@@ -331,6 +338,17 @@ func (db *DB) ObserveDevice(observation DeviceObservation) (bool, error) {
 	if err := db.upsertSignalsTx(tx, deviceID, sigs, scanTime); err != nil {
 		return false, err
 	}
+	corpusObserved, err := db.corpusObservedSignalsTx(tx, deviceID, host, scanTime)
+	if err != nil {
+		return false, err
+	}
+	corpusSignals := corpusDerivedSignalsForObserved(corpusObserved)
+	// Remove the prior corpus projection before canonical fields feed the fingerprint/risk
+	// engine. The newly matched advisory labels are inserted only after that engine runs, so
+	// community corpus content cannot become detection or EOL evidence by feedback.
+	if err := deleteCorpusSignalsTx(tx, deviceID); err != nil {
+		return false, err
+	}
 
 	// Recompute canonical vendor/model/hostname/friendly_name from the signal set
 	// (confidence-weighted; user_corrected wins). OUI vendor from OpenPorts/MAC is
@@ -372,6 +390,12 @@ func (db *DB) ObserveDevice(observation DeviceObservation) (bool, error) {
 		derived = append(derived, signalUpsert{field: "os_family", value: fpResult.OSFamily, source: SourceHostnamePattern, confidence: fpResult.FingerprintConfidence})
 	}
 	if err := db.upsertSignalsTx(tx, deviceID, derived, scanTime); err != nil {
+		return false, err
+	}
+	// Community corpus labels are descriptive output only. Insert the current match after all
+	// local fingerprint/risk derivation; the final canonical projection may display them, but
+	// no detector consumes them in this transaction.
+	if err := db.upsertSignalsTx(tx, deviceID, corpusSignals, scanTime); err != nil {
 		return false, err
 	}
 
@@ -502,9 +526,11 @@ func (db *DB) ObserveDevice(observation DeviceObservation) (bool, error) {
 		evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mdns_name", Value: mdnsName,
 			Source: SourceMDNSTxt, Confidence: 0.75, Sensitive: true})
 	}
-	for _, service := range host.Services {
-		evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mdns_service", Value: service,
-			DisplayValue: service, Source: SourceMDNSPtr, Confidence: 0.45})
+	if host.DiscoverySource == "passive_mdns" || host.DiscoverySource == "mdns" {
+		for _, service := range host.Services {
+			evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mdns_service", Value: service,
+				DisplayValue: service, Source: "passive_mdns", Confidence: 0.45})
+		}
 	}
 	for _, item := range evidence {
 		if _, err := db.upsertIdentityEvidenceTx(tx, deviceID, seg, sensorID, item, scanTime, false); err != nil {

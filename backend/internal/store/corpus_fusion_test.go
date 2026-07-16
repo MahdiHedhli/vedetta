@@ -1,0 +1,656 @@
+package store
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/vedetta-network/vedetta/backend/internal/corpusmatch"
+	"github.com/vedetta-network/vedetta/backend/internal/discovery"
+)
+
+func TestCorpusDerivedSignals(t *testing.T) {
+	dir := t.TempDir()
+	snap := `{"schema_version":1,"corpus_revision":1,"profiles":[
+	  {"profile_id":"p1","labels":{"manufacturer":"Google","model":"Chromecast","device_type":"media_player"},
+	   "variants":[{"variant_id":"v1","confidence_bp":9000,
+	     "shape":{"schema_version":1,"oui_prefixes":["acbc32"],"mdns_services":["_googlecast._tcp"]}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "corpus.json"), []byte(snap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := corpusmatch.EnableManagedCorpus(dir); err != nil {
+		t.Fatal(err)
+	}
+	// Reset the process-global matcher so it can't leak into other store tests.
+	t.Cleanup(func() { _ = corpusmatch.EnableManagedCorpus(t.TempDir()) })
+
+	// OUI + mDNS service = two families → a Chromecast class match.
+	sigs := corpusDerivedSignalsForObserved(corpusObservedSignals(discovery.DiscoveredHost{
+		MACAddress:      "ac:bc:32:11:22:33",
+		Services:        []string{"_googlecast._tcp"},
+		DiscoverySource: "passive_mdns",
+	}))
+	got := map[string]string{}
+	for _, s := range sigs {
+		if s.source != SourceCorpus {
+			t.Errorf("signal source = %q, want %q", s.source, SourceCorpus)
+		}
+		if s.confidence != 0.85 {
+			t.Errorf("signal confidence = %v, want 0.85", s.confidence)
+		}
+		got[s.field] = s.value
+	}
+	if got["vendor"] != "Google" || got["model"] != "Chromecast" || got["device_type"] != "media_player" {
+		t.Errorf("derived signals = %+v", got)
+	}
+
+	// A non-matching host yields nothing.
+	if s := corpusDerivedSignalsForObserved(corpusObservedSignals(discovery.DiscoveredHost{MACAddress: "00:00:00:00:00:00"})); s != nil {
+		t.Errorf("a non-match should yield nil, got %+v", s)
+	}
+}
+
+func TestCorpusObservedSignalsDoesNotRelabelActiveServicesAsMDNS(t *testing.T) {
+	dir := t.TempDir()
+	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","device_type":"media"},"variants":[{"variant_id":"v","confidence_bp":9000,"shape":{"schema_version":1,"oui_prefixes":["acbc32"],"mdns_services":["_googlecast._tcp"]}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "corpus.json"), []byte(snap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := corpusmatch.EnableManagedCorpus(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = corpusmatch.EnableManagedCorpus(t.TempDir()) })
+
+	active := corpusObservedSignals(discovery.DiscoveredHost{
+		MACAddress: "ac:bc:32:11:22:33", Services: []string{"_googlecast._tcp"},
+		DiscoverySource: "nmap_active",
+	})
+	if sigs := corpusDerivedSignalsForObserved(active); sigs != nil {
+		t.Fatalf("active service names must not count as mDNS evidence: %+v", sigs)
+	}
+}
+
+func TestCorpusFusionDoesNotRetainActiveServicesAsMDNS(t *testing.T) {
+	dir := t.TempDir()
+	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","device_type":"media"},"variants":[{"variant_id":"v","confidence_bp":9000,"shape":{"schema_version":1,"oui_prefixes":["acbc32"],"mdns_services":["_googlecast._tcp"]}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "corpus.json"), []byte(snap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := corpusmatch.EnableManagedCorpus(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = corpusmatch.EnableManagedCorpus(t.TempDir()) })
+
+	db := testDB(t)
+	now := time.Now().UTC()
+	for i, services := range [][]string{{"_googlecast._tcp"}, nil} {
+		if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+			IPAddress: "192.0.2.52", MACAddress: "ac:bc:32:11:22:33",
+			Services: services, DiscoverySource: "nmap_active", Status: "up",
+		}, now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var corpusRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_signals WHERE source = ?`, SourceCorpus).Scan(&corpusRows); err != nil {
+		t.Fatal(err)
+	}
+	if corpusRows != 0 {
+		t.Fatalf("active service was retained as mDNS and produced %d corpus rows", corpusRows)
+	}
+}
+
+func TestCorpusFusionDoesNotBorrowFutureEvidenceForDelayedReport(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	at := time.Now().UTC()
+	future := at.Add(time.Hour)
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.53", MACAddress: "00:00:5E:00:53:01",
+		Model: "Future Model", Services: []string{"_future._tcp"},
+		DiscoverySource: "passive_mdns", Status: "up",
+	}, future); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.53").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.OUIPrefixes) != 0 || len(obs.MDNSModels) != 0 || len(obs.MDNSServices) != 0 {
+		t.Fatalf("delayed report borrowed future evidence: %+v", obs)
+	}
+}
+
+func TestCorpusFusionRetainsCurrentlyAssociatedStableMAC(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	base := time.Now().UTC().Add(-3 * 24 * time.Hour)
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.58", MACAddress: "00:00:5E:00:53:58",
+		DiscoverySource: "nmap_active", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.58").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{},
+		base.Add(2*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.OUIPrefixes) != 1 || obs.OUIPrefixes[0] != "00:00:5E:00:53:58" {
+		t.Fatalf("currently associated stable MAC aged out of corpus fusion: %v", obs.OUIPrefixes)
+	}
+}
+
+func TestCorpusFusionUsesAndClearsRecursiveMergedFamily(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	base := time.Now().UTC()
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.59", MACAddress: "00:00:5E:00:53:59",
+		DiscoverySource: "nmap_active", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.60", MACAddress: "00:00:5E:00:53:60",
+		Services: []string{"_family._tcp"}, DiscoverySource: "passive_mdns", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	var targetID, childID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.59").Scan(&targetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.60").Scan(&childID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO device_signals
+		(device_id, field, value, source, confidence, first_observed, last_observed)
+		VALUES (?, 'model', 'stale-corpus-model', ?, 0.85, ?, ?)`,
+		childID, SourceCorpus, base, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.MergeDevices(context.Background(), childID, targetID,
+		"synthetic merged-family corpus regression", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, targetID, discovery.DiscoveredHost{}, base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.OUIPrefixes) != 2 {
+		t.Fatalf("merged-family OUIs = %v, want both family members", obs.OUIPrefixes)
+	}
+	if len(obs.MDNSServices) != 1 || obs.MDNSServices[0] != "_family._tcp" {
+		t.Fatalf("merged-child mDNS evidence missing from corpus fusion: %v", obs.MDNSServices)
+	}
+	if err := deleteCorpusSignalsTx(tx, targetID); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := db.resolveCanonicalFields(tx, targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := canonical["model"].value; got == "stale-corpus-model" {
+		t.Fatalf("merged-child corpus projection survived family clear: %q", got)
+	}
+	var corpusRows int
+	if err := tx.QueryRow(`WITH RECURSIVE family(device_id) AS (
+			SELECT ? UNION SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT COUNT(*) FROM device_signals WHERE source = ?
+		  AND device_id IN (SELECT device_id FROM family)`, targetID, SourceCorpus).Scan(&corpusRows); err != nil {
+		t.Fatal(err)
+	}
+	if corpusRows != 0 {
+		t.Fatalf("merged family retained %d corpus projection rows", corpusRows)
+	}
+
+	// The global generation clear must recompute both the redirected row (for a future split)
+	// and its visible canonical root. A projection may physically live only on the child even
+	// though canonical resolution previously copied its value onto the root row.
+	if _, err := tx.Exec(`INSERT INTO device_signals
+		(device_id, field, value, source, confidence, first_observed, last_observed)
+		VALUES (?, 'model', 'stale-corpus-model', ?, 0.85, ?, ?)`,
+		childID, SourceCorpus, base, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE devices SET model = 'stale-corpus-model'
+		WHERE device_id IN (?, ?)`, childID, targetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.clearCorpusSignalsTx(tx); err != nil {
+		t.Fatal(err)
+	}
+	for _, deviceID := range []string{childID, targetID} {
+		var model string
+		if err := tx.QueryRow(`SELECT model FROM devices WHERE device_id = ?`, deviceID).Scan(&model); err != nil {
+			t.Fatal(err)
+		}
+		if model == "stale-corpus-model" {
+			t.Fatalf("global corpus clear left stale model on merged-family device %s", deviceID)
+		}
+	}
+}
+
+func TestCorpusFusionDoesNotBackdateFutureProtocolProvenance(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	at := time.Now().UTC()
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.54", DiscoverySource: "nmap_active", Status: "up",
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.54").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	observations := []struct {
+		time       time.Time
+		source     string
+		confidence float64
+	}{
+		{time: at, source: "legacy_import", confidence: 0.4},
+		{time: at.Add(time.Hour), source: "passive_mdns", confidence: 0.9},
+	}
+	for _, observation := range observations {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
+			DeviceIdentityEvidenceInput{
+				Type: "mdns_service", Value: "_future._tcp", DisplayValue: "_future._tcp",
+				Source: observation.source, Confidence: observation.confidence,
+			}, observation.time, false)
+		if err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.MDNSServices) != 0 {
+		t.Fatalf("future passive-mDNS provenance was backdated: %+v", obs.MDNSServices)
+	}
+}
+
+func TestCorpusFusionDoesNotReviveStaleProtocolProvenance(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	at := time.Now().UTC()
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.55", DiscoverySource: "nmap_active", Status: "up",
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.55").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	observations := []struct {
+		time       time.Time
+		source     string
+		confidence float64
+	}{
+		{time: at.Add(-20 * 24 * time.Hour), source: "passive_mdns", confidence: 0.4},
+		{time: at, source: "legacy_import", confidence: 0.9},
+	}
+	for _, observation := range observations {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
+			DeviceIdentityEvidenceInput{
+				Type: "mdns_service", Value: "_stale._tcp", DisplayValue: "_stale._tcp",
+				Source: observation.source, Confidence: observation.confidence,
+			}, observation.time, false)
+		if err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.MDNSServices) != 0 {
+		t.Fatalf("non-protocol refresh revived stale passive-mDNS provenance: %+v", obs.MDNSServices)
+	}
+}
+
+func TestIdentityEvidenceStrengthRecordsBoundedSourceRecencyCheckpoints(t *testing.T) {
+	db := testDB(t)
+	base := time.Now().UTC().Add(-10 * 24 * time.Hour)
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.56", DiscoverySource: "nmap_active", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.56").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	for _, observedAt := range []time.Time{base, base.Add(time.Hour), base.Add(8 * 24 * time.Hour)} {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
+			DeviceIdentityEvidenceInput{
+				Type: "mdns_service", Value: "_bounded._tcp", DisplayValue: "_bounded._tcp",
+				Source: "passive_mdns", Confidence: 0.8,
+			}, observedAt, false)
+		if err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var strengthRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_identity_evidence_strength s
+		JOIN device_identity_evidence e ON e.evidence_id = s.evidence_id
+		WHERE e.device_id = ? AND e.evidence_type = 'mdns_service'`, deviceID).Scan(&strengthRows); err != nil {
+		t.Fatal(err)
+	}
+	if strengthRows != 2 {
+		t.Fatalf("source recency history rows = %d, want 2 bounded checkpoints", strengthRows)
+	}
+}
+
+func TestCorpusFusionRetainsProtocolProvenanceAtExactFreshnessBoundaries(t *testing.T) {
+	db := testDB(t)
+	base := time.Now().UTC().Add(-2 * mdnsNameRecencyWindow)
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.57", DiscoverySource: "nmap_active", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.57").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		evidenceType string
+		value        string
+		source       string
+		retained     func(corpusmatch.ObservedSignals) []string
+	}{
+		{
+			evidenceType: "mdns_service", value: "_boundary._tcp", source: "passive_mdns",
+			retained: func(obs corpusmatch.ObservedSignals) []string { return obs.MDNSServices },
+		},
+		{
+			evidenceType: "ssdp_device_type", value: "urn:example:device:boundary:1", source: "passive_ssdp",
+			retained: func(obs corpusmatch.ObservedSignals) []string { return obs.SSDPDeviceTypes },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.source, func(t *testing.T) {
+			observations := []struct {
+				observedAt time.Time
+				value      string
+			}{
+				{observedAt: base, value: "stale-" + tc.value},
+				{observedAt: base, value: tc.value},
+				{observedAt: base.Add(mdnsNameRecencyWindow), value: tc.value},
+			}
+			for _, observation := range observations {
+				tx, err := db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
+					DeviceIdentityEvidenceInput{
+						Type: tc.evidenceType, Value: observation.value, DisplayValue: observation.value,
+						Source: tc.source, Confidence: 0.8,
+					}, observation.observedAt, false)
+				if err != nil {
+					tx.Rollback()
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{},
+				base.Add(2*mdnsNameRecencyWindow))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retained := tc.retained(obs); len(retained) != 1 || retained[0] != tc.value {
+				t.Fatalf("exact-boundary %s provenance = %v, want %q", tc.source, retained, tc.value)
+			}
+		})
+	}
+}
+
+func TestCorpusDerivedSignalsCapsConfidenceAtVariantConfidence(t *testing.T) {
+	dir := t.TempDir()
+	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","model":"Player","device_type":"media_player"},"variants":[{"variant_id":"v","confidence_bp":4200,"shape":{"schema_version":1,"ssdp_server_tokens":["example/player"]}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "corpus.json"), []byte(snap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := corpusmatch.EnableManagedCorpus(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = corpusmatch.EnableManagedCorpus(t.TempDir()) })
+
+	sigs := corpusDerivedSignalsForObserved(corpusObservedSignals(discovery.DiscoveredHost{
+		DiscoverySource: "passive_ssdp",
+		IdentityEvidence: []discovery.IdentityEvidence{{
+			Type: "ssdp_server_token", Value: "Example/Player",
+		}},
+	}))
+	if len(sigs) == 0 {
+		t.Fatal("SSDP server token did not reach the corpus matcher")
+	}
+	for _, sig := range sigs {
+		if sig.confidence != 0.42 {
+			t.Fatalf("signal confidence = %v, want curator cap 0.42", sig.confidence)
+		}
+	}
+}
+
+func TestCorpusFusionCombinesCorrelatedReportsAndClearsStaleProjection(t *testing.T) {
+	dir := t.TempDir()
+	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example Networks","model":"DIR-850L Wireless Router","device_type":"router"},"variants":[{"variant_id":"v","confidence_bp":9000,"shape":{"schema_version":1,"oui_prefixes":["00005e"],"mdns_services":["_router._tcp"]}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "corpus.json"), []byte(snap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := corpusmatch.EnableManagedCorpus(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = corpusmatch.EnableManagedCorpus(t.TempDir()) })
+
+	db := testDB(t)
+	now := time.Now().UTC()
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.50", MACAddress: "00:00:5E:00:53:01",
+		Status: "up", DiscoverySource: "nmap_active",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	// The normal passive mDNS report has the source IP and service but no MAC. Core must
+	// combine it with the already-correlated device MAC to reach two independent families.
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.50", Services: []string{"_router._tcp"},
+		Status: "up", DiscoverySource: "passive_mdns",
+	}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var model, deviceType string
+	var eolRisk bool
+	if err := db.QueryRow(`SELECT model, device_type, eol_risk FROM devices WHERE ip_address = ?`, "192.0.2.50").
+		Scan(&model, &deviceType, &eolRisk); err != nil {
+		t.Fatal(err)
+	}
+	if model != "DIR-850L Wireless Router" || deviceType != "router" {
+		t.Fatalf("correlated corpus projection missing: model=%q type=%q", model, deviceType)
+	}
+	if eolRisk {
+		t.Fatal("advisory corpus model fed the local EOL/risk engine")
+	}
+
+	// Removing the active corpus and observing the device again must remove the prior
+	// projection instead of allowing it to sustain itself.
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.50", Services: []string{"_router._tcp"},
+		Status: "up", DiscoverySource: "passive_mdns",
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var corpusRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_signals WHERE source = ?`, SourceCorpus).Scan(&corpusRows); err != nil {
+		t.Fatal(err)
+	}
+	if corpusRows != 0 {
+		t.Fatalf("stale corpus rows remain after no-match observation: %d", corpusRows)
+	}
+	if err := db.QueryRow(`SELECT model, device_type FROM devices WHERE ip_address = ?`, "192.0.2.50").
+		Scan(&model, &deviceType); err != nil {
+		t.Fatal(err)
+	}
+	if model == "DIR-850L Wireless Router" || deviceType == "router" {
+		t.Fatalf("stale corpus projection remains on device: model=%q type=%q", model, deviceType)
+	}
+}
+
+func TestClearCorpusSignalsReprojectsQuietDevices(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	if _, err := db.Exec(`INSERT INTO devices
+		(device_id, ip_address, mac_address, first_seen, last_seen, model, device_type, display_name)
+		VALUES ('quiet-corpus-device', '192.0.2.51', '', ?, ?, 'Stale Model', 'camera', 'Stale Model')`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO device_signals
+		(device_id, field, value, source, confidence, first_observed, last_observed)
+		VALUES ('quiet-corpus-device', 'model', 'Stale Model', ?, 0.85, ?, ?),
+		       ('quiet-corpus-device', 'device_type', 'camera', ?, 0.85, ?, ?)`,
+		SourceCorpus, now, now, SourceCorpus, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClearCorpusSignals(); err != nil {
+		t.Fatal(err)
+	}
+	var model, deviceType, displayName string
+	if err := db.QueryRow(`SELECT model, device_type, display_name FROM devices
+		WHERE device_id = 'quiet-corpus-device'`).Scan(&model, &deviceType, &displayName); err != nil {
+		t.Fatal(err)
+	}
+	if model != "" || deviceType != "" || displayName == "Stale Model" {
+		t.Fatalf("quiet device was not reprojected: model=%q type=%q display=%q", model, deviceType, displayName)
+	}
+}
+
+func TestActivateCorpusGenerationPreservesOnlyExactGeneration(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	activated := 0
+	if err := db.ActivateCorpusGeneration("sha256:first", func() { activated++ }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO devices
+		(device_id, ip_address, mac_address, first_seen, last_seen, model, display_name)
+		VALUES ('quiet-versioned-device', '192.0.2.55', '', ?, ?, 'Versioned Model', 'Versioned Model')`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO device_signals
+		(device_id, field, value, source, confidence, first_observed, last_observed)
+		VALUES ('quiet-versioned-device', 'model', 'Versioned Model', ?, 0.85, ?, ?)`,
+		SourceCorpus, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ActivateCorpusGeneration("sha256:first", func() { activated++ }); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_signals WHERE source = ?`, SourceCorpus).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("unchanged generation discarded quiet-device projection: rows=%d", rows)
+	}
+	if err := db.ActivateCorpusGeneration("sha256:second", func() { activated++ }); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_signals WHERE source = ?`, SourceCorpus).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || activated != 3 {
+		t.Fatalf("changed generation did not clear/activate exactly once: rows=%d activated=%d", rows, activated)
+	}
+}

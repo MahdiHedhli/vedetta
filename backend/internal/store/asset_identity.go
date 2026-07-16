@@ -216,9 +216,11 @@ func identityDisplayValue(in DeviceIdentityEvidenceInput) string {
 	}
 }
 
-// recordIdentityEvidenceStrengthTx appends only changes to the strength known at
-// observedAt. The parent evidence row remains the best/current aggregate for
-// inventory compatibility; event-time resolution reads this history instead.
+// recordIdentityEvidenceStrengthTx appends changes to the strength known at observedAt plus
+// one bounded recency checkpoint per source/freshness window. The latter preserves temporal
+// provenance without growing at high-frequency polling cadence. The parent evidence row
+// remains the best/current aggregate for inventory compatibility; event-time resolution
+// reads this history instead.
 func recordIdentityEvidenceStrengthTx(tx *sql.Tx, evidenceID, source string, confidence float64,
 	operatorConfirmed bool, observedAt time.Time) error {
 	observedAt = observedAt.UTC()
@@ -226,15 +228,18 @@ func recordIdentityEvidenceStrengthTx(tx *sql.Tx, evidenceID, source string, con
 	source = strings.TrimSpace(source)
 
 	var priorConfidence sql.NullFloat64
-	var priorConfirmed int
+	var priorConfirmed, recentSource int
+	sourceRecencyCutoff := observedAt.Add(-mdnsNameRecencyWindow)
 	if err := tx.QueryRow(`SELECT MAX(confidence),
-		COALESCE(MAX(CASE WHEN operator_confirmed THEN 1 ELSE 0 END), 0)
+		COALESCE(MAX(CASE WHEN operator_confirmed THEN 1 ELSE 0 END), 0),
+		COALESCE(MAX(CASE WHEN source = ? AND observed_at > ? THEN 1 ELSE 0 END), 0)
 		FROM device_identity_evidence_strength
-		WHERE evidence_id = ? AND observed_at <= ?`, evidenceID, observedAt).
-		Scan(&priorConfidence, &priorConfirmed); err != nil {
+		WHERE evidence_id = ? AND observed_at <= ?`, source, sourceRecencyCutoff, evidenceID, observedAt).
+		Scan(&priorConfidence, &priorConfirmed, &recentSource); err != nil {
 		return fmt.Errorf("read identity evidence strength history: %w", err)
 	}
-	if priorConfidence.Valid && confidence <= priorConfidence.Float64 && (!operatorConfirmed || priorConfirmed != 0) {
+	if priorConfidence.Valid && confidence <= priorConfidence.Float64 &&
+		(!operatorConfirmed || priorConfirmed != 0) && recentSource != 0 {
 		return nil
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO device_identity_evidence_strength
@@ -481,7 +486,7 @@ func supportedIdentityEvidenceType(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "mac", "hostname", "oui", "dhcp_client_id", "dhcp_option_55", "dhcp_vendor_class",
 		"ssdp_uuid", "ssdp_device_type", "mdns_name", "mdns_service",
-		"mdns_txt_model", "mdns_txt_vendor", "mdns_txt_id":
+		"mdns_txt_model", "mdns_txt_vendor", "mdns_txt_id", "ssdp_server_token":
 		return true
 	default:
 		return false

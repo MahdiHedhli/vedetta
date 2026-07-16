@@ -30,6 +30,32 @@ const (
 // can never make previously downloaded bytes eligible.
 var managedOUIPath atomic.Pointer[string]
 
+// PreparedIEEEOUI is a fully loaded, validated OUI generation that has not yet been
+// published. Activate is deliberately infallible so a coordinator can prepare every file
+// in a signed device-DB generation before changing any process-visible consumer state.
+type PreparedIEEEOUI struct {
+	managedPath *string
+	entries     map[string]string
+}
+
+// Activate publishes a previously prepared immutable OUI map.
+func (p *PreparedIEEEOUI) Activate() {
+	if p == nil {
+		return
+	}
+	if p.managedPath != nil {
+		managedOUIPath.Store(p.managedPath)
+	}
+	ieeeOUIMu.Lock()
+	ieeeOUI = p.entries
+	ieeeOUIMu.Unlock()
+	if p.managedPath != nil {
+		log.Printf("[fingerprint] activated managed OUI source %s (%d entries)", *p.managedPath, len(p.entries))
+	} else {
+		log.Printf("[fingerprint] reloaded %d OUI entries", len(p.entries))
+	}
+}
+
 // configuredOUIDBPath resolves the table that should supersede the embedded baseline.
 // A managed generation is eligible only while signed updates are explicitly enabled.
 // VEDETTA_OUI_DB_PATH remains an independent, operator-managed override for backwards
@@ -128,27 +154,34 @@ func loadIEEEOUI() map[string]string {
 // before this callback can read existing bytes. A valid existing generation is loaded
 // immediately; an absent first generation starts from the embedded baseline. An unusable
 // existing generation fails without changing the active source or index.
-func EnableManagedIEEEOUI(installDir string) error {
+func PrepareManagedIEEEOUI(installDir string) (*PreparedIEEEOUI, error) {
 	installDir = strings.TrimSpace(installDir)
 	if installDir == "" {
-		return errors.New("managed OUI install directory is empty")
+		return nil, errors.New("managed OUI install directory is empty")
 	}
 	path := filepath.Join(installDir, "oui.csv")
 	next, err := loadOUICSVFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if _, statErr := os.Lstat(installDir); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
-			return fmt.Errorf("activate managed OUI generation %s: %w", path, err)
+			return nil, fmt.Errorf("activate managed OUI generation %s: %w", path, err)
 		}
 		next = parseOUICSV(bytes.NewReader(embeddedOUICSV))
 	} else if err != nil {
-		return fmt.Errorf("activate managed OUI generation %s: %w", path, err)
+		return nil, fmt.Errorf("activate managed OUI generation %s: %w", path, err)
 	}
 	stablePath := path
-	managedOUIPath.Store(&stablePath)
-	ieeeOUIMu.Lock()
-	ieeeOUI = next
-	ieeeOUIMu.Unlock()
-	log.Printf("[fingerprint] activated managed OUI source %s (%d entries)", path, len(next))
+	return &PreparedIEEEOUI{managedPath: &stablePath, entries: next}, nil
+}
+
+// EnableManagedIEEEOUI prepares and publishes the managed OUI generation. Coordinators
+// that activate multiple generation files should use PrepareManagedIEEEOUI and publish only
+// after every consumer has prepared successfully.
+func EnableManagedIEEEOUI(installDir string) error {
+	prepared, err := PrepareManagedIEEEOUI(installDir)
+	if err != nil {
+		return err
+	}
+	prepared.Activate()
 	return nil
 }
 
@@ -156,7 +189,7 @@ func EnableManagedIEEEOUI(installDir string) error {
 // for future lookups. Unlike initial startup, an explicitly configured but unusable file
 // is an error: the signed updater uses this as its post-switch acceptance check and rolls
 // the generation pointer back rather than silently claiming an update while using fallback.
-func ReloadIEEEOUI() error {
+func PrepareReloadIEEEOUI() (*PreparedIEEEOUI, error) {
 	path := configuredOUIDBPath()
 	var next map[string]string
 	if path == "" {
@@ -164,13 +197,19 @@ func ReloadIEEEOUI() error {
 	} else {
 		loaded, err := loadOUICSVFile(path)
 		if err != nil {
-			return fmt.Errorf("reload OUI override %s: %w", path, err)
+			return nil, fmt.Errorf("reload OUI override %s: %w", path, err)
 		}
 		next = loaded
 	}
-	ieeeOUIMu.Lock()
-	ieeeOUI = next
-	ieeeOUIMu.Unlock()
-	log.Printf("[fingerprint] reloaded %d OUI entries", len(next))
+	return &PreparedIEEEOUI{entries: next}, nil
+}
+
+// ReloadIEEEOUI prepares and publishes the configured source as one immutable map.
+func ReloadIEEEOUI() error {
+	prepared, err := PrepareReloadIEEEOUI()
+	if err != nil {
+		return err
+	}
+	prepared.Activate()
 	return nil
 }

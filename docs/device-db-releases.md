@@ -1,7 +1,8 @@
 # Signed Device-DB Releases
 
-Vedetta ships the IEEE OUI table (and, later, the fingerprint corpus) compiled into the
-binary, so device identification works fully offline. This document covers the **optional,
+Vedetta ships the IEEE OUI table compiled into the binary, so baseline device identification
+works fully offline. Signed bundles may also include the curated fingerprint corpus. This
+document covers the **optional,
 opt-in** mechanism for delivering a *fresher* device DB between software releases: a signed
 GitHub release that clients verify and apply.
 
@@ -53,9 +54,10 @@ Run workflow) with a monotonically increasing calendar tag such as `db-2026.07`,
 
 1. bundles the current `oui.csv`, builds the manifest, and signs it with the secret (the
    key is streamed to the signer via stdin — never on disk or argv);
-2. validates the same schema and size limits used by clients and self-verifies the signature;
-3. creates a new **draft** release with `oui.csv`, `manifest.json`, and
-   `manifest.json.sig`.
+2. for an included corpus, runs both the canonical Threat Network privacy/publication gate
+   and Core's exact bounded runtime parser, then self-verifies the signed bundle;
+3. creates a new **draft** release with `oui.csv`, `manifest.json`,
+   `manifest.json.sig`, and `corpus.json` when a corpus was included.
 
 Review the draft and **publish** it by hand. Clients ignore product releases, drafts, and
 prereleases and select the highest published valid `db-*` calendar version. The workflow
@@ -78,7 +80,8 @@ on. Enable it with:
 When enabled, the client checks on startup and every interval, and installs a newer
 published release only after full verification. The directory containing `current` must be
 writable by Core; `current` itself must be absent or a pointer previously created by the
-updater. Core reloads the OUI index after a successful switch without requiring restart.
+updater. Core stages and reloads the OUI index and optional corpus together after a
+successful switch without requiring restart.
 When disabled (the default), the embedded table—refreshed monthly in-repo by the
 `update-oui` workflow—is authoritative even if a prior managed generation remains on disk.
 The separate `VEDETTA_OUI_DB_PATH` variable remains available for a deliberate, manually

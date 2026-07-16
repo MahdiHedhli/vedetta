@@ -111,6 +111,9 @@ func TestParseSSDP(t *testing.T) {
 	if got := identityEvidenceValue(host.IdentityEvidence, "ssdp_device_type"); got != "urn:schemas-upnp-org:device:MediaRenderer:1" {
 		t.Fatalf("SSDP device-type evidence = %q", got)
 	}
+	if got := identityEvidenceValue(host.IdentityEvidence, "ssdp_server_token"); got != "TestVendor/1.0 UPnP/1.1" {
+		t.Fatalf("SSDP server-token evidence = %q", got)
+	}
 }
 
 func identityEvidenceValue(items []netscan.IdentityEvidence, kind string) string {
