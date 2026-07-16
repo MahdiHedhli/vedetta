@@ -114,7 +114,26 @@ jobs:
           unset signing_key
           ls -la "$ROOT/dist"
 
+      - name: Re-verify release is still unpublished
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          # A maintainer may publish the draft while this signing job is running.
+          # draft: true does not turn an existing published release back into a draft,
+          # so fail immediately before the release action can mutate live assets.
+          rows="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r tag is_draft; do
+            if [ "$tag" = "$TAG" ] && [ "$is_draft" != "true" ]; then
+              echo "::error::release '$TAG' was published during the build; refusing to replace live assets"
+              exit 1
+            fi
+          done <<< "$rows"
+
       - name: Create/refresh DRAFT release
+        id: draft-release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ github.event.inputs.tag }}
@@ -129,3 +148,26 @@ jobs:
             dist/oui.csv
             dist/manifest.json
             dist/manifest.json.sig
+
+      - name: Require the assembled release to remain a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ github.event.inputs.tag }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::release action returned an invalid release id"
+            exit 1
+          fi
+          release_state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            --jq '[.tag_name, .draft] | @tsv')"
+          IFS=$'\t' read -r actual_tag is_draft <<< "$release_state"
+          if [ "$actual_tag" != "$EXPECTED_TAG" ]; then
+            echo "::error::release action returned tag '$actual_tag', expected '$EXPECTED_TAG'"
+            exit 1
+          fi
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::release '$EXPECTED_TAG' is published; refusing a successful asset-refresh run"
+            exit 1
+          fi
