@@ -182,10 +182,8 @@ func TestDBReleaseVersionOrdering(t *testing.T) {
 	}
 }
 
-func TestTrustedKey_FailsClosedWhenUnset(t *testing.T) {
-	// The shipped placeholder is empty, so a default build has no trust root and must
-	// refuse rather than trust anything.
-	if _, err := TrustedKey(); !errors.Is(err, ErrTrustKey) {
+func TestParsePublicKey_FailsClosedAndValidates(t *testing.T) {
+	if _, err := parsePublicKey(""); !errors.Is(err, ErrTrustKey) {
 		t.Errorf("empty trust key: got %v, want ErrTrustKey", err)
 	}
 	// A well-formed key round-trips.

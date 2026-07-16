@@ -27,14 +27,14 @@ const manifestSchemaVersion = 1
 // on the Pi-4 floor. The real bundle carries a handful of files (OUI table + corpus parts).
 const maxManifestFiles = 64
 
-// maxBundleFileBytes is the single per-file contract shared by manifest parsing,
-// bundle construction, downloading, and verification.
-const maxBundleFileBytes = 64 << 20 // 64 MiB
+// MaxBundleFileBytes is the single per-file contract shared by manifest parsing,
+// bundle construction, signing, downloading, and verification.
+const MaxBundleFileBytes int64 = 64 << 20 // 64 MiB
 
-// maxBundleTotalBytes caps the summed declared size of a bundle. It bounds how much a
+// MaxBundleTotalBytes caps the summed declared size of a bundle. It bounds how much a
 // manifest can make the client download even before per-file limits apply, so a hostile
 // (or accidental) manifest cannot direct a multi-gigabyte download at the Pi-4 floor.
-const maxBundleTotalBytes = 256 << 20 // 256 MiB
+const MaxBundleTotalBytes int64 = 256 << 20 // 256 MiB
 
 var (
 	// ErrManifestSchema is returned for an unrecognized schema version.
@@ -204,7 +204,7 @@ func validateManifestStructure(m *Manifest) error {
 	seen := make(map[string]struct{}, len(m.Files))
 	var total int64
 	for _, f := range m.Files {
-		if !isSafeName(f.Name) || !sha256HexRE.MatchString(f.SHA256) || f.Bytes < 0 || f.Bytes > maxBundleFileBytes {
+		if !isSafeName(f.Name) || !sha256HexRE.MatchString(f.SHA256) || f.Bytes < 0 || f.Bytes > MaxBundleFileBytes {
 			return fmt.Errorf("%w: %q", ErrManifestFile, f.Name)
 		}
 		if _, dup := seen[f.Name]; dup {
@@ -213,7 +213,7 @@ func validateManifestStructure(m *Manifest) error {
 		seen[f.Name] = struct{}{}
 		total += f.Bytes // each f.Bytes <= cap and <= 64 files, so this cannot overflow int64
 	}
-	if total > maxBundleTotalBytes {
+	if total > MaxBundleTotalBytes {
 		return fmt.Errorf("%w: %d bytes total", ErrManifestTooLarge, total)
 	}
 	return nil

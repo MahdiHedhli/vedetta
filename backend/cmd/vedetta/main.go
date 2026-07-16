@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -439,14 +438,6 @@ func main() {
 	// release's signature + hashes before applying and keeps the last-good DB otherwise.
 	if envEnabled(os.Getenv("VEDETTA_DB_UPDATE_ENABLED")) {
 		installDir := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_INSTALL_DIR"))
-		// Backwards compatibility for early opt-in deployments that pointed the
-		// updater at a stable OUI path directly. New deployments use the dedicated
-		// managed-generation path so disabling updates cannot leave it active.
-		if installDir == "" {
-			if ouiPath := strings.TrimSpace(os.Getenv("VEDETTA_OUI_DB_PATH")); ouiPath != "" {
-				installDir = filepath.Dir(ouiPath)
-			}
-		}
 		if installDir == "" {
 			log.Printf("WARNING: VEDETTA_DB_UPDATE_ENABLED is set but VEDETTA_DB_UPDATE_INSTALL_DIR is empty; device-DB updater not started")
 		} else {

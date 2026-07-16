@@ -58,6 +58,7 @@ func run() error {
 	}
 
 	contents := make(map[string][]byte, len(files))
+	var totalBytes int64
 	for _, spec := range files {
 		name, path, ok := strings.Cut(spec, "=")
 		if !ok || name == "" || path == "" {
@@ -66,11 +67,12 @@ func run() error {
 		if _, duplicate := contents[name]; duplicate {
 			return fmt.Errorf("duplicate -file name %q", name)
 		}
-		data, err := os.ReadFile(path)
+		data, err := readBundleSource(path, dbupdate.MaxBundleFileBytes, dbupdate.MaxBundleTotalBytes-totalBytes)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
 		contents[name] = data
+		totalBytes += int64(len(data))
 	}
 
 	ts := *generatedAt
@@ -104,6 +106,36 @@ func run() error {
 	fmt.Printf("public key (must match the client's trustedPublicKeyBase64): %s\n",
 		base64.StdEncoding.EncodeToString(pub))
 	return nil
+}
+
+// readBundleSource bounds memory before a source becomes part of the in-memory manifest
+// input. The signer therefore enforces the same per-file and aggregate contract as clients
+// even when a source file is unexpectedly huge or grows while it is being read.
+func readBundleSource(path string, perFileLimit, aggregateRemaining int64) ([]byte, error) {
+	if perFileLimit < 0 || aggregateRemaining < 0 {
+		return nil, fmt.Errorf("%w: aggregate byte limit exceeded", dbupdate.ErrManifestTooLarge)
+	}
+	limit := perFileLimit
+	aggregateBound := aggregateRemaining < limit
+	if aggregateBound {
+		limit = aggregateRemaining
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		if aggregateBound {
+			return nil, fmt.Errorf("%w: aggregate byte limit exceeded", dbupdate.ErrManifestTooLarge)
+		}
+		return nil, fmt.Errorf("%w: file exceeds %d bytes", dbupdate.ErrManifestFile, perFileLimit)
+	}
+	return data, nil
 }
 
 // loadPrivateKey reads a base64 ed25519 private key from a file (or stdin for "-"),

@@ -371,19 +371,59 @@ func TestNew_RejectsRepoDotSegments(t *testing.T) {
 	}
 }
 
+func TestCanonicalInstallDirResolvesExistingAliasWithoutCreatingMissingParent(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "real")
+	aliasParent := filepath.Join(root, "alias")
+	if err := os.Mkdir(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realParent, aliasParent); err != nil {
+		t.Skipf("symlink aliases unavailable: %v", err)
+	}
+	got, err := canonicalInstallDir(filepath.Join(aliasParent, "missing", "current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalReal, err := filepath.EvalSymlinks(realParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalReal, "missing", "current")
+	if got != want {
+		t.Fatalf("canonical path = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(realParent, "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("path canonicalization mutated the filesystem: %v", err)
+	}
+}
+
 func TestUpdater_ConcurrentChecksInstallOnce(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	const repo = "owner/repo"
 	srv := newReleaseServer(t, repo, "db-2026.08", map[string]string{"oui.csv": "new\n"}, priv)
-	dir := filepath.Join(t.TempDir(), "current")
+	root := t.TempDir()
+	realParent := filepath.Join(root, "real")
+	aliasParent := filepath.Join(root, "alias")
+	if err := os.Mkdir(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realParent, aliasParent); err != nil {
+		t.Skipf("symlink aliases unavailable: %v", err)
+	}
+	dirs := []string{filepath.Join(realParent, "current"), filepath.Join(aliasParent, "current")}
 	updaters := make([]*Updater, 2)
 	for i := range updaters {
 		var err error
 		updaters[i], err = New(Config{Enabled: true, Repo: repo, APIBaseURL: srv.URL,
-			InstallDir: dir, PublicKey: pub})
+			InstallDir: dirs[i], PublicKey: pub})
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	if updaters[0].cfg.InstallDir != updaters[1].cfg.InstallDir {
+		t.Fatalf("symlinked parents produced distinct lock paths: %q != %q",
+			updaters[0].cfg.InstallDir, updaters[1].cfg.InstallDir)
 	}
 	start := make(chan struct{})
 	errs := make(chan error, 2)
@@ -411,9 +451,8 @@ func TestUpdater_ConcurrentChecksInstallOnce(t *testing.T) {
 	}
 }
 
-func TestNew_FailsClosedWithoutTrustRoot(t *testing.T) {
-	// No PublicKey and the compiled-in placeholder is empty, so there is no trust root.
-	if _, err := New(Config{InstallDir: t.TempDir()}); !errors.Is(err, ErrTrustKey) {
-		t.Errorf("no trust root: got %v, want ErrTrustKey", err)
+func TestNew_FailsClosedWithInvalidTrustRoot(t *testing.T) {
+	if _, err := New(Config{InstallDir: t.TempDir(), PublicKey: ed25519.PublicKey{}}); !errors.Is(err, ErrTrustKey) {
+		t.Errorf("invalid trust root: got %v, want ErrTrustKey", err)
 	}
 }

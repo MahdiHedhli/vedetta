@@ -104,8 +104,8 @@ func readBundleFile(fsys fs.FS, f FileEntry) ([]byte, error) {
 	defer file.Close()
 
 	limit := f.Bytes
-	if limit < 0 || limit > maxBundleFileBytes {
-		limit = maxBundleFileBytes
+	if limit < 0 || limit > MaxBundleFileBytes {
+		limit = MaxBundleFileBytes
 	}
 	// +1 so a file longer than the manifest claims trips the size check rather than being
 	// silently truncated to a matching length.

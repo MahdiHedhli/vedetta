@@ -22,7 +22,7 @@ import (
 // additionally rejects dot path components before the value is interpolated into an API URL.
 var repoRE = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 
-var installDirLocks sync.Map // map[absolute-clean-install-dir]*sync.Mutex
+var installDirLocks sync.Map // map[canonical-parent-plus-managed-pointer]*sync.Mutex
 
 const (
 	// DefaultRepo is the official source of signed device-DB releases.
@@ -104,11 +104,11 @@ func New(cfg Config) (*Updater, error) {
 	if cfg.InstallDir == "" {
 		return nil, errors.New("dbupdate: InstallDir is required")
 	}
-	installDir, err := filepath.Abs(cfg.InstallDir)
+	installDir, err := canonicalInstallDir(cfg.InstallDir)
 	if err != nil {
 		return nil, fmt.Errorf("dbupdate: resolve InstallDir: %w", err)
 	}
-	cfg.InstallDir = filepath.Clean(installDir)
+	cfg.InstallDir = installDir
 	if cfg.PublicKey == nil {
 		key, err := TrustedKey()
 		if err != nil {
@@ -174,6 +174,39 @@ func validRepoSlug(repo string) bool {
 	}
 	owner, name, ok := strings.Cut(repo, "/")
 	return ok && owner != "." && owner != ".." && name != "." && name != ".."
+}
+
+// canonicalInstallDir resolves symlinks in the pointer's parent without resolving the
+// managed pointer itself. This makes lexical aliases share one process lock while preserving
+// InstallDir as the atomic symlink that installGeneration owns. Missing parent suffixes are
+// appended to the deepest existing canonical ancestor and may be created during install.
+func canonicalInstallDir(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	parent := filepath.Dir(abs)
+	existing := parent
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(existing)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Join(resolved, filepath.Base(abs)), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		next := filepath.Dir(existing)
+		if next == existing {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(existing))
+		existing = next
+	}
 }
 
 func installDirLock(path string) *sync.Mutex {
@@ -302,8 +335,8 @@ func (u *Updater) Update(ctx context.Context) error {
 	// Download every file the manifest lists into the staging dir before verifying contents.
 	for _, f := range manifest.Files {
 		limit := f.Bytes
-		if limit < 0 || limit > maxBundleFileBytes {
-			limit = maxBundleFileBytes
+		if limit < 0 || limit > MaxBundleFileBytes {
+			limit = MaxBundleFileBytes
 		}
 		data, err := u.fetchAsset(ctx, rel, f.Name, limit)
 		if err != nil {
