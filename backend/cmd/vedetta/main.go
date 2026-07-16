@@ -13,6 +13,7 @@ import (
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
+	"github.com/vedetta-network/vedetta/backend/internal/corpusmatch"
 	"github.com/vedetta-network/vedetta/backend/internal/dbupdate"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsingest"
@@ -447,9 +448,17 @@ func main() {
 			log.Printf("WARNING: VEDETTA_DB_UPDATE_ENABLED is set but VEDETTA_DB_UPDATE_INSTALL_DIR is empty; device-DB updater not started")
 		} else {
 			cfg := dbupdate.Config{
-				Enabled:     true,
-				InstallDir:  installDir,
-				OnInstalled: fingerprint.ReloadIEEEOUI,
+				Enabled:    true,
+				InstallDir: installDir,
+				// Reload both managed consumers after a generation switch; a failure rolls the
+				// pointer back. The OUI table is the primary payload; the device corpus is an
+				// optional file in the same signed bundle.
+				OnInstalled: func() error {
+					if err := fingerprint.ReloadIEEEOUI(); err != nil {
+						return err
+					}
+					return corpusmatch.ReloadCorpus()
+				},
 			}
 			if repo := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_REPO")); repo != "" {
 				cfg.Repo = repo
@@ -463,7 +472,12 @@ func main() {
 			}
 			if updater, err := dbupdate.New(cfg); err != nil {
 				log.Printf("WARNING: device-DB updater not started: %v", err)
-			} else if err := updater.ActivateConsumer(fingerprint.EnableManagedIEEEOUI); err != nil {
+			} else if err := updater.ActivateConsumer(func(dir string) error {
+				if err := fingerprint.EnableManagedIEEEOUI(dir); err != nil {
+					return err
+				}
+				return corpusmatch.EnableManagedCorpus(dir)
+			}); err != nil {
 				log.Printf("WARNING: device-DB updater not started: %v", err)
 			} else {
 				installedDBTag = updater.InstalledTag
