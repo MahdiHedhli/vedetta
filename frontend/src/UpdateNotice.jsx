@@ -95,7 +95,11 @@ export default function UpdateNotice() {
           </span>
           <button
             type="button"
-            aria-label="Dismiss update notice"
+            aria-label={
+              n.kind === 'software'
+                ? 'Dismiss Vedetta software update notice'
+                : 'Dismiss device database update notice'
+            }
             className="shrink-0 text-blue-300 hover:text-white"
             onClick={() => {
               rememberDismissed(n.kind, n.tag);

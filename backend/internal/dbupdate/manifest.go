@@ -122,6 +122,18 @@ func compareDBReleaseVersion(a, b dbReleaseVersion) int {
 	return 0
 }
 
+// CompareReleaseTags compares two validated device-DB calendar release tags. It returns
+// -1, 0, or 1 when a is older than, equal to, or newer than b. The boolean is false when
+// either tag is malformed.
+func CompareReleaseTags(a, b string) (int, bool) {
+	aVersion, aOK := parseDBReleaseVersion(a)
+	bVersion, bOK := parseDBReleaseVersion(b)
+	if !aOK || !bOK {
+		return 0, false
+	}
+	return compareDBReleaseVersion(aVersion, bVersion), true
+}
+
 func parseGeneratedAt(value string) (time.Time, bool) {
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {

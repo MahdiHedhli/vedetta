@@ -177,11 +177,13 @@ func TestParseManifest_RejectsTrailingJSONAndBadMetadata(t *testing.T) {
 func TestDBReleaseVersionOrdering(t *testing.T) {
 	ordered := []string{"db-2026.07", "db-2026.07.01", "db-2026.07.01.1", "db-2026.08", "db-2027.01"}
 	for i := 1; i < len(ordered); i++ {
-		previous, okPrevious := parseDBReleaseVersion(ordered[i-1])
-		current, okCurrent := parseDBReleaseVersion(ordered[i])
-		if !okPrevious || !okCurrent || compareDBReleaseVersion(previous, current) >= 0 {
+		comparison, ok := CompareReleaseTags(ordered[i-1], ordered[i])
+		if !ok || comparison >= 0 {
 			t.Fatalf("expected %s < %s", ordered[i-1], ordered[i])
 		}
+	}
+	if _, ok := CompareReleaseTags("db-2026.02.31", "db-2026.03"); ok {
+		t.Fatal("CompareReleaseTags accepted an invalid calendar tag")
 	}
 }
 

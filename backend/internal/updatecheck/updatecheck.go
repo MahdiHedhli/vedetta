@@ -8,16 +8,19 @@ package updatecheck
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vedetta-network/vedetta/backend/internal/dbupdate"
 )
 
 const (
@@ -30,14 +33,19 @@ const (
 
 	softwareTagPrefix = "v"
 	deviceDBTagPrefix = "db-"
-	maxReleaseBytes   = 1 << 20 // one releases page, bounded
-	maxReleasesPage   = 100
+	maxReleaseBytes   = 4 << 20 // one releases page, bounded
+	maxReleasesPage   = 20
 	httpTimeout       = 20 * time.Second
+	userAgent         = "Vedetta-UpdateChecker/1"
 )
 
 var (
 	repoRE   = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
-	semverRE = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)`)
+	semverRE = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+
+	// ErrDisabled is returned when a direct Refresh call attempts to bypass the
+	// operator's process-level opt-out.
+	ErrDisabled = errors.New("updatecheck: checker is disabled")
 )
 
 // Component describes the update state for one release channel.
@@ -67,8 +75,8 @@ type Config struct {
 	APIBaseURL string
 	// Interval is the re-poll cadence. Defaults to DefaultInterval.
 	Interval time.Duration
-	// CurrentVersion is the running build version (e.g. "v1.2.3" or "dev"). A non-semver
-	// value (like a dev build) suppresses the software-update signal.
+	// CurrentVersion is the running build version (e.g. "v1.2.3", "v1.2.3-beta.4", or
+	// "dev"). A non-semver value (like a dev build) suppresses the software-update signal.
 	CurrentVersion string
 	// InstalledDBTag returns the installed signed device-DB tag, or "" if none. Optional.
 	InstalledDBTag func() string
@@ -97,7 +105,7 @@ func New(cfg Config) (*Checker, error) {
 	if cfg.Repo == "" {
 		cfg.Repo = DefaultRepo
 	}
-	if !repoRE.MatchString(cfg.Repo) {
+	if !validRepoSlug(cfg.Repo) {
 		return nil, fmt.Errorf("updatecheck: invalid Repo %q", cfg.Repo)
 	}
 	if cfg.APIBaseURL == "" {
@@ -113,8 +121,14 @@ func New(cfg Config) (*Checker, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	client := cfg.HTTPClient
-	if client == nil {
+	var client *http.Client
+	if cfg.HTTPClient != nil {
+		copy := *cfg.HTTPClient
+		if copy.Timeout == 0 {
+			copy.Timeout = httpTimeout
+		}
+		client = &copy
+	} else {
 		client = &http.Client{Timeout: httpTimeout}
 	}
 	logger := cfg.Logger
@@ -163,22 +177,35 @@ func (c *Checker) Run(ctx context.Context) {
 
 // ghRelease is the subset of the GitHub releases API we consume.
 type ghRelease struct {
-	TagName    string `json:"tag_name"`
-	HTMLURL    string `json:"html_url"`
-	Draft      bool   `json:"draft"`
-	Prerelease bool   `json:"prerelease"`
+	TagName     string    `json:"tag_name"`
+	HTMLURL     string    `json:"html_url"`
+	Draft       bool      `json:"draft"`
+	Prerelease  bool      `json:"prerelease"`
+	ID          int64     `json:"id"`
+	PublishedAt time.Time `json:"published_at"`
 }
 
 // Refresh performs one poll and updates the cached Status.
 func (c *Checker) Refresh(ctx context.Context) error {
+	if !c.cfg.Enabled {
+		return ErrDisabled
+	}
 	releases, err := c.listReleases(ctx)
 	if err != nil {
 		return err
 	}
+	// GitHub does not contractually guarantee the REST response order. Prefer the
+	// latest publication and use the immutable release ID as a deterministic tie-break.
+	sort.SliceStable(releases, func(i, j int) bool {
+		if releases[i].PublishedAt.Equal(releases[j].PublishedAt) {
+			return releases[i].ID > releases[j].ID
+		}
+		return releases[i].PublishedAt.After(releases[j].PublishedAt)
+	})
 
 	status := Status{Enabled: true, CheckedAt: c.cfg.Now().UTC().Format(time.RFC3339)}
 
-	if rel := firstMatch(releases, softwareTagPrefix, isSemverTag); rel != nil {
+	if rel := latestSoftwareMatch(releases, c.cfg.CurrentVersion); rel != nil {
 		status.Software = Component{
 			Current:         c.cfg.CurrentVersion,
 			Latest:          rel.TagName,
@@ -193,11 +220,16 @@ func (c *Checker) Refresh(ctx context.Context) error {
 	if c.cfg.InstalledDBTag != nil {
 		installedDB = strings.TrimSpace(c.cfg.InstalledDBTag())
 	}
-	if rel := firstMatch(releases, deviceDBTagPrefix, nil); rel != nil {
+	if rel := firstMatch(releases, deviceDBTagPrefix, isDeviceDBTag); rel != nil {
+		updateAvailable := installedDB == ""
+		if installedDB != "" {
+			comparison, ok := dbupdate.CompareReleaseTags(rel.TagName, installedDB)
+			updateAvailable = ok && comparison > 0
+		}
 		status.DeviceDB = Component{
 			Current:         installedDB,
 			Latest:          rel.TagName,
-			UpdateAvailable: rel.TagName != installedDB,
+			UpdateAvailable: updateAvailable,
 			URL:             c.safeReleaseURL(rel.HTMLURL),
 		}
 	} else {
@@ -210,6 +242,11 @@ func (c *Checker) Refresh(ctx context.Context) error {
 	return nil
 }
 
+func isDeviceDBTag(tag string) bool {
+	_, ok := dbupdate.CompareReleaseTags(tag, tag)
+	return ok
+}
+
 // listReleases fetches the newest page of published releases (newest first).
 func (c *Checker) listReleases(ctx context.Context) ([]ghRelease, error) {
 	endpoint := fmt.Sprintf("%s/repos/%s/releases?per_page=%d",
@@ -219,6 +256,7 @@ func (c *Checker) listReleases(ctx context.Context) ([]ghRelease, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", userAgent)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("updatecheck: list releases: %w", err)
@@ -227,16 +265,23 @@ func (c *Checker) listReleases(ctx context.Context) ([]ghRelease, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("updatecheck: releases returned HTTP %d", resp.StatusCode)
 	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("updatecheck: read releases: %w", err)
+	}
+	if len(body) > maxReleaseBytes {
+		return nil, fmt.Errorf("updatecheck: releases response exceeds %d bytes", maxReleaseBytes)
+	}
 	var releases []ghRelease
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReleaseBytes)).Decode(&releases); err != nil {
+	if err := json.Unmarshal(body, &releases); err != nil {
 		return nil, fmt.Errorf("updatecheck: decode releases: %w", err)
 	}
 	return releases, nil
 }
 
 // firstMatch returns the first published (non-draft, non-prerelease) release whose tag has
-// the given prefix and, optionally, satisfies extra. The API lists releases newest-first, so
-// the first match is the latest.
+// the given prefix and, optionally, satisfies extra. Refresh sorts releases newest-first
+// before calling it.
 func firstMatch(releases []ghRelease, prefix string, extra func(string) bool) *ghRelease {
 	for i := range releases {
 		r := &releases[i]
@@ -251,11 +296,39 @@ func firstMatch(releases []ghRelease, prefix string, extra func(string) bool) *g
 	return nil
 }
 
+// latestSoftwareMatch returns the highest semantic software version visible to the
+// running release channel. Stable builds ignore prereleases; prerelease builds receive
+// both newer prereleases and the eventual stable release. Source/dev builds return nil.
+func latestSoftwareMatch(releases []ghRelease, current string) *ghRelease {
+	currentVersion, ok := parseSemver(current)
+	if !ok {
+		return nil
+	}
+	allowPrerelease := len(currentVersion.prerelease) > 0
+	var best *ghRelease
+	var bestVersion semanticVersion
+	for i := range releases {
+		release := &releases[i]
+		if release.Draft || !strings.HasPrefix(release.TagName, softwareTagPrefix) {
+			continue
+		}
+		version, ok := parseSemver(release.TagName)
+		if !ok || (!allowPrerelease && (release.Prerelease || len(version.prerelease) > 0)) {
+			continue
+		}
+		if best == nil || compareSemver(version, bestVersion) > 0 {
+			best = release
+			bestVersion = version
+		}
+	}
+	return best
+}
+
 // safeReleaseURL returns raw only if it is an https URL on the same host family as the API
 // (so a hostile API response cannot inject a javascript:/http: link into the dashboard).
 func (c *Checker) safeReleaseURL(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" {
+	if err != nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
 		return ""
 	}
 	host := strings.ToLower(u.Hostname())
@@ -265,24 +338,118 @@ func (c *Checker) safeReleaseURL(raw string) string {
 	return ""
 }
 
-func isSemverTag(tag string) bool { return semverRE.MatchString(tag) }
+type semanticVersion struct {
+	core       [3]string
+	prerelease []string
+}
 
-// isNewerSemver reports whether latest is a strictly higher vMAJOR.MINOR.PATCH than current.
-// A non-semver current (e.g. "dev") yields false so a local build is never nagged.
-func isNewerSemver(latest, current string) bool {
-	lm := semverRE.FindStringSubmatch(latest)
-	cm := semverRE.FindStringSubmatch(current)
-	if lm == nil || cm == nil {
-		return false
+func parseSemver(tag string) (semanticVersion, bool) {
+	match := semverRE.FindStringSubmatch(tag)
+	if match == nil {
+		return semanticVersion{}, false
 	}
-	for i := 1; i <= 3; i++ {
-		l, _ := strconv.Atoi(lm[i])
-		cur, _ := strconv.Atoi(cm[i])
-		if l != cur {
-			return l > cur
+	version := semanticVersion{core: [3]string{match[1], match[2], match[3]}}
+	if match[4] != "" {
+		version.prerelease = strings.Split(match[4], ".")
+		for _, identifier := range version.prerelease {
+			if isNumeric(identifier) && len(identifier) > 1 && identifier[0] == '0' {
+				return semanticVersion{}, false
+			}
 		}
 	}
-	return false
+	return version, true
+}
+
+// isNewerSemver reports whether latest is a strictly higher semantic version than current.
+// A non-semver current (e.g. "dev") yields false so a local build is never nagged.
+func isNewerSemver(latest, current string) bool {
+	l, lok := parseSemver(latest)
+	cur, cok := parseSemver(current)
+	if !lok || !cok {
+		return false
+	}
+	return compareSemver(l, cur) > 0
+}
+
+func compareSemver(a, b semanticVersion) int {
+	for i := range a.core {
+		if cmp := compareNumeric(a.core[i], b.core[i]); cmp != 0 {
+			return cmp
+		}
+	}
+	if len(a.prerelease) == 0 && len(b.prerelease) == 0 {
+		return 0
+	}
+	if len(a.prerelease) == 0 {
+		return 1
+	}
+	if len(b.prerelease) == 0 {
+		return -1
+	}
+	limit := len(a.prerelease)
+	if len(b.prerelease) < limit {
+		limit = len(b.prerelease)
+	}
+	for i := 0; i < limit; i++ {
+		aNumeric, bNumeric := isNumeric(a.prerelease[i]), isNumeric(b.prerelease[i])
+		switch {
+		case aNumeric && bNumeric:
+			if cmp := compareNumeric(a.prerelease[i], b.prerelease[i]); cmp != 0 {
+				return cmp
+			}
+		case aNumeric:
+			return -1
+		case bNumeric:
+			return 1
+		case a.prerelease[i] < b.prerelease[i]:
+			return -1
+		case a.prerelease[i] > b.prerelease[i]:
+			return 1
+		}
+	}
+	switch {
+	case len(a.prerelease) < len(b.prerelease):
+		return -1
+	case len(a.prerelease) > len(b.prerelease):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func compareNumeric(a, b string) int {
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func isNumeric(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := range value {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validRepoSlug(repo string) bool {
+	if !repoRE.MatchString(repo) {
+		return false
+	}
+	owner, name, ok := strings.Cut(repo, "/")
+	return ok && owner != "." && owner != ".." && name != "." && name != ".."
 }
 
 func isLoopback(host string) bool {

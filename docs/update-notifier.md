@@ -10,10 +10,11 @@ operator action.
 ## Behaviour
 
 - The backend polls the repository's **public** GitHub releases on an interval and caches
-  the result. It picks the latest published (non-draft, non-prerelease) `v*` and `db-*`
-  tags.
-- **Software:** compared against the running build with a `vMAJOR.MINOR.PATCH` check — a
-  source/`dev` build is never nagged.
+  the result. Drafts are ignored. Stable software builds follow stable `v*` releases;
+  prerelease builds also follow newer semantic prereleases. Signed `db-*` prereleases are
+  ignored.
+- **Software:** compared against the running semantic version — a source/`dev` build is
+  never nagged, and a stable build is never prompted to install a prerelease.
 - **Device DB:** the latest `db-*` release is compared against the installed signed
   generation (or "none" if the opt-in updater has never run).
 - The dashboard shows a per-channel banner only when an update is available, with a link to
@@ -28,12 +29,15 @@ disableable. It is independent of the device-DB updater, which stays **off** by 
 
 | Env var | Default | Meaning |
 | ------- | ------- | ------- |
-| `VEDETTA_UPDATE_CHECK_ENABLED` | on | Set to the exact value `false` to disable all release checks. |
+| `VEDETTA_UPDATE_CHECK_ENABLED` | on | Set to `false` to disable all release checks. Core trims whitespace and compares this value case-insensitively, so `FALSE` and ` false ` also disable checks. |
 | `VEDETTA_UPDATE_CHECK_INTERVAL` | `6h` | Poll cadence (Go duration). |
 | `VEDETTA_UPDATE_CHECK_REPO` | official repo | `owner/repo` to check releases from. |
 
 When disabled, no release checks are made and `GET /api/v1/update-status` reports
 `{"enabled": false}` so the dashboard shows nothing.
+
+For the default Docker installation, set these values in the generated `.env` file;
+Compose forwards all three variables to Core.
 
 ## API
 

@@ -44,6 +44,21 @@ describe('UpdateNotice', () => {
     expect(await screen.findByText(/newer device database \(db-2026\.07\)/)).toBeInTheDocument();
   });
 
+  it('gives simultaneous dismiss controls distinct accessible names', async () => {
+    mockStatus({
+      enabled: true,
+      software: { latest: 'v1.3.0', update_available: true },
+      device_db: { latest: 'db-2026.07', update_available: true },
+    });
+    render(<UpdateNotice />);
+    expect(
+      await screen.findByRole('button', { name: 'Dismiss Vedetta software update notice' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Dismiss device database update notice' }),
+    ).toBeInTheDocument();
+  });
+
   it('renders nothing when disabled', async () => {
     mockStatus({ enabled: false });
     const { container } = render(<UpdateNotice />);
@@ -70,7 +85,9 @@ describe('UpdateNotice', () => {
     });
     render(<UpdateNotice />);
     expect(await screen.findByText(/Vedetta v1\.3\.0 is available/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss update notice' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Dismiss Vedetta software update notice' }),
+    );
     await waitFor(() =>
       expect(screen.queryByText(/Vedetta v1\.3\.0 is available/)).not.toBeInTheDocument(),
     );
