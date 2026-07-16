@@ -19,8 +19,23 @@ func TestEnumerateHosts(t *testing.T) {
 	if got, _ := enumerateHosts("203.0.113.7"); !reflect.DeepEqual(got, []string{"203.0.113.7"}) {
 		t.Errorf("enumerateHosts(bare IPv4) = %v", got)
 	}
+	if got, err := enumerateHosts("203.0.113.7/32"); err != nil || !reflect.DeepEqual(got, []string{"203.0.113.7"}) {
+		t.Errorf("enumerateHosts(/32) = %v, %v; want exact target", got, err)
+	}
+	if got, err := enumerateHosts("203.0.113.6/31"); err != nil || !reflect.DeepEqual(got, []string{"203.0.113.6", "203.0.113.7"}) {
+		t.Errorf("enumerateHosts(/31) = %v, %v; want both RFC 3021 endpoints", got, err)
+	}
+	if got, err := enumerateHosts("192.0.2.1,3-4"); err != nil || !reflect.DeepEqual(got, []string{"192.0.2.1", "192.0.2.3", "192.0.2.4"}) {
+		t.Errorf("enumerateHosts(range/list) = %v, %v", got, err)
+	}
 	if got, _ := enumerateHosts("2001:db8::/64"); got != nil {
 		t.Errorf("enumerateHosts(IPv6) = %v, want nil (IPv4-only v1)", got)
+	}
+	if got, _ := enumerateHosts("::ffff:192.0.2.7"); got != nil {
+		t.Errorf("enumerateHosts(mapped IPv6) = %v, want nil", got)
+	}
+	if got, _ := enumerateHosts("::ffff:192.0.2.7/128"); got != nil {
+		t.Errorf("enumerateHosts(mapped IPv6 CIDR) = %v, want nil", got)
 	}
 	if _, err := enumerateHosts("198.51.100.0/8"); err == nil {
 		t.Error("enumerateHosts(/8) should error as too wide")
@@ -38,6 +53,41 @@ func TestEnumerateHosts(t *testing.T) {
 	}
 	if _, err := enumerateHosts("not-a-cidr"); err == nil {
 		t.Error("enumerateHosts(invalid) should error")
+	}
+}
+
+func TestIPv4TargetContainsOnlyRequestedAddresses(t *testing.T) {
+	cases := []struct {
+		target, candidate string
+		want              bool
+	}{
+		{"192.0.2.7", "192.0.2.7", true},
+		{"192.0.2.7", "192.0.2.8", false},
+		{"192.0.2.0/30", "192.0.2.2", true},
+		{"192.0.2.0/30", "198.51.100.2", false},
+		{"192.0.2.1,3-4", "192.0.2.3", true},
+		{"192.0.2.1,3-4", "192.0.2.2", false},
+		{"192.0-4.0-255.1", "192.4.255.1", true}, // membership does not expand >1024 addresses
+		{"192.0-4.0-255.1", "192.5.255.1", false},
+		{"999.0.0.1", "192.0.0.1", false},
+		{"::ffff:192.0.2.7", "192.0.2.7", false},
+		{"::ffff:192.0.2.7/128", "192.0.2.7", false},
+	}
+	for _, tc := range cases {
+		if got := ipv4TargetContains(tc.target, tc.candidate); got != tc.want {
+			t.Errorf("ipv4TargetContains(%q, %q) = %v, want %v", tc.target, tc.candidate, got, tc.want)
+		}
+	}
+}
+
+func TestNmapRangeValidationFailsClosed(t *testing.T) {
+	if got := nmapRangeBreadth("192.0.2.1,3-4"); got != 3 {
+		t.Fatalf("range/list breadth = %d, want 3", got)
+	}
+	for _, target := range []string{"999.0.0.1", "192.0.2.1-999", "192.0.2.9-1"} {
+		if got := nmapRangeBreadth(target); got <= maxScanAddresses {
+			t.Errorf("invalid target %q breadth = %d, want fail-closed sentinel", target, got)
+		}
 	}
 }
 

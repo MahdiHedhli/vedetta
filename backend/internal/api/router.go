@@ -110,6 +110,7 @@ func NewRouter(srv *Server) http.Handler {
 		srv.Processor = processing.NewProcessor(srv.DB, srv.Enricher)
 	}
 	sensorRegistrationLimiter := newIPRateLimiter(5, time.Minute)
+	sensorAuthCheckLimiter := newIPRateLimiter(sensorAuthCheckRequestsPerMinute, time.Minute)
 
 	// Outermost middleware: stamp anti-clickjacking / anti-sniffing headers on
 	// every response, including the dashboard SPA and health probes (GHSA-69jp).
@@ -272,6 +273,12 @@ func NewRouter(srv *Server) http.Handler {
 		// Sensor ingest (native sensors push data to Core)
 		r.Route("/sensor", func(r chi.Router) {
 			r.With(sensorRegistrationLimiter.Middleware).Post("/register", srv.handleSensorRegister)
+			// Auth check deliberately uses its handler's read-only token validation.
+			// The normal auth middleware updates api_tokens.last_used, which would make
+			// this diagnostic GET mutate Core state.
+			// noStore wraps the limiter as well as the handler so every credential
+			// response, including an early 429, is explicitly non-cacheable.
+			r.With(noStore, sensorAuthCheckLimiter.Middleware).Get("/auth-check", srv.handleSensorAuthCheck)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireStrictAuth(srv.DB))
 				r.Use(auth.RequireExactScope(auth.ScopeSensor))
@@ -304,6 +311,13 @@ func NewRouter(srv *Server) http.Handler {
 	})
 
 	return r
+}
+
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- Simulation Handlers (only active when VEDETTA_ALLOW_SIMULATION=true) ---
@@ -1705,6 +1719,31 @@ func (s *Server) handleSensorHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.DB.TouchSensor(sensorID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not record sensor heartbeat"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSensorAuthCheck validates that the caller still holds the active credential
+// bound to its sensor identity. Unlike heartbeat it deliberately performs no database
+// write, does not refresh last_seen/status, and does not drain queued work. Installers
+// and diagnostics use this endpoint to distinguish a valid persisted token from a
+// revoked one without making a stopped sensor appear online.
+func (s *Server) handleSensorAuthCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+	err := s.validateReadOnlySensorRequest(r)
+	if errors.Is(err, errInvalidReadOnlySensorCredential) {
+		// Keep the response generic: callers must not be able to enumerate token IDs,
+		// revocation state, or sensor identities through this diagnostic surface.
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or revoked sensor token"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "sensor authentication temporarily unavailable"})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

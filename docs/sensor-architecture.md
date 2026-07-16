@@ -29,8 +29,8 @@ The current sensor is strongest at:
 
 - **Public install path:** macOS, Linux, and Windows
 - **Current installer:** `install.sh` (macOS/Linux) or `install.ps1` (Windows) downloads a
-  checksum-verified prebuilt binary (or builds from source on Unix) and registers a persistent
-  service (launchd / systemd / Windows service)
+  checksum-verified prebuilt binary (or builds an exact published tag on Unix), stages and
+  preflights it, and registers a persistent service (launchd / systemd / Windows service)
 - **Privileges:** best visibility assumes elevated local access — a LocalSystem service on
   Windows, `sudo`/root on Unix
 - **Capture preflight:** on Unix the installer prints a recommended DNS/passive capture
@@ -74,7 +74,8 @@ vedetta-sensor
   |- first bootstrap:
   |    POST /api/v1/sensor/register
   |    receives one-time auth_token
-  |    stores token in ~/.vedetta/sensor-token (0600)
+  |    stores token in a platform-protected service path
+  |      (Unix: root-owned 0600; Windows: SYSTEM + Administrators ACL)
   |
   |- ongoing device discovery
   |- ongoing passive DNS capture
@@ -126,9 +127,29 @@ For diagnostics:
 
 ```bash
 ./vedetta-sensor --core http://<CORE_IP>:8080 --cidr 10.0.0.0/24 --print-capture-plan
+sudo ./vedetta-sensor --check --require-token --core https://vedetta.example.com
 ```
 
-That command prints the chosen DNS and passive interfaces, the reasons they won, and the next-best candidates.
+`--print-capture-plan` prints the chosen DNS and passive interfaces, the reasons they won, and the next-best candidates.
+
+The Unix installer keeps the long-running root service on a system-only `PATH`. It passes
+an absolute `VEDETTA_NMAP_PATH` separately. Port probes, DNS-free connect discovery, and
+all custom-path Nmap children drop to an unprivileged account. The sole exception is a
+fixed-argument, no-port/no-DNS ARP discovery on Linux when Nmap is the root-owned system
+binary and the IPv4 target is directly attached on a broadcast-capable interface. macOS
+and custom Nmap paths use connect discovery; existing neighbor-cache entries enrich hosts
+that Nmap confirms live, but quiet devices may require passive discovery. Active scanning
+is IPv4-only in this beta; IPv6/hostname scan targets fail explicitly. The
+installed sensor defaults to `/Library/Vedetta/bin/vedetta-sensor` on macOS and
+`/usr/local/libexec/vedetta/vedetta-sensor` on Linux. Failed upgrades restore the prior
+binary and service definition instead of leaving a new crash loop active.
+
+Enrollment codes enter the Unix installer only through `--enroll-code-file` (a
+mode-0600, non-symlink regular file) or `--enroll-code-stdin`. The installer pipes
+the secret into its one-shot enrollment child, so it is absent from installer,
+sudo, and sensor argument vectors and is never serialized into launchd/systemd.
+The legacy `--enroll-code CODE` installer form is disabled unless an operator
+explicitly enables the deprecated compatibility escape hatch.
 
 ## Security Note
 
