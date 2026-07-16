@@ -24,6 +24,7 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/processing"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
+	"github.com/vedetta-network/vedetta/backend/internal/updatecheck"
 )
 
 // buildVersion is the release version of this binary. It defaults to "dev" for
@@ -433,6 +434,10 @@ func main() {
 	}()
 	log.Printf("Retention job started (daily)")
 
+	// installedDBTag lets the update notifier report the running signed device-DB generation.
+	// It stays nil unless the opt-in updater below is active.
+	var installedDBTag func() string
+
 	// Opt-in signed device-DB updater. Off unless VEDETTA_DB_UPDATE_ENABLED is set; even
 	// then it stays inert (fails closed) until a trust root is compiled in. It verifies a
 	// release's signature + hashes before applying and keeps the last-good DB otherwise.
@@ -461,9 +466,39 @@ func main() {
 			} else if err := updater.ActivateConsumer(fingerprint.EnableManagedIEEEOUI); err != nil {
 				log.Printf("WARNING: device-DB updater not started: %v", err)
 			} else {
+				installedDBTag = updater.InstalledTag
 				go updater.Run(context.Background())
 				log.Printf("Device-DB updater started (opt-in); installing into %s", updater.InstallDir())
 			}
+		}
+	}
+
+	// Read-only update notifier. ON by default (opt-out with VEDETTA_UPDATE_CHECK_ENABLED=
+	// false). It polls public GitHub releases to tell the dashboard when a newer Vedetta
+	// (v*) or signed device-DB (db-*) release exists; it never downloads or installs.
+	updateCheckEnabled := !strings.EqualFold(strings.TrimSpace(os.Getenv("VEDETTA_UPDATE_CHECK_ENABLED")), "false")
+	ucCfg := updatecheck.Config{
+		Enabled:        updateCheckEnabled,
+		CurrentVersion: buildVersion,
+		InstalledDBTag: installedDBTag,
+	}
+	if repo := strings.TrimSpace(os.Getenv("VEDETTA_UPDATE_CHECK_REPO")); repo != "" {
+		ucCfg.Repo = repo
+	}
+	if raw := strings.TrimSpace(os.Getenv("VEDETTA_UPDATE_CHECK_INTERVAL")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil {
+			ucCfg.Interval = d
+		} else {
+			log.Printf("Ignoring invalid VEDETTA_UPDATE_CHECK_INTERVAL %q: %v", raw, err)
+		}
+	}
+	if checker, err := updatecheck.New(ucCfg); err != nil {
+		log.Printf("WARNING: update notifier not started: %v", err)
+	} else {
+		srv.UpdateChecker = checker
+		go checker.Run(context.Background())
+		if updateCheckEnabled {
+			log.Printf("Update notifier started (on by default; set VEDETTA_UPDATE_CHECK_ENABLED=false to disable)")
 		}
 	}
 

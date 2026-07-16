@@ -64,6 +64,17 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
           "$(go env GOPATH)/bin/staticcheck" ./...
       - run: go test ./...
+      - name: Build and verify the version-stamped Core container
+        if: matrix.module == 'backend'
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker build -f backend/Dockerfile -t vedetta-core-version-test .
+          expected="vedetta-core $(cat VERSION)"
+          actual="$(docker run --rm vedetta-core-version-test --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Core container version mismatch: got '$actual', want '$expected'"
+            exit 1
+          fi
       - name: Sensor installer transaction and service-health tests
         if: matrix.module == 'sensor'
         run: bash deploy/install_test.sh

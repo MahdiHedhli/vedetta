@@ -6,6 +6,7 @@ import { eventAssetKey, eventBelongsToDevice, eventOutcome, stableDeviceID } fro
 import { fetchDeviceThreatEvents } from './identity/api';
 import { IdentityPanel } from './identity/IdentityPanel';
 import { TelemetryAcknowledgementDialog, TelemetryInertBackground } from './TelemetryAcknowledgementDialog';
+import UpdateNotice from './UpdateNotice';
 import {
   readTelemetryDisclosureSetting,
   TELEMETRY_STATUS_UNAVAILABLE_MESSAGE,
@@ -759,6 +760,7 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
+        <UpdateNotice authRefreshKey={adminToken} />
         {view === 'dashboard' ? (
           <DashboardView
             devices={devices} scanStatus={scanStatus} newDeviceCount={newDeviceCount}

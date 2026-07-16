@@ -40,6 +40,11 @@ services:
       VEDETTA_DB_UPDATE_INTERVAL: "${VEDETTA_DB_UPDATE_INTERVAL:-24h}"
       VEDETTA_DB_UPDATE_REPO: "${VEDETTA_DB_UPDATE_REPO:-MahdiHedhli/vedetta}"
       VEDETTA_DB_UPDATE_INSTALL_DIR: "/data/device-db/current"
+      # Read-only release notices are on by default and independently opt-out.
+      # These must be forwarded explicitly so changing .env affects Core.
+      VEDETTA_UPDATE_CHECK_ENABLED: "${VEDETTA_UPDATE_CHECK_ENABLED:-true}"
+      VEDETTA_UPDATE_CHECK_INTERVAL: "${VEDETTA_UPDATE_CHECK_INTERVAL:-6h}"
+      VEDETTA_UPDATE_CHECK_REPO: "${VEDETTA_UPDATE_CHECK_REPO:-MahdiHedhli/vedetta}"
       VEDETTA_FRONTEND_DIR: "/frontend"
       VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-auto}"
       VEDETTA_SCAN_INTERVAL: "${VEDETTA_SCAN_INTERVAL:-5m}"
