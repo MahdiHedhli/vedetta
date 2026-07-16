@@ -12,9 +12,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// repoRE matches an "owner/repo" GitHub slug, validated before it is interpolated into an
+// API URL path.
+var repoRE = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 
 const (
 	// DefaultRepo is the official source of signed device-DB releases.
@@ -74,6 +79,9 @@ func New(cfg Config) (*Updater, error) {
 	if cfg.Repo == "" {
 		cfg.Repo = DefaultRepo
 	}
+	if !repoRE.MatchString(cfg.Repo) {
+		return nil, fmt.Errorf("dbupdate: invalid Repo %q, want owner/repo", cfg.Repo)
+	}
 	if cfg.APIBaseURL == "" {
 		cfg.APIBaseURL = DefaultAPIBaseURL
 	}
@@ -118,6 +126,9 @@ func New(cfg Config) (*Updater, error) {
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return errors.New("dbupdate: too many redirects")
+		}
+		if req.URL.Scheme != "https" && !isLoopback(req.URL.Hostname()) {
+			return fmt.Errorf("dbupdate: redirect to non-https host %q", req.URL.Hostname())
 		}
 		if _, ok := allowed[strings.ToLower(req.URL.Hostname())]; !ok {
 			return fmt.Errorf("dbupdate: redirect to disallowed host %q", req.URL.Hostname())
@@ -225,7 +236,15 @@ func (u *Updater) Update(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Download every file the manifest lists into the staging dir before verifying.
+	// Authenticate the manifest BEFORE downloading the files it lists. The manifest + sig
+	// are tiny and already fetched, so this cheap check stops an unsigned/forged manifest
+	// from driving the client to download an attacker-declared volume of data (a DoS an
+	// attacker could mount without the signing key). The per-file contents are still
+	// re-verified by VerifyBundle after download.
+	if err := VerifyManifest(manifest, sig, u.cfg.PublicKey); err != nil {
+		return fmt.Errorf("dbupdate: manifest signature invalid, not downloading: %w", err)
+	}
+	// Download every file the manifest lists into the staging dir before verifying contents.
 	for _, f := range manifest.Files {
 		limit := f.Bytes
 		if limit < 0 || limit > maxBundleFileBytes {
@@ -336,6 +355,11 @@ func (u *Updater) install(m *Manifest, stagingDir string) error {
 		data, err := os.ReadFile(src)
 		if err != nil {
 			return fmt.Errorf("dbupdate: reread staged %s: %w", f.Name, err)
+		}
+		// Re-verify the exact bytes we are about to install, so a staged file that changed
+		// between VerifyBundle and here (e.g. a local swap in the temp dir) cannot slip in.
+		if err := m.verifyBytes(f.Name, data); err != nil {
+			return fmt.Errorf("dbupdate: staged file changed before install: %w", err)
 		}
 		dest := filepath.Join(u.cfg.InstallDir, filepath.FromSlash(f.Name))
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {

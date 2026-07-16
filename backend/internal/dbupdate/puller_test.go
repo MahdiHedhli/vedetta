@@ -13,12 +13,26 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
+// releaseServer is an httptest release server that also counts asset downloads by name.
+type releaseServer struct {
+	*httptest.Server
+	mu        sync.Mutex
+	downloads map[string]int
+}
+
+func (rs *releaseServer) count(name string) int {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.downloads[name]
+}
+
 // newReleaseServer builds a signed bundle for dataFiles and serves it as a GitHub-style
 // release (releases/latest metadata + asset downloads) signed with priv.
-func newReleaseServer(t *testing.T, repo, tag string, dataFiles map[string]string, priv ed25519.PrivateKey) *httptest.Server {
+func newReleaseServer(t *testing.T, repo, tag string, dataFiles map[string]string, priv ed25519.PrivateKey) *releaseServer {
 	t.Helper()
 	m := &Manifest{SchemaVersion: manifestSchemaVersion, Release: tag, GeneratedAt: "2026-07-15T00:00:00Z"}
 	for name, content := range dataFiles {
@@ -37,6 +51,7 @@ func newReleaseServer(t *testing.T, repo, tag string, dataFiles map[string]strin
 		assets[name] = []byte(content)
 	}
 
+	rs := &releaseServer{downloads: map[string]int{}}
 	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/"+repo+"/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
@@ -47,7 +62,11 @@ func newReleaseServer(t *testing.T, repo, tag string, dataFiles map[string]strin
 		_ = json.NewEncoder(w).Encode(rel)
 	})
 	mux.HandleFunc("/download/", func(w http.ResponseWriter, r *http.Request) {
-		body, ok := assets[strings.TrimPrefix(r.URL.Path, "/download/")]
+		name := strings.TrimPrefix(r.URL.Path, "/download/")
+		rs.mu.Lock()
+		rs.downloads[name]++
+		rs.mu.Unlock()
+		body, ok := assets[name]
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -55,8 +74,9 @@ func newReleaseServer(t *testing.T, repo, tag string, dataFiles map[string]strin
 		_, _ = w.Write(body)
 	})
 	srv = httptest.NewServer(mux)
+	rs.Server = srv
 	t.Cleanup(srv.Close)
-	return srv
+	return rs
 }
 
 func TestUpdater_DisabledIsANoop(t *testing.T) {
@@ -111,8 +131,14 @@ func TestUpdater_BadSignatureKeepsLastGood(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := u.Update(context.Background()); err == nil || !strings.Contains(err.Error(), "verification failed") {
-		t.Fatalf("expected a verification failure, got %v", err)
+	err = u.Update(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "signature invalid, not downloading") {
+		t.Fatalf("expected the manifest signature to be rejected before download, got %v", err)
+	}
+	// The forged manifest must be rejected BEFORE the data files are fetched, so a party who
+	// can publish a release (but lacks the signing key) cannot drive a large download.
+	if n := srv.count("oui.csv"); n != 0 {
+		t.Errorf("data file was downloaded %d time(s) despite a bad manifest signature", n)
 	}
 	if got, _ := os.ReadFile(lastGood); string(got) != "OLD\n" {
 		t.Errorf("last-good file was overwritten by an unverifiable update: %q", got)

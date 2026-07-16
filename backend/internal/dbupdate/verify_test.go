@@ -126,14 +126,16 @@ func TestParseManifest(t *testing.T) {
 		json string
 		want error
 	}{
-		"unknown schema": {`{"schema_version":9,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestSchema},
-		"empty files":    {`{"schema_version":1,"files":[]}`, ErrManifestEmpty},
-		"duplicate name": {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1},{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestDuplicate},
-		"path traversal": {`{"schema_version":1,"files":[{"name":"../etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
-		"absolute path":  {`{"schema_version":1,"files":[{"name":"/etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
-		"non-hex sha":    {`{"schema_version":1,"files":[{"name":"a","sha256":"nothex","bytes":1}]}`, ErrManifestFile},
-		"negative bytes": {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":-1}]}`, ErrManifestFile},
-		"unknown field":  {`{"schema_version":1,"extra":true,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, nil}, // decode error, not a sentinel
+		"unknown schema":  {`{"schema_version":9,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestSchema},
+		"empty files":     {`{"schema_version":1,"files":[]}`, ErrManifestEmpty},
+		"duplicate name":  {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1},{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestDuplicate},
+		"path traversal":  {`{"schema_version":1,"files":[{"name":"../etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
+		"absolute path":   {`{"schema_version":1,"files":[{"name":"/etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
+		"non-hex sha":     {`{"schema_version":1,"files":[{"name":"a","sha256":"nothex","bytes":1}]}`, ErrManifestFile},
+		"negative bytes":  {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":-1}]}`, ErrManifestFile},
+		"oversized file":  {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":314572800}]}`, ErrManifestFile},                                                                 // 300 MiB > per-file cap
+		"oversized total": {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":209715200},{"name":"b","sha256":"` + hexZero() + `","bytes":209715200}]}`, ErrManifestTooLarge}, // 2×200 MiB > total cap
+		"unknown field":   {`{"schema_version":1,"extra":true,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, nil},                                                                        // decode error, not a sentinel
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
