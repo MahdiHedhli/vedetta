@@ -45,6 +45,7 @@ Vedetta is not yet a plug-and-play consumer appliance. The current install path 
 - AdGuard Home integration
 - telemetry contribution (on by default, opt-out)
 - public community-feed consumption (on by default, independently disableable)
+- dashboard update notifier for new releases (read-only version check, on by default, opt-out)
 - early router and firewall connector experimentation
 
 Pi-hole and AdGuard Home are **optional integrations**, not the product identity. Vedetta is being built to ingest useful signals from multiple DNS and network sources over time.
@@ -395,6 +396,7 @@ These should be described honestly as early or planned until they are documented
 - [Sensor Architecture](docs/sensor-architecture.md)
 - [OUI Vendor Database](docs/oui-database.md)
 - [Signed Device-DB Releases](docs/device-db-releases.md)
+- [Update Notifier](docs/update-notifier.md)
 - [Pi-hole And AdGuard Home Setup](docs/connectors/dns-pollers.md)
 - [UniFi Connector Setup](docs/connectors/unifi.md)
 - [Threat Network — Implementation, Hosting & Configuration](docs/threat-network-operations.md)

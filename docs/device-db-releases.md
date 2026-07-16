@@ -84,5 +84,6 @@ When disabled (the default), the embedded table—refreshed monthly in-repo by t
 The separate `VEDETTA_OUI_DB_PATH` variable remains available for a deliberate, manually
 managed OUI override; Compose does not set it.
 
-Dashboard notification for newer device-DB or Vedetta releases is planned separately; it is
-not part of this updater or the current operator UI.
+The dashboard surfaces a read-only notice when a newer device-DB or Vedetta release exists;
+that check is separate from (and does not trigger) this updater. See the
+[Update Notifier](update-notifier.md).
