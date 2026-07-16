@@ -1,6 +1,6 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import UpdateNotice from './UpdateNotice';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import UpdateNotice, { UPDATE_STATUS_POLL_MS } from './UpdateNotice';
 
 vi.mock('./lib/api', () => ({ authFetch: vi.fn() }));
 import { authFetch } from './lib/api';
@@ -13,6 +13,10 @@ describe('UpdateNotice', () => {
   beforeEach(() => {
     localStorage.clear();
     authFetch.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('shows a software-update banner with a release link', async () => {
@@ -92,5 +96,66 @@ describe('UpdateNotice', () => {
       expect(screen.queryByText(/Vedetta v1\.3\.0 is available/)).not.toBeInTheDocument(),
     );
     expect(localStorage.getItem('vedetta_update_dismissed:software:v1.3.0')).toBe('1');
+  });
+
+  it('refreshes status while the dashboard remains open', async () => {
+    vi.useFakeTimers();
+    authFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          enabled: true,
+          software: { update_available: false },
+          device_db: { update_available: false },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          enabled: true,
+          software: { latest: 'v1.4.0', update_available: true },
+          device_db: { update_available: false },
+        }),
+      });
+
+    render(<UpdateNotice />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(authFetch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UPDATE_STATUS_POLL_MS);
+    });
+    expect(authFetch).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Vedetta v1\.4\.0 is available/)).toBeInTheDocument();
+  });
+
+  it('keeps the last visible notice when a later poll fails', async () => {
+    vi.useFakeTimers();
+    authFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          enabled: true,
+          software: { latest: 'v1.4.0', update_available: true },
+          device_db: { update_available: false },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: false });
+
+    render(<UpdateNotice />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText(/Vedetta v1\.4\.0 is available/)).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UPDATE_STATUS_POLL_MS);
+    });
+    expect(authFetch).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Vedetta v1\.4\.0 is available/)).toBeInTheDocument();
   });
 });

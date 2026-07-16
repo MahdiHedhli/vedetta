@@ -93,6 +93,11 @@ the [project constitution](.specify/memory/constitution.md).
 
 ## Quick Start
 
+> **Release safety:** `v0.1.0-beta.3` is superseded and must not be installed.
+> Fresh installations must use `v0.1.0-beta.4` or newer. See the
+> [beta.2 release notes](docs/releases/v0.1.0-beta.2.md#install) for
+> the corrected, pinned installer flow.
+
 > **Transport (secure by default): the Quick Start publishes Core and the dashboard
 > to the host loopback only (`127.0.0.1`) — they are NOT on your LAN.** The dashboard
 > is reachable at `http://localhost:…` from the machine running Compose, and no

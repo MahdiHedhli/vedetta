@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -162,6 +163,86 @@ func TestRefresh_SortsByPublishedAt(t *testing.T) {
 	status := c.Status()
 	if status.Software.Latest != "v1.2.0" || status.DeviceDB.Latest != "db-2026.08" {
 		t.Fatalf("status = %+v, want newest publication in each channel", status)
+	}
+}
+
+func TestRefresh_PaginatesAcrossReleaseChannels(t *testing.T) {
+	const repo = "owner/repo"
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/"+repo+"/releases", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if got := r.URL.Query().Get("per_page"); got != strconv.Itoa(maxReleasesPage) {
+			t.Errorf("per_page = %q, want %d", got, maxReleasesPage)
+		}
+		switch r.URL.Query().Get("page") {
+		case "1":
+			decoys := make([]ghRelease, maxReleasesPage)
+			for i := range decoys {
+				decoys[i] = ghRelease{ID: int64(i + 1), TagName: fmt.Sprintf("notes-%02d", i)}
+			}
+			_ = json.NewEncoder(w).Encode(decoys)
+		case "2":
+			_ = json.NewEncoder(w).Encode([]ghRelease{
+				{ID: 101, TagName: "v1.1.0", PublishedAt: time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)},
+				{ID: 102, TagName: "db-2026.08", PublishedAt: time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)},
+			})
+		default:
+			t.Fatalf("unexpected release page %q", r.URL.Query().Get("page"))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c, err := New(Config{
+		Enabled: true, Repo: repo, APIBaseURL: srv.URL, CurrentVersion: "v1.0.0",
+		InstalledDBTag: func() string { return "db-2026.07" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := c.Status()
+	if status.Software.Latest != "v1.1.0" || !status.Software.UpdateAvailable {
+		t.Fatalf("software = %+v, want update from page 2", status.Software)
+	}
+	if status.DeviceDB.Latest != "db-2026.08" || !status.DeviceDB.UpdateAvailable {
+		t.Fatalf("device DB = %+v, want update from page 2", status.DeviceDB)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("release API calls = %d, want 2 bounded pages", got)
+	}
+}
+
+func TestListReleases_StopsAtPageLimit(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		if err != nil || page < 1 || page > maxReleasePages {
+			t.Fatalf("unexpected release page %q", r.URL.Query().Get("page"))
+		}
+		calls.Add(1)
+		items := make([]ghRelease, maxReleasesPage)
+		for i := range items {
+			items[i] = ghRelease{ID: int64((page-1)*maxReleasesPage + i + 1)}
+		}
+		_ = json.NewEncoder(w).Encode(items)
+	}))
+	defer srv.Close()
+	c, err := New(Config{Enabled: true, Repo: "o/r", APIBaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases, err := c.listReleases(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(releases), maxReleasePages*maxReleasesPage; got != want {
+		t.Fatalf("releases = %d, want bounded maximum %d", got, want)
+	}
+	if got := calls.Load(); got != maxReleasePages {
+		t.Fatalf("release API calls = %d, want page limit %d", got, maxReleasePages)
 	}
 }
 

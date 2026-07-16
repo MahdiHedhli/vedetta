@@ -7,6 +7,7 @@ import { authFetch } from './lib/api';
 // is remembered per release tag, so a brand-new release surfaces again.
 
 const DISMISS_PREFIX = 'vedetta_update_dismissed:';
+export const UPDATE_STATUS_POLL_MS = 15 * 60 * 1000;
 
 function dismissKey(kind, tag) {
   return `${DISMISS_PREFIX}${kind}:${tag}`;
@@ -34,16 +35,27 @@ export default function UpdateNotice() {
 
   useEffect(() => {
     let alive = true;
-    authFetch('/api/v1/update-status')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (alive) setStatus(data);
-      })
-      .catch(() => {
-        /* a failed check simply shows no notice */
-      });
+    let inFlight = false;
+    const refresh = () => {
+      if (inFlight) return;
+      inFlight = true;
+      authFetch('/api/v1/update-status')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (alive && data) setStatus(data);
+        })
+        .catch(() => {
+          /* a failed check simply keeps the last visible notice state */
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, UPDATE_STATUS_POLL_MS);
     return () => {
       alive = false;
+      window.clearInterval(timer);
     };
   }, []);
 

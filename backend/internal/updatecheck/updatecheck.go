@@ -33,8 +33,9 @@ const (
 
 	softwareTagPrefix = "v"
 	deviceDBTagPrefix = "db-"
-	maxReleaseBytes   = 4 << 20 // one releases page, bounded
+	maxReleaseBytes   = 4 << 20 // each releases page is independently bounded
 	maxReleasesPage   = 20
+	maxReleasePages   = 5 // inspect at most 100 releases per refresh
 	httpTimeout       = 20 * time.Second
 	userAgent         = "Vedetta-UpdateChecker/1"
 )
@@ -247,34 +248,51 @@ func isDeviceDBTag(tag string) bool {
 	return ok
 }
 
-// listReleases fetches the newest page of published releases (newest first).
+// listReleases fetches a bounded set of published releases. The GitHub API does not
+// contractually guarantee release ordering, so callers sort the combined pages before
+// choosing a channel. Pagination prevents a busy software channel from hiding the newest
+// device-DB release (or vice versa) while retaining strict request, byte, and page caps.
 func (c *Checker) listReleases(ctx context.Context) ([]ghRelease, error) {
-	endpoint := fmt.Sprintf("%s/repos/%s/releases?per_page=%d",
-		strings.TrimRight(c.cfg.APIBaseURL, "/"), c.cfg.Repo, maxReleasesPage)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", userAgent)
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("updatecheck: list releases: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("updatecheck: releases returned HTTP %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("updatecheck: read releases: %w", err)
-	}
-	if len(body) > maxReleaseBytes {
-		return nil, fmt.Errorf("updatecheck: releases response exceeds %d bytes", maxReleaseBytes)
-	}
-	var releases []ghRelease
-	if err := json.Unmarshal(body, &releases); err != nil {
-		return nil, fmt.Errorf("updatecheck: decode releases: %w", err)
+	base := strings.TrimRight(c.cfg.APIBaseURL, "/")
+	releases := make([]ghRelease, 0, maxReleasesPage)
+	for page := 1; page <= maxReleasePages; page++ {
+		endpoint := fmt.Sprintf("%s/repos/%s/releases?per_page=%d&page=%d",
+			base, c.cfg.Repo, maxReleasesPage, page)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", userAgent)
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("updatecheck: list releases page %d: %w", page, err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxReleaseBytes+1))
+		closeErr := resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("updatecheck: releases page %d returned HTTP %d", page, resp.StatusCode)
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("updatecheck: read releases page %d: %w", page, readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("updatecheck: close releases page %d: %w", page, closeErr)
+		}
+		if len(body) > maxReleaseBytes {
+			return nil, fmt.Errorf("updatecheck: releases page %d response exceeds %d bytes", page, maxReleaseBytes)
+		}
+		var pageReleases []ghRelease
+		if err := json.Unmarshal(body, &pageReleases); err != nil {
+			return nil, fmt.Errorf("updatecheck: decode releases page %d: %w", page, err)
+		}
+		if len(pageReleases) > maxReleasesPage {
+			return nil, fmt.Errorf("updatecheck: releases page %d contains %d items, limit %d", page, len(pageReleases), maxReleasesPage)
+		}
+		releases = append(releases, pageReleases...)
+		if len(pageReleases) < maxReleasesPage {
+			break
+		}
 	}
 	return releases, nil
 }
