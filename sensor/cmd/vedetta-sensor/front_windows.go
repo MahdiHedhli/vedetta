@@ -38,9 +38,13 @@ func runFrontend(run *sensorRun) {
 		return
 	}
 	// Console: Ctrl+C only (SIGTERM is not delivered on Windows).
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := interactiveContext()
 	defer stop()
 	run.serve(ctx)
+}
+
+func interactiveContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt)
 }
 
 // sensorService adapts sensorRun.serve to the SCM control handler. Crucially, ALL

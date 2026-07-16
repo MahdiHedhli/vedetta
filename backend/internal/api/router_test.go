@@ -62,13 +62,17 @@ func registerTestSensor(t *testing.T, router http.Handler, sensorID string) stri
 	}
 
 	var resp struct {
-		AuthToken string `json:"auth_token"`
+		AuthToken     string `json:"auth_token"`
+		DeliveryEpoch string `json:"delivery_epoch"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode register response: %v", err)
 	}
 	if resp.AuthToken == "" {
 		t.Fatal("expected bootstrap auth token in registration response")
+	}
+	if resp.DeliveryEpoch == "" {
+		t.Fatal("expected Core-issued delivery epoch in registration response")
 	}
 
 	return resp.AuthToken
@@ -102,6 +106,39 @@ func createTestToken(t *testing.T, db *store.DB, scope auth.TokenScope, sensorID
 	}
 
 	return rawToken
+}
+
+func TestSensorRegistrationReturnsCommittedBearerWhenDeliveryEpochFails(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
+	if _, err := db.Exec(`DROP TABLE arp_cache_delivery_epochs`); err != nil {
+		t.Fatalf("disable delivery epoch store: %v", err)
+	}
+
+	body := []byte(`{"sensor_id":"sensor-epoch-failure","hostname":"h","os":"linux","arch":"amd64","cidr":"192.0.2.0/24","version":"test"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sensor/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+admin)
+	req.RemoteAddr = "192.0.2.44:12345"
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("registration after epoch failure: got %d: %s", w.Code, w.Body.String())
+	}
+	var response sensorRegistrationResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.AuthToken == "" || response.TokenID == "" {
+		t.Fatalf("committed credential withheld: %+v", response)
+	}
+	if response.DeliveryEpoch != "" {
+		t.Fatalf("delivery epoch = %q, want provisional empty value", response.DeliveryEpoch)
+	}
+	if _, err := auth.ValidateAuthorizationHeader(db, "Bearer "+response.AuthToken); err != nil {
+		t.Fatalf("returned committed bearer does not authenticate: %v", err)
+	}
 }
 
 func TestSensorHeartbeatRefreshesLastSeenWithoutDrainingWork(t *testing.T) {

@@ -135,11 +135,11 @@ func parseMDNS(packet gopacket.Packet) []netscan.DiscoveredHost {
 // per-host accumulation so a hostile/oversized packet degrades gracefully rather
 // than exhausting memory. Sizes are generous relative to legitimate mDNS.
 const (
-	maxMDNSRecords   = 128 // total A/AAAA/SRV/TXT/PTR records processed per packet
-	maxMDNSTXTPairs  = 32  // key=value pairs parsed per TXT record set
-	maxServicesHost  = 16  // service types attached to a single host
-	maxMDNSInstances = 64  // distinct service instances tracked per packet
-	maxMDNSHosts     = 64  // distinct A/AAAA owner names tracked per packet
+	maxMDNSRecords   = 128                        // total A/AAAA/SRV/TXT/PTR records processed per packet
+	maxMDNSTXTPairs  = 32                         // key=value pairs parsed per TXT record set
+	maxServicesHost  = netscan.MaxServicesPerHost // service types attached to a single host
+	maxMDNSInstances = 64                         // distinct service instances tracked per packet
+	maxMDNSHosts     = 64                         // distinct A/AAAA owner names tracked per packet
 )
 
 // mdnsInstance is a service-instance node in the per-packet record graph

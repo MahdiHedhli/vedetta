@@ -32,13 +32,16 @@ var Version = "dev"
 
 // CoreClient communicates with the Vedetta Core API.
 type CoreClient struct {
-	BaseURL    string
-	SensorID   string
-	TokenPath  string
-	tokenMu    sync.RWMutex
-	authToken  string
-	persistMu  sync.Mutex
-	httpClient *http.Client
+	BaseURL       string
+	SensorID      string
+	TokenPath     string
+	tokenMu       sync.RWMutex
+	authToken     string
+	registerMu    sync.Mutex
+	deliveryMu    sync.RWMutex
+	deliveryEpoch string
+	persistMu     sync.Mutex
+	httpClient    *http.Client
 	// directorySync is an internal durability seam used by focused tests. Normal
 	// clients always use the platform syncTokenDirectory implementation.
 	directorySync func(string) error
@@ -70,6 +73,13 @@ type DeviceReport struct {
 	Hosts    []netscan.DiscoveredHost `json:"hosts"`
 }
 
+type deviceReportResponse struct {
+	Accepted   int    `json:"accepted"`
+	Failed     int    `json:"failed"`
+	NewDevices int    `json:"new_devices"`
+	Status     string `json:"status,omitempty"`
+}
+
 // ScanRequest represents a queued scan from Core.
 type ScanRequest struct {
 	CIDR        string    `json:"cidr"`
@@ -99,11 +109,12 @@ type WorkResponse struct {
 }
 
 type sensorRegistrationResponse struct {
-	Status       string `json:"status"`
-	SensorID     string `json:"sensor_id"`
-	AuthToken    string `json:"auth_token,omitempty"`
-	TokenID      string `json:"token_id,omitempty"`
-	TokenWarning string `json:"token_warning,omitempty"`
+	Status        string `json:"status"`
+	SensorID      string `json:"sensor_id"`
+	AuthToken     string `json:"auth_token,omitempty"`
+	TokenID       string `json:"token_id,omitempty"`
+	TokenWarning  string `json:"token_warning,omitempty"`
+	DeliveryEpoch string `json:"delivery_epoch,omitempty"`
 }
 
 // New creates a CoreClient pointed at the given API base URL.
@@ -207,6 +218,11 @@ func (c *CoreClient) TokenConfigured() bool {
 
 // Register announces this sensor to the Core API and persists the one-time bootstrap token.
 func (c *CoreClient) Register(ctx context.Context, cidr string, primary bool, interfaces []netinfo.NetworkInterface) error {
+	// One client process owns one registration/session transition at a time. The
+	// backend's issue/activate protocol handles cross-process reordering; this lock
+	// prevents concurrent local responses from overwriting the newer epoch in memory.
+	c.registerMu.Lock()
+	defer c.registerMu.Unlock()
 	hostname, _ := os.Hostname()
 	reg := SensorRegistration{
 		SensorID:   c.SensorID,
@@ -233,8 +249,45 @@ func (c *CoreClient) Register(ctx context.Context, cidr string, primary bool, in
 	if !c.TokenConfigured() {
 		return fmt.Errorf("sensor registration did not return a usable auth token")
 	}
+	epoch := strings.TrimSpace(resp.DeliveryEpoch)
+	if epoch != "" && !validDeliveryEpoch(epoch) {
+		c.setDeliveryEpoch("")
+		return fmt.Errorf("sensor registration returned an invalid delivery epoch")
+	}
+	// An empty value is accepted for compatibility with an older Core. Such a
+	// sensor can still report cache observations, but the upgraded Core will keep
+	// them provisional rather than using unauthenticated ordering metadata.
+	c.setDeliveryEpoch(epoch)
 
 	return nil
+}
+
+func validDeliveryEpoch(epoch string) bool {
+	if epoch == "" || len(epoch) > 64 {
+		return false
+	}
+	for _, r := range epoch {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (c *CoreClient) setDeliveryEpoch(epoch string) {
+	c.deliveryMu.Lock()
+	c.deliveryEpoch = epoch
+	c.deliveryMu.Unlock()
+}
+
+// DeliveryEpoch returns the current Core-issued process delivery session. It is
+// non-secret and is useful only with this client's authenticated sensor bearer.
+func (c *CoreClient) DeliveryEpoch() string {
+	c.deliveryMu.RLock()
+	defer c.deliveryMu.RUnlock()
+	return c.deliveryEpoch
 }
 
 // PushDevices sends discovered hosts to Core for storage.
@@ -251,7 +304,20 @@ func (c *CoreClient) PushDevices(ctx context.Context, result *netscan.ScanResult
 		Duration: result.Duration.String(),
 		Hosts:    result.Hosts,
 	}
-	return c.doJSON(ctx, http.MethodPost, "/api/v1/sensor/devices", report, nil, false)
+	var response deviceReportResponse
+	status, err := c.doJSONStatus(ctx, http.MethodPost, "/api/v1/sensor/devices", report, &response, false)
+	if err != nil {
+		return err
+	}
+	// Core uses 207 for partial persistence. A 2xx transport status is not enough:
+	// the whole observation batch must be retried idempotently so failed hosts are
+	// never silently dropped. Preserve the original per-host ObservedAt values.
+	if status == http.StatusMultiStatus ||
+		response.Failed != 0 ||
+		response.Accepted != len(report.Hosts) {
+		return fmt.Errorf("POST /api/v1/sensor/devices partially persisted batch: status=%d accepted=%d failed=%d", status, response.Accepted, response.Failed)
+	}
+	return nil
 }
 
 // FetchWork retrieves pending scan requests and enabled targets from Core.
@@ -389,35 +455,69 @@ func (c *CoreClient) PushDNS(ctx context.Context, payload any) error {
 }
 
 func (c *CoreClient) doJSON(ctx context.Context, method, path string, payload any, response any, allowBootstrap bool) error {
+	_, err := c.doJSONStatus(ctx, method, path, payload, response, allowBootstrap)
+	return err
+}
+
+func (c *CoreClient) doJSONStatus(ctx context.Context, method, path string, payload any, response any, allowBootstrap bool) (int, error) {
 	req, err := c.newJSONRequest(ctx, method, path, payload, allowBootstrap)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	resp, err := c.doCoreRequest(req)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
+		return 0, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if message := strings.TrimSpace(string(body)); message != "" {
-			return fmt.Errorf("%s %s returned %d: %s", method, path, resp.StatusCode, message)
+		return resp.StatusCode, &HTTPStatusError{
+			Method: method, Path: path, StatusCode: resp.StatusCode,
+			Message: strings.TrimSpace(string(body)),
 		}
-		return fmt.Errorf("%s %s returned %d", method, path, resp.StatusCode)
 	}
 
 	if response == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
+		return resp.StatusCode, nil
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(response); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+		return resp.StatusCode, fmt.Errorf("decode response: %w", err)
 	}
 
-	return nil
+	return resp.StatusCode, nil
+}
+
+// HTTPStatusError preserves the response class across wrapping boundaries. Sensor
+// delivery must distinguish a transient Core outage from a rejected/revoked sensor
+// credential: retrying a 401/403 forever cannot recover and prevents the lifecycle
+// from returning to registration/reset guidance.
+type HTTPStatusError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Message    string
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e == nil {
+		return "Core returned an HTTP error"
+	}
+	if e.Message != "" {
+		return fmt.Sprintf("%s %s returned %d: %s", e.Method, e.Path, e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("%s %s returned %d", e.Method, e.Path, e.StatusCode)
+}
+
+// IsAuthorizationError reports a terminal sensor-credential rejection. The helper
+// uses errors.As so callers can add useful operation context without losing status.
+func IsAuthorizationError(err error) bool {
+	var statusErr *HTTPStatusError
+	return errors.As(err, &statusErr) &&
+		(statusErr.StatusCode == http.StatusUnauthorized || statusErr.StatusCode == http.StatusForbidden)
 }
 
 func (c *CoreClient) newJSONRequest(ctx context.Context, method, path string, payload any, allowBootstrap bool) (*http.Request, error) {

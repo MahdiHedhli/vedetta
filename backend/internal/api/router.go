@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -1286,13 +1287,23 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 					Interfaces: interfacesStr,
 				}, tokenID)
 				if refreshErr == nil {
+					deliveryEpoch, epochErr := s.DB.IssueARPCacheDeliveryEpoch(body.SensorID)
+					if epochErr != nil {
+						log.Printf("Sensor %s delivery-session issue failed: %v", body.SensorID, epochErr)
+						// The bearer was already committed and is the only recoverable copy.
+						// Return it even when the optional ARP-cache delivery session cannot
+						// be issued; an empty epoch keeps cache evidence provisional until a
+						// later registration succeeds instead of stranding the sensor.
+						deliveryEpoch = ""
+					}
 					log.Printf("Sensor %s re-registered via idempotent enrollment replay — returning existing token %s", body.SensorID, tokenID)
 					writeJSON(w, http.StatusOK, sensorRegistrationResponse{
-						Status:       "registered",
-						SensorID:     body.SensorID,
-						AuthToken:    rawToken,
-						TokenID:      tokenID,
-						TokenWarning: "save this token now — it will not be displayed again",
+						Status:        "registered",
+						SensorID:      body.SensorID,
+						AuthToken:     rawToken,
+						TokenID:       tokenID,
+						TokenWarning:  "save this token now — it will not be displayed again",
+						DeliveryEpoch: deliveryEpoch,
 					})
 					return
 				}
@@ -1502,6 +1513,15 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	deliveryEpoch, err := s.DB.IssueARPCacheDeliveryEpoch(body.SensorID)
+	if err != nil {
+		log.Printf("Sensor %s delivery-session issue failed: %v", body.SensorID, err)
+		// Registration/token persistence has already committed. Withholding a
+		// freshly minted raw bearer here would make the credential unrecoverable.
+		// Empty means ARP-cache evidence remains provisional/fail-closed.
+		deliveryEpoch = ""
+	}
+	response.DeliveryEpoch = deliveryEpoch
 
 	log.Printf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR)
 	s.logInfo("sensor", fmt.Sprintf("Sensor registered: %s (%s/%s) scanning %s", body.SensorID, body.OS, body.Arch, body.CIDR))
@@ -1520,12 +1540,15 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 		Segment  string    `json:"segment"`
 		ScanTime time.Time `json:"scan_time"`
 		Hosts    []struct {
-			IPAddress  string `json:"ip_address"`
-			MACAddress string `json:"mac_address"`
-			Hostname   string `json:"hostname"`
-			Vendor     string `json:"vendor"`
-			OpenPorts  []int  `json:"open_ports"`
-			Status     string `json:"status"`
+			IPAddress        string    `json:"ip_address"`
+			MACAddress       string    `json:"mac_address"`
+			Hostname         string    `json:"hostname"`
+			Vendor           string    `json:"vendor"`
+			OpenPorts        []int     `json:"open_ports"`
+			Status           string    `json:"status"`
+			ObservedAt       time.Time `json:"observed_at,omitempty"`
+			DeliveryEpoch    string    `json:"delivery_epoch,omitempty"`
+			DeliverySequence uint64    `json:"delivery_sequence,omitempty"`
 			// Extended for actionability (model/services/discovery_source from passive sensor).
 			// These will be populated in JSON decode; copy to DiscoveredHost only after L4 updates the type.
 			Model            string   `json:"model,omitempty"`
@@ -1567,15 +1590,144 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 	// every store error, so the API returned 200 "accepted:N" even when every
 	// upsert failed. Now we count what actually persisted and reflect it.
 	now := time.Now().UTC()
-	observedAt := body.ScanTime.UTC()
+	// Normalize implausibly future clocks before any device write. The store keeps
+	// the first mapping by authenticated sensor and exact upstream timestamp, so a
+	// partial 207 replay cannot turn identical evidence into a newer observation.
+	// Correct-clock timestamps remain exact. A short forward continuation of a
+	// durable future-clock epoch retains its offset after entering the skew window
+	// only while upstream progress still tracks server receipt time; a backward or
+	// partial NTP correction is deliberately left raw. Future cohorts keep their
+	// relative ordering, including request-local cohorts that straddle the skew
+	// cutoff and would otherwise invert under independent classification.
+	upstreamTimes := make([]time.Time, 0, len(body.Hosts)+1)
+	upstreamTimes = append(upstreamTimes, body.ScanTime)
+	for _, host := range body.Hosts {
+		upstreamTimes = append(upstreamTimes, host.ObservedAt)
+	}
+	normalizedTimes, err := s.DB.NormalizeSensorReportTimes(
+		r.Context(), body.SensorID, upstreamTimes, now, maxTimestampSkew,
+	)
+	if err != nil {
+		log.Printf("Failed to normalize device report timestamps from sensor %s: %v", body.SensorID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to normalize sensor report timestamps"})
+		return
+	}
+	normalizeReportTime := func(ts time.Time) time.Time {
+		if ts.IsZero() {
+			return ts
+		}
+		ts = ts.UTC()
+		if normalized, ok := normalizedTimes[ts.Format(time.RFC3339Nano)]; ok {
+			return normalized
+		}
+		// Every non-zero request timestamp was included above. Keep a safe fallback
+		// if that invariant changes in a future additive payload.
+		return clampFutureTimestamp(ts, now)
+	}
+	observedAt := normalizeReportTime(body.ScanTime)
 	if observedAt.IsZero() {
 		observedAt = now
 	}
-	observedAt = clampFutureTimestamp(observedAt, now)
+	hostObservedTimes := make([]time.Time, len(body.Hosts))
+	for i, host := range body.Hosts {
+		hostObservedTimes[i] = observedAt
+		if !host.ObservedAt.IsZero() {
+			hostObservedTimes[i] = normalizeReportTime(host.ObservedAt)
+		}
+	}
+
+	// One authenticated sensor report is one observation generation. Collapse
+	// equal-time cache conflicts before the first store write so input ordering
+	// cannot fuse A and only afterward discover B/blank for the same scoped IP.
+	// Current sensors already emit one pre-classified state per IP; this boundary
+	// also keeps legacy/additive payloads fail-closed.
+	type cacheGenerationKey struct {
+		ip         string
+		observedAt time.Time
+		epoch      string
+		sequence   uint64
+	}
+	normalizeIP := func(raw string) string {
+		if ip := net.ParseIP(strings.TrimSpace(raw)).To4(); ip != nil &&
+			!ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast() {
+			return ip.String()
+		}
+		return ""
+	}
+	normalizeMAC := func(raw string) string {
+		mac, err := net.ParseMAC(strings.TrimSpace(raw))
+		if err != nil || len(mac) != 6 || mac[0]&1 != 0 {
+			return ""
+		}
+		allZero, allBroadcast := true, true
+		for _, octet := range mac {
+			allZero = allZero && octet == 0
+			allBroadcast = allBroadcast && octet == 0xff
+		}
+		if allZero || allBroadcast {
+			return ""
+		}
+		return strings.ToUpper(mac.String())
+	}
+	// Delivery epochs are untrusted request fields until they are tied to this sensor in
+	// Core's issuance ledger. Classify every candidate before the first device write so
+	// arbitrary strings cannot split one equal-time conflict into attacker-chosen keys.
+	issuedEpochs := make(map[string]bool)
+	checkedEpochs := make(map[string]struct{})
+	for _, host := range body.Hosts {
+		source := strings.ToLower(strings.TrimSpace(host.DiscoverySource))
+		if source != "arp_cache" && source != "arp" {
+			continue
+		}
+		epoch := strings.TrimSpace(host.DeliveryEpoch)
+		if epoch == "" || len(epoch) > 64 || host.DeliverySequence == 0 || host.DeliverySequence > uint64(1<<63-1) {
+			continue
+		}
+		if _, checked := checkedEpochs[epoch]; checked {
+			continue
+		}
+		checkedEpochs[epoch] = struct{}{}
+		issued, err := s.DB.HasARPCacheDeliveryEpoch(body.SensorID, epoch)
+		if err != nil {
+			log.Printf("Failed to classify ARP delivery epoch from sensor %s: %v", body.SensorID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to classify sensor delivery epoch"})
+			return
+		}
+		issuedEpochs[epoch] = issued
+	}
+	cacheKey := func(index int, ipAddress, deliveryEpoch string, deliverySequence uint64) cacheGenerationKey {
+		key := cacheGenerationKey{ip: normalizeIP(ipAddress), observedAt: hostObservedTimes[index]}
+		epoch := strings.TrimSpace(deliveryEpoch)
+		if issuedEpochs[epoch] && deliverySequence > 0 && deliverySequence <= uint64(1<<63-1) {
+			key.observedAt = time.Time{}
+			key.epoch = epoch
+			key.sequence = deliverySequence
+		}
+		return key
+	}
+	cacheValues := make(map[cacheGenerationKey]string)
+	cacheAmbiguous := make(map[cacheGenerationKey]struct{})
+	for i, host := range body.Hosts {
+		source := strings.ToLower(strings.TrimSpace(host.DiscoverySource))
+		if source != "arp_cache" && source != "arp" {
+			continue
+		}
+		key := cacheKey(i, host.IPAddress, host.DeliveryEpoch, host.DeliverySequence)
+		mac := normalizeMAC(host.MACAddress)
+		if previous, exists := cacheValues[key]; exists {
+			if previous == "" || mac == "" || previous != mac {
+				cacheAmbiguous[key] = struct{}{}
+			}
+		} else {
+			cacheValues[key] = mac
+		}
+	}
 	newCount := 0
 	accepted := 0
 	failed := 0
-	for _, h := range body.Hosts {
+	protocolConflicts := 0
+	staleReplays := 0
+	for hostIndex, h := range body.Hosts {
 		identityEvidence := make([]discovery.IdentityEvidence, 0, len(h.IdentityEvidence))
 		for i, evidence := range h.IdentityEvidence {
 			if i >= 32 {
@@ -1597,17 +1749,45 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 			Vendor:           h.Vendor,
 			OpenPorts:        h.OpenPorts,
 			Status:           h.Status,
+			ObservedAt:       h.ObservedAt,
 			Model:            h.Model,
 			Services:         h.Services,
 			FriendlyName:     h.FriendlyName,
 			DiscoverySource:  h.DiscoverySource,
 			IdentityEvidence: identityEvidence,
 		}
+		hostObservedAt := hostObservedTimes[hostIndex]
+		source := strings.ToLower(strings.TrimSpace(h.DiscoverySource))
+		if source == "arp_cache" || source == "arp" {
+			key := cacheKey(hostIndex, h.IPAddress, h.DeliveryEpoch, h.DeliverySequence)
+			if _, ambiguous := cacheAmbiguous[key]; ambiguous {
+				host.MACAddress = ""
+			}
+		}
+		host.ObservedAt = hostObservedAt
 		isNew, err := s.DB.ObserveDevice(store.DeviceObservation{
 			Host: host, Segment: body.Segment, SensorID: body.SensorID,
-			ObservedAt: observedAt,
+			ObservedAt: hostObservedAt, DeliveryEpoch: h.DeliveryEpoch,
+			DeliverySequence: h.DeliverySequence,
 		})
 		if err != nil {
+			if errors.Is(err, store.ErrARPCacheDeliveryMutation) {
+				// The immutable batch was already accepted under this scoped
+				// generation. Acknowledge the changed duplicate as permanently
+				// processed so the sensor does not retry it forever. Aggregate the
+				// warning below rather than logging attacker-controlled host values.
+				accepted++
+				protocolConflicts++
+				continue
+			}
+			if errors.Is(err, store.ErrARPCacheDeliveryStale) {
+				// A newer accepted sequence or process epoch makes every older
+				// generation terminal. Do not let the stale payload create weak
+				// provisional evidence, and do not make the sensor retry it.
+				accepted++
+				staleReplays++
+				continue
+			}
 			failed++
 			log.Printf("Failed to upsert device %s from sensor %s: %v", h.IPAddress, body.SensorID, err)
 			continue
@@ -1619,13 +1799,25 @@ func (s *Server) handleSensorDevices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("Sensor %s reported %d hosts (%d accepted, %d failed, %d new) from %s", body.SensorID, len(body.Hosts), accepted, failed, newCount, body.CIDR)
-	s.logInfo("scan", fmt.Sprintf("Sensor %s reported %d hosts (%d accepted, %d failed, %d new) from %s [%s]", body.SensorID, len(body.Hosts), accepted, failed, newCount, body.CIDR, body.Segment))
+	if protocolConflicts > 0 {
+		log.Printf("Sensor %s sent %d contradictory immutable ARP cache delivery generations; acknowledged without changing stored identity", body.SensorID, protocolConflicts)
+	}
+	if staleReplays > 0 {
+		log.Printf("Sensor %s replayed %d superseded ARP cache delivery generations; acknowledged without creating projections", body.SensorID, staleReplays)
+	}
+	log.Printf("Sensor %s reported %d hosts (%d accepted, %d failed, %d new, %d protocol conflicts, %d stale replays) from %s", body.SensorID, len(body.Hosts), accepted, failed, newCount, protocolConflicts, staleReplays, body.CIDR)
+	s.logInfo("scan", fmt.Sprintf("Sensor %s reported %d hosts (%d accepted, %d failed, %d new, %d protocol conflicts, %d stale replays) from %s [%s]", body.SensorID, len(body.Hosts), accepted, failed, newCount, protocolConflicts, staleReplays, body.CIDR, body.Segment))
 
 	resp := map[string]any{
 		"accepted":    accepted,
 		"failed":      failed,
 		"new_devices": newCount,
+	}
+	if protocolConflicts > 0 {
+		resp["protocol_conflicts"] = protocolConflicts
+	}
+	if staleReplays > 0 {
+		resp["stale_replays"] = staleReplays
 	}
 
 	// If we had hosts to store but every single one failed, this is a server-side

@@ -23,9 +23,11 @@ func TestOpen_InMemory(t *testing.T) {
 
 	// Verify core tables exist
 	tables := []string{"events", "devices", "retention_config", "scan_targets", "sensors", "schema_migrations",
-		"device_address_history", "device_identity_evidence", "device_identity_actions",
+		"device_address_history", "device_address_binding_strength", "device_address_binding_validity",
+		"device_identity_evidence", "device_identity_evidence_strength", "device_identity_evidence_validity", "device_identity_actions",
 		"event_detection_evidence", "findings", "finding_events", "finding_evidence", "finding_status_history",
 		"finding_suppression_rules", "finding_suppression_history", "collection_source_health"}
+	tables = append(tables, "sensor_report_time_raw_epochs", "sensor_report_time_receipts")
 	for _, table := range tables {
 		var name string
 		err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)

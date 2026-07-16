@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"runtime"
 	"strings"
@@ -166,6 +168,10 @@ func main() {
 	passiveDHCP := flag.Bool("passive-dhcp", true, "Enable passive DHCP discovery")
 	passiveMDNS := flag.Bool("passive-mdns", true, "Enable passive mDNS discovery")
 	passiveSSDP := flag.Bool("passive-ssdp", true, "Enable passive SSDP/UPnP discovery")
+	arpDiscovery := flag.Bool("arp-discovery", true, "Enable unprivileged ARP-cache discovery (reads the OS neighbor cache; passive, no root)")
+	arpSweep := flag.Bool("arp-sweep", false, "Warm the ARP cache with a lightweight unprivileged TCP/UDP sweep (active; off by default)")
+	arpPollInterval := flag.Duration("arp-poll-interval", 30*time.Second, "How often to read the OS ARP/neighbor cache")
+	arpSweepInterval := flag.Duration("arp-sweep-interval", 5*time.Minute, "How often to warm the ARP cache when --arp-sweep is set (<=0 warms once at startup)")
 	printCapturePlan := flag.Bool("print-capture-plan", false, "Print the recommended DNS/passive capture interfaces and exit")
 	showVersion := flag.Bool("version", false, "Show version")
 	selfCheck := flag.Bool("check", false, "Verify runtime dependencies (nmap, token/client init, Core reachability) from THIS process's environment, print a per-dependency report, and exit non-zero on any fatal gap. The installer runs it under the service's exact PATH to catch problems the daemon would hit.")
@@ -178,9 +184,13 @@ func main() {
 	// exits; `--reset --core ...` preflights local persistence and performs one
 	// reset/re-registration action without deleting the old file first.
 	coreExplicit := false
+	passiveIfaceExplicit := false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "core" {
+		switch f.Name {
+		case "core":
 			coreExplicit = true
+		case "passive-iface":
+			passiveIfaceExplicit = true
 		}
 	})
 	enrollmentCode := strings.TrimSpace(*enrollCode)
@@ -286,21 +296,27 @@ func main() {
 	// the SCM. Doing any of it here would let a boot before DHCP (no LAN address yet)
 	// exit this process before dispatch → Error 1053.
 	run := &sensorRun{
-		scanner:        scanner,
-		core:           core,
-		coreURL:        *coreURL,
-		cidrFlag:       *cidr,
-		primary:        *primary,
-		scanPorts:      *scanPorts,
-		interval:       *interval,
-		dnsEnabled:     *dnsEnabled,
-		dnsIface:       *dnsIface,
-		passiveEnabled: *passiveEnabled,
-		passiveIface:   *passiveIface,
-		passiveARP:     *passiveARP,
-		passiveDHCP:    *passiveDHCP,
-		passiveMDNS:    *passiveMDNS,
-		passiveSSDP:    *passiveSSDP,
+		scanner:              scanner,
+		core:                 core,
+		coreURL:              *coreURL,
+		cidrFlag:             *cidr,
+		primary:              *primary,
+		scanPorts:            *scanPorts,
+		interval:             *interval,
+		dnsEnabled:           *dnsEnabled,
+		dnsIface:             *dnsIface,
+		passiveEnabled:       *passiveEnabled,
+		passiveIface:         *passiveIface,
+		passiveIfaceExplicit: passiveIfaceExplicit,
+		passiveARP:           *passiveARP,
+		passiveDHCP:          *passiveDHCP,
+		passiveMDNS:          *passiveMDNS,
+		passiveSSDP:          *passiveSSDP,
+
+		arpEnabled:       *arpDiscovery,
+		arpSweep:         *arpSweep,
+		arpPollInterval:  *arpPollInterval,
+		arpSweepInterval: *arpSweepInterval,
 	}
 
 	// Enrollment-only mode (installer step): interactive, the network is up. Resolve the
@@ -318,15 +334,15 @@ func main() {
 	}
 
 	if *oneshot {
-		// One scan and exit (interactive). Resolve eagerly, scan once, drain.
-		ctx := context.Background()
-		if err := run.prepare(ctx, false); err != nil {
-			log.Fatalf("scan: %v", err)
+		// Interactive one-shot delivery is finite and signal-aware. It always drains
+		// captures before returning and a registration/delivery failure exits non-zero.
+		ctx, stop := interactiveContext()
+		err := run.runOneShot(ctx)
+		stop()
+		if err != nil {
+			log.Printf("one-shot scan failed: %v", err)
+			os.Exit(1)
 		}
-		run.startCaptures()
-		run.register(ctx)
-		runScan(ctx, run.scanner, run.core, run.scanCIDR, run.scanPorts)
-		run.shutdown()
 		return
 	}
 
@@ -355,21 +371,41 @@ type sensorRun struct {
 	dnsIface       string
 	passiveEnabled bool
 	passiveIface   string
-	passiveARP     bool
-	passiveDHCP    bool
-	passiveMDNS    bool
-	passiveSSDP    bool
+	// passiveIfaceExplicit distinguishes a user-pinned OS interface from the
+	// default "auto" capture selection. ARP link resolution must never inherit an
+	// interface that pcap happened to auto-select before DHCP was ready.
+	passiveIfaceExplicit bool
+	passiveARP           bool
+	passiveDHCP          bool
+	passiveMDNS          bool
+	passiveSSDP          bool
+
+	arpEnabled       bool
+	arpSweep         bool
+	arpPollInterval  time.Duration
+	arpSweepInterval time.Duration
+	// oneShotDelivery is a test seam for the interactive finite-attempt policy.
+	// Production leaves it nil and uses oneShotScanDeliveryConfig.
+	oneShotDelivery *scanDeliveryConfig
 
 	// runtime state populated by prepare() + startCaptures()
-	scanCIDR        string
-	interfaces      []netinfo.NetworkInterface
-	capturer        *dnscap.Capturer
-	passiveCapturer *passive.Capturer
-	dnsQueries      chan dnscap.Query
-	passiveHosts    chan netscan.DiscoveredHost
-	wg              sync.WaitGroup
-	droppedDNS      atomic.Int64
-	droppedHosts    atomic.Int64
+	scanCIDR           string
+	interfaces         []netinfo.NetworkInterface
+	capturer           *dnscap.Capturer
+	passiveCapturer    *passive.Capturer
+	arpSource          *netscan.Source
+	dnsQueries         chan dnscap.Query
+	passiveHosts       chan netscan.DiscoveredHost
+	passiveSinkStarted bool
+	wg                 sync.WaitGroup
+	droppedDNS         atomic.Int64
+	droppedHosts       atomic.Int64
+	// registrationConfirmed means this process received a successful Register
+	// response. A token file alone is not proof that Core still accepts the identity.
+	registrationConfirmed atomic.Bool
+	// scanFn is a lifecycle test seam. Production leaves it nil and scan executes
+	// runScan; tests can prove registration gates without invoking nmap.
+	scanFn func(context.Context, *netscan.Scanner, *client.CoreClient, string, bool, scanDeliveryConfig) error
 }
 
 // serve runs the full operational lifecycle: resolve the scan target + interfaces
@@ -390,8 +426,9 @@ func (r *sensorRun) serve(ctx context.Context) {
 	defer stopHeartbeat()
 	// Registration can itself consume several bounded HTTP attempts. Start liveness
 	// first so an already-enrolled sensor is not marked stale while Core is slow.
-	r.register(ctx)
-	runScan(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts)
+	if err := r.scanIfRegistered(ctx, true); err != nil && ctx.Err() == nil {
+		log.Printf("Initial scan deferred: %v", err)
+	}
 	r.loop(ctx)
 }
 
@@ -410,6 +447,25 @@ func (r *sensorRun) startHeartbeat(ctx context.Context) func() {
 		cancelHeartbeat()
 		<-heartbeatDone
 	}
+}
+
+// runOneShot owns the complete interactive lifecycle so every error path still stops
+// the ARP/capture sources and drains their delivery workers. Unlike service mode, the
+// immutable active-scan report has a finite attempt budget.
+func (r *sensorRun) runOneShot(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := r.prepare(ctx, false); err != nil {
+		return fmt.Errorf("prepare one-shot scan: %w", err)
+	}
+	r.startCaptures()
+	defer r.shutdown()
+	delivery := oneShotScanDeliveryConfig
+	if r.oneShotDelivery != nil {
+		delivery = *r.oneShotDelivery
+	}
+	return r.scanIfRegisteredWithConfig(ctx, false, delivery)
 }
 
 // prepare resolves the scan CIDR and enumerates network interfaces. When wait is true
@@ -480,6 +536,18 @@ func (r *sensorRun) resolveScanCIDR(ctx context.Context, wait bool) (string, err
 // attribute this host's DNS to its LAN address). All failures are logged and non-fatal —
 // the sensor keeps running (e.g. capture may fail while scan/registration still work).
 func (r *sensorRun) startCaptures() {
+	// Resolve the operator's interface intent once and feed the same value to both
+	// Windows source-bound ICMP and the neighbor-cache Source. The scanner still
+	// resolves/revalidates the live OS link for every target; this only ensures the
+	// two paths cannot make different preferred-interface choices.
+	discoveryIface := ""
+	if r.arpEnabled || runtime.GOOS == "windows" {
+		discoveryIface = explicitARPInterface(r.passiveIface, r.passiveIfaceExplicit, net.InterfaceByName)
+	}
+	if r.scanner != nil {
+		r.scanner.ConfigureNativeDiscovery(discoveryIface, r.arpEnabled)
+	}
+
 	if r.dnsEnabled {
 		r.dnsQueries = make(chan dnscap.Query, 100)
 		capturer, err := dnscap.NewCapturer(dnscap.Config{
@@ -510,7 +578,9 @@ func (r *sensorRun) startCaptures() {
 			r.wg.Add(1)
 			go func() {
 				defer r.wg.Done()
-				pushDNSQueries(r.core, r.dnsQueries)
+				cfg := productionDNSPushConfig
+				cfg.OnAuthorizationError = r.authorizationRejected
+				pushDNSQueriesWithConfig(r.core, r.dnsQueries, cfg)
 			}()
 		}
 	}
@@ -544,30 +614,196 @@ func (r *sensorRun) startCaptures() {
 		} else {
 			r.passiveCapturer = pc
 			log.Printf("Passive discovery active on interface %s (arp=%v dhcp=%v mdns=%v ssdp=%v)", pc.Interface(), r.passiveARP, r.passiveDHCP, r.passiveMDNS, r.passiveSSDP)
-			r.wg.Add(1)
-			go func() {
-				defer r.wg.Done()
-				pushPassiveHosts(r.core, r.scanCIDR, r.passiveHosts)
-			}()
+			r.ensurePassiveSink()
 		}
 	}
+
+	// Unprivileged ARP-cache discovery: reads the OS neighbor cache (passive) and, when
+	// --arp-sweep is set, warms it first. It shares the passive host sink/drain — if
+	// passive discovery is disabled those don't exist yet, so create them here.
+	if r.arpEnabled {
+		// Ensure the shared host sink + drain exist even when passive discovery is off
+		// or failed to start (in which case r.passiveHosts was allocated but never
+		// drained — the ARP source would otherwise fill the buffer and drop forever).
+		r.ensurePassiveSink()
+		src := netscan.NewSource(netscan.SourceConfig{
+			CIDR:          r.scanCIDR,
+			Interface:     discoveryIface,
+			Sweep:         r.arpSweep,
+			PollInterval:  r.arpPollInterval,
+			SweepInterval: r.arpSweepInterval,
+			// An explicit --cidr can be known before DHCP assigns the matching
+			// local address. Keep the post-SCM source alive until that link appears.
+			WaitForLink: true,
+			OnHostContext: func(ctx context.Context, host netscan.DiscoveredHost) bool {
+				// Cache reads arrive as a bounded snapshot (at most the configured
+				// /22). Backpressure here is safe: the outbox drain never blocks on
+				// HTTP. Context cancellation also releases a blocked enqueue if the
+				// sink has exited, keeping service shutdown bounded.
+				select {
+				case r.passiveHosts <- host:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			},
+		})
+		if err := src.Start(); err != nil {
+			log.Printf("WARNING: Failed to start ARP-cache discovery: %v", err)
+		} else {
+			r.arpSource = src
+			log.Printf("ARP-cache discovery active (sweep=%v poll=%s)", r.arpSweep, r.arpPollInterval)
+		}
+	}
+}
+
+// explicitARPInterface returns an OS interface only when the operator genuinely
+// pinned --passive-iface to an existing interface. The passive pcap capturer's
+// auto-selected interface is intentionally not inherited: at boot before DHCP it can
+// select a different physical link, which would make the ARP source retry that wrong
+// link forever. "auto" and pcap's pseudo-interface "any" are not OS link identities.
+func explicitARPInterface(value string, explicitlySet bool, lookup func(string) (*net.Interface, error)) string {
+	if !explicitlySet {
+		return ""
+	}
+	name := strings.TrimSpace(value)
+	if name == "" || strings.EqualFold(name, "auto") || strings.EqualFold(name, "any") {
+		return ""
+	}
+	if lookup == nil {
+		return ""
+	}
+	if _, err := lookup(name); err != nil {
+		log.Printf("WARNING: --passive-iface %q is not a valid OS interface for ARP discovery; resolving the ARP link from --cidr instead: %v", name, err)
+		return ""
+	}
+	return name
+}
+
+// ensurePassiveSink lazily creates the shared discovered-host channel and its single
+// drain goroutine (pushPassiveHosts). Both passive discovery and the ARP source push
+// here; whichever needs it first starts the drain. This is called only from the
+// single-threaded startCaptures, so the started flag needs no synchronization. It fixes
+// the case where passive discovery allocated the channel but failed to start its drain,
+// leaving a sink that fills and drops.
+func (r *sensorRun) ensurePassiveSink() {
+	if r.passiveHosts == nil {
+		r.passiveHosts = make(chan netscan.DiscoveredHost, 200)
+	}
+	if r.passiveSinkStarted {
+		return
+	}
+	r.passiveSinkStarted = true
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		cfg := productionHostPushConfig
+		cfg.OnAuthorizationError = r.authorizationRejected
+		pushPassiveHostsWithConfig(r.core, r.scanCIDR, r.passiveHosts, &r.droppedHosts, cfg)
+	}()
 }
 
 // shutdown stops the capturers and drains their push goroutines within the bounded
 // window.
 func (r *sensorRun) shutdown() {
+	// Stop the ARP source BEFORE shutdownCaptures closes r.passiveHosts, so its poll
+	// loop can never send on a closed channel. Stop() blocks until the loop has drained.
+	if r.arpSource != nil {
+		r.arpSource.Stop()
+	}
 	shutdownCaptures(r.capturer, r.passiveCapturer, r.dnsQueries, r.passiveHosts, &r.wg)
 }
 
 // register performs the initial registration with bounded, context-aware retries. A
 // failure is not fatal — the sensor stays up (Running, in a retrying state) and the
 // loop re-attempts registration each cycle (issue #44 idempotent recovery).
-func (r *sensorRun) register(ctx context.Context) {
-	if registerWithRetry(ctx, r.core, r.scanCIDR, r.primary, r.interfaces) {
+func (r *sensorRun) register(ctx context.Context) error {
+	if err := registerWithRetryError(ctx, r.core, r.scanCIDR, r.primary, r.interfaces); err == nil {
+		r.registrationConfirmed.Store(true)
 		log.Printf("Registered with Core at %s", r.coreURL)
+		return nil
 	} else {
+		r.registrationConfirmed.Store(false)
+		if client.IsAuthorizationError(err) {
+			logSensorResetGuidance(err)
+			return err
+		}
 		log.Printf("WARNING: could not register with Core at %s yet; staying up and retrying each scan cycle", r.coreURL)
+		return err
 	}
+}
+
+// scanIfRegistered is the single gate for the initial service scan, periodic scans,
+// and interactive --once. A failed bootstrap must not enter retained scan delivery:
+// PushDevices cannot authenticate without a token, and retrying that local error would
+// otherwise pin the lifecycle forever before the next registration-recovery cycle.
+func (r *sensorRun) scanIfRegistered(ctx context.Context, initial bool) error {
+	return r.scanIfRegisteredWithConfig(ctx, initial, productionScanDeliveryConfig)
+}
+
+func (r *sensorRun) scanIfRegisteredWithConfig(ctx context.Context, initial bool, delivery scanDeliveryConfig) error {
+	var registrationErr error
+	if initial {
+		registrationErr = r.register(ctx)
+	} else {
+		registrationErr = r.ensureRegistered(ctx)
+	}
+	if registrationErr != nil || !r.registrationConfirmed.Load() || !r.core.TokenConfigured() {
+		if ctx.Err() == nil {
+			log.Printf("Skipping scan until sensor registration succeeds")
+		}
+		if registrationErr != nil {
+			return fmt.Errorf("sensor registration not confirmed: %w", registrationErr)
+		}
+		return fmt.Errorf("sensor registration not confirmed")
+	}
+	var err error
+	if r.scanFn != nil {
+		err = r.scanFn(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts, delivery)
+	} else {
+		err = runScanWithConfig(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts, delivery)
+	}
+	if client.IsAuthorizationError(err) {
+		// A token can be revoked after registration (or between FetchWork and report
+		// delivery). Stop the terminal retry, close the process-local scan gate, and
+		// force the next cycle back through Register instead of trusting the token file.
+		r.authorizationRejected(err)
+	}
+	return err
+}
+
+func (r *sensorRun) ensureRegistered(ctx context.Context) error {
+	if r.registrationConfirmed.Load() && r.core.TokenConfigured() {
+		return nil
+	}
+	if err := r.core.Register(ctx, r.scanCIDR, r.primary, r.interfaces); err != nil {
+		r.registrationConfirmed.Store(false)
+		if client.IsAuthorizationError(err) {
+			logSensorResetGuidance(err)
+		} else {
+			log.Printf("Re-registration attempt failed (will retry next cycle): %v", err)
+		}
+		return err
+	}
+	r.registrationConfirmed.Store(true)
+	log.Printf("Recovered registration with Core — persisted/validated sensor token")
+	return nil
+}
+
+func logSensorResetGuidance(err error) {
+	log.Printf("Sensor credential was rejected by Core (%v). Scanning is paused. If the token was revoked, run --reset and re-enroll with a fresh admin-minted reset code bound to this sensor ID; a generic new-sensor code cannot reactivate it.", err)
+}
+
+// authorizationRejected is the process-wide transition for a terminal 401/403 from
+// any sensor API path. Capture delivery runs concurrently with the scan/heartbeat
+// lifecycle, so the registration gate is atomic. A rejected worker invokes this once
+// before switching to a safe drain/drop mode; the next scan cycle must validate with
+// Register again and the operator receives the same bound reset-code guidance.
+func (r *sensorRun) authorizationRejected(err error) {
+	if r != nil {
+		r.registrationConfirmed.Store(false)
+	}
+	logSensorResetGuidance(err)
 }
 
 // loop runs periodic scans until ctx is cancelled, then drains captures within the
@@ -585,8 +821,9 @@ func (r *sensorRun) loop(ctx context.Context) {
 			// enrollment code), keep retrying with the SAME retained enrollment code
 			// so the sensor recovers the idempotent token instead of running
 			// unregistered forever (issue #44).
-			ensureRegistered(ctx, r.core, r.scanCIDR, r.primary, r.interfaces)
-			runScan(ctx, r.scanner, r.core, r.scanCIDR, r.scanPorts)
+			if err := r.scanIfRegistered(ctx, false); err != nil && ctx.Err() == nil {
+				log.Printf("Scan cycle deferred/failed: %v", err)
+			}
 			if d, h := r.droppedDNS.Load(), r.droppedHosts.Load(); d > 0 || h > 0 {
 				log.Printf("Cumulative dropped events (capture buffers overflowed): %d DNS queries, %d passive hosts", d, h)
 			}
@@ -613,7 +850,11 @@ func (r *sensorRun) heartbeatLoop(ctx context.Context) {
 		case <-ticker.C:
 			// Fetching work is not a heartbeat: it drains queued scans.
 			if err := r.core.Heartbeat(ctx); err != nil && ctx.Err() == nil {
-				log.Printf("Sensor heartbeat failed: %v", err)
+				if client.IsAuthorizationError(err) {
+					r.authorizationRejected(err)
+				} else {
+					log.Printf("Sensor heartbeat failed: %v", err)
+				}
 			}
 		case <-ctx.Done():
 			return
@@ -637,44 +878,52 @@ var registerRetryBaseDelay = 2 * time.Second
 // sensor never received, a retry recovers that idempotent token (issue #44).
 // Returns true once registration succeeds.
 func registerWithRetry(ctx context.Context, core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
+	return registerWithRetryError(ctx, core, cidr, primary, interfaces) == nil
+}
+
+func registerWithRetryError(ctx context.Context, core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) error {
 	const maxAttempts = 4
 	delay := registerRetryBaseDelay
+	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if ctx.Err() != nil {
-			return false // cancelled (e.g. service Stop during boot) — abort promptly
+		if err := ctx.Err(); err != nil {
+			return err // cancelled (e.g. service Stop during boot) — abort promptly
 		}
 		if err := core.Register(ctx, cidr, primary, interfaces); err == nil {
-			return true
+			return nil
 		} else {
+			lastErr = err
 			log.Printf("Register attempt %d/%d failed: %v", attempt, maxAttempts, err)
+			if client.IsAuthorizationError(err) {
+				return err // retry cannot repair a rejected persisted credential
+			}
 		}
 		if attempt < maxAttempts {
 			select {
 			case <-time.After(delay):
 				delay *= 2
 			case <-ctx.Done():
-				return false // don't sleep out the backoff after a Stop request
+				return ctx.Err() // don't sleep out the backoff after a Stop request
 			}
 		}
 	}
-	return false
+	return lastErr
 }
 
-// ensureRegistered performs one registration attempt when the sensor still has no
-// persisted token. It reuses the enrollment code retained on the client, so a
-// registration whose response was lost — the backend consumed the code and minted
-// a token the sensor never saw — recovers the idempotent token on a later attempt
-// rather than stranding the sensor (issue #44). It is a no-op (returns true) once
-// a token is configured. Returns true when the sensor is registered.
+// ensureRegistered performs one explicit registration validation. A persisted token
+// is only a credential candidate, not proof that Core still accepts this sensor; the
+// sensorRun lifecycle avoids repeated validation only after this process has observed
+// a successful Register response. This free helper remains for focused tests/tools.
 func ensureRegistered(ctx context.Context, core *client.CoreClient, cidr string, primary bool, interfaces []netinfo.NetworkInterface) bool {
-	if core.TokenConfigured() {
-		return true
-	}
 	if err := core.Register(ctx, cidr, primary, interfaces); err != nil {
-		log.Printf("Re-registration attempt failed (will retry next cycle): %v", err)
+		if client.IsAuthorizationError(err) {
+			logSensorResetGuidance(err)
+		} else {
+			log.Printf("Re-registration attempt failed (will retry next cycle): %v", err)
+		}
 		return false
 	}
-	log.Printf("Recovered registration with Core — persisted sensor token")
+	log.Printf("Recovered registration with Core — persisted/validated sensor token")
 	return true
 }
 
@@ -739,70 +988,241 @@ func printCaptureRecommendations(coreURL, scanCIDR, dnsIface, passiveIface strin
 	return nil
 }
 
-func runScan(ctx context.Context, scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR string, withPorts bool) {
+// scanDeliveryConfig bounds active/native scan reporting without dropping a scan whose
+// Core request failed or was only partially accepted. One immutable result is retained
+// at a time, each HTTP attempt has a deadline, and retry backoff is capped. The parent
+// service context is the only terminal condition so an SCM Stop cancels both a request
+// and its backoff immediately.
+type scanDeliveryConfig struct {
+	RetryBaseDelay time.Duration
+	RetryMaxDelay  time.Duration
+	AttemptTimeout time.Duration
+	// MaxAttempts <= 0 keeps service-mode delivery retrying until its context is
+	// cancelled. Interactive --once sets a finite budget and therefore returns a
+	// meaningful non-zero exit instead of hanging forever on a blackhole/207.
+	MaxAttempts int
+	// Scan is a deterministic test seam. Production leaves it nil and uses the
+	// platform scanner's context-aware entry point.
+	Scan func(context.Context, *netscan.Scanner, string, bool) (*netscan.ScanResult, error)
+}
+
+var productionScanDeliveryConfig = scanDeliveryConfig{
+	RetryBaseDelay: 500 * time.Millisecond,
+	RetryMaxDelay:  30 * time.Second,
+	AttemptTimeout: 30 * time.Second,
+}
+
+var oneShotScanDeliveryConfig = scanDeliveryConfig{
+	RetryBaseDelay: 500 * time.Millisecond,
+	RetryMaxDelay:  2 * time.Second,
+	AttemptTimeout: 5 * time.Second,
+	MaxAttempts:    3,
+}
+
+func cloneScanResult(result *netscan.ScanResult) *netscan.ScanResult {
+	if result == nil {
+		return nil
+	}
+	cloned := *result
+	cloned.Hosts = append([]netscan.DiscoveredHost(nil), result.Hosts...)
+	for i := range cloned.Hosts {
+		cloned.Hosts[i].OpenPorts = append([]int(nil), result.Hosts[i].OpenPorts...)
+		cloned.Hosts[i].Services = append([]string(nil), result.Hosts[i].Services...)
+		cloned.Hosts[i].IdentityEvidence = append([]netscan.IdentityEvidence(nil), result.Hosts[i].IdentityEvidence...)
+	}
+	return &cloned
+}
+
+func deliverScanResult(ctx context.Context, core *client.CoreClient, result *netscan.ScanResult, cidr, segment string) error {
+	return deliverScanResultWithConfig(ctx, core, result, cidr, segment, productionScanDeliveryConfig)
+}
+
+func deliverScanResultWithConfig(ctx context.Context, core *client.CoreClient, result *netscan.ScanResult, cidr, segment string, cfg scanDeliveryConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if core == nil {
+		return fmt.Errorf("deliver scan result: nil Core client")
+	}
+	if !core.TokenConfigured() {
+		return fmt.Errorf("deliver scan result: sensor is not registered with Core")
+	}
+	retained := cloneScanResult(result)
+	if retained == nil {
+		return fmt.Errorf("deliver scan result: nil scan result")
+	}
+	if cfg.RetryBaseDelay <= 0 {
+		cfg.RetryBaseDelay = 500 * time.Millisecond
+	}
+	if cfg.RetryMaxDelay < cfg.RetryBaseDelay {
+		cfg.RetryMaxDelay = cfg.RetryBaseDelay
+	}
+	if cfg.AttemptTimeout <= 0 {
+		cfg.AttemptTimeout = 30 * time.Second
+	}
+
+	backoff := cfg.RetryBaseDelay
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, cfg.AttemptTimeout)
+		err := core.PushDevices(attemptCtx, retained, cidr, segment)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if client.IsAuthorizationError(err) {
+			return fmt.Errorf("deliver immutable scan result: %w", err)
+		}
+		if cfg.MaxAttempts > 0 && attempt >= cfg.MaxAttempts {
+			return fmt.Errorf("deliver immutable scan result exhausted %d attempts: %w", attempt, err)
+		}
+		log.Printf("Failed to push immutable scan result for %s (segment=%s, attempt=%d; retained for retry in %s): %v", cidr, segment, attempt, backoff, err)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < cfg.RetryMaxDelay {
+			if backoff > cfg.RetryMaxDelay/2 {
+				backoff = cfg.RetryMaxDelay
+			} else {
+				backoff *= 2
+			}
+		}
+	}
+}
+
+func runScan(ctx context.Context, scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR string, withPorts bool) error {
+	return runScanWithConfig(ctx, scanner, core, primaryCIDR, withPorts, productionScanDeliveryConfig)
+}
+
+func runScanWithConfig(ctx context.Context, scanner *netscan.Scanner, core *client.CoreClient, primaryCIDR string, withPorts bool, delivery scanDeliveryConfig) error {
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
+	}
+	// Defense in depth for any future caller that bypasses sensorRun's lifecycle gate.
+	// In particular, never enter immutable delivery's retry loop for a deterministic
+	// local "sensor auth token not configured" error.
+	if core == nil || !core.TokenConfigured() {
+		log.Printf("Skipping scan: sensor is not registered with Core")
+		return fmt.Errorf("sensor is not registered with Core")
+	}
+	if scanner == nil {
+		return fmt.Errorf("nil device scanner")
 	}
 	// Fetch work from Core (queued scans and enabled targets)
 	var work *client.WorkResponse
-	if w, err := core.FetchWork(ctx); err == nil {
-		work = w
-		if len(work.ScanQueue) > 0 {
-			log.Printf("Fetched %d queued scans from Core", len(work.ScanQueue))
+	if delivery.MaxAttempts <= 0 {
+		// FetchWork drains queued work. After a service scan succeeds, delivery
+		// retains that result in this process until Core accepts it; scan failure or
+		// process loss still needs the lease/ack recovery tracked in issue #106.
+		// A finite one-shot process can also exhaust its delivery budget and exit.
+		// Therefore --once scans only its requested primary CIDR and leaves Core's
+		// queued work untouched for the long-running service.
+		if w, err := core.FetchWork(ctx); err == nil {
+			work = w
+			if len(work.ScanQueue) > 0 {
+				log.Printf("Fetched %d queued scans from Core", len(work.ScanQueue))
+			}
+			if len(work.Targets) > 0 {
+				log.Printf("Fetched %d enabled scan targets from Core", len(work.Targets))
+			}
+		} else if client.IsAuthorizationError(err) {
+			return fmt.Errorf("fetch sensor work: %w", err)
+		} else {
+			log.Printf("Could not fetch work from Core: %v (scanning primary CIDR only)", err)
 		}
-		if len(work.Targets) > 0 {
-			log.Printf("Fetched %d enabled scan targets from Core", len(work.Targets))
-		}
-	} else {
-		log.Printf("Could not fetch work from Core: %v (scanning primary CIDR only)", err)
 	}
 
-	// Build a set of CIDRs to scan, avoiding duplicates
+	// Build a deterministic list of CIDRs to scan, avoiding duplicates. Map iteration
+	// used to make a bad/off-link task randomly run before a good queued task; returning
+	// on that first error then lost the rest after FetchWork had drained Core's queue.
 	type scanTask struct {
 		cidr      string
 		segment   string
 		scanPorts bool
 	}
-	scansMap := make(map[string]scanTask)
+	type scanKey struct {
+		cidr    string
+		segment string
+	}
+	seenScans := make(map[scanKey]int)
+	scans := make([]scanTask, 0, 1)
+	addScan := func(task scanTask) {
+		task.cidr = strings.TrimSpace(task.cidr)
+		task.segment = strings.TrimSpace(task.segment)
+		if task.segment == "" {
+			task.segment = "default"
+		}
+		key := scanKey{cidr: task.cidr, segment: task.segment}
+		if index, exists := seenScans[key]; exists {
+			// A recurring target may duplicate an on-demand request while asking
+			// for stronger port coverage. Preserve the strongest requirement.
+			scans[index].scanPorts = scans[index].scanPorts || task.scanPorts
+			return
+		}
+		seenScans[key] = len(scans)
+		scans = append(scans, task)
+	}
 
-	// Add primary CIDR
-	scansMap[primaryCIDR] = scanTask{cidr: primaryCIDR, segment: "default", scanPorts: withPorts}
+	// Primary first, then queued work in server order, then recurring targets.
+	addScan(scanTask{cidr: primaryCIDR, segment: "default", scanPorts: withPorts})
 
 	// Add queued scans from work
 	if work != nil {
 		for _, req := range work.ScanQueue {
-			if _, exists := scansMap[req.CIDR]; !exists {
-				scansMap[req.CIDR] = scanTask{
-					cidr:      req.CIDR,
-					segment:   req.Segment,
-					scanPorts: req.ScanPorts || withPorts,
-				}
-			}
+			addScan(scanTask{
+				cidr:      req.CIDR,
+				segment:   req.Segment,
+				scanPorts: req.ScanPorts || withPorts,
+			})
 		}
 
 		// Add enabled targets from work
 		for _, target := range work.Targets {
-			if _, exists := scansMap[target.CIDR]; !exists {
-				scansMap[target.CIDR] = scanTask{
-					cidr:      target.CIDR,
-					segment:   target.Segment,
-					scanPorts: target.ScanPorts || withPorts,
-				}
-			}
+			addScan(scanTask{
+				cidr:      target.CIDR,
+				segment:   target.Segment,
+				scanPorts: target.ScanPorts || withPorts,
+			})
 		}
 	}
 
 	// Execute all scans
 	totalHosts := 0
-	for _, task := range scansMap {
+	var scanErrors []error
+	for _, task := range scans {
 		if ctx.Err() != nil {
-			return // stop between targets on a Stop/Shutdown request (bounded drain)
+			return ctx.Err() // stop between targets on a Stop/Shutdown request (bounded drain)
 		}
 		log.Printf("Scanning %s (segment=%s) ...", task.cidr, task.segment)
-
-		result, err := scanner.ScanContext(ctx, task.cidr, task.scanPorts)
+		var result *netscan.ScanResult
+		var err error
+		if delivery.Scan != nil {
+			result, err = delivery.Scan(ctx, scanner, task.cidr, task.scanPorts)
+		} else {
+			result, err = scanner.ScanContext(ctx, task.cidr, task.scanPorts)
+		}
 		if err != nil {
 			log.Printf("Scan failed for %s: %v", task.cidr, err)
+			wrapped := fmt.Errorf("scan %s: %w", task.cidr, err)
+			if delivery.MaxAttempts > 0 {
+				// --once has exactly one primary task and must surface its failure.
+				return wrapped
+			}
+			scanErrors = append(scanErrors, wrapped)
 			continue
 		}
 
@@ -814,9 +1234,21 @@ func runScan(ctx context.Context, scanner *netscan.Scanner, core *client.CoreCli
 
 		totalHosts += len(result.Hosts)
 
-		// Push results to Core with the correct segment
-		if err := core.PushDevices(ctx, result, task.cidr, task.segment); err != nil {
-			log.Printf("Failed to push results to Core for %s: %v", task.cidr, err)
+		// Retain the exact result in this process until Core fully accepts it. This is
+		// especially important for queued scan work: FetchWork drains that queue, so
+		// treating a 207 partial response as success would otherwise lose failed hosts.
+		// Durable recovery across a process/host failure is the lease/ack follow-up #106.
+		if err := deliverScanResultWithConfig(ctx, core, result, task.cidr, task.segment, delivery); err != nil {
+			if ctx.Err() == nil {
+				log.Printf("Failed to deliver retained scan results to Core for %s: %v", task.cidr, err)
+			}
+			// Authorization and cancellation apply to the whole sensor, not one target.
+			// Transient service delivery retries internally until recovery/cancellation.
+			if client.IsAuthorizationError(err) || ctx.Err() != nil || delivery.MaxAttempts > 0 {
+				return err
+			}
+			scanErrors = append(scanErrors, fmt.Errorf("deliver scan %s: %w", task.cidr, err))
+			continue
 		} else {
 			log.Printf("Pushed %d devices to Core for %s", len(result.Hosts), task.cidr)
 		}
@@ -825,6 +1257,10 @@ func runScan(ctx context.Context, scanner *netscan.Scanner, core *client.CoreCli
 	if totalHosts > 0 {
 		log.Printf("Scan cycle complete: %d total hosts discovered", totalHosts)
 	}
+	if len(scanErrors) > 0 {
+		return errors.Join(scanErrors...)
+	}
+	return nil
 }
 
 // dnsPushConfig bounds every in-memory stage of DNS delivery. A failed request keeps
@@ -833,15 +1269,16 @@ func runScan(ctx context.Context, scanner *netscan.Scanner, core *client.CoreCli
 // offline. The capture callback has its own bounded channel and drop counter as the
 // first line of overload protection.
 type dnsPushConfig struct {
-	BatchSize          int
-	QueuedBatches      int
-	MaxUnpaired        int
-	PairWindow         time.Duration
-	FlushInterval      time.Duration
-	RetryBaseDelay     time.Duration
-	RetryMaxDelay      time.Duration
-	AttemptTimeout     time.Duration
-	ShutdownFlushLimit time.Duration
+	BatchSize            int
+	QueuedBatches        int
+	MaxUnpaired          int
+	PairWindow           time.Duration
+	FlushInterval        time.Duration
+	RetryBaseDelay       time.Duration
+	RetryMaxDelay        time.Duration
+	AttemptTimeout       time.Duration
+	ShutdownFlushLimit   time.Duration
+	OnAuthorizationError func(error)
 }
 
 var productionDNSPushConfig = dnsPushConfig{
@@ -1051,19 +1488,25 @@ func pushDNSQueriesWithConfig(core *client.CoreClient, queries <-chan dnscap.Que
 	defer cancelDelivery()
 	batches := make(chan []dnscap.DNSQuery, cfg.QueuedBatches)
 	deliveryDone := make(chan struct{})
+	authorizationRejected := make(chan error, 1)
 	go func() {
 		defer close(deliveryDone)
-		deliverDNSBatches(deliveryCtx, core, batches, cfg)
+		deliverDNSBatches(deliveryCtx, core, batches, cfg, authorizationRejected)
 	}()
 
 	coalescer := newDNSQueryCoalescer(cfg.PairWindow, cfg.MaxUnpaired)
 	ready := make([]dnscap.DNSQuery, 0, cfg.BatchSize)
 	dropped := 0
+	authRejected := false
 	enqueueChunk := func(chunk []dnscap.DNSQuery) {
 		if len(chunk) == 0 {
 			return
 		}
 		immutable := append([]dnscap.DNSQuery(nil), chunk...)
+		if authRejected {
+			dropped += len(immutable)
+			return
+		}
 		select {
 		case batches <- immutable:
 		default:
@@ -1091,6 +1534,10 @@ func pushDNSQueriesWithConfig(core *client.CoreClient, queries <-chan dnscap.Que
 	defer ticker.Stop()
 	for {
 		select {
+		case err := <-authorizationRejected:
+			authRejected = true
+			authorizationRejected = nil
+			log.Printf("WARNING: DNS delivery stopped after Core rejected the sensor credential; safely draining and dropping new capture records until restart/reset: %v", err)
 		case query, ok := <-queries:
 			if !ok {
 				emit(coalescer.flush())
@@ -1123,7 +1570,7 @@ func pushDNSQueriesWithConfig(core *client.CoreClient, queries <-chan dnscap.Que
 	}
 }
 
-func deliverDNSBatches(ctx context.Context, core *client.CoreClient, batches <-chan []dnscap.DNSQuery, cfg dnsPushConfig) {
+func deliverDNSBatches(ctx context.Context, core *client.CoreClient, batches <-chan []dnscap.DNSQuery, cfg dnsPushConfig, authorizationRejected chan<- error) {
 	for queries := range batches {
 		request := dnscap.DNSPushRequest{SensorID: core.SensorID, Queries: queries}
 		backoff := cfg.RetryBaseDelay
@@ -1146,6 +1593,16 @@ func deliverDNSBatches(ctx context.Context, core *client.CoreClient, batches <-c
 				log.Printf("Pushed %d DNS records to Core", len(queries))
 				break
 			}
+			if client.IsAuthorizationError(err) {
+				if cfg.OnAuthorizationError != nil {
+					cfg.OnAuthorizationError(err)
+				}
+				select {
+				case authorizationRejected <- err:
+				default:
+				}
+				return
+			}
 			log.Printf("Failed to push %d DNS records to Core (retained for retry in %s): %v", len(queries), backoff, err)
 			timer := time.NewTimer(backoff)
 			select {
@@ -1166,69 +1623,322 @@ func deliverDNSBatches(ctx context.Context, core *client.CoreClient, batches <-c
 	}
 }
 
-func pushPassiveHosts(core *client.CoreClient, cidr string, observations chan netscan.DiscoveredHost) {
-	ticker := time.NewTicker(15 * time.Second)
+type hostPushConfig struct {
+	BatchSize            int
+	MaxPending           int
+	FlushInterval        time.Duration
+	RetryBaseDelay       time.Duration
+	RetryMaxDelay        time.Duration
+	AttemptTimeout       time.Duration
+	ShutdownFlushLimit   time.Duration
+	Now                  func() time.Time
+	OnAuthorizationError func(error)
+}
+
+var productionHostPushConfig = hostPushConfig{
+	BatchSize:          50,
+	MaxPending:         2048, // one complete /22 snapshot plus passive enrichment
+	FlushInterval:      15 * time.Second,
+	RetryBaseDelay:     500 * time.Millisecond,
+	RetryMaxDelay:      30 * time.Second,
+	AttemptTimeout:     5 * time.Second,
+	ShutdownFlushLimit: 8 * time.Second,
+	Now:                time.Now,
+}
+
+type pendingHostSet struct {
+	hosts                 map[string]netscan.DiscoveredHost
+	order                 []string
+	nextSequence          uint64
+	deliveryEpochProvider func() string
+}
+
+func newPendingHostSet(deliveryEpochProvider ...func() string) *pendingHostSet {
+	pending := &pendingHostSet{hosts: make(map[string]netscan.DiscoveredHost)}
+	if len(deliveryEpochProvider) > 0 {
+		pending.deliveryEpochProvider = deliveryEpochProvider[0]
+	}
+	return pending
+}
+
+func passiveHostKey(host netscan.DiscoveredHost) string {
+	ip := strings.TrimSpace(host.IPAddress)
+	mac := strings.ToLower(strings.TrimSpace(host.MACAddress))
+	if ip == "" {
+		return ""
+	}
+	if isARPCacheSource(host.DiscoverySource) {
+		// Cache mappings represent current ownership edges. One IP must have only
+		// the latest mapping queued; retaining old/new MAC keys independently lets
+		// a failed old retry reclaim the address after the new edge succeeds.
+		return "arp-cache-ip:" + ip
+	}
+	if mac != "" {
+		// Preserve simultaneous old/new or proxy-ARP bindings for one MAC. Core's
+		// temporal resolver, not a browser-side first-wins fold, adjudicates them.
+		return "mac:" + mac + "|ip:" + ip
+	}
+	return "ip:" + ip
+}
+
+func isARPCacheSource(source string) bool {
+	return strings.EqualFold(strings.TrimSpace(source), "arp_cache")
+}
+
+func (p *pendingHostSet) add(host netscan.DiscoveredHost, limit int, now time.Time) bool {
+	// Bound the first observation as well as later merges. Current parsers already
+	// enforce this cap, but the outbox is the final memory-safety boundary shared by
+	// every discovery producer.
+	host.Services = mergeHostServices(nil, host.Services)
+	key := passiveHostKey(host)
+	if key == "" {
+		return true
+	}
+	if host.ObservedAt.IsZero() {
+		host.ObservedAt = now.UTC()
+	}
+	if host.DeliverySequence == 0 {
+		p.nextSequence++
+		host.DeliverySequence = p.nextSequence
+	} else if host.DeliverySequence > p.nextSequence {
+		p.nextSequence = host.DeliverySequence
+	}
+	if existing, ok := p.hosts[key]; ok {
+		p.hosts[key] = mergeQueuedHost(existing, host)
+		return true
+	}
+	if len(p.hosts) >= limit {
+		return false
+	}
+	p.hosts[key] = host
+	p.order = append(p.order, key)
+	return true
+}
+
+func mergeQueuedHost(existing, observed netscan.DiscoveredHost) netscan.DiscoveredHost {
+	if isARPCacheSource(existing.DiscoverySource) && isARPCacheSource(observed.DiscoverySource) &&
+		strings.TrimSpace(existing.IPAddress) == strings.TrimSpace(observed.IPAddress) {
+		// Queue sequence reflects local observation order and survives retries. It
+		// therefore wins over wall-clock timestamps, which can jump during NTP
+		// correction; a failed older request must never reclaim the IP afterward.
+		if observed.DeliverySequence > existing.DeliverySequence ||
+			(observed.DeliverySequence == existing.DeliverySequence && observed.ObservedAt.After(existing.ObservedAt)) {
+			return observed
+		}
+		return existing
+	}
+	merged := mergePassiveHost(existing, observed)
+	if observed.DeliverySequence > merged.DeliverySequence {
+		merged.DeliverySequence = observed.DeliverySequence
+	}
+	return merged
+}
+
+func (p *pendingHostSet) pop(limit int) []netscan.DiscoveredHost {
+	if limit <= 0 || limit > len(p.order) {
+		limit = len(p.order)
+	}
+	batch := make([]netscan.DiscoveredHost, 0, limit)
+	for len(batch) < limit && len(p.order) > 0 {
+		key := p.order[0]
+		p.order = p.order[1:]
+		host, ok := p.hosts[key]
+		if !ok {
+			continue
+		}
+		if p.deliveryEpochProvider != nil {
+			// Core, not sensor wall time or first packet arrival, orders process
+			// sessions. Restamp a retained batch after re-registration so an old
+			// in-flight epoch cannot reclaim identity after a process restart.
+			host.DeliveryEpoch = strings.TrimSpace(p.deliveryEpochProvider())
+		}
+		delete(p.hosts, key)
+		batch = append(batch, host)
+	}
+	return batch
+}
+
+func latestHostObservation(hosts []netscan.DiscoveredHost, fallback time.Time) time.Time {
+	latest := time.Time{}
+	for _, host := range hosts {
+		if host.ObservedAt.After(latest) {
+			latest = host.ObservedAt
+		}
+	}
+	if latest.IsZero() {
+		return fallback.UTC()
+	}
+	return latest.UTC()
+}
+
+type hostDeliveryResult struct {
+	batch []netscan.DiscoveredHost
+	err   error
+}
+
+func pushPassiveHosts(core *client.CoreClient, cidr string, observations <-chan netscan.DiscoveredHost, dropped *atomic.Int64) {
+	pushPassiveHostsWithConfig(core, cidr, observations, dropped, productionHostPushConfig)
+}
+
+// pushPassiveHostsWithConfig is a bounded outbox (latest cache mapping per IP;
+// latest enrichment per MAC/IP). HTTP delivery
+// runs separately from ingestion, so a full /22 ARP snapshot cannot overflow the
+// 200-entry capture channel while Core is slow. Failed batches move to the tail,
+// retaining newer observations and preventing a stable table prefix from starving the
+// rest of the network.
+func pushPassiveHostsWithConfig(core *client.CoreClient, cidr string, observations <-chan netscan.DiscoveredHost, dropped *atomic.Int64, cfg hostPushConfig) {
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 50
+	}
+	if cfg.MaxPending < cfg.BatchSize {
+		cfg.MaxPending = cfg.BatchSize
+	}
+	if cfg.FlushInterval <= 0 {
+		cfg.FlushInterval = 15 * time.Second
+	}
+	if cfg.RetryBaseDelay <= 0 {
+		cfg.RetryBaseDelay = 500 * time.Millisecond
+	}
+	if cfg.RetryMaxDelay < cfg.RetryBaseDelay {
+		cfg.RetryMaxDelay = cfg.RetryBaseDelay
+	}
+	if cfg.AttemptTimeout <= 0 {
+		cfg.AttemptTimeout = 5 * time.Second
+	}
+	if cfg.ShutdownFlushLimit <= 0 {
+		cfg.ShutdownFlushLimit = 8 * time.Second
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+
+	pending := newPendingHostSet(core.DeliveryEpoch)
+	results := make(chan hostDeliveryResult, 1)
+	deliveryCtx, cancelDelivery := context.WithCancel(context.Background())
+	defer cancelDelivery()
+	ticker := time.NewTicker(cfg.FlushInterval)
 	defer ticker.Stop()
 
-	pending := make(map[string]netscan.DiscoveredHost)
+	backoff := cfg.RetryBaseDelay
+	var retryTimer *time.Timer
+	var retryC <-chan time.Time
+	var shutdownTimer *time.Timer
+	var shutdownC <-chan time.Time
+	var inflight []netscan.DiscoveredHost
+	flushRequested := false
+	closing := false
+	defer func() {
+		if retryTimer != nil {
+			retryTimer.Stop()
+		}
+		if shutdownTimer != nil {
+			shutdownTimer.Stop()
+		}
+	}()
 
-	flush := func() {
-		if len(pending) == 0 {
+	countDropped := func(n int64) {
+		if dropped != nil && n > 0 {
+			dropped.Add(n)
+		}
+	}
+	startDelivery := func() {
+		if len(inflight) > 0 || retryC != nil || len(pending.hosts) == 0 {
 			return
 		}
-
-		hosts := make([]netscan.DiscoveredHost, 0, len(pending))
-		for _, host := range pending {
-			hosts = append(hosts, host)
+		forceDrain := closing || flushRequested
+		if !forceDrain && len(pending.hosts) < cfg.BatchSize {
+			return
 		}
-
-		result := &netscan.ScanResult{
-			Hosts:    hosts,
-			ScanTime: time.Now(),
-			Duration: 0,
+		inflight = pending.pop(cfg.BatchSize)
+		flushRequested = forceDrain && len(pending.hosts) > 0
+		batch := append([]netscan.DiscoveredHost(nil), inflight...)
+		go func() {
+			attemptCtx, cancel := context.WithTimeout(deliveryCtx, cfg.AttemptTimeout)
+			defer cancel()
+			result := &netscan.ScanResult{
+				Hosts: batch, ScanTime: latestHostObservation(batch, cfg.Now()), Duration: 0,
+			}
+			err := core.PushDevices(attemptCtx, result, cidr, "default")
+			results <- hostDeliveryResult{batch: batch, err: err}
+		}()
+	}
+	requeue := func(batch []netscan.DiscoveredHost) {
+		now := cfg.Now()
+		for _, host := range batch {
+			if !pending.add(host, cfg.MaxPending, now) {
+				countDropped(1)
+			}
 		}
-		// context.Background so the shutdown drain still flushes (bounded by shutdownCaptures).
-		if err := core.PushDevices(context.Background(), result, cidr, "default"); err != nil {
-			log.Printf("Failed to push %d passive discovery hosts to Core: %v", len(hosts), err)
-		} else {
-			log.Printf("Pushed %d passive discovery hosts to Core", len(hosts))
-		}
-
-		clear(pending)
 	}
 
 	for {
+		startDelivery()
+		if closing && len(inflight) == 0 && len(pending.hosts) == 0 {
+			return
+		}
 		select {
 		case host, ok := <-observations:
 			if !ok {
-				flush()
-				return
-			}
-			if host.IPAddress == "" {
+				observations = nil
+				closing = true
+				flushRequested = true
+				shutdownTimer = time.NewTimer(cfg.ShutdownFlushLimit)
+				shutdownC = shutdownTimer.C
 				continue
 			}
-
-			key := host.MACAddress
-			if key == "" {
-				key = host.IPAddress
+			if !pending.add(host, cfg.MaxPending, cfg.Now()) {
+				countDropped(1)
 			}
-			if key == "" {
-				continue
-			}
-
-			pending[key] = mergePassiveHost(pending[key], host)
-			if len(pending) >= 50 {
-				flush()
-			}
-
 		case <-ticker.C:
-			flush()
+			flushRequested = true
+		case result := <-results:
+			inflight = nil
+			if result.err != nil {
+				if client.IsAuthorizationError(result.err) {
+					if cfg.OnAuthorizationError != nil {
+						cfg.OnAuthorizationError(result.err)
+					}
+					abandoned := int64(len(result.batch) + len(pending.hosts))
+					countDropped(abandoned)
+					log.Printf("WARNING: discovery delivery stopped after Core rejected the sensor credential; abandoning %d retained hosts and safely draining new observations until restart/reset: %v", abandoned, result.err)
+					if observations != nil {
+						for range observations {
+							countDropped(1)
+						}
+					}
+					return
+				}
+				log.Printf("Failed to push %d discovery hosts to Core (retained for retry in %s): %v", len(result.batch), backoff, result.err)
+				requeue(result.batch)
+				flushRequested = true
+				retryTimer = time.NewTimer(backoff)
+				retryC = retryTimer.C
+				if backoff < cfg.RetryMaxDelay {
+					backoff *= 2
+					if backoff > cfg.RetryMaxDelay {
+						backoff = cfg.RetryMaxDelay
+					}
+				}
+			} else {
+				log.Printf("Pushed %d discovery hosts to Core", len(result.batch))
+				backoff = cfg.RetryBaseDelay
+			}
+		case <-retryC:
+			retryC = nil
+			retryTimer = nil
+			flushRequested = true
+		case <-shutdownC:
+			cancelDelivery()
+			countDropped(int64(len(pending.hosts) + len(inflight)))
+			log.Printf("WARNING: discovery delivery did not drain within %s; abandoning %d retained hosts for bounded shutdown", cfg.ShutdownFlushLimit, len(pending.hosts)+len(inflight))
+			return
 		}
 	}
 }
 
 func mergePassiveHost(existing, observed netscan.DiscoveredHost) netscan.DiscoveredHost {
 	if existing.IPAddress == "" && existing.MACAddress == "" && existing.Hostname == "" && existing.Vendor == "" && existing.Status == "" && len(existing.OpenPorts) == 0 {
+		observed.Services = mergeHostServices(nil, observed.Services)
 		return observed
 	}
 	if existing.IPAddress == "" {
@@ -1252,11 +1962,7 @@ func mergePassiveHost(existing, observed netscan.DiscoveredHost) netscan.Discove
 	if existing.FriendlyName == "" {
 		existing.FriendlyName = observed.FriendlyName
 	}
-	for _, svc := range observed.Services {
-		if !containsString(existing.Services, svc) {
-			existing.Services = append(existing.Services, svc)
-		}
-	}
+	existing.Services = mergeHostServices(existing.Services, observed.Services)
 	for _, evidence := range observed.IdentityEvidence {
 		duplicate := false
 		for _, current := range existing.IdentityEvidence {
@@ -1271,8 +1977,39 @@ func mergePassiveHost(existing, observed netscan.DiscoveredHost) netscan.Discove
 	}
 	if existing.Status == "" {
 		existing.Status = observed.Status
+	} else if existing.Status == "observed" && observed.Status == "up" {
+		existing.Status = observed.Status
+	}
+	if existing.DiscoverySource == "" || (existing.DiscoverySource == "arp_cache" && observed.DiscoverySource != "" && observed.DiscoverySource != "arp_cache") {
+		existing.DiscoverySource = observed.DiscoverySource
+	}
+	if observed.ObservedAt.After(existing.ObservedAt) {
+		existing.ObservedAt = observed.ObservedAt
 	}
 	return existing
+}
+
+// mergeHostServices preserves first-seen order while enforcing the same per-host cap
+// as the mDNS parser. The retained outbox can merge observations indefinitely while
+// Core is offline, so the parser's packet-local guard alone is not sufficient.
+func mergeHostServices(existing, observed []string) []string {
+	capacity := len(existing) + len(observed)
+	if capacity > netscan.MaxServicesPerHost {
+		capacity = netscan.MaxServicesPerHost
+	}
+	merged := make([]string, 0, capacity)
+	for _, list := range [][]string{existing, observed} {
+		for _, service := range list {
+			if len(merged) >= netscan.MaxServicesPerHost {
+				return merged
+			}
+			if service == "" || containsString(merged, service) {
+				continue
+			}
+			merged = append(merged, service)
+		}
+	}
+	return merged
 }
 
 func containsString(list []string, want string) bool {

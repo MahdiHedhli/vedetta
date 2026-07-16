@@ -64,10 +64,16 @@ func TestFreshMigrationsProduceCompleteSchema(t *testing.T) {
 	wantTables := []string{
 		"events", "devices", "sensors", "api_tokens", "scan_targets",
 		"threat_indicators", "whitelist_rules", "suppression_rules",
-		"device_address_history", "device_identity_evidence", "device_identity_actions",
+		"device_address_history", "device_address_binding_strength", "device_address_binding_validity",
+		"device_identity_evidence", "device_identity_evidence_strength", "device_identity_evidence_validity", "device_identity_actions",
 		"event_detection_evidence", "findings", "finding_events", "finding_evidence",
 		"finding_status_history", "finding_suppression_rules", "finding_suppression_history", "collection_source_health",
 		"sensor_lifecycle_events",
+		"sensor_report_time_normalizations",
+		"sensor_report_time_raw_epochs",
+		"sensor_report_time_receipts",
+		"arp_cache_states",
+		"arp_cache_delivery_epochs",
 		"schema_migrations",
 	}
 	for _, tbl := range wantTables {
@@ -106,6 +112,22 @@ func TestFreshMigrationsProduceCompleteSchema(t *testing.T) {
 		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sensor_lifecycle_events') WHERE name=?`, col).Scan(&count); err != nil || count != 1 {
 			t.Errorf("expected sensor_lifecycle_events.%s after migration 026 (count=%d err=%v)", col, count, err)
 		}
+	}
+	for _, col := range []string{"sensor_id", "segment", "ip_address", "state", "mac_hmac",
+		"observed_at", "delivery_epoch_order", "delivery_sequence", "updated_at"} {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('arp_cache_states') WHERE name=?`, col).Scan(&count); err != nil || count != 1 {
+			t.Errorf("expected arp_cache_states.%s after migration 030 (count=%d err=%v)", col, count, err)
+		}
+	}
+	for _, col := range []string{"epoch_order", "sensor_id", "delivery_epoch", "issued_at", "activated_at", "ever_activated_at"} {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('arp_cache_delivery_epochs') WHERE name=?`, col).Scan(&count); err != nil || count != 1 {
+			t.Errorf("expected arp_cache_delivery_epochs.%s after migration 030 (count=%d err=%v)", col, count, err)
+		}
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type='index' AND name='ux_arp_cache_delivery_active_sensor'
+		AND sql LIKE '%WHERE activated_at IS NOT NULL%'`).Scan(&count); err != nil || count != 1 {
+		t.Errorf("expected partial unique active ARP epoch index after migration 030 (count=%d err=%v)", count, err)
 	}
 
 	// Compatibility invariant: old-style inserts do not guess a historical

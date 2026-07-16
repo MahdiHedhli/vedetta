@@ -2,6 +2,8 @@ github.com/0xrawsec/golang-etw v1.6.2 h1:ZXOEL2+hfWBz7QK3iSPVhKeB1VYjz47xGl/Wfdq
 github.com/0xrawsec/golang-etw v1.6.2/go.mod h1:nTLqX2X4dxf/XpYiFmVfWSrjER/CO3A1WOsvc8cac6I=
 github.com/0xrawsec/golang-utils v1.3.1 h1:jjiBzsxzcQPkmEV5KONJY4OnCoqTTW1eQMJcpSdk3hw=
 github.com/0xrawsec/golang-utils v1.3.1/go.mod h1:DADTtCFY10qXjWmUVhhJqQIZdSweaHH4soYUDEi8mj0=
+github.com/0xrawsec/toast v1.2.3 h1:nTs5NyAdmSoDfxlYjMVMYb9wj3C/MFpnoIoQBPUsHXg=
+github.com/0xrawsec/toast v1.2.3/go.mod h1:sRvfNYxqVoH1sZnE18s9Knm/lkbarTGNvaNVBf2/h1k=
 github.com/google/gopacket v1.1.19 h1:ves8RnFZPGiFnTS0uPQStjwru6uO6h+nlr9j6fL7kF8=
 github.com/google/gopacket v1.1.19/go.mod h1:iJ8V8n6KS+z2U1A8pUwu8bW5SyEMkXJB8Yo/Vo+TKTo=
 github.com/kr/fs v0.1.0/go.mod h1:FFnZGqtBN9Gxj7eW1uZ42v5BccTP0vu6NEaFoC2HwRg=
@@ -17,7 +19,6 @@ golang.org/x/net v0.0.0-20190620200207-3b0461eec859 h1:R/3boaszxrf1GEUWTVDzSKVwL
 golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
 golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
-golang.org/x/sys v0.0.0-20190412213103-97732733099d h1:+R4KGOnez64A81RvjARKc4UT5/tI9ujCIVX+P5KiHuI=
 golang.org/x/sys v0.0.0-20190412213103-97732733099d/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
 golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=

@@ -23,7 +23,8 @@ type DiscoveredHost struct {
 	Hostname   string
 	Vendor     string
 	OpenPorts  []int
-	Status     string // up | down
+	Status     string // up | down | observed (cache evidence; not a liveness assertion)
+	ObservedAt time.Time
 
 	// Actionability fields populated by sensor passive discovery (mDNS, DHCP, SSDP, etc.).
 	// These flow through to the Device model and UI for richer context (model, advertised services, discovery source).
@@ -152,7 +153,8 @@ func parseNmapXML(data []byte, scanTime time.Time, duration time.Duration) (*Nma
 		}
 
 		host := DiscoveredHost{
-			Status: h.Status.State,
+			Status:     h.Status.State,
+			ObservedAt: scanTime.UTC(),
 		}
 
 		for _, addr := range h.Addresses {

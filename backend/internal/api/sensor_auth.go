@@ -65,11 +65,12 @@ func (s *Server) validateReadOnlySensorRequest(r *http.Request) error {
 // auth_token is only populated when Core creates a new sensor-scoped token; authenticated re-registration
 // updates sensor metadata without repeating the secret.
 type sensorRegistrationResponse struct {
-	Status       string `json:"status"`
-	SensorID     string `json:"sensor_id"`
-	AuthToken    string `json:"auth_token,omitempty"`
-	TokenID      string `json:"token_id,omitempty"`
-	TokenWarning string `json:"token_warning,omitempty"`
+	Status        string `json:"status"`
+	SensorID      string `json:"sensor_id"`
+	AuthToken     string `json:"auth_token,omitempty"`
+	TokenID       string `json:"token_id,omitempty"`
+	TokenWarning  string `json:"token_warning,omitempty"`
+	DeliveryEpoch string `json:"delivery_epoch,omitempty"`
 }
 
 func (s *Server) requireAuthenticatedSensorID(w http.ResponseWriter, r *http.Request, ids ...string) (string, bool) {

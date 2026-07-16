@@ -21,6 +21,8 @@ const identityHMACSetting = "asset_identity_hmac_key_v1"
 
 const temporalAddressResolutionWindow = 24 * time.Hour
 
+var maxSQLiteIdentityTime = time.Date(9999, 12, 31, 23, 59, 59, 999*int(time.Millisecond), time.UTC)
+
 // DeviceIdentityEvidenceInput is a raw, in-memory observation. Value is HMACed
 // inside the Core transaction before persistence. Callers must never place it
 // in event metadata or logs.
@@ -38,11 +40,20 @@ type DeviceIdentityEvidenceInput struct {
 // context through inventory correlation. UpsertDevice remains as a legacy
 // wrapper for older callers.
 type DeviceObservation struct {
-	Host       discovery.DiscoveredHost
-	Segment    string
-	SensorID   string
-	ObservedAt time.Time
-	Evidence   []DeviceIdentityEvidenceInput
+	Host             discovery.DiscoveredHost
+	Segment          string
+	SensorID         string
+	ObservedAt       time.Time
+	Evidence         []DeviceIdentityEvidenceInput
+	DeliveryEpoch    string
+	DeliverySequence uint64
+
+	// expectedARPCache is an internal compare-and-set guard used only when Core
+	// turns a separate cache row into native_icmp_arp evidence. It prevents a
+	// newer ambiguity transition from racing into the transaction split between
+	// the cache-state write and the normal identity pipeline. Direct sensor-side
+	// native_icmp_arp observations do not use or need this guard.
+	expectedARPCache *arpCacheExpectation
 }
 
 // DeviceIdentityResolutionRequest contains only evidence valid for one event.
@@ -205,6 +216,185 @@ func identityDisplayValue(in DeviceIdentityEvidenceInput) string {
 	}
 }
 
+// recordIdentityEvidenceStrengthTx appends only changes to the strength known at
+// observedAt. The parent evidence row remains the best/current aggregate for
+// inventory compatibility; event-time resolution reads this history instead.
+func recordIdentityEvidenceStrengthTx(tx *sql.Tx, evidenceID, source string, confidence float64,
+	operatorConfirmed bool, observedAt time.Time) error {
+	observedAt = observedAt.UTC()
+	confidence = clampIdentityConfidence(confidence)
+	source = strings.TrimSpace(source)
+
+	var priorConfidence sql.NullFloat64
+	var priorConfirmed int
+	if err := tx.QueryRow(`SELECT MAX(confidence),
+		COALESCE(MAX(CASE WHEN operator_confirmed THEN 1 ELSE 0 END), 0)
+		FROM device_identity_evidence_strength
+		WHERE evidence_id = ? AND observed_at <= ?`, evidenceID, observedAt).
+		Scan(&priorConfidence, &priorConfirmed); err != nil {
+		return fmt.Errorf("read identity evidence strength history: %w", err)
+	}
+	if priorConfidence.Valid && confidence <= priorConfidence.Float64 && (!operatorConfirmed || priorConfirmed != 0) {
+		return nil
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO device_identity_evidence_strength
+		(evidence_id, observed_at, source, confidence, operator_confirmed, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, evidenceID, observedAt, source, confidence,
+		operatorConfirmed, time.Now().UTC()); err != nil {
+		return fmt.Errorf("record identity evidence strength: %w", err)
+	}
+	return nil
+}
+
+// recordAddressBindingStrengthTx is the address-binding counterpart to
+// recordIdentityEvidenceStrengthTx. Repeated scans at the same or lower
+// effective confidence do not grow the history.
+func recordAddressBindingStrengthTx(tx *sql.Tx, bindingID, source string, confidence float64,
+	observedAt time.Time) error {
+	observedAt = observedAt.UTC()
+	confidence = clampIdentityConfidence(confidence)
+	source = strings.TrimSpace(source)
+
+	var priorConfidence sql.NullFloat64
+	if err := tx.QueryRow(`SELECT MAX(confidence)
+		FROM device_address_binding_strength
+		WHERE binding_id = ? AND observed_at <= ?`, bindingID, observedAt).
+		Scan(&priorConfidence); err != nil {
+		return fmt.Errorf("read address binding strength history: %w", err)
+	}
+	if priorConfidence.Valid && confidence <= priorConfidence.Float64 {
+		return nil
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO device_address_binding_strength
+		(binding_id, observed_at, source, confidence, created_at)
+		VALUES (?, ?, ?, ?, ?)`, bindingID, observedAt, source, confidence, time.Now().UTC()); err != nil {
+		return fmt.Errorf("record address binding strength: %w", err)
+	}
+	return nil
+}
+
+// mergeValidityWindowTx stores the exact union of observation-freshness
+// windows without writing one row per poll. Repeated observations inside a
+// continuous interval extend/merge that interval; observations separated by a
+// real stale gap remain separate so historical resolution cannot be changed by
+// a later refresh.
+func mergeValidityWindowTx(tx *sql.Tx, table, parentColumn, parentID string,
+	validFrom, validUntil time.Time) error {
+	if (table != "device_address_binding_validity" || parentColumn != "binding_id") &&
+		(table != "device_identity_evidence_validity" || parentColumn != "evidence_id") {
+		return fmt.Errorf("invalid identity validity table %q", table)
+	}
+	validFrom = validFrom.UTC()
+	validUntil = validUntil.UTC()
+	if validUntil.Before(validFrom) {
+		return fmt.Errorf("invalid identity validity window: %s before %s", validUntil, validFrom)
+	}
+
+	mergedFrom, mergedUntil := validFrom, validUntil
+	query := fmt.Sprintf(`SELECT valid_from, valid_until FROM %s
+		WHERE %s = ? AND valid_from <= ? AND valid_until >= ?`, table, parentColumn)
+	// Query only the connected component that can overlap this observation. A
+	// parent can legitimately accumulate many disjoint historical windows, so
+	// loading every row on every poll would make the hot path O(total history).
+	// Runtime writes keep components compact; another pass is needed only to
+	// self-heal a legacy/corrupt chain whose next edge becomes reachable after
+	// expanding the current bounds.
+	firstPass := true
+	for {
+		rows, err := tx.Query(query, parentID, mergedUntil, mergedFrom)
+		if err != nil {
+			return fmt.Errorf("read %s windows: %w", table, err)
+		}
+		expanded := false
+		rowCount := 0
+		contained := false
+		for rows.Next() {
+			rowCount++
+			var fromRaw, untilRaw any
+			if err := rows.Scan(&fromRaw, &untilRaw); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan %s window: %w", table, err)
+			}
+			from, err := parseSQLiteTime(fromRaw)
+			if err != nil {
+				rows.Close()
+				return fmt.Errorf("parse %s valid_from: %w", table, err)
+			}
+			until, err := parseSQLiteTime(untilRaw)
+			if err != nil {
+				rows.Close()
+				return fmt.Errorf("parse %s valid_until: %w", table, err)
+			}
+			if from.Before(mergedFrom) {
+				mergedFrom = from.UTC()
+				expanded = true
+			}
+			if until.After(mergedUntil) {
+				mergedUntil = until.UTC()
+				expanded = true
+			}
+			if !from.After(validFrom) && !until.Before(validUntil) {
+				contained = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate %s window rows: %w", table, err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close %s window rows: %w", table, err)
+		}
+		if firstPass && rowCount == 1 && contained {
+			return nil
+		}
+		firstPass = false
+		if !expanded {
+			break
+		}
+	}
+
+	deleteSQL := fmt.Sprintf(`DELETE FROM %s
+		WHERE %s = ? AND valid_from <= ? AND valid_until >= ?`, table, parentColumn)
+	if _, err := tx.Exec(deleteSQL, parentID, mergedUntil, mergedFrom); err != nil {
+		return fmt.Errorf("merge %s windows: %w", table, err)
+	}
+	insertSQL := fmt.Sprintf(`INSERT INTO %s
+		(%s, valid_from, valid_until, created_at) VALUES (?, ?, ?, ?)`, table, parentColumn)
+	if _, err := tx.Exec(insertSQL, parentID, mergedFrom, mergedUntil, time.Now().UTC()); err != nil {
+		return fmt.Errorf("record %s window: %w", table, err)
+	}
+	return nil
+}
+
+func recordIdentityEvidenceValidityTx(tx *sql.Tx, evidenceID string, observedAt time.Time) error {
+	validUntil, err := identityFreshnessEnd(observedAt, mdnsNameRecencyWindow)
+	if err != nil {
+		return err
+	}
+	return mergeValidityWindowTx(tx, "device_identity_evidence_validity", "evidence_id", evidenceID,
+		observedAt, validUntil)
+}
+
+func recordAddressBindingValidityTx(tx *sql.Tx, bindingID string, observedAt time.Time) error {
+	validUntil, err := identityFreshnessEnd(observedAt, temporalAddressResolutionWindow)
+	if err != nil {
+		return err
+	}
+	return mergeValidityWindowTx(tx, "device_address_binding_validity", "binding_id", bindingID,
+		observedAt, validUntil)
+}
+
+func identityFreshnessEnd(observedAt time.Time, window time.Duration) (time.Time, error) {
+	observedAt = observedAt.UTC()
+	if observedAt.After(maxSQLiteIdentityTime) {
+		return time.Time{}, fmt.Errorf("identity observation time %s exceeds SQLite timestamp limit", observedAt)
+	}
+	if observedAt.After(maxSQLiteIdentityTime.Add(-window)) {
+		return maxSQLiteIdentityTime, nil
+	}
+	return observedAt.Add(window), nil
+}
+
 func (db *DB) upsertIdentityEvidenceTx(tx *sql.Tx, deviceID, segment, sensorID string,
 	in DeviceIdentityEvidenceInput, observedAt time.Time, operatorConfirmed bool) (string, error) {
 	kind := strings.ToLower(strings.TrimSpace(in.Type))
@@ -249,18 +439,37 @@ func (db *DB) upsertIdentityEvidenceTx(tx *sql.Tx, deviceID, segment, sensorID s
 		if err != nil {
 			return "", fmt.Errorf("insert identity evidence: %w", err)
 		}
+		if err := recordIdentityEvidenceStrengthTx(tx, evidenceID, in.Source, confidence,
+			operatorConfirmed, observedAt); err != nil {
+			return "", err
+		}
+		if err := recordIdentityEvidenceValidityTx(tx, evidenceID, observedAt); err != nil {
+			return "", err
+		}
 		return evidenceID, nil
+	}
+	if err := recordIdentityEvidenceStrengthTx(tx, evidenceID, in.Source, confidence,
+		operatorConfirmed, observedAt); err != nil {
+		return "", err
+	}
+	if err := recordIdentityEvidenceValidityTx(tx, evidenceID, observedAt); err != nil {
+		return "", err
 	}
 
 	_, err = tx.Exec(`UPDATE device_identity_evidence SET
 		last_seen = CASE WHEN last_seen < ? THEN ? ELSE last_seen END,
 		first_seen = CASE WHEN first_seen > ? THEN ? ELSE first_seen END,
+		valid_from = CASE WHEN valid_from > ? THEN ? ELSE valid_from END,
+		source = CASE WHEN ? > confidence AND TRIM(?) != '' THEN ? ELSE source END,
 		confidence = MAX(confidence, ?),
 		operator_confirmed = CASE WHEN ? THEN TRUE ELSE operator_confirmed END,
 		metadata = CASE WHEN ? != '{}' THEN ? ELSE metadata END,
 		value_display = CASE WHEN value_display = '' THEN ? ELSE value_display END
 		WHERE evidence_id = ?`,
-		observedAt, observedAt, observedAt, observedAt, confidence, operatorConfirmed,
+		observedAt, observedAt, observedAt, observedAt,
+		observedAt, observedAt,
+		confidence, strings.TrimSpace(in.Source), strings.TrimSpace(in.Source),
+		confidence, operatorConfirmed,
 		string(meta), string(meta), identityDisplayValue(in), evidenceID)
 	if err != nil {
 		return "", fmt.Errorf("refresh identity evidence: %w", err)
@@ -292,6 +501,40 @@ func normalizeAddress(kind, value string) string {
 		}
 	}
 	return value
+}
+
+func normalizeObservedIPv4(value string) (string, bool) {
+	ip := net.ParseIP(strings.TrimSpace(value)).To4()
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() {
+		return "", false
+	}
+	allBroadcast := true
+	for _, octet := range ip {
+		if octet != 0xff {
+			allBroadcast = false
+			break
+		}
+	}
+	if allBroadcast {
+		return "", false
+	}
+	return ip.String(), true
+}
+
+func normalizeObservedEthernetMAC(value string) (string, bool) {
+	mac, err := net.ParseMAC(strings.TrimSpace(value))
+	if err != nil || len(mac) != 6 || mac[0]&1 != 0 {
+		return "", false
+	}
+	allZero, allBroadcast := true, true
+	for _, octet := range mac {
+		allZero = allZero && octet == 0
+		allBroadcast = allBroadcast && octet == 0xff
+	}
+	if allZero || allBroadcast {
+		return "", false
+	}
+	return strings.ToUpper(mac.String()), true
 }
 
 func (db *DB) recordAddressBindingTx(tx *sql.Tx, deviceID, addressType, addressValue,
@@ -332,6 +575,12 @@ func (db *DB) recordAddressBindingTx(tx *sql.Tx, deviceID, addressType, addressV
 			return err
 		}
 		if ownerID == canonicalID {
+			if err := recordAddressBindingStrengthTx(tx, bindingID, source, confidence, observedAt); err != nil {
+				return err
+			}
+			if err := recordAddressBindingValidityTx(tx, bindingID, observedAt); err != nil {
+				return err
+			}
 			_, err := tx.Exec(`UPDATE device_address_history SET
 				first_seen = CASE WHEN first_seen > ? THEN ? ELSE first_seen END,
 				last_seen = CASE WHEN last_seen < ? THEN ? ELSE last_seen END,
@@ -354,14 +603,22 @@ func (db *DB) recordAddressBindingTx(tx *sql.Tx, deviceID, addressType, addressV
 			if until.Valid {
 				tailUntil = until.Time
 			}
+			tailBindingID := uuid.New().String()
 			if _, err := tx.Exec(`INSERT INTO device_address_history
 				(binding_id, device_id, address_type, address_value, segment, sensor_id,
 				 first_seen, last_seen, valid_from, valid_until, evidence_source, confidence, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				uuid.New().String(), ownerID, addressType, addressValue, segment, sensorID,
+				tailBindingID, ownerID, addressType, addressValue, segment, sensorID,
 				priorLastSeen, priorLastSeen, priorLastSeen, tailUntil, priorSource,
 				priorConfidence, time.Now().UTC()); err != nil {
 				return fmt.Errorf("restore later address owner: %w", err)
+			}
+			if err := recordAddressBindingStrengthTx(tx, tailBindingID, priorSource,
+				priorConfidence, priorLastSeen); err != nil {
+				return err
+			}
+			if err := recordAddressBindingValidityTx(tx, tailBindingID, priorLastSeen); err != nil {
+				return err
 			}
 		}
 	}
@@ -384,14 +641,21 @@ func (db *DB) recordAddressBindingTx(tx *sql.Tx, deviceID, addressType, addressV
 		}
 		validUntil = next
 	}
+	bindingID = uuid.New().String()
 	_, err = tx.Exec(`INSERT INTO device_address_history
 		(binding_id, device_id, address_type, address_value, segment, sensor_id,
 		 first_seen, last_seen, valid_from, valid_until, evidence_source, confidence, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		uuid.New().String(), deviceID, addressType, addressValue, segment, sensorID,
+		bindingID, deviceID, addressType, addressValue, segment, sensorID,
 		observedAt, observedAt, observedAt, validUntil, source, confidence, time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("insert address interval: %w", err)
+	}
+	if err := recordAddressBindingStrengthTx(tx, bindingID, source, confidence, observedAt); err != nil {
+		return err
+	}
+	if err := recordAddressBindingValidityTx(tx, bindingID, observedAt); err != nil {
+		return err
 	}
 	return nil
 }
@@ -470,36 +734,42 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 				continue
 			}
 			valueHash := identityValueHMAC(key, kind, in.Value)
-			query := `SELECT device_id FROM device_identity_evidence
-				WHERE evidence_type = ? AND value_hmac = ? AND valid_from <= ?
-				  AND (valid_until IS NULL OR ? < valid_until)`
-			args := []any{kind, valueHash, at, at}
+			query := `SELECT e.device_id FROM device_identity_evidence e
+				JOIN device_identity_evidence_strength s
+				  ON s.evidence_id = e.evidence_id AND s.observed_at <= ?
+				WHERE e.evidence_type = ? AND e.value_hmac = ? AND e.valid_from <= ?
+				  AND (e.valid_until IS NULL OR ? < e.valid_until)`
+			args := []any{at, kind, valueHash, at, at}
 			if r.requireConfirmed {
-				query += ` AND operator_confirmed = TRUE`
 				// Friendly aliases and MACs are local observations even when an
 				// operator confirms them. Do not let a common name cross a VLAN.
 				if !globallyScopedIdentityEvidenceType(kind) {
-					query += ` AND segment = ?`
+					query += ` AND e.segment = ?`
 					args = append(args, segment)
 					if strings.TrimSpace(req.SensorID) != "" {
-						query += ` AND (sensor_id = ? OR sensor_id = '')`
+						query += ` AND (e.sensor_id = ? OR e.sensor_id = '')`
 						args = append(args, strings.TrimSpace(req.SensorID))
 					}
 				}
 			} else if r.name == "alias" || (r.name == "mac" && isLocallyAdministeredMAC(in.Value)) {
-				query += ` AND segment = ?`
+				query += ` AND e.segment = ?`
 				args = append(args, segment)
 				if strings.TrimSpace(req.SensorID) != "" {
-					query += ` AND (sensor_id = ? OR sensor_id = '')`
+					query += ` AND (e.sensor_id = ? OR e.sensor_id = '')`
 					args = append(args, strings.TrimSpace(req.SensorID))
 				}
 			}
-			if r.name == "alias" {
-				query += ` AND (valid_until IS NOT NULL OR last_seen >= ?)`
-				args = append(args, at.Add(-mdnsNameRecencyWindow))
+			// Stable IDs and MACs are durable keys: the incoming event freshly
+			// presents the exact value being looked up. Seven-day validity unions
+			// apply only to weak aliases below; expiring a physical/stable key here
+			// would split a quiet device when it returns to the network.
+			query += ` GROUP BY e.evidence_id, e.device_id`
+			if r.requireConfirmed {
+				query += ` HAVING MAX(CASE WHEN s.operator_confirmed THEN 1 ELSE 0 END) = 1`
+			} else {
+				query += ` HAVING MAX(s.confidence) >= ?`
+				args = append(args, r.minimumEvidence)
 			}
-			query += ` AND confidence >= ?`
-			args = append(args, r.minimumEvidence)
 			rows, err := tx.QueryContext(ctx, query, args...)
 			if err != nil {
 				return DeviceIdentityResolution{}, fmt.Errorf("query identity candidates: %w", err)
@@ -552,7 +822,7 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 			}
 		}
 		if weakConfirmation {
-			if conflict, err := db.macConflicts(tx, strongID, req.MACAddress); err != nil {
+			if conflict, err := db.macConflictsAt(tx, strongID, req.MACAddress, at); err != nil {
 				return DeviceIdentityResolution{}, err
 			} else if conflict {
 				return identityResolution("", 0, "conflicting_identity_evidence",
@@ -573,17 +843,23 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 				continue
 			}
 			valueHash := identityValueHMAC(key, kind, in.Value)
-			query := `SELECT device_id FROM device_identity_evidence
-				WHERE evidence_type = ? AND value_hmac = ? AND valid_from <= ?
-				  AND (valid_until IS NULL OR ? < valid_until)
-				  AND segment = ?`
-			args := []any{kind, valueHash, at, at, segment}
+			query := `SELECT e.device_id FROM device_identity_evidence e
+				JOIN device_identity_evidence_strength s
+				  ON s.evidence_id = e.evidence_id AND s.observed_at <= ?
+				WHERE e.evidence_type = ? AND e.value_hmac = ? AND e.valid_from <= ?
+				  AND (e.valid_until IS NULL OR ? < e.valid_until)
+				  AND e.segment = ?`
+			args := []any{at, kind, valueHash, at, at, segment}
 			if strings.TrimSpace(req.SensorID) != "" {
-				query += ` AND (sensor_id = ? OR sensor_id = '')`
+				query += ` AND (e.sensor_id = ? OR e.sensor_id = '')`
 				args = append(args, strings.TrimSpace(req.SensorID))
 			}
-			query += ` AND (valid_until IS NOT NULL OR last_seen >= ?) AND confidence >= ?`
-			args = append(args, at.Add(-mdnsNameRecencyWindow), r.minimumEvidence)
+			query += ` AND EXISTS (
+					SELECT 1 FROM device_identity_evidence_validity v
+					WHERE v.evidence_id = e.evidence_id
+					  AND v.valid_from <= ? AND ? <= v.valid_until)
+				GROUP BY e.evidence_id, e.device_id HAVING MAX(s.confidence) >= ?`
+			args = append(args, at, at, r.minimumEvidence)
 			rows, err := tx.QueryContext(ctx, query, args...)
 			if err != nil {
 				return DeviceIdentityResolution{}, fmt.Errorf("query alias identity candidates: %w", err)
@@ -615,7 +891,7 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 		}
 		if len(candidates) == 1 && len(matchedTypes) >= 2 {
 			for id := range candidates {
-				if conflict, err := db.macConflicts(tx, id, req.MACAddress); err != nil {
+				if conflict, err := db.macConflictsAt(tx, id, req.MACAddress, at); err != nil {
 					return DeviceIdentityResolution{}, err
 				} else if conflict {
 					return identityResolution("", 0, "conflicting_identity_evidence", append(matchedTypes, "mac"), 2), nil
@@ -649,19 +925,26 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 			scopes = append(scopes, addressScope{reason: "unique_unscoped_address_binding"})
 		}
 		for _, scope := range scopes {
-			query := `SELECT device_id, confidence FROM device_address_history
-				WHERE address_type = 'ip' AND address_value = ?
-				  AND valid_from <= ? AND (valid_until IS NULL OR ? < valid_until)
-				  AND (valid_until IS NOT NULL OR last_seen >= ?)`
-			args := []any{ip, at, at, at.Add(-temporalAddressResolutionWindow)}
+			query := `SELECT h.device_id, MAX(s.confidence)
+				FROM device_address_history h
+				JOIN device_address_binding_strength s
+				  ON s.binding_id = h.binding_id AND s.observed_at <= ?
+				WHERE h.address_type = 'ip' AND h.address_value = ?
+				  AND h.valid_from <= ? AND (h.valid_until IS NULL OR ? < h.valid_until)
+				  AND EXISTS (
+					SELECT 1 FROM device_address_binding_validity v
+					WHERE v.binding_id = h.binding_id
+					  AND v.valid_from <= ? AND ? <= v.valid_until)`
+			args := []any{at, ip, at, at, at, at}
 			if scope.segment {
-				query += ` AND segment = ?`
+				query += ` AND h.segment = ?`
 				args = append(args, segment)
 			}
 			if scope.sensor {
-				query += ` AND sensor_id = ?`
+				query += ` AND h.sensor_id = ?`
 				args = append(args, strings.TrimSpace(req.SensorID))
 			}
+			query += ` GROUP BY h.binding_id, h.device_id`
 			rows, err := tx.QueryContext(ctx, query, args...)
 			if err != nil {
 				return DeviceIdentityResolution{}, fmt.Errorf("query temporal address: %w", err)
@@ -686,7 +969,7 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 			rows.Close()
 			if len(candidates) == 1 {
 				for id, confidence := range candidates {
-					if conflict, err := db.macConflicts(tx, id, req.MACAddress); err != nil {
+					if conflict, err := db.macConflictsAt(tx, id, req.MACAddress, at); err != nil {
 						return DeviceIdentityResolution{}, err
 					} else if conflict {
 						return identityResolution("", 0, "conflicting_address_mac", []string{"ip", "mac"}, 2), nil
@@ -703,6 +986,45 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 		}
 	}
 	return identityResolution("", 0, "unresolved", nil, 0), nil
+}
+
+// macConflictsAt is the event-time counterpart to the live-correlation
+// macConflicts helper. It intentionally ignores the current devices projection
+// and considers only HMAC-only MAC evidence that existed at at, so learning a
+// MAC later cannot retroactively veto an older address or alias attribution.
+func (db *DB) macConflictsAt(tx *sql.Tx, candidateID, incomingMAC string, at time.Time) (bool, error) {
+	incomingMAC = normalizeAddress("mac", incomingMAC)
+	if incomingMAC == "" {
+		return false, nil
+	}
+	canonicalID, err := db.canonicalDeviceIDTx(tx, candidateID)
+	if err != nil {
+		return false, err
+	}
+	key, err := db.identityHMACKeyTx(tx)
+	if err != nil {
+		return false, err
+	}
+	incomingHash := identityValueHMAC(key, "mac", incomingMAC)
+	var known, matching int
+	if err := tx.QueryRow(`WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d
+			JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT COUNT(DISTINCT e.value_hmac),
+			COUNT(DISTINCT CASE WHEN e.value_hmac = ? THEN e.value_hmac END)
+		FROM device_identity_evidence e
+		JOIN family f ON f.device_id = e.device_id
+		WHERE e.evidence_type = 'mac'
+		  AND e.valid_from <= ? AND (e.valid_until IS NULL OR ? < e.valid_until)
+		  AND EXISTS (SELECT 1 FROM device_identity_evidence_strength s
+			WHERE s.evidence_id = e.evidence_id AND s.observed_at <= ?)`,
+		canonicalID, incomingHash, at, at, at).Scan(&known, &matching); err != nil {
+		return false, fmt.Errorf("read candidate MAC evidence at event time: %w", err)
+	}
+	return known > matching, nil
 }
 
 func isLocallyAdministeredMAC(value string) bool {

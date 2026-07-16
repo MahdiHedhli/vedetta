@@ -77,9 +77,9 @@ func discoverySourceToSignal(discoverySource string) string {
 		return SourceSSDP
 	case "passive_dhcp", "dhcp":
 		return SourceDHCPHostname
-	case "passive_arp", "arp":
+	case "passive_arp", "arp", "arp_cache":
 		return SourceOUI // ARP gives MAC->vendor (OUI) and no reliable hostname
-	case "nmap_active", "active_nmap", "nmap":
+	case "nmap_active", "active_nmap", "nmap", "native_icmp", nativeICMPBoundSource, arpLiveFusionSource:
 		return SourceNmap
 	default:
 		return SourceNmap
@@ -542,9 +542,15 @@ func (db *DB) matchByAlias(tx *sql.Tx, host correlationInput, seg string, now ti
 			return res, fmt.Errorf("resolve by ip+segment: %w", err)
 		}
 		if err == nil {
-			// MAC-conflict veto: if BOTH sides have a MAC and they differ, this is a
-			// different device (DHCP churn re-used the IP) — do NOT re-assign.
-			if host.mac != "" && storedMAC != "" && host.mac != storedMAC {
+			// MAC-conflict veto includes HMAC-only cache evidence. Cache provisional
+			// rows intentionally keep the canonical MAC blank, so comparing only
+			// devices.mac_address would let a strong observation for MAC B promote a
+			// provisional that actually represents MAC A after IP reuse.
+			macConflict, err := db.macConflicts(tx, id, host.mac)
+			if err != nil {
+				return res, err
+			}
+			if macConflict {
 				return res, nil // no match; caller creates a new device
 			}
 			// When both sides are MAC-less, require 24h recency on the attachment.
@@ -572,8 +578,9 @@ func (db *DB) matchByAlias(tx *sql.Tx, host correlationInput, seg string, now ti
 	return res, nil
 }
 
-// macConflicts reports whether the candidate device carries a non-empty MAC that
-// differs from the incoming observation's non-empty MAC. It is the MAC-conflict
+// macConflicts reports whether the candidate device carries a non-empty canonical
+// MAC, or active HMAC-only MAC evidence, that differs from the incoming
+// observation's non-empty MAC. It is the MAC-conflict
 // veto for the alias rules (mDNS name, hostname): two records with different known
 // MACs are, by definition, different physical devices and must never be folded
 // together (spec FR-4 "MUST NOT re-assign a record whose stored MAC differs",
@@ -581,18 +588,57 @@ func (db *DB) matchByAlias(tx *sql.Tx, host correlationInput, seg string, now ti
 // either side lacks a MAC there is no conflict, so MAC-less continuity matching
 // (mDNS/hostname link-up before ARP supplies a MAC) still works.
 func (db *DB) macConflicts(tx *sql.Tx, candidateID, incomingMAC string) (bool, error) {
+	incomingMAC = normalizeAddress("mac", incomingMAC)
 	if incomingMAC == "" {
 		return false, nil
 	}
+	canonicalID, err := db.canonicalDeviceIDTx(tx, candidateID)
+	if err != nil {
+		return false, err
+	}
 	var candMAC string
-	err := tx.QueryRow(`SELECT COALESCE(mac_address, '') FROM devices WHERE device_id = ?`, candidateID).Scan(&candMAC)
+	err = tx.QueryRow(`SELECT COALESCE(mac_address, '') FROM devices WHERE device_id = ?`, canonicalID).Scan(&candMAC)
 	if err != nil && err != sql.ErrNoRows {
 		return false, fmt.Errorf("read candidate mac for conflict check: %w", err)
 	}
-	if candMAC == "" {
-		return false, nil
+	if candMAC != "" {
+		if normalizeAddress("mac", candMAC) != incomingMAC {
+			return true, nil
+		}
 	}
-	return candMAC != incomingMAC, nil
+
+	// Cache-only MAC evidence is intentionally too weak to resolve a device, but
+	// it is still strong enough to veto a contradictory IP/alias merge. Prefer a
+	// duplicate over promoting the wrong provisional identity.
+	key, err := db.identityHMACKeyTx(tx)
+	if err != nil {
+		return false, err
+	}
+	incomingHash := identityValueHMAC(key, "mac", incomingMAC)
+	var active, matching int
+	// Merge redirects preserve the source row and its evidence for auditability.
+	// Treat that complete recursive family as the candidate identity: checking only
+	// the canonical row lets a weak HMAC-only cache MAC on a merged child disappear
+	// from this veto and allows a contradictory legacy IP/alias fallback to overwrite
+	// the family. UNION also protects the walk from malformed historical cycles.
+	if err := tx.QueryRow(`WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d
+			JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT COUNT(*),
+			COALESCE(SUM(CASE WHEN e.value_hmac = ? THEN 1 ELSE 0 END), 0)
+		FROM device_identity_evidence e
+		JOIN family f ON f.device_id = e.device_id
+		WHERE e.evidence_type = 'mac' AND e.valid_until IS NULL`,
+		canonicalID, incomingHash).Scan(&active, &matching); err != nil {
+		return false, fmt.Errorf("read candidate MAC evidence for conflict check: %w", err)
+	}
+	// More than one active MAC value is ambiguous even when one happens to
+	// match the incoming value. Never let a matching weak edge mask another
+	// contradictory edge on the same provisional.
+	return active > matching, nil
 }
 
 // hostnameConflicts reports whether the candidate device carries a specific

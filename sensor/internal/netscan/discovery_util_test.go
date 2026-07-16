@@ -56,6 +56,19 @@ func TestEnumerateHosts(t *testing.T) {
 	}
 }
 
+func TestSourceBoundWindowsTargetGrammar(t *testing.T) {
+	for _, target := range []string{"192.0.2.7", "203.0.113.0/22"} {
+		if err := validateSourceBoundWindowsTarget(target); err != nil {
+			t.Errorf("source-bound Windows target %q rejected: %v", target, err)
+		}
+	}
+	for _, target := range []string{"192.0.2.1-20", "192.0.2.1,3-4"} {
+		if err := validateSourceBoundWindowsTarget(target); err == nil {
+			t.Errorf("source-bound Windows range/list %q accepted", target)
+		}
+	}
+}
+
 func TestIPv4TargetContainsOnlyRequestedAddresses(t *testing.T) {
 	cases := []struct {
 		target, candidate string
@@ -97,14 +110,55 @@ func TestIsRealNeighbor(t *testing.T) {
 		want    bool
 	}{
 		{"192.0.2.5", "aa:bb:cc:dd:ee:ff", true},
-		{"192.0.2.255", "aa:bb:cc:dd:ee:ff", false},     // directed broadcast
+		{"192.0.2.255", "aa:bb:cc:dd:ee:ff", true},      // prefix decides whether this is broadcast
 		{"255.255.255.255", "ff:ff:ff:ff:ff:ff", false}, // broadcast
 		{"224.0.0.251", "01:00:5e:00:00:fb", false},     // IPv4 multicast (mDNS)
 		{"192.0.2.9", "ff:ff:ff:ff:ff:ff", false},       // broadcast MAC
+		{"192.0.2.9", "01:80:c2:00:00:00", false},       // generic multicast MAC
+		{"192.0.2.9", "00:00:00:00:00:00", false},       // unspecified MAC
+		{"192.0.2.9", "00:00:5e:00:53:00:01:02", false}, // EUI-64 is not an Ethernet MAC
+		{"0.0.0.0", "00:00:5e:00:53:01", false},
+		{"127.0.0.1", "00:00:5e:00:53:01", false},
+		{"2001:db8::1", "00:00:5e:00:53:01", false},
 	}
 	for _, c := range cases {
 		if got := isRealNeighbor(c.ip, c.mac); got != c.want {
 			t.Errorf("isRealNeighbor(%s, %s) = %v, want %v", c.ip, c.mac, got, c.want)
+		}
+	}
+}
+
+func TestIPv4ScopeContainsHostUsesActualPrefix(t *testing.T) {
+	tests := []struct {
+		scope string
+		ip    string
+		want  bool
+	}{
+		{"192.0.2.0/23", "192.0.2.255", true},  // ordinary host in a /23
+		{"192.0.2.0/24", "192.0.2.255", false}, // /24 broadcast
+		{"192.0.2.0/26", "192.0.2.63", false},  // /26 broadcast
+		{"192.0.2.0/26", "192.0.2.62", true},
+		{"192.0.2.0/26", "192.0.2.64", false}, // outside this /26
+		{"192.0.2.0/31", "192.0.2.0", true},   // RFC 3021 endpoints
+		{"192.0.2.0/31", "192.0.2.1", true},
+		{"192.0.2.7", "192.0.2.7", true},
+		{"192.0.2.7", "192.0.2.8", false},
+	}
+	for _, tt := range tests {
+		scope, err := parseIPv4Scope(tt.scope)
+		if err != nil {
+			t.Fatalf("parseIPv4Scope(%q): %v", tt.scope, err)
+		}
+		if got := scope.containsHost(tt.ip); got != tt.want {
+			t.Errorf("scope %s containsHost(%s) = %v, want %v", tt.scope, tt.ip, got, tt.want)
+		}
+	}
+}
+
+func TestParseIPv4ScopeRejectsInvalidAndIPv6(t *testing.T) {
+	for _, value := range []string{"", "not-a-cidr", "2001:db8::/64", "2001:db8::1"} {
+		if _, err := parseIPv4Scope(value); err == nil {
+			t.Errorf("parseIPv4Scope(%q) unexpectedly succeeded", value)
 		}
 	}
 }

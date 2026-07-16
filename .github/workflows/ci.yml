@@ -67,6 +67,16 @@ jobs:
       - name: Sensor installer transaction and service-health tests
         if: matrix.module == 'sensor'
         run: bash deploy/install_test.sh
+      - name: Compile native ARP readers for supported macOS/BSD targets
+        if: matrix.module == 'sensor'
+        run: |
+          for target in darwin/amd64 freebsd/amd64 netbsd/amd64 openbsd/amd64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            out="/tmp/netscan-${os}-${arch}.test"
+            echo "== compile $target ARP reader =="
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go test -c -o "$out" ./internal/netscan
+          done
       - name: govulncheck (source mode)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest

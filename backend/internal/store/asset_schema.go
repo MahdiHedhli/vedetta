@@ -2,14 +2,14 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
 
-// ensureAssetCenteredSchema mirrors migration 025 for binary-only installs and
+// ensureAssetCenteredSchema mirrors migrations 025, 028, and 030 for binary-only installs and
 // repairs an older inline database without backfilling identity from a current
-// IP projection. Keep its DDL in lockstep with
-// siem/migrations/025_asset_centered_findings.sql.
+// IP projection. Keep its DDL in lockstep with migrations 025, 028, and 030.
 func (db *DB) ensureAssetCenteredSchema() error {
 	eventsOK, err := db.schemaTableExists("events")
 	if err != nil {
@@ -49,6 +49,29 @@ func (db *DB) ensureAssetCenteredSchema() error {
 	if _, err := db.Exec(assetIdentityTablesDDL); err != nil {
 		return fmt.Errorf("create asset identity tables: %w", err)
 	}
+	// Early development builds of migration 030 used activated_at for both
+	// current ownership and activation history. Add the durable history column
+	// before any pruning can make a retired epoch indistinguishable from an
+	// unreceived candidate. Rows no newer than the current active epoch are
+	// conservatively retained: they may have been active before that epoch.
+	if err := db.ensureSchemaColumn("arp_cache_delivery_epochs", "ever_activated_at",
+		`ALTER TABLE arp_cache_delivery_epochs ADD COLUMN ever_activated_at TIMESTAMP`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`UPDATE arp_cache_delivery_epochs
+		SET ever_activated_at = COALESCE(activated_at, issued_at)
+		WHERE ever_activated_at IS NULL AND (
+			activated_at IS NOT NULL OR epoch_order <= COALESCE((
+				SELECT MAX(active.epoch_order) FROM arp_cache_delivery_epochs active
+				WHERE active.sensor_id = arp_cache_delivery_epochs.sensor_id
+				AND active.activated_at IS NOT NULL
+			), 0)
+		)`); err != nil {
+		return fmt.Errorf("backfill ARP cache epoch activation history: %w", err)
+	}
+	if err := db.ensureAssetStrengthHistory(); err != nil {
+		return err
+	}
 
 	deviceColumns := []struct{ name, ddl string }{
 		{"merged_into_device_id", `ALTER TABLE devices ADD COLUMN merged_into_device_id TEXT REFERENCES devices(device_id)`},
@@ -73,6 +96,134 @@ func (db *DB) ensureAssetCenteredSchema() error {
 		return err
 	}
 	return db.ensureIdentityHMACKey()
+}
+
+// ensureAssetStrengthHistory backfills one conservative baseline for rows that
+// predate migration 028. Historical strength transitions and observation gaps
+// cannot be recovered, so the aggregate behavior an older Core already trusted
+// is retained from valid_from through last_seen plus its freshness window. New
+// writes append strength changes and merge exact post-upgrade validity windows.
+// Malformed temporal parents deliberately fail the NOT NULL child insert and
+// abort startup. Silently skipping one corrupt owner/evidence row would create
+// an incomplete historical ledger and permit incorrect attribution; repair or
+// restore the corrupt local database instead.
+func (db *DB) ensureAssetStrengthHistory() error {
+	if err := validateAssetTemporalParents(context.Background(), db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`INSERT INTO device_address_binding_validity
+		(binding_id, valid_from, valid_until, created_at)
+		SELECT h.binding_id,
+			CASE WHEN strftime('%Y', h.valid_from) IS NULL THEN NULL ELSE h.valid_from END,
+			CASE WHEN strftime('%Y', h.last_seen) IS NULL THEN NULL
+				 ELSE COALESCE(
+					 strftime('%Y-%m-%d %H:%M:%f+00:00', h.last_seen, '+24 hours'),
+					 '9999-12-31 23:59:59.999+00:00')
+			END, h.created_at
+		FROM device_address_history h
+		WHERE NOT EXISTS (SELECT 1 FROM device_address_binding_validity v
+			WHERE v.binding_id = h.binding_id)
+		ON CONFLICT(binding_id, valid_from) DO NOTHING`); err != nil {
+		return fmt.Errorf("backfill address binding validity: %w", err)
+	}
+	if _, err := db.Exec(`INSERT INTO device_identity_evidence_validity
+		(evidence_id, valid_from, valid_until, created_at)
+		SELECT e.evidence_id,
+			CASE WHEN strftime('%Y', e.valid_from) IS NULL THEN NULL ELSE e.valid_from END,
+			CASE WHEN strftime('%Y', e.last_seen) IS NULL THEN NULL
+				 ELSE COALESCE(
+					 strftime('%Y-%m-%d %H:%M:%f+00:00', e.last_seen, '+7 days'),
+					 '9999-12-31 23:59:59.999+00:00')
+			END, e.created_at
+		FROM device_identity_evidence e
+		WHERE NOT EXISTS (SELECT 1 FROM device_identity_evidence_validity v
+			WHERE v.evidence_id = e.evidence_id)
+		ON CONFLICT(evidence_id, valid_from) DO NOTHING`); err != nil {
+		return fmt.Errorf("backfill identity evidence validity: %w", err)
+	}
+	if _, err := db.Exec(`INSERT INTO device_address_binding_strength
+		(binding_id, observed_at, source, confidence, created_at)
+		SELECT h.binding_id,
+			CASE WHEN strftime('%Y', h.valid_from) IS NULL THEN NULL ELSE h.valid_from END,
+			h.evidence_source, h.confidence, h.created_at
+		FROM device_address_history h
+		WHERE NOT EXISTS (SELECT 1 FROM device_address_binding_strength s
+			WHERE s.binding_id = h.binding_id)
+		ON CONFLICT(binding_id, observed_at, source, confidence) DO NOTHING`); err != nil {
+		return fmt.Errorf("backfill address binding strength history: %w", err)
+	}
+	if _, err := db.Exec(`INSERT INTO device_identity_evidence_strength
+		(evidence_id, observed_at, source, confidence, operator_confirmed, created_at)
+		SELECT e.evidence_id,
+			CASE WHEN strftime('%Y', e.valid_from) IS NULL THEN NULL ELSE e.valid_from END,
+			e.source, e.confidence, e.operator_confirmed, e.created_at
+		FROM device_identity_evidence e
+		WHERE NOT EXISTS (SELECT 1 FROM device_identity_evidence_strength s
+			WHERE s.evidence_id = e.evidence_id)
+		ON CONFLICT(evidence_id, observed_at, source, confidence, operator_confirmed) DO NOTHING`); err != nil {
+		return fmt.Errorf("backfill identity evidence strength history: %w", err)
+	}
+	return nil
+}
+
+type assetTemporalQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+// validateAssetTemporalParents parses the raw text rather than trusting
+// SQLite's permissive date functions or the driver's TIMESTAMP conversion.
+// SQLite normalizes impossible dates such as February 30, and go-sqlite3 can
+// turn some noncanonical values into time.Time{}. Either behavior would poison
+// event-time attribution if it reached the child ledger.
+func validateAssetTemporalParents(ctx context.Context, q assetTemporalQueryer) error {
+	for _, table := range []struct {
+		name string
+		id   string
+	}{
+		{name: "device_address_history", id: "binding_id"},
+		{name: "device_identity_evidence", id: "evidence_id"},
+	} {
+		query := fmt.Sprintf(`SELECT %s, CAST(valid_from AS TEXT), CAST(last_seen AS TEXT) FROM %s`,
+			table.id, table.name)
+		rows, err := q.QueryContext(ctx, query)
+		if err != nil {
+			return fmt.Errorf("validate %s timestamps: %w", table.name, err)
+		}
+		for rows.Next() {
+			var id, validFromRaw, lastSeenRaw string
+			if err := rows.Scan(&id, &validFromRaw, &lastSeenRaw); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan %s timestamps: %w", table.name, err)
+			}
+			for _, field := range []struct{ column, raw string }{
+				{column: "valid_from", raw: validFromRaw},
+				{column: "last_seen", raw: lastSeenRaw},
+			} {
+				if field.raw != strings.TrimSpace(field.raw) {
+					rows.Close()
+					return fmt.Errorf("invalid temporal parent %s.%s for %s %q: surrounding whitespace is not canonical",
+						table.name, field.column, table.id, id)
+				}
+				parsed, err := parseSQLiteTimeString(field.raw)
+				if err != nil || parsed.IsZero() {
+					rows.Close()
+					if err == nil {
+						err = fmt.Errorf("zero timestamp")
+					}
+					return fmt.Errorf("invalid temporal parent %s.%s for %s %q: %w",
+						table.name, field.column, table.id, id, err)
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate %s timestamps: %w", table.name, err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close %s timestamp rows: %w", table.name, err)
+		}
+	}
+	return nil
 }
 
 // ensureOpenEventQueryType repairs databases created by migrations 001/009/019,
@@ -244,6 +395,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_device_address_current_owner
     ON device_address_history(address_type, address_value, segment, sensor_id)
     WHERE valid_until IS NULL;
 
+-- The compatibility row above retains the best/current aggregate used by
+-- inventory APIs. Event-time resolution reads this append-only change history
+-- so later corroboration cannot raise confidence at an earlier timestamp.
+CREATE TABLE IF NOT EXISTS device_address_binding_strength (
+    binding_id TEXT NOT NULL REFERENCES device_address_history(binding_id) ON DELETE CASCADE,
+    observed_at TIMESTAMP NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (binding_id, observed_at, source, confidence)
+);
+CREATE INDEX IF NOT EXISTS idx_device_address_binding_strength_time
+    ON device_address_binding_strength(binding_id, observed_at);
+CREATE TABLE IF NOT EXISTS device_address_binding_validity (
+    binding_id TEXT NOT NULL REFERENCES device_address_history(binding_id) ON DELETE CASCADE,
+    valid_from TIMESTAMP NOT NULL,
+    valid_until TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (binding_id, valid_from),
+    CHECK (valid_until >= valid_from)
+);
+CREATE INDEX IF NOT EXISTS idx_device_address_binding_validity_time
+    ON device_address_binding_validity(binding_id, valid_from, valid_until);
+
 CREATE TABLE IF NOT EXISTS device_identity_evidence (
     evidence_id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL REFERENCES devices(device_id),
@@ -267,6 +442,58 @@ CREATE INDEX IF NOT EXISTS idx_device_identity_evidence_lookup
     ON device_identity_evidence(evidence_type, value_hmac, segment, sensor_id, valid_from, valid_until);
 CREATE INDEX IF NOT EXISTS idx_device_identity_evidence_device
     ON device_identity_evidence(device_id, last_seen DESC);
+
+CREATE TABLE IF NOT EXISTS device_identity_evidence_strength (
+    evidence_id TEXT NOT NULL REFERENCES device_identity_evidence(evidence_id) ON DELETE CASCADE,
+    observed_at TIMESTAMP NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    operator_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (evidence_id, observed_at, source, confidence, operator_confirmed)
+);
+CREATE INDEX IF NOT EXISTS idx_device_identity_evidence_strength_time
+    ON device_identity_evidence_strength(evidence_id, observed_at);
+CREATE TABLE IF NOT EXISTS device_identity_evidence_validity (
+    evidence_id TEXT NOT NULL REFERENCES device_identity_evidence(evidence_id) ON DELETE CASCADE,
+    valid_from TIMESTAMP NOT NULL,
+    valid_until TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (evidence_id, valid_from),
+    CHECK (valid_until >= valid_from)
+);
+CREATE INDEX IF NOT EXISTS idx_device_identity_evidence_validity_time
+    ON device_identity_evidence_validity(evidence_id, valid_from, valid_until);
+
+-- Latest cache state is a scoped ordering ledger, not identity evidence. It
+-- survives projection changes while keeping raw MACs out of this state table.
+CREATE TABLE IF NOT EXISTS arp_cache_delivery_epochs (
+    epoch_order INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    delivery_epoch TEXT NOT NULL,
+    issued_at TIMESTAMP NOT NULL,
+    activated_at TIMESTAMP,
+    ever_activated_at TIMESTAMP,
+    UNIQUE (sensor_id, delivery_epoch)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_arp_cache_delivery_active_sensor
+    ON arp_cache_delivery_epochs(sensor_id) WHERE activated_at IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS arp_cache_states (
+    sensor_id TEXT NOT NULL DEFAULT '',
+    segment TEXT NOT NULL DEFAULT 'default',
+    ip_address TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('unique', 'ambiguous')),
+    mac_hmac TEXT NOT NULL DEFAULT '',
+    observed_at TIMESTAMP NOT NULL,
+    delivery_epoch_order INTEGER NOT NULL DEFAULT 0 CHECK (delivery_epoch_order >= 0),
+    delivery_sequence INTEGER NOT NULL DEFAULT 0 CHECK (delivery_sequence >= 0),
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (sensor_id, segment, ip_address),
+    CHECK ((state = 'unique' AND mac_hmac != '') OR (state = 'ambiguous' AND mac_hmac = ''))
+);
+CREATE INDEX IF NOT EXISTS idx_arp_cache_states_observed
+    ON arp_cache_states(observed_at);
 
 CREATE TABLE IF NOT EXISTS device_identity_actions (
     action_id TEXT PRIMARY KEY,
