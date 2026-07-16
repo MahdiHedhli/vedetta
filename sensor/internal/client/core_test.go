@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -772,6 +773,46 @@ func TestPreflightTokenPersistencePreservesExistingTokenAndCleansProbe(t *testin
 	}
 	if len(entries) != 1 || entries[0].Name() != "sensor-token" {
 		t.Fatalf("preflight left unexpected files: %+v", entries)
+	}
+}
+
+func TestPreflightTokenPersistenceSnapshotsWhileHoldingPersistenceLock(t *testing.T) {
+	parent := testTokenDir(t)
+	tokenPath := filepath.Join(parent, "sensor-token")
+	const oldToken = "synthetic-old-token"
+	const rotatedToken = "synthetic-rotated-token"
+	if err := os.WriteFile(tokenPath, []byte(oldToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	core := &CoreClient{TokenPath: tokenPath, authToken: oldToken}
+
+	// Hold tokenMu so preflight must stop at its snapshot. Correct lock ordering
+	// means it has already taken persistMu; the old ordering left persistMu free
+	// after selecting the stale token.
+	core.tokenMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- core.PreflightTokenPersistence() }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for core.persistMu.TryLock() {
+		core.persistMu.Unlock()
+		if time.Now().After(deadline) {
+			core.tokenMu.Unlock()
+			t.Fatal("preflight did not acquire persistMu before snapshotting the token")
+		}
+		runtime.Gosched()
+	}
+	core.authToken = rotatedToken
+	core.tokenMu.Unlock()
+
+	if err := <-done; err != nil {
+		t.Fatalf("preflight rotated token: %v", err)
+	}
+	if got, err := os.ReadFile(tokenPath); err != nil || string(got) != rotatedToken {
+		t.Fatalf("preflight persisted token = %q, err=%v; want rotated token", got, err)
+	}
+	if got := core.authTokenSnapshot(); got != rotatedToken {
+		t.Fatalf("in-memory token = %q, want rotated token", got)
 	}
 }
 

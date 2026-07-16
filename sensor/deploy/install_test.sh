@@ -387,7 +387,10 @@ CODER="$(code_file reset RESET-TEST-123)"
 run_installer "$PLISTR" --core http://198.51.100.10:8080 --reset --enroll-code-file "$CODER"
 check "reset and enrollment share one process" "argv=[--reset --enroll-only" "${PLISTR}.senslog"
 RESET_FIRST_CHECK="$(grep '^sensor-argv=\[--check' "${PLISTR}.log" | head -1)"
-if printf '%s' "$RESET_FIRST_CHECK" | grep -q -- '--require-token'; then
+if [ -z "$RESET_FIRST_CHECK" ]; then
+  echo "  FAIL: reset preflight did not invoke --check"
+  FAIL=$((FAIL + 1))
+elif printf '%s' "$RESET_FIRST_CHECK" | grep -q -- '--require-token'; then
   echo "  FAIL: reset preflight tried to validate the obsolete/revoked bearer"
   FAIL=$((FAIL + 1))
 else

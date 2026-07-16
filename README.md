@@ -194,7 +194,7 @@ URL printed by `gen-env.sh` for a same-host sensor):
 (
   set -e
   umask 077
-  RELEASE_TAG=v0.1.0-beta.3
+  RELEASE_TAG=v0.1.0-beta.4
   RELEASE_BASE="https://github.com/MahdiHedhli/vedetta/releases/download/${RELEASE_TAG}"
   INSTALLER_FILE="$(mktemp "$HOME/.vedetta-sensor-install.XXXXXXXX")"
   CHECKSUM_FILE="$(mktemp "$HOME/.vedetta-sensor-checksums.XXXXXXXX")"
@@ -234,7 +234,7 @@ visible to other local users.
 the release with `-Tag`:
 
 ```powershell
-$ReleaseTag = "v0.1.0-beta.3"
+$ReleaseTag = "v0.1.0-beta.4"
 $ReleaseBase = "https://github.com/MahdiHedhli/vedetta/releases/download/$ReleaseTag"
 Invoke-WebRequest -UseBasicParsing "$ReleaseBase/install.ps1" -OutFile install.ps1
 Invoke-WebRequest -UseBasicParsing "$ReleaseBase/checksums.txt" -OutFile checksums.txt

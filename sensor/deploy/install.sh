@@ -12,7 +12,7 @@
 # the repository README for the complete copy/paste flow. Do not curl-to-sudo.
 #
 # Invocation after the README's release-asset checksum verification:
-#   RELEASE_TAG=v0.1.0-beta.3
+#   RELEASE_TAG=v0.1.0-beta.4
 #   sudo env VEDETTA_RELEASE_TAG="$RELEASE_TAG" bash install.sh \
 #     --core http://YOUR-CORE-IP:8080
 #

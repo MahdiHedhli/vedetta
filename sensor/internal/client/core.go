@@ -492,15 +492,16 @@ func (c *CoreClient) SuppressTokenForReset() {
 // rotates the credential still relies on enrollment-code replay or a fresh bound
 // reset code.
 func (c *CoreClient) PreflightTokenPersistence() error {
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
+
 	if token := c.authTokenSnapshot(); token != "" {
-		if err := c.persistToken(token); err != nil {
+		if err := c.persistTokenLocked(token); err != nil {
 			return fmt.Errorf("round-trip existing sensor token: %w", err)
 		}
 		return nil
 	}
 
-	c.persistMu.Lock()
-	defer c.persistMu.Unlock()
 	dir := filepath.Dir(c.TokenPath)
 	if err := ensureSecureDirectory(dir); err != nil {
 		return fmt.Errorf("secure sensor token directory: %w", err)
@@ -569,12 +570,19 @@ func (c *CoreClient) PreflightTokenPersistence() error {
 }
 
 func (c *CoreClient) persistToken(rawToken string) error {
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
+	return c.persistTokenLocked(rawToken)
+}
+
+// persistTokenLocked persists and activates a token while the caller holds
+// persistMu. Keeping the lock across both token selection and replacement prevents
+// a preflight rewrite from restoring a stale token after concurrent registration.
+func (c *CoreClient) persistTokenLocked(rawToken string) error {
 	token := strings.TrimSpace(rawToken)
 	if token == "" {
 		return fmt.Errorf("sensor auth token is empty")
 	}
-	c.persistMu.Lock()
-	defer c.persistMu.Unlock()
 
 	dir := filepath.Dir(c.TokenPath)
 	if err := ensureSecureDirectory(dir); err != nil {
