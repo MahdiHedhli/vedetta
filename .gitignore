@@ -187,6 +187,10 @@ data/
 # tracked or fresh-clone builds (CI, Docker, cloud-init) fail. Re-include it.
 !threat-network/internal/store/data/
 !threat-network/internal/store/data/allowlist.txt
+# Same rule for the embedded IEEE OUI table (//go:embed in
+# backend/internal/fingerprint/oui_ieee.go). Source asset, not runtime data.
+!backend/internal/fingerprint/data/
+!backend/internal/fingerprint/data/oui.csv
 
 # ----- Docker -----
 docker-compose.override.yml
