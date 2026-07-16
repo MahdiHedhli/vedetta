@@ -1474,16 +1474,17 @@ func TestCacheIdentityValidationFailsClosed(t *testing.T) {
 	for _, invalidIP := range []string{"not-an-ip", "2001:db8::1", "127.0.0.1", "224.0.0.1", "0.0.0.0"} {
 		t.Run("ip-"+strings.ReplaceAll(invalidIP, ":", "-"), func(t *testing.T) {
 			db := newCorrelationDB(t)
+			epoch := issueTestCacheDeliveryEpoch(t, db, "sensor-validation")
 			_, err := db.ObserveDevice(DeviceObservation{
 				Host: discovery.DiscoveredHost{
 					IPAddress: invalidIP, MACAddress: "02:00:5E:00:53:01",
 					Status: "observed", DiscoverySource: "arp_cache",
 				},
 				Segment: "lan", SensorID: "sensor-validation", ObservedAt: time.Now().UTC(),
-				DeliveryEpoch: "unrecognized-test-epoch", DeliverySequence: 1,
+				DeliveryEpoch: epoch, DeliverySequence: 1,
 			})
-			if err == nil {
-				t.Fatalf("invalid cache IP %q was accepted", invalidIP)
+			if err == nil || !strings.Contains(err.Error(), "valid unicast IPv4 address") {
+				t.Fatalf("invalid cache IP %q error=%v, want IPv4 validation error", invalidIP, err)
 			}
 		})
 	}

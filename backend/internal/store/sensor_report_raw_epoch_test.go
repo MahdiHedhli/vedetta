@@ -259,10 +259,17 @@ func TestSensorReportRawAndMixedConcurrentFirstClassificationWins(t *testing.T) 
 		if got.err != nil {
 			t.Fatal(got.err)
 		}
-		plausibleResults = append(plausibleResults, got.values[sensorUpstreamTimeKey(plausible)])
-		if value := got.values[sensorUpstreamTimeKey(future)]; !value.IsZero() {
+		plausibleValue, ok := got.values[sensorUpstreamTimeKey(plausible)]
+		if !ok || plausibleValue.IsZero() {
+			t.Fatalf("concurrent result omitted plausible timestamp: %+v", got.values)
+		}
+		plausibleResults = append(plausibleResults, plausibleValue)
+		if value, ok := got.values[sensorUpstreamTimeKey(future)]; ok && !value.IsZero() {
 			concurrentFuture = value
 		}
+	}
+	if concurrentFuture.IsZero() {
+		t.Fatal("mixed concurrent result omitted future timestamp")
 	}
 	if len(plausibleResults) != 2 || !plausibleResults[0].Equal(plausibleResults[1]) {
 		t.Fatalf("concurrent first classifications disagreed: %+v", plausibleResults)
