@@ -332,7 +332,16 @@ func (db *DB) clearCorpusSignalsTx(tx *sql.Tx) error {
 		return fmt.Errorf("clear corpus signals: %w", err)
 	}
 
+	affected := make(map[string]struct{}, len(deviceIDs)*2)
 	for _, deviceID := range deviceIDs {
+		affected[deviceID] = struct{}{}
+		canonicalID, err := db.canonicalDeviceIDTx(tx, deviceID)
+		if err != nil {
+			return fmt.Errorf("resolve corpus projection owner: %w", err)
+		}
+		affected[canonicalID] = struct{}{}
+	}
+	for deviceID := range affected {
 		canonical, err := db.resolveCanonicalFields(tx, deviceID)
 		if err != nil {
 			return err

@@ -238,6 +238,32 @@ func TestCorpusFusionUsesAndClearsRecursiveMergedFamily(t *testing.T) {
 	if corpusRows != 0 {
 		t.Fatalf("merged family retained %d corpus projection rows", corpusRows)
 	}
+
+	// The global generation clear must recompute both the redirected row (for a future split)
+	// and its visible canonical root. A projection may physically live only on the child even
+	// though canonical resolution previously copied its value onto the root row.
+	if _, err := tx.Exec(`INSERT INTO device_signals
+		(device_id, field, value, source, confidence, first_observed, last_observed)
+		VALUES (?, 'model', 'stale-corpus-model', ?, 0.85, ?, ?)`,
+		childID, SourceCorpus, base, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE devices SET model = 'stale-corpus-model'
+		WHERE device_id IN (?, ?)`, childID, targetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.clearCorpusSignalsTx(tx); err != nil {
+		t.Fatal(err)
+	}
+	for _, deviceID := range []string{childID, targetID} {
+		var model string
+		if err := tx.QueryRow(`SELECT model FROM devices WHERE device_id = ?`, deviceID).Scan(&model); err != nil {
+			t.Fatal(err)
+		}
+		if model == "stale-corpus-model" {
+			t.Fatalf("global corpus clear left stale model on merged-family device %s", deviceID)
+		}
+	}
 }
 
 func TestCorpusFusionDoesNotBackdateFutureProtocolProvenance(t *testing.T) {
