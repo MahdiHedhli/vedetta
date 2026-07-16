@@ -13,6 +13,9 @@ on:
       tag:
         description: "Device-DB release tag, e.g. db-2026.07"
         required: true
+      corpus_snapshot_url:
+        description: "Optional https URL of the device-corpus snapshot to bundle (blank = OUI only)"
+        required: false
 
 permissions:
   contents: read
@@ -89,6 +92,7 @@ jobs:
         env:
           VEDETTA_DB_SIGNING_KEY: ${{ secrets.VEDETTA_DB_SIGNING_KEY }}
           TAG: ${{ github.event.inputs.tag }}
+          CORPUS_SNAPSHOT_URL: ${{ github.event.inputs.corpus_snapshot_url }}
         run: |
           set -euo pipefail
           if [ -z "${VEDETTA_DB_SIGNING_KEY:-}" ]; then
@@ -98,6 +102,30 @@ jobs:
           ROOT="$PWD"
           mkdir -p "$ROOT/dist"
           cp backend/internal/fingerprint/data/oui.csv "$ROOT/dist/oui.csv"
+          file_args=(-file "oui.csv=$ROOT/dist/oui.csv")
+
+          # Optionally fetch + include the device-corpus snapshot. It rides the same signed
+          # bundle; the client verifies it and treats it as optional. Fetch bounded, over
+          # https only, and sanity-check the schema before trusting it into the bundle.
+          if [ -n "${CORPUS_SNAPSHOT_URL:-}" ]; then
+            case "$CORPUS_SNAPSHOT_URL" in
+              https://*) ;;
+              *) echo "::error::corpus_snapshot_url must be https"; exit 1 ;;
+            esac
+            curl --fail-with-body --silent --show-error --proto '=https' --tlsv1.2 \
+              --max-filesize 33554432 -o "$ROOT/dist/corpus.json" "$CORPUS_SNAPSHOT_URL"
+            python3 - "$ROOT/dist/corpus.json" <<'PY'
+          import json, sys
+          try:
+              doc = json.load(open(sys.argv[1]))
+          except Exception as exc:
+              raise SystemExit(f"::error::corpus snapshot is not valid JSON: {exc}")
+          if doc.get("schema_version") != 1:
+              raise SystemExit("::error::corpus snapshot schema_version must be 1")
+          PY
+            file_args+=(-file "corpus.json=$ROOT/dist/corpus.json")
+          fi
+
           # Stream the key via stdin so it never touches disk or argv. Remove the
           # exported secret before launching go tooling so descendants cannot read it
           # from their environment.
@@ -109,7 +137,7 @@ jobs:
             -key - \
             -release "$TAG" \
             -out "$ROOT/dist" \
-            -file "oui.csv=$ROOT/dist/oui.csv"
+            "${file_args[@]}"
           rm -f "$signer"
           unset signing_key
           ls -la "$ROOT/dist"
@@ -163,7 +191,9 @@ jobs:
           set -euo pipefail
           api_token="$GH_TOKEN"
           unset GH_TOKEN
-          for asset in dist/oui.csv dist/manifest.json dist/manifest.json.sig; do
+          assets=(dist/oui.csv dist/manifest.json dist/manifest.json.sig)
+          [ -f dist/corpus.json ] && assets+=(dist/corpus.json)
+          for asset in "${assets[@]}"; do
             # Bind every mutation to the release ID returned by our create call and
             # re-check draft state immediately before it. We never refresh by tag.
             release_json="$(GH_TOKEN="$api_token" gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
@@ -211,7 +241,11 @@ jobs:
             exit 1
           fi
           actual_assets="$(jq -r '[.assets[].name] | sort | join(",")' <<< "$release_json")"
-          expected_assets='manifest.json,manifest.json.sig,oui.csv'
+          if [ -f dist/corpus.json ]; then
+            expected_assets='corpus.json,manifest.json,manifest.json.sig,oui.csv'
+          else
+            expected_assets='manifest.json,manifest.json.sig,oui.csv'
+          fi
           if [ "$actual_assets" != "$expected_assets" ]; then
             echo "::error::release '$EXPECTED_TAG' has unexpected assets: $actual_assets"
             exit 1
