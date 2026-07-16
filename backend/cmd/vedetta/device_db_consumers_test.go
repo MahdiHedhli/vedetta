@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/vedetta-network/vedetta/backend/internal/fingerprint"
+	"github.com/vedetta-network/vedetta/backend/internal/store"
 )
 
 func TestActivateDeviceDBConsumersRejectsCorpusBeforePublishingOUI(t *testing.T) {
@@ -33,7 +34,12 @@ func TestActivateDeviceDBConsumersRejectsCorpusBeforePublishingOUI(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if err := activateDeviceDBConsumers(dir); err == nil {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := activateDeviceDBConsumers(db, dir); err == nil {
 		t.Fatal("activation accepted an invalid corpus")
 	}
 	after := engine.Lookup("00:00:00:00:00:01")

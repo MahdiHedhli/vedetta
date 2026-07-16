@@ -91,3 +91,39 @@ func TestPrepareManagedCorpusDoesNotPublishBeforeActivate(t *testing.T) {
 		t.Fatalf("failed prepare changed last-good matcher: ok=%v result=%+v", ok, result)
 	}
 }
+
+func TestPreparedCorpusGenerationTracksExactValidatedBytes(t *testing.T) {
+	dir := t.TempDir()
+	absent, err := PrepareManagedCorpus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent.GenerationID() != "absent" {
+		t.Fatalf("absent generation = %q", absent.GenerationID())
+	}
+	if err := os.WriteFile(filepath.Join(dir, managedCorpusFile), []byte(sampleSnapshotJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := PrepareManagedCorpus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := PrepareManagedCorpus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GenerationID() == "" || first.GenerationID() == "absent" || first.GenerationID() != second.GenerationID() {
+		t.Fatalf("validated generation IDs are not stable: first=%q second=%q", first.GenerationID(), second.GenerationID())
+	}
+	changed := []byte("\n" + sampleSnapshotJSON)
+	if err := os.WriteFile(filepath.Join(dir, managedCorpusFile), changed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	third, err := PrepareManagedCorpus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.GenerationID() == first.GenerationID() {
+		t.Fatal("changed validated corpus bytes reused the prior generation ID")
+	}
+}

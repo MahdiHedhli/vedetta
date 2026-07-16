@@ -310,3 +310,42 @@ func TestClearCorpusSignalsReprojectsQuietDevices(t *testing.T) {
 		t.Fatalf("quiet device was not reprojected: model=%q type=%q display=%q", model, deviceType, displayName)
 	}
 }
+
+func TestActivateCorpusGenerationPreservesOnlyExactGeneration(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().UTC()
+	activated := 0
+	if err := db.ActivateCorpusGeneration("sha256:first", func() { activated++ }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO devices
+		(device_id, ip_address, mac_address, first_seen, last_seen, model, display_name)
+		VALUES ('quiet-versioned-device', '192.0.2.55', '', ?, ?, 'Versioned Model', 'Versioned Model')`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO device_signals
+		(device_id, field, value, source, confidence, first_observed, last_observed)
+		VALUES ('quiet-versioned-device', 'model', 'Versioned Model', ?, 0.85, ?, ?)`,
+		SourceCorpus, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ActivateCorpusGeneration("sha256:first", func() { activated++ }); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_signals WHERE source = ?`, SourceCorpus).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("unchanged generation discarded quiet-device projection: rows=%d", rows)
+	}
+	if err := db.ActivateCorpusGeneration("sha256:second", func() { activated++ }); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_signals WHERE source = ?`, SourceCorpus).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || activated != 3 {
+		t.Fatalf("changed generation did not clear/activate exactly once: rows=%d activated=%d", rows, activated)
+	}
+}

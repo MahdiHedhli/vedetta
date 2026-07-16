@@ -1,6 +1,7 @@
 package corpusmatch
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +26,17 @@ var (
 type PreparedCorpus struct {
 	managedPath *string
 	matcher     *Matcher
+	generation  string
+}
+
+// GenerationID identifies the exact validated corpus bytes represented by this prepared
+// matcher. It is local lifecycle metadata only; the corpus is public and already ships in a
+// signed bundle. An absent optional corpus has its own stable generation ID.
+func (p *PreparedCorpus) GenerationID() string {
+	if p == nil {
+		return "unmanaged"
+	}
+	return p.generation
 }
 
 // Activate publishes a previously prepared immutable matcher.
@@ -57,12 +69,12 @@ func PrepareManagedCorpus(installDir string) (*PreparedCorpus, error) {
 		return nil, fmt.Errorf("corpusmatch: managed install directory is empty")
 	}
 	path := filepath.Join(installDir, managedCorpusFile)
-	matcher, err := prepareFromPath(path)
+	matcher, generation, err := prepareFromPath(path)
 	if err != nil {
 		return nil, err
 	}
 	stablePath := path
-	return &PreparedCorpus{managedPath: &stablePath, matcher: matcher}, nil
+	return &PreparedCorpus{managedPath: &stablePath, matcher: matcher, generation: generation}, nil
 }
 
 // EnableManagedCorpus prepares and publishes the managed corpus. Coordinators activating
@@ -84,11 +96,11 @@ func PrepareReloadCorpus() (*PreparedCorpus, error) {
 	if p == nil {
 		return nil, nil // not managed
 	}
-	matcher, err := prepareFromPath(*p)
+	matcher, generation, err := prepareFromPath(*p)
 	if err != nil {
 		return nil, err
 	}
-	return &PreparedCorpus{matcher: matcher}, nil
+	return &PreparedCorpus{matcher: matcher, generation: generation}, nil
 }
 
 // ReloadCorpus prepares and publishes the current managed snapshot.
@@ -103,24 +115,25 @@ func ReloadCorpus() error {
 
 // loadFromPath loads (or clears) the active matcher from a snapshot file, bounding the read
 // so an oversized file cannot exhaust memory before ParseSnapshot's byte check.
-func prepareFromPath(path string) (*Matcher, error) {
+func prepareFromPath(path string) (*Matcher, string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return NewMatcher(nil), nil // no corpus shipped in this generation
+			return NewMatcher(nil), "absent", nil // no corpus shipped in this generation
 		}
-		return nil, fmt.Errorf("corpusmatch: open %s: %w", path, err)
+		return nil, "", fmt.Errorf("corpusmatch: open %s: %w", path, err)
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, maxSnapshotBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("corpusmatch: read %s: %w", path, err)
+		return nil, "", fmt.Errorf("corpusmatch: read %s: %w", path, err)
 	}
 	snap, err := ParseSnapshot(data)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return NewMatcher(snap), nil
+	digest := sha256.Sum256(data)
+	return NewMatcher(snap), fmt.Sprintf("sha256:%x", digest), nil
 }
 
 func setActive(m *Matcher) {

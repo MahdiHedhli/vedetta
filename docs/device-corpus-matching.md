@@ -51,12 +51,12 @@ A corpus match is advisory context; it cannot create, suppress, resolve, or repr
 finding on its own. It is also withheld from the local risk/EOL detector input path.
 
 Corpus signals are a replaceable projection of the active signed generation, not permanent
-identity facts. Each observation replaces that device's prior corpus rows. On startup and
-when a new device-DB generation activates, Core transactionally removes every prior corpus
-projection and reprojects affected device labels from non-corpus evidence. The clear and
-in-process matcher swap exclude concurrent device observations, so an old-generation match
-cannot be committed after activation. Removing `corpus.json`, disabling the updater, or
-installing a changed snapshot therefore cannot leave a quiet device labeled indefinitely.
+identity facts. Each observation replaces that device's prior corpus rows. Core records a
+SHA-256 lifecycle ID for the exact validated `corpus.json` bytes: an unchanged generation
+preserves quiet-device labels across restart, while a changed/removed corpus or disabled
+updater transactionally removes prior projections and reprojects affected device labels from
+non-corpus evidence. The reconcile and in-process matcher swap exclude concurrent device
+observations, so an old-generation match cannot be committed after activation.
 
 ## Delivery
 

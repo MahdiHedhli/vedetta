@@ -11,7 +11,10 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 )
 
-const corpusSignalRecency = 30 * 24 * time.Hour
+const (
+	corpusSignalRecency           = 30 * 24 * time.Hour
+	corpusProjectionGenerationKey = "device_corpus_projection_generation"
+)
 
 // corpusObservedSignals projects a discovery observation into the corpus shape vocabulary so
 // the local matcher can compare it against curated device-class shapes. Hostname templates are
@@ -215,36 +218,78 @@ func deleteCorpusSignalsTx(tx *sql.Tx, deviceID string) error {
 	return nil
 }
 
-// ClearCorpusSignals removes every persisted corpus projection and recomputes affected device
-// rows from non-corpus sources. Core calls this on startup and before activating a replacement
-// corpus so removing or changing a signed snapshot takes effect even for quiet devices.
+// ClearCorpusSignals removes every persisted corpus projection, records the unmanaged state,
+// and recomputes affected device rows from non-corpus sources. Core calls this when no managed
+// corpus can be activated, so disabling/removing the updater cannot leave quiet devices stale.
 func (db *DB) ClearCorpusSignals() error {
 	db.corpusProjectionMu.Lock()
 	defer db.corpusProjectionMu.Unlock()
-	return db.clearCorpusSignals()
-}
-
-// ActivateCorpusGeneration clears the prior generation's persisted projections and then
-// invokes an infallible process-state activation while device observations are excluded.
-// This prevents an in-flight observation matched by the old generation from committing
-// stale labels after the clear. If clearing fails, activate is not called.
-func (db *DB) ActivateCorpusGeneration(activate func()) error {
-	db.corpusProjectionMu.Lock()
-	defer db.corpusProjectionMu.Unlock()
-	if err := db.clearCorpusSignals(); err != nil {
-		return err
-	}
-	activate()
-	return nil
-}
-
-func (db *DB) clearCorpusSignals() error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin corpus signal clear: %w", err)
 	}
 	defer tx.Rollback()
+	if err := db.clearCorpusSignalsTx(tx); err != nil {
+		return err
+	}
+	if err := setCorpusProjectionGenerationTx(tx, ""); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit corpus signal clear: %w", err)
+	}
+	return nil
+}
 
+// ActivateCorpusGeneration reconciles persisted labels with the exact validated corpus bytes,
+// then invokes an infallible process-state activation while device observations are excluded.
+// An unchanged generation preserves quiet-device labels across restart; a changed/removed
+// generation clears them. If reconciliation fails, activate is not called.
+func (db *DB) ActivateCorpusGeneration(generation string, activate func()) error {
+	if activate == nil {
+		return fmt.Errorf("activate corpus generation: activation callback is required")
+	}
+	generation = strings.TrimSpace(generation)
+	if generation == "" {
+		return fmt.Errorf("activate corpus generation: generation ID is required")
+	}
+	db.corpusProjectionMu.Lock()
+	defer db.corpusProjectionMu.Unlock()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin corpus generation activation: %w", err)
+	}
+	defer tx.Rollback()
+	var prior string
+	err = tx.QueryRow(`SELECT value FROM settings WHERE key = ?`, corpusProjectionGenerationKey).Scan(&prior)
+	switch err {
+	case nil:
+		if prior != generation {
+			if err := db.clearCorpusSignalsTx(tx); err != nil {
+				return err
+			}
+		}
+	case sql.ErrNoRows:
+		// First generation-aware startup: fail closed and discard any unversioned
+		// projections left by an older binary before recording the active bytes.
+		if err := db.clearCorpusSignalsTx(tx); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("read corpus projection generation: %w", err)
+	}
+	if err := setCorpusProjectionGenerationTx(tx, generation); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit corpus generation activation: %w", err)
+	}
+	activate()
+	return nil
+}
+
+func (db *DB) clearCorpusSignalsTx(tx *sql.Tx) error {
 	rows, err := tx.Query(`SELECT DISTINCT device_id FROM device_signals WHERE source = ?`, SourceCorpus)
 	if err != nil {
 		return fmt.Errorf("list corpus signal devices: %w", err)
@@ -290,8 +335,14 @@ func (db *DB) clearCorpusSignals() error {
 			return fmt.Errorf("clear device corpus projection: %w", err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit corpus signal clear: %w", err)
+	return nil
+}
+
+func setCorpusProjectionGenerationTx(tx *sql.Tx, generation string) error {
+	if _, err := tx.Exec(`INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		corpusProjectionGenerationKey, generation); err != nil {
+		return fmt.Errorf("write corpus projection generation: %w", err)
 	}
 	return nil
 }
