@@ -2,7 +2,7 @@
 
 This document records what must be solved before a Vedetta instance can help grow the
 community device-recognition corpus ([spec 008](../specs/008-device-fingerprint-corpus/) /
-#52). It does **not** authorize real-data contribution, and no contribution transport or
+issue `#52`). It does **not** authorize real-data contribution, and no contribution transport or
 shadow persistence exists in this change.
 
 Owner direction requires a contribution to be unlinkable to an install, user/device ID,
