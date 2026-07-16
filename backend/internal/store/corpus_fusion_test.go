@@ -287,6 +287,72 @@ func TestIdentityEvidenceStrengthRecordsBoundedSourceRecencyCheckpoints(t *testi
 	}
 }
 
+func TestCorpusFusionRetainsProtocolProvenanceAtExactFreshnessBoundaries(t *testing.T) {
+	db := testDB(t)
+	base := time.Now().UTC().Add(-2 * mdnsNameRecencyWindow)
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.57", DiscoverySource: "nmap_active", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.57").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		evidenceType string
+		value        string
+		source       string
+		retained     func(corpusmatch.ObservedSignals) []string
+	}{
+		{
+			evidenceType: "mdns_service", value: "_boundary._tcp", source: "passive_mdns",
+			retained: func(obs corpusmatch.ObservedSignals) []string { return obs.MDNSServices },
+		},
+		{
+			evidenceType: "ssdp_device_type", value: "urn:example:device:boundary:1", source: "passive_ssdp",
+			retained: func(obs corpusmatch.ObservedSignals) []string { return obs.SSDPDeviceTypes },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.source, func(t *testing.T) {
+			for _, observedAt := range []time.Time{base, base.Add(mdnsNameRecencyWindow)} {
+				tx, err := db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
+					DeviceIdentityEvidenceInput{
+						Type: tc.evidenceType, Value: tc.value, DisplayValue: tc.value,
+						Source: tc.source, Confidence: 0.8,
+					}, observedAt, false)
+				if err != nil {
+					tx.Rollback()
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{},
+				base.Add(2*mdnsNameRecencyWindow))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retained := tc.retained(obs); len(retained) != 1 || retained[0] != tc.value {
+				t.Fatalf("exact-boundary %s provenance = %v, want %q", tc.source, retained, tc.value)
+			}
+		})
+	}
+}
+
 func TestCorpusDerivedSignalsCapsConfidenceAtVariantConfidence(t *testing.T) {
 	dir := t.TempDir()
 	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","model":"Player","device_type":"media_player"},"variants":[{"variant_id":"v","confidence_bp":4200,"shape":{"schema_version":1,"ssdp_server_tokens":["example/player"]}}]}]}`

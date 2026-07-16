@@ -232,7 +232,7 @@ func recordIdentityEvidenceStrengthTx(tx *sql.Tx, evidenceID, source string, con
 	sourceRecencyCutoff := observedAt.Add(-mdnsNameRecencyWindow)
 	if err := tx.QueryRow(`SELECT MAX(confidence),
 		COALESCE(MAX(CASE WHEN operator_confirmed THEN 1 ELSE 0 END), 0),
-		COALESCE(MAX(CASE WHEN source = ? AND observed_at >= ? THEN 1 ELSE 0 END), 0)
+		COALESCE(MAX(CASE WHEN source = ? AND observed_at > ? THEN 1 ELSE 0 END), 0)
 		FROM device_identity_evidence_strength
 		WHERE evidence_id = ? AND observed_at <= ?`, source, sourceRecencyCutoff, evidenceID, observedAt).
 		Scan(&priorConfidence, &priorConfirmed, &recentSource); err != nil {
