@@ -133,6 +133,38 @@ func TestCorpusFusionDoesNotBorrowFutureEvidenceForDelayedReport(t *testing.T) {
 	}
 }
 
+func TestCorpusFusionRetainsCurrentlyAssociatedStableMAC(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	base := time.Now().UTC().Add(-3 * 24 * time.Hour)
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.58", MACAddress: "00:00:5E:00:53:58",
+		DiscoverySource: "nmap_active", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.58").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{},
+		base.Add(2*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.OUIPrefixes) != 1 || obs.OUIPrefixes[0] != "00:00:5E:00:53:58" {
+		t.Fatalf("currently associated stable MAC aged out of corpus fusion: %v", obs.OUIPrefixes)
+	}
+}
+
 func TestCorpusFusionDoesNotBackdateFutureProtocolProvenance(t *testing.T) {
 	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
 		t.Fatal(err)
@@ -317,16 +349,24 @@ func TestCorpusFusionRetainsProtocolProvenanceAtExactFreshnessBoundaries(t *test
 	}
 	for _, tc := range tests {
 		t.Run(tc.source, func(t *testing.T) {
-			for _, observedAt := range []time.Time{base, base.Add(mdnsNameRecencyWindow)} {
+			observations := []struct {
+				observedAt time.Time
+				value      string
+			}{
+				{observedAt: base, value: "stale-" + tc.value},
+				{observedAt: base, value: tc.value},
+				{observedAt: base.Add(mdnsNameRecencyWindow), value: tc.value},
+			}
+			for _, observation := range observations {
 				tx, err := db.Begin()
 				if err != nil {
 					t.Fatal(err)
 				}
 				_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
 					DeviceIdentityEvidenceInput{
-						Type: tc.evidenceType, Value: tc.value, DisplayValue: tc.value,
+						Type: tc.evidenceType, Value: observation.value, DisplayValue: observation.value,
 						Source: tc.source, Confidence: 0.8,
-					}, observedAt, false)
+					}, observation.observedAt, false)
 				if err != nil {
 					tx.Rollback()
 					t.Fatal(err)

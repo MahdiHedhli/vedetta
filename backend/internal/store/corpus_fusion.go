@@ -92,10 +92,8 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 
 	rows, err := tx.Query(`SELECT DISTINCT h.address_value FROM device_address_history h
 		WHERE h.device_id = ? AND h.address_type = 'mac'
-		  AND h.valid_from <= ? AND (h.valid_until IS NULL OR ? < h.valid_until)
-		  AND EXISTS (SELECT 1 FROM device_address_binding_validity v
-		    WHERE v.binding_id = h.binding_id AND v.valid_from <= ? AND ? <= v.valid_until)`,
-		deviceID, observedAt, observedAt, observedAt, observedAt)
+		  AND h.valid_from <= ? AND (h.valid_until IS NULL OR ? < h.valid_until)`,
+		deviceID, observedAt, observedAt)
 	if err != nil {
 		return obs, fmt.Errorf("read retained corpus signals: %w", err)
 	}
