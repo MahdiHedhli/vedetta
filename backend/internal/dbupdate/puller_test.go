@@ -411,6 +411,31 @@ func TestActivateConsumerEnforcesManagedPointerState(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, stateFileName), []byte("db-2026.07\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	indirectTarget := ".current-release-db-2026.07-indirect"
+	indirectGeneration := filepath.Join(root, indirectTarget)
+	if err := os.Symlink(outside, indirectGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(indirectTarget, u.InstallDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.ActivateConsumer(activate); err == nil {
+		t.Fatal("accepted a symlinked generation target")
+	}
+	if err := os.Remove(u.InstallDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(indirectGeneration); err != nil {
+		t.Fatal(err)
+	}
+
 	validTarget := ".current-release-db-2026.07-valid"
 	validGeneration := filepath.Join(root, validTarget)
 	if err := os.Mkdir(validGeneration, 0o755); err != nil {

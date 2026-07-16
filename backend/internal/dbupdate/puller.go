@@ -32,9 +32,8 @@ const (
 	// DefaultInterval is how often an enabled updater re-checks for a new release.
 	DefaultInterval = 24 * time.Hour
 
-	stateFileName       = ".db-release" // records the installed release tag
-	maxMetadataBytes    = 64 << 10      // manifest.json / .sig are tiny
-	maxReleaseListBytes = 2 << 20       // one GitHub releases page, bounded
+	maxMetadataBytes    = 64 << 10 // manifest.json / .sig are tiny
+	maxReleaseListBytes = 2 << 20  // one GitHub releases page, bounded
 	defaultHTTPTimeout  = 30 * time.Second
 )
 
@@ -186,12 +185,12 @@ func (u *Updater) ActivateConsumer(activate func(string) error) error {
 	}
 	if exists {
 		generation := filepath.Join(filepath.Dir(u.cfg.InstallDir), target)
-		info, err := os.Stat(generation)
+		info, err := os.Lstat(generation)
 		if err != nil {
 			return fmt.Errorf("dbupdate: inspect installed generation: %w", err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("dbupdate: installed generation %s is not a directory", generation)
+			return fmt.Errorf("dbupdate: installed generation %s is not a real directory", generation)
 		}
 		tag, err := u.installedTag()
 		if err != nil {

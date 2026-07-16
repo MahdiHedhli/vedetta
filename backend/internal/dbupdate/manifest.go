@@ -40,6 +40,7 @@ const MaxBundleTotalBytes int64 = 256 << 20 // 256 MiB
 const (
 	manifestAssetName  = "manifest.json"
 	signatureAssetName = "manifest.json.sig"
+	stateFileName      = ".db-release" // records the installed release tag
 )
 
 var (
@@ -210,7 +211,7 @@ func validateManifestStructure(m *Manifest) error {
 	seen := make(map[string]struct{}, len(m.Files))
 	var total int64
 	for _, f := range m.Files {
-		if f.Name == manifestAssetName || f.Name == signatureAssetName ||
+		if f.Name == manifestAssetName || f.Name == signatureAssetName || f.Name == stateFileName ||
 			!isSafeName(f.Name) || !sha256HexRE.MatchString(f.SHA256) ||
 			f.Bytes < 0 || f.Bytes > MaxBundleFileBytes {
 			return fmt.Errorf("%w: %q", ErrManifestFile, f.Name)

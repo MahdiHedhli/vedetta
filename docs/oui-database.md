@@ -85,5 +85,6 @@ uses `<VEDETTA_DB_UPDATE_INSTALL_DIR>/oui.csv`. The environment flag/path alone 
 activates persisted managed bytes. Outside that validated managed-update configuration, an
 explicitly operator-managed table at `VEDETTA_OUI_DB_PATH` takes precedence over the
 embedded baseline. Either on-disk table must contain at least 30,000 unique valid MA-L
-rows; a missing, tiny, truncated, or unusable table falls back to the embedded registry.
-See [Signed Device-DB Releases](device-db-releases.md).
+rows. Missing or invalid manual tables fall back to the embedded registry during initial
+selection; invalid existing managed generations fail activation or reload and preserve or
+restore the last-good source. See [Signed Device-DB Releases](device-db-releases.md).
