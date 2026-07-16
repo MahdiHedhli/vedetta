@@ -90,6 +90,26 @@ jobs:
           printf 'tag_object_sha=%s\n' "$tag_object_sha" >> "$GITHUB_OUTPUT"
           printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Check out the immutable release commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ steps.validate.outputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Require the tracked Core version to match the release tag
+        env:
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          if [ ! -f VERSION ]; then
+            echo "::error::Release commit does not contain the tracked VERSION file"
+            exit 1
+          fi
+          tracked_version="$(cat VERSION)"
+          if [ "$tracked_version" != "$RELEASE_TAG" ]; then
+            echo "::error::VERSION is '$tracked_version', want release tag '$RELEASE_TAG'"
+            exit 1
+          fi
+
       - name: Refuse to rebuild an already-published release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,6 +127,27 @@ jobs:
               exit 1
             fi
           done <<< "$release_rows"
+
+  build-core:
+    name: build version-stamped Core container
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.validate-tag.outputs.commit_sha }}
+          persist-credentials: false
+      - name: Build and verify Core
+        env:
+          RELEASE_TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          docker build -f backend/Dockerfile -t vedetta-core-release .
+          actual="$(docker run --rm vedetta-core-release --version)"
+          expected="vedetta-core ${RELEASE_TAG}"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Core container version mismatch: got '$actual', want '$expected'"
+            exit 1
+          fi
 
   build-sensor:
     name: build sensor (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -180,7 +221,7 @@ jobs:
 
   release:
     name: assemble draft release
-    needs: [validate-tag, build-sensor]
+    needs: [validate-tag, build-core, build-sensor]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create or refresh a draft release only in this job

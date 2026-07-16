@@ -39,6 +39,12 @@ When disabled, no release checks are made and `GET /api/v1/update-status` report
 For the default Docker installation, set these values in the generated `.env` file;
 Compose forwards all three variables to Core.
 
+The normal Core container build stamps the tracked root `VERSION` into the binary and
+asserts the reported version during the image build. Before creating a `v*` release tag,
+update `VERSION` to that exact tag; the release workflow refuses a mismatch and rebuilds
+the Core container as a release gate. Direct developer `go build` commands remain `dev`
+and intentionally do not receive software notices.
+
 ## API
 
 `GET /api/v1/update-status` (read scope) returns the cached status:
