@@ -9,6 +9,20 @@ import (
 	"testing"
 )
 
+func resetManagedOUIState(t *testing.T) {
+	t.Helper()
+	managedOUIPath.Store(nil)
+	ieeeOUIMu.Lock()
+	ieeeOUI = nil
+	ieeeOUIMu.Unlock()
+	t.Cleanup(func() {
+		managedOUIPath.Store(nil)
+		ieeeOUIMu.Lock()
+		ieeeOUI = nil
+		ieeeOUIMu.Unlock()
+	})
+}
+
 func TestParseOUICSV(t *testing.T) {
 	const data = `prefix,vendor
 000393,"Apple, Inc."
@@ -35,8 +49,7 @@ zzzzzz,Bad Prefix
 }
 
 func TestLoadIEEEOUI_EmbeddedBaseline(t *testing.T) {
-	t.Setenv(dbUpdateEnabledEnv, "false")
-	t.Setenv(dbUpdateInstallDirEnv, "")
+	resetManagedOUIState(t)
 	t.Setenv(ouiDBOverrideEnv, "")
 	m := loadIEEEOUI()
 	if len(m) < 30000 {
@@ -82,6 +95,7 @@ func TestLoadOUICSVFile_OverrideAndReject(t *testing.T) {
 }
 
 func TestLoadIEEEOUI_EnvOverrideReplacesBaseline(t *testing.T) {
+	resetManagedOUIState(t)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "oui.csv")
 	override := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Env Override Co"), 1)
@@ -91,8 +105,6 @@ func TestLoadIEEEOUI_EnvOverrideReplacesBaseline(t *testing.T) {
 	if err := os.WriteFile(p, override, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(dbUpdateEnabledEnv, "false")
-	t.Setenv(dbUpdateInstallDirEnv, "")
 	t.Setenv(ouiDBOverrideEnv, p)
 	m := loadIEEEOUI()
 	if m["000000"] != "Env Override Co" {
@@ -104,13 +116,12 @@ func TestLoadIEEEOUI_EnvOverrideReplacesBaseline(t *testing.T) {
 }
 
 func TestLoadIEEEOUI_PartialOverrideFallsBack(t *testing.T) {
+	resetManagedOUIState(t)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "oui.csv")
 	if err := os.WriteFile(p, []byte("prefix,vendor\naabbcc,Partial Override\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(dbUpdateEnabledEnv, "false")
-	t.Setenv(dbUpdateInstallDirEnv, "")
 	t.Setenv(ouiDBOverrideEnv, p)
 	m := loadIEEEOUI()
 	if len(m) < minimumFullOUIRows {
@@ -122,7 +133,7 @@ func TestLoadIEEEOUI_PartialOverrideFallsBack(t *testing.T) {
 }
 
 func TestReloadIEEEOUI_AtomicallyPublishesOverride(t *testing.T) {
-	t.Cleanup(func() { _ = ReloadIEEEOUI() })
+	resetManagedOUIState(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "oui.csv")
 	override := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Reloaded Vendor"), 1)
@@ -132,8 +143,6 @@ func TestReloadIEEEOUI_AtomicallyPublishesOverride(t *testing.T) {
 	if err := os.WriteFile(path, override, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(dbUpdateEnabledEnv, "false")
-	t.Setenv(dbUpdateInstallDirEnv, "")
 	t.Setenv(ouiDBOverrideEnv, path)
 	if err := ReloadIEEEOUI(); err != nil {
 		t.Fatal(err)
@@ -167,8 +176,8 @@ func TestReloadIEEEOUI_AtomicallyPublishesOverride(t *testing.T) {
 	}
 }
 
-func TestReloadIEEEOUI_DisablingUpdatesRestoresEmbeddedBaseline(t *testing.T) {
-	t.Cleanup(func() { _ = ReloadIEEEOUI() })
+func TestEnableManagedIEEEOUIRequiresProcessLocalActivation(t *testing.T) {
+	resetManagedOUIState(t)
 	dir := t.TempDir()
 	managedPath := filepath.Join(dir, "oui.csv")
 	managed := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Managed Update Vendor"), 1)
@@ -180,22 +189,47 @@ func TestReloadIEEEOUI_DisablingUpdatesRestoresEmbeddedBaseline(t *testing.T) {
 	}
 
 	t.Setenv(ouiDBOverrideEnv, "")
-	t.Setenv(dbUpdateInstallDirEnv, dir)
-	t.Setenv(dbUpdateEnabledEnv, "true")
 	if err := ReloadIEEEOUI(); err != nil {
 		t.Fatal(err)
 	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || !strings.Contains(got.Vendor, "XEROX") {
+		t.Fatalf("managed file became active before validated activation: %#v", got)
+	}
+	if err := EnableManagedIEEEOUI(dir); err != nil {
+		t.Fatal(err)
+	}
 	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || got.Vendor != "Managed Update Vendor" {
-		t.Fatalf("enabled updater generation not loaded: %#v", got)
+		t.Fatalf("validated managed generation not loaded: %#v", got)
 	}
 
-	// The generation deliberately remains on disk. The flag alone is the authority
-	// boundary: disabling updates must stop using those persisted downloaded bytes.
-	t.Setenv(dbUpdateEnabledEnv, "false")
+	// A fresh process with the updater disabled has no activation authority even though
+	// the downloaded generation deliberately remains on disk.
+	managedOUIPath.Store(nil)
 	if err := ReloadIEEEOUI(); err != nil {
 		t.Fatal(err)
 	}
 	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || !strings.Contains(got.Vendor, "XEROX") {
 		t.Fatalf("disabled updater did not restore embedded baseline: %#v", got)
+	}
+}
+
+func TestEnableManagedIEEEOUIRejectsUnusableExistingGeneration(t *testing.T) {
+	resetManagedOUIState(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "oui.csv"), []byte("prefix,vendor\naabbcc,Partial\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ouiDBOverrideEnv, "")
+	if err := EnableManagedIEEEOUI(dir); err == nil {
+		t.Fatal("expected unusable managed generation to fail activation")
+	}
+	if managedOUIPath.Load() != nil {
+		t.Fatal("failed activation retained managed-source authority")
+	}
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || !strings.Contains(got.Vendor, "XEROX") {
+		t.Fatalf("failed activation did not retain embedded baseline: %#v", got)
 	}
 }

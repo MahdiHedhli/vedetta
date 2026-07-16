@@ -36,6 +36,12 @@ const MaxBundleFileBytes int64 = 64 << 20 // 64 MiB
 // (or accidental) manifest cannot direct a multi-gigabyte download at the Pi-4 floor.
 const MaxBundleTotalBytes int64 = 256 << 20 // 256 MiB
 
+// These release-level metadata assets cannot also appear as bundle payload files.
+const (
+	manifestAssetName  = "manifest.json"
+	signatureAssetName = "manifest.json.sig"
+)
+
 var (
 	// ErrManifestSchema is returned for an unrecognized schema version.
 	ErrManifestSchema = errors.New("dbupdate: unsupported manifest schema version")
@@ -204,7 +210,9 @@ func validateManifestStructure(m *Manifest) error {
 	seen := make(map[string]struct{}, len(m.Files))
 	var total int64
 	for _, f := range m.Files {
-		if !isSafeName(f.Name) || !sha256HexRE.MatchString(f.SHA256) || f.Bytes < 0 || f.Bytes > MaxBundleFileBytes {
+		if f.Name == manifestAssetName || f.Name == signatureAssetName ||
+			!isSafeName(f.Name) || !sha256HexRE.MatchString(f.SHA256) ||
+			f.Bytes < 0 || f.Bytes > MaxBundleFileBytes {
 			return fmt.Errorf("%w: %q", ErrManifestFile, f.Name)
 		}
 		if _, dup := seen[f.Name]; dup {

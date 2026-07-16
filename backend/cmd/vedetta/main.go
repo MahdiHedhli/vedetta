@@ -458,9 +458,11 @@ func main() {
 			}
 			if updater, err := dbupdate.New(cfg); err != nil {
 				log.Printf("WARNING: device-DB updater not started: %v", err)
+			} else if err := fingerprint.EnableManagedIEEEOUI(updater.InstallDir()); err != nil {
+				log.Printf("WARNING: device-DB updater not started: %v", err)
 			} else {
 				go updater.Run(context.Background())
-				log.Printf("Device-DB updater started (opt-in); installing into %s", cfg.InstallDir)
+				log.Printf("Device-DB updater started (opt-in); installing into %s", updater.InstallDir())
 			}
 		}
 	}

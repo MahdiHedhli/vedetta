@@ -51,6 +51,11 @@ func TestBuildManifest_Rejects(t *testing.T) {
 	if _, _, err := BuildManifest(map[string][]byte{"../escape": {1}}, "db", "t"); !errors.Is(err, ErrManifestFile) {
 		t.Errorf("traversal: got %v, want ErrManifestFile", err)
 	}
+	for _, name := range []string{manifestAssetName, signatureAssetName} {
+		if _, _, err := BuildManifest(map[string][]byte{name: {1}}, "db-2026.07", "2026-07-15T00:00:00Z"); !errors.Is(err, ErrManifestFile) {
+			t.Errorf("reserved name %q: got %v, want ErrManifestFile", name, err)
+		}
+	}
 	if _, _, err := BuildManifest(map[string][]byte{"oui.csv": {1}}, "v0.1.0", "2026-07-15T00:00:00Z"); !errors.Is(err, ErrManifestMetadata) {
 		t.Errorf("release metadata: got %v, want ErrManifestMetadata", err)
 	}

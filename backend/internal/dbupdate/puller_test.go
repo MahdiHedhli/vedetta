@@ -421,9 +421,9 @@ func TestUpdater_ConcurrentChecksInstallOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if updaters[0].cfg.InstallDir != updaters[1].cfg.InstallDir {
+	if updaters[0].InstallDir() != updaters[1].InstallDir() {
 		t.Fatalf("symlinked parents produced distinct lock paths: %q != %q",
-			updaters[0].cfg.InstallDir, updaters[1].cfg.InstallDir)
+			updaters[0].InstallDir(), updaters[1].InstallDir())
 	}
 	start := make(chan struct{})
 	errs := make(chan error, 2)

@@ -11,18 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 const (
 	// ouiDBOverrideEnv names an optional operator-managed OUI table that supersedes
 	// the compiled-in baseline independently of signed automatic updates.
 	ouiDBOverrideEnv = "VEDETTA_OUI_DB_PATH"
-	// dbUpdateEnabledEnv and dbUpdateInstallDirEnv describe the signed updater's
-	// managed generation pointer. Keeping this separate from ouiDBOverrideEnv means
-	// turning the updater off immediately restores the embedded baseline instead of
-	// continuing to trust a previously downloaded generation.
-	dbUpdateEnabledEnv    = "VEDETTA_DB_UPDATE_ENABLED"
-	dbUpdateInstallDirEnv = "VEDETTA_DB_UPDATE_INSTALL_DIR"
 
 	// minimumFullOUIRows keeps a truncated but syntactically valid override from
 	// silently replacing the complete embedded registry with a handful of entries.
@@ -30,26 +25,20 @@ const (
 	minimumFullOUIRows = 30000
 )
 
+// managedOUIPath is process-local authority established only after dbupdate.New has
+// validated the updater configuration and compiled trust root. Environment variables alone
+// can never make previously downloaded bytes eligible.
+var managedOUIPath atomic.Pointer[string]
+
 // configuredOUIDBPath resolves the table that should supersede the embedded baseline.
 // A managed generation is eligible only while signed updates are explicitly enabled.
 // VEDETTA_OUI_DB_PATH remains an independent, operator-managed override for backwards
 // compatibility and is never populated automatically by Compose.
 func configuredOUIDBPath() string {
-	if envEnabled(os.Getenv(dbUpdateEnabledEnv)) {
-		if installDir := strings.TrimSpace(os.Getenv(dbUpdateInstallDirEnv)); installDir != "" {
-			return filepath.Join(installDir, "oui.csv")
-		}
+	if path := managedOUIPath.Load(); path != nil {
+		return *path
 	}
 	return strings.TrimSpace(os.Getenv(ouiDBOverrideEnv))
-}
-
-func envEnabled(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
 }
 
 // embeddedOUICSV is the full IEEE MA-L (24-bit OUI) vendor table, refreshed monthly by
@@ -132,6 +121,31 @@ func loadIEEEOUI() map[string]string {
 		}
 	}
 	return parseOUICSV(bytes.NewReader(embeddedOUICSV))
+}
+
+// EnableManagedIEEEOUI activates a signed updater's stable generation pointer. Callers
+// must invoke this only after dbupdate.New succeeds. A valid existing generation is loaded
+// immediately; an absent first generation starts from the embedded baseline. An unusable
+// existing generation fails without changing the active source or index.
+func EnableManagedIEEEOUI(installDir string) error {
+	installDir = strings.TrimSpace(installDir)
+	if installDir == "" {
+		return errors.New("managed OUI install directory is empty")
+	}
+	path := filepath.Join(installDir, "oui.csv")
+	next, err := loadOUICSVFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		next = parseOUICSV(bytes.NewReader(embeddedOUICSV))
+	} else if err != nil {
+		return fmt.Errorf("activate managed OUI generation %s: %w", path, err)
+	}
+	stablePath := path
+	managedOUIPath.Store(&stablePath)
+	ieeeOUIMu.Lock()
+	ieeeOUI = next
+	ieeeOUIMu.Unlock()
+	log.Printf("[fingerprint] activated managed OUI source %s (%d entries)", path, len(next))
+	return nil
 }
 
 // ReloadIEEEOUI validates the currently configured override and atomically publishes it

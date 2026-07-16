@@ -32,8 +32,6 @@ const (
 	// DefaultInterval is how often an enabled updater re-checks for a new release.
 	DefaultInterval = 24 * time.Hour
 
-	manifestAssetName   = "manifest.json"
-	signatureAssetName  = "manifest.json.sig"
 	stateFileName       = ".db-release" // records the installed release tag
 	maxMetadataBytes    = 64 << 10      // manifest.json / .sig are tiny
 	maxReleaseListBytes = 2 << 20       // one GitHub releases page, bounded
@@ -166,6 +164,12 @@ func New(cfg Config) (*Updater, error) {
 		logger = log.Default()
 	}
 	return &Updater{cfg: cfg, client: client, allowedHosts: allowed, log: logger}, nil
+}
+
+// InstallDir returns the canonical managed generation pointer validated by New. Consumers
+// should use this value rather than re-resolving the caller's possibly symlinked input path.
+func (u *Updater) InstallDir() string {
+	return u.cfg.InstallDir
 }
 
 func validRepoSlug(repo string) bool {

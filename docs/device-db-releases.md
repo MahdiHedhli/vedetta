@@ -21,7 +21,9 @@ valid older bundle cannot be replayed as a newer release or installed as a downg
   switches one pointer, so readers never see a mixed bundle. A failed update or reload
   leaves (or restores) the last-good generation.
 - With no public key configured the client **fails closed** — it never applies an
-  unverifiable update.
+  unverifiable update, and a persisted managed generation is not activated merely because
+  updater environment variables are present. Core activates that source only after updater
+  construction validates the compiled trust root and configuration.
 
 ## One-time setup (maintainer)
 

@@ -132,6 +132,8 @@ func TestParseManifest(t *testing.T) {
 		"duplicate name":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1},{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestDuplicate},
 		"path traversal":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"../etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
 		"absolute path":   {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"/etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
+		"manifest asset":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"manifest.json","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
+		"signature asset": {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"manifest.json.sig","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
 		"non-hex sha":     {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"nothex","bytes":1}]}`, ErrManifestFile},
 		"negative bytes":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"` + hexZero() + `","bytes":-1}]}`, ErrManifestFile},
 		"oversized file":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"` + hexZero() + `","bytes":67108865}]}`, ErrManifestFile},

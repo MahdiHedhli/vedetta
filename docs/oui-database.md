@@ -80,8 +80,9 @@ then opens — or force-refreshes — a single `automation/oui-update` pull requ
 
 ## Runtime override
 
-When signed automatic updates are enabled and `VEDETTA_DB_UPDATE_INSTALL_DIR` is set,
-`Lookup` first uses `<install-dir>/oui.csv`. Outside that managed-update configuration, an
+After signed-updater initialization validates its trust root and configuration, `Lookup`
+uses `<VEDETTA_DB_UPDATE_INSTALL_DIR>/oui.csv`. The environment flag/path alone never
+activates persisted managed bytes. Outside that validated managed-update configuration, an
 explicitly operator-managed table at `VEDETTA_OUI_DB_PATH` takes precedence over the
 embedded baseline. Either on-disk table must contain at least 30,000 unique valid MA-L
 rows; a missing, tiny, truncated, or unusable table falls back to the embedded registry.
