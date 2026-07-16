@@ -5,8 +5,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+func resetManagedOUIState(t *testing.T) {
+	t.Helper()
+	managedOUIPath.Store(nil)
+	ieeeOUIMu.Lock()
+	ieeeOUI = nil
+	ieeeOUIMu.Unlock()
+	t.Cleanup(func() {
+		managedOUIPath.Store(nil)
+		ieeeOUIMu.Lock()
+		ieeeOUI = nil
+		ieeeOUIMu.Unlock()
+	})
+}
 
 func TestParseOUICSV(t *testing.T) {
 	const data = `prefix,vendor
@@ -34,6 +49,7 @@ zzzzzz,Bad Prefix
 }
 
 func TestLoadIEEEOUI_EmbeddedBaseline(t *testing.T) {
+	resetManagedOUIState(t)
 	t.Setenv(ouiDBOverrideEnv, "")
 	m := loadIEEEOUI()
 	if len(m) < 30000 {
@@ -79,6 +95,7 @@ func TestLoadOUICSVFile_OverrideAndReject(t *testing.T) {
 }
 
 func TestLoadIEEEOUI_EnvOverrideReplacesBaseline(t *testing.T) {
+	resetManagedOUIState(t)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "oui.csv")
 	override := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Env Override Co"), 1)
@@ -99,6 +116,7 @@ func TestLoadIEEEOUI_EnvOverrideReplacesBaseline(t *testing.T) {
 }
 
 func TestLoadIEEEOUI_PartialOverrideFallsBack(t *testing.T) {
+	resetManagedOUIState(t)
 	dir := t.TempDir()
 	p := filepath.Join(dir, "oui.csv")
 	if err := os.WriteFile(p, []byte("prefix,vendor\naabbcc,Partial Override\n"), 0o644); err != nil {
@@ -111,5 +129,110 @@ func TestLoadIEEEOUI_PartialOverrideFallsBack(t *testing.T) {
 	}
 	if v := m["000000"]; !strings.Contains(v, "XEROX") {
 		t.Fatalf("embedded fallback was not retained: 000000=%q", v)
+	}
+}
+
+func TestReloadIEEEOUI_AtomicallyPublishesOverride(t *testing.T) {
+	resetManagedOUIState(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oui.csv")
+	override := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Reloaded Vendor"), 1)
+	if bytes.Equal(override, embeddedOUICSV) {
+		t.Fatal("test fixture did not replace the baseline vendor")
+	}
+	if err := os.WriteFile(path, override, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ouiDBOverrideEnv, path)
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || got.Vendor != "Reloaded Vendor" {
+		t.Fatalf("lookup did not see reloaded generation: %#v", got)
+	}
+
+	// Repeated publication while readers are active exercises the immutable map swap under
+	// the race detector; no reader should observe a partial map or data race.
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = (&Engine{}).Lookup("00:00:00:00:00:01")
+			}
+		}()
+	}
+	for i := 0; i < 3; i++ {
+		if err := ReloadIEEEOUI(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+
+	t.Setenv(ouiDBOverrideEnv, "")
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatalf("restore embedded index: %v", err)
+	}
+}
+
+func TestEnableManagedIEEEOUIRequiresProcessLocalActivation(t *testing.T) {
+	resetManagedOUIState(t)
+	dir := t.TempDir()
+	managedPath := filepath.Join(dir, "oui.csv")
+	managed := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Managed Update Vendor"), 1)
+	if bytes.Equal(managed, embeddedOUICSV) {
+		t.Fatal("test fixture did not replace the baseline vendor")
+	}
+	if err := os.WriteFile(managedPath, managed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(ouiDBOverrideEnv, "")
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || !strings.Contains(got.Vendor, "XEROX") {
+		t.Fatalf("managed file became active before validated activation: %#v", got)
+	}
+	if err := EnableManagedIEEEOUI(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || got.Vendor != "Managed Update Vendor" {
+		t.Fatalf("validated managed generation not loaded: %#v", got)
+	}
+
+	// A fresh process with the updater disabled has no activation authority even though
+	// the downloaded generation deliberately remains on disk.
+	managedOUIPath.Store(nil)
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || !strings.Contains(got.Vendor, "XEROX") {
+		t.Fatalf("disabled updater did not restore embedded baseline: %#v", got)
+	}
+}
+
+func TestEnableManagedIEEEOUIRejectsUnusableExistingGeneration(t *testing.T) {
+	resetManagedOUIState(t)
+	dir := t.TempDir()
+	t.Setenv(ouiDBOverrideEnv, "")
+	if err := EnableManagedIEEEOUI(dir); err == nil {
+		t.Fatal("expected an existing empty install directory to fail activation")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "oui.csv"), []byte("prefix,vendor\naabbcc,Partial\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnableManagedIEEEOUI(dir); err == nil {
+		t.Fatal("expected unusable managed generation to fail activation")
+	}
+	if managedOUIPath.Load() != nil {
+		t.Fatal("failed activation retained managed-source authority")
+	}
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || !strings.Contains(got.Vendor, "XEROX") {
+		t.Fatalf("failed activation did not retain embedded baseline: %#v", got)
 	}
 }

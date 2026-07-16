@@ -394,6 +394,7 @@ These should be described honestly as early or planned until they are documented
 - [Project Roadmap](docs/roadmap.md)
 - [Sensor Architecture](docs/sensor-architecture.md)
 - [OUI Vendor Database](docs/oui-database.md)
+- [Signed Device-DB Releases](docs/device-db-releases.md)
 - [Pi-hole And AdGuard Home Setup](docs/connectors/dns-pollers.md)
 - [UniFi Connector Setup](docs/connectors/unifi.md)
 - [Threat Network — Implementation, Hosting & Configuration](docs/threat-network-operations.md)

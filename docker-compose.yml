@@ -33,6 +33,13 @@ services:
       # an empty value is the fail-closed default.
       VEDETTA_TRUSTED_PROXIES: "${VEDETTA_TRUSTED_PROXIES:-}"
       VEDETTA_DB_PATH: "/data/vedetta.db"
+      # Optional signed device-fingerprint database updates. Off by default. The
+      # updater owns /data/device-db/current as an atomic generation pointer; the
+      # OUI reader follows that stable path and reloads after a successful update.
+      VEDETTA_DB_UPDATE_ENABLED: "${VEDETTA_DB_UPDATE_ENABLED:-false}"
+      VEDETTA_DB_UPDATE_INTERVAL: "${VEDETTA_DB_UPDATE_INTERVAL:-24h}"
+      VEDETTA_DB_UPDATE_REPO: "${VEDETTA_DB_UPDATE_REPO:-MahdiHedhli/vedetta}"
+      VEDETTA_DB_UPDATE_INSTALL_DIR: "/data/device-db/current"
       VEDETTA_FRONTEND_DIR: "/frontend"
       VEDETTA_SCAN_CIDR: "${VEDETTA_SCAN_CIDR:-auto}"
       VEDETTA_SCAN_INTERVAL: "${VEDETTA_SCAN_INTERVAL:-5m}"

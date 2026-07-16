@@ -1,0 +1,218 @@
+name: release-db
+
+# Builds and signs a device-DB bundle (the embedded IEEE OUI table today; the fingerprint
+# corpus later) and publishes it as a DRAFT GitHub release for a human to review and
+# publish. The opt-in client selects the highest published db-* calendar version and verifies the
+# ed25519 signature + per-file SHA-256 before applying. Signing uses the
+# VEDETTA_DB_SIGNING_KEY secret, streamed to the signer via stdin so it never lands on disk
+# or argv. The workflow creates one new draft and never auto-publishes it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Device-DB release tag, e.g. db-2026.07"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-db-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    # workflow_dispatch lets a caller choose any branch. Signing is restricted to the
+    # repository's default protected branch so an unreviewed branch cannot exfiltrate or
+    # misuse the release signing secret.
+    if: github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create a new DRAFT release only
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Validate the release tag
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 - "$TAG" <<'PY'
+          import datetime
+          import re
+          import sys
+
+          tag = sys.argv[1]
+          match = re.fullmatch(
+              r"db-([0-9]{4})\.(0[1-9]|1[0-2])(?:\.(0[1-9]|[12][0-9]|3[01]))?(?:\.([1-9][0-9]*))?",
+              tag,
+          )
+          if match is None or int(match.group(1)) < 2000:
+              print(
+                  f"::error::tag must be a monotonic calendar version like "
+                  f"db-2026.07 or db-2026.07.15.1 (got {tag!r})",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          if match.group(3) is not None:
+              try:
+                  datetime.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+              except ValueError:
+                  print(f"::error::tag contains an impossible calendar date (got {tag!r})", file=sys.stderr)
+                  raise SystemExit(1)
+          PY
+
+      - name: Refuse to reuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          rows="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.id, .tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r release_id tag is_draft; do
+            if [ "$tag" = "$TAG" ]; then
+              echo "::error::release '$TAG' already exists (id $release_id, draft=$is_draft); refusing by-tag refresh"
+              exit 1
+            fi
+          done <<< "$rows"
+
+      - name: Build and sign the bundle
+        env:
+          VEDETTA_DB_SIGNING_KEY: ${{ secrets.VEDETTA_DB_SIGNING_KEY }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VEDETTA_DB_SIGNING_KEY:-}" ]; then
+            echo "::error::VEDETTA_DB_SIGNING_KEY is not set — mint a keypair with 'go run ./cmd/dbkeygen' (in backend/) and add the private key as this secret"
+            exit 1
+          fi
+          ROOT="$PWD"
+          mkdir -p "$ROOT/dist"
+          cp backend/internal/fingerprint/data/oui.csv "$ROOT/dist/oui.csv"
+          # Stream the key via stdin so it never touches disk or argv. Remove the
+          # exported secret before launching go tooling so descendants cannot read it
+          # from their environment.
+          signing_key="$VEDETTA_DB_SIGNING_KEY"
+          unset VEDETTA_DB_SIGNING_KEY
+          signer="$RUNNER_TEMP/vedetta-dbbundle"
+          (cd backend && go build -trimpath -o "$signer" ./cmd/dbbundle)
+          printf '%s' "$signing_key" | "$signer" \
+            -key - \
+            -release "$TAG" \
+            -out "$ROOT/dist" \
+            -file "oui.csv=$ROOT/dist/oui.csv"
+          rm -f "$signer"
+          unset signing_key
+          ls -la "$ROOT/dist"
+
+      - name: Re-verify release still does not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          # The workflow is deliberately one-shot: it never looks up an existing release
+          # by tag for asset mutation. A prior draft must be reviewed or deleted explicitly.
+          rows="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.id, .tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r release_id tag is_draft; do
+            if [ "$tag" = "$TAG" ]; then
+              echo "::error::release '$TAG' appeared during the build (id $release_id, draft=$is_draft); refusing by-tag refresh"
+              exit 1
+            fi
+          done <<< "$rows"
+
+      - name: Create empty DRAFT release
+        id: draft-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          body='Signed device-DB bundle. The opt-in client verifies the ed25519 signature and per-file SHA-256 before applying anything. Review the assets and publish to make it eligible for clients.'
+          release_json="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+            --raw-field "tag_name=$TAG" \
+            --raw-field "name=Device DB $TAG" \
+            --raw-field "body=$body" \
+            --field draft=true \
+            --field prerelease=false)"
+          release_id="$(jq -r '.id' <<< "$release_json")"
+          actual_tag="$(jq -r '.tag_name' <<< "$release_json")"
+          is_draft="$(jq -r '.draft' <<< "$release_json")"
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]] || [ "$actual_tag" != "$TAG" ] || [ "$is_draft" != "true" ]; then
+            echo "::error::GitHub did not create the expected draft release"
+            exit 1
+          fi
+          printf 'id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload assets to the exact draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ github.event.inputs.tag }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.id }}
+        run: |
+          set -euo pipefail
+          api_token="$GH_TOKEN"
+          unset GH_TOKEN
+          for asset in dist/oui.csv dist/manifest.json dist/manifest.json.sig; do
+            # Bind every mutation to the release ID returned by our create call and
+            # re-check draft state immediately before it. We never refresh by tag.
+            release_json="$(GH_TOKEN="$api_token" gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+            actual_tag="$(jq -r '.tag_name' <<< "$release_json")"
+            is_draft="$(jq -r '.draft' <<< "$release_json")"
+            if [ "$actual_tag" != "$EXPECTED_TAG" ] || [ "$is_draft" != "true" ]; then
+              echo "::error::release ${RELEASE_ID} is no longer the expected draft; refusing to upload $(basename "$asset")"
+              exit 1
+            fi
+            upload_url="$(jq -r '.upload_url' <<< "$release_json")"
+            upload_base="${upload_url%%\{*}"
+            expected_base="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets"
+            if [ "$upload_base" != "$expected_base" ]; then
+              echo "::error::release ${RELEASE_ID} returned an unexpected asset upload URL"
+              exit 1
+            fi
+            # Read the ephemeral Actions token through curl's stdin config so it is
+            # neither written to disk nor exposed in the process argument list.
+            printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/octet-stream"\n' "$api_token" | \
+              curl --config - --fail-with-body --silent --show-error \
+                --proto '=https' --tlsv1.2 --request POST \
+                --data-binary "@$asset" "${upload_base}?name=$(basename "$asset")" >/dev/null
+          done
+
+      - name: Require the assembled release to remain a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ github.event.inputs.tag }}
+          RELEASE_ID: ${{ steps.draft-release.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::draft creation returned an invalid release id"
+            exit 1
+          fi
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          actual_tag="$(jq -r '.tag_name' <<< "$release_json")"
+          is_draft="$(jq -r '.draft' <<< "$release_json")"
+          if [ "$actual_tag" != "$EXPECTED_TAG" ]; then
+            echo "::error::created release returned tag '$actual_tag', expected '$EXPECTED_TAG'"
+            exit 1
+          fi
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::release '$EXPECTED_TAG' is published; refusing a successful draft-creation run"
+            exit 1
+          fi
+          actual_assets="$(jq -r '[.assets[].name] | sort | join(",")' <<< "$release_json")"
+          expected_assets='manifest.json,manifest.json.sig,oui.csv'
+          if [ "$actual_assets" != "$expected_assets" ]; then
+            echo "::error::release '$EXPECTED_TAG' has unexpected assets: $actual_assets"
+            exit 1
+          fi

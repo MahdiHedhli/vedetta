@@ -13,10 +13,12 @@ import (
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
+	"github.com/vedetta-network/vedetta/backend/internal/dbupdate"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsingest"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 	"github.com/vedetta-network/vedetta/backend/internal/dnspoller"
+	"github.com/vedetta-network/vedetta/backend/internal/fingerprint"
 	"github.com/vedetta-network/vedetta/backend/internal/firewall"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/processing"
@@ -430,6 +432,40 @@ func main() {
 		}
 	}()
 	log.Printf("Retention job started (daily)")
+
+	// Opt-in signed device-DB updater. Off unless VEDETTA_DB_UPDATE_ENABLED is set; even
+	// then it stays inert (fails closed) until a trust root is compiled in. It verifies a
+	// release's signature + hashes before applying and keeps the last-good DB otherwise.
+	if envEnabled(os.Getenv("VEDETTA_DB_UPDATE_ENABLED")) {
+		installDir := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_INSTALL_DIR"))
+		if installDir == "" {
+			log.Printf("WARNING: VEDETTA_DB_UPDATE_ENABLED is set but VEDETTA_DB_UPDATE_INSTALL_DIR is empty; device-DB updater not started")
+		} else {
+			cfg := dbupdate.Config{
+				Enabled:     true,
+				InstallDir:  installDir,
+				OnInstalled: fingerprint.ReloadIEEEOUI,
+			}
+			if repo := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_REPO")); repo != "" {
+				cfg.Repo = repo
+			}
+			if raw := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_INTERVAL")); raw != "" {
+				if d, err := time.ParseDuration(raw); err == nil {
+					cfg.Interval = d
+				} else {
+					log.Printf("Ignoring invalid VEDETTA_DB_UPDATE_INTERVAL %q: %v", raw, err)
+				}
+			}
+			if updater, err := dbupdate.New(cfg); err != nil {
+				log.Printf("WARNING: device-DB updater not started: %v", err)
+			} else if err := updater.ActivateConsumer(fingerprint.EnableManagedIEEEOUI); err != nil {
+				log.Printf("WARNING: device-DB updater not started: %v", err)
+			} else {
+				go updater.Run(context.Background())
+				log.Printf("Device-DB updater started (opt-in); installing into %s", updater.InstallDir())
+			}
+		}
+	}
 
 	router := api.NewRouter(srv)
 
