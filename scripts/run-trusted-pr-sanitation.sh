@@ -147,7 +147,15 @@ git -C "$INSPECTION_ROOT" cat-file -e "$BASE_SHA^{commit}" 2>/dev/null ||
     die "event base commit is unavailable"
 [[ "$fetched_base" == "$BASE_SHA" ]] || die "base branch moved after the pull-request event"
 [[ "$fetched_head" == "$HEAD_SHA" ]] || die "pull-request head moved during inspection"
-[[ "$fetched_merge" == "$MERGE_SHA" ]] || die "pull-request merge ref moved during inspection"
+
+# GitHub regenerates refs/pull/N/merge as a fresh merge commit (new committer timestamp ->
+# new SHA) on a background timer even when the merged content is unchanged, so requiring
+# the live ref to still equal the event's merge_commit_sha is racy and adds no safety: the
+# base and head are already pinned above, refs/pull/*/merge is GitHub-computed (not
+# user-pushable), and for a mergeable PR the merge tree is a deterministic function of
+# (base, head) — regeneration changes only the SHA, not the tree we read and scan below.
+# Adopt the live merge ref and validate it by its parents (next), not by its volatile SHA.
+MERGE_SHA="$fetched_merge"
 
 parent_line="$(git -C "$INSPECTION_ROOT" rev-list --parents -n 1 "$MERGE_SHA")"
 read -r merge_commit merge_base_parent merge_head_parent merge_extra <<<"$parent_line"
