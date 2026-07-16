@@ -101,6 +101,38 @@ func TestCorpusFusionDoesNotRetainActiveServicesAsMDNS(t *testing.T) {
 	}
 }
 
+func TestCorpusFusionDoesNotBorrowFutureEvidenceForDelayedReport(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	at := time.Now().UTC()
+	future := at.Add(time.Hour)
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.53", MACAddress: "00:00:5E:00:53:01",
+		Model: "Future Model", Services: []string{"_future._tcp"},
+		DiscoverySource: "passive_mdns", Status: "up",
+	}, future); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.53").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.OUIPrefixes) != 0 || len(obs.MDNSModels) != 0 || len(obs.MDNSServices) != 0 {
+		t.Fatalf("delayed report borrowed future evidence: %+v", obs)
+	}
+}
+
 func TestCorpusDerivedSignalsCapsConfidenceAtVariantConfidence(t *testing.T) {
 	dir := t.TempDir()
 	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","model":"Player","device_type":"media_player"},"variants":[{"variant_id":"v","confidence_bp":4200,"shape":{"schema_version":1,"ssdp_server_tokens":["example/player"]}}]}]}`

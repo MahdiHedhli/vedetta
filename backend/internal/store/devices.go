@@ -526,9 +526,11 @@ func (db *DB) ObserveDevice(observation DeviceObservation) (bool, error) {
 		evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mdns_name", Value: mdnsName,
 			Source: SourceMDNSTxt, Confidence: 0.75, Sensitive: true})
 	}
-	for _, service := range host.Services {
-		evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mdns_service", Value: service,
-			DisplayValue: service, Source: SourceMDNSPtr, Confidence: 0.45})
+	if host.DiscoverySource == "passive_mdns" || host.DiscoverySource == "mdns" {
+		for _, service := range host.Services {
+			evidence = append(evidence, DeviceIdentityEvidenceInput{Type: "mdns_service", Value: service,
+				DisplayValue: service, Source: "passive_mdns", Confidence: 0.45})
+		}
 	}
 	for _, item := range evidence {
 		if _, err := db.upsertIdentityEvidenceTx(tx, deviceID, seg, sensorID, item, scanTime, false); err != nil {

@@ -14,7 +14,9 @@ sequence / vendor class, and TCP ports) plus recently retained, already-correlat
 mDNS, and SSDP evidence into the corpus shape vocabulary. Retained descriptive and typed
 evidence is limited to 30 days; the device's already-associated stable MAC remains eligible.
 That correlation lets, for example, a MAC-bearing discovery and a later mDNS report for the
-same stable device satisfy the two-family rule.
+same stable device satisfy the two-family rule. Retained inputs are resolved at the report's
+observation timestamp, so a delayed report cannot borrow MAC or protocol evidence that arrived
+in its future.
 Corpus-derived output is never read back as input, so a prior match cannot sustain itself.
 The corpus schema also reserves hostname templates and UDP ports, but Core does not claim
 those families until its observation model supplies them safely.

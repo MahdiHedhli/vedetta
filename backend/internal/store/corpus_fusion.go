@@ -86,17 +86,33 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 	obs := corpusObservedSignals(host)
 	cutoff := observedAt.UTC().Add(-corpusSignalRecency)
 
-	var macAddress string
-	if err := tx.QueryRow(`SELECT COALESCE(mac_address, '') FROM devices WHERE device_id = ?`, deviceID).
-		Scan(&macAddress); err != nil {
+	rows, err := tx.Query(`SELECT DISTINCT h.address_value FROM device_address_history h
+		WHERE h.device_id = ? AND h.address_type = 'mac'
+		  AND h.valid_from <= ? AND (h.valid_until IS NULL OR ? < h.valid_until)
+		  AND EXISTS (SELECT 1 FROM device_address_binding_validity v
+		    WHERE v.binding_id = h.binding_id AND v.valid_from <= ? AND ? <= v.valid_until)`,
+		deviceID, observedAt, observedAt, observedAt, observedAt)
+	if err != nil {
 		return obs, fmt.Errorf("read retained corpus signals: %w", err)
 	}
-	if macAddress != "" {
+	for rows.Next() {
+		var macAddress string
+		if err := rows.Scan(&macAddress); err != nil {
+			rows.Close()
+			return obs, fmt.Errorf("scan retained corpus address: %w", err)
+		}
 		obs.OUIPrefixes = append(obs.OUIPrefixes, macAddress)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return obs, fmt.Errorf("iterate retained corpus addresses: %w", err)
+	}
+	rows.Close()
 
-	rows, err := tx.Query(`SELECT field, value, source FROM device_signals
-		WHERE device_id = ? AND source != ? AND last_observed >= ?`, deviceID, SourceCorpus, cutoff)
+	rows, err = tx.Query(`SELECT field, value, source FROM device_signals
+		WHERE device_id = ? AND source != ? AND first_observed <= ?
+		  AND last_observed >= ? AND last_observed <= ?`,
+		deviceID, SourceCorpus, observedAt, cutoff, observedAt)
 	if err != nil {
 		return obs, fmt.Errorf("read retained descriptive signals: %w", err)
 	}
@@ -123,17 +139,22 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 	}
 	rows.Close()
 
-	rows, err = tx.Query(`SELECT evidence_type, value_display, source FROM device_identity_evidence
-		WHERE device_id = ? AND valid_until IS NULL AND value_display != ''
-		  AND last_seen >= ?
+	rows, err = tx.Query(`SELECT evidence_type, value_display FROM device_identity_evidence
+		WHERE device_id = ? AND value_display != ''
+		  AND first_seen <= ? AND last_seen >= ?
+		  AND valid_from <= ? AND (valid_until IS NULL OR ? < valid_until)
+		  AND EXISTS (SELECT 1 FROM device_identity_evidence_validity v
+		    WHERE v.evidence_id = device_identity_evidence.evidence_id
+		      AND v.valid_from <= ? AND ? <= v.valid_until)
 		  AND ((evidence_type = 'mdns_service' AND source = 'passive_mdns')
-		    OR (evidence_type = 'ssdp_device_type' AND source = 'passive_ssdp'))`, deviceID, cutoff)
+		    OR (evidence_type = 'ssdp_device_type' AND source = 'passive_ssdp'))`,
+		deviceID, observedAt, cutoff, observedAt, observedAt, observedAt, observedAt)
 	if err != nil {
 		return obs, fmt.Errorf("read retained typed signals: %w", err)
 	}
 	for rows.Next() {
-		var kind, value, source string
-		if err := rows.Scan(&kind, &value, &source); err != nil {
+		var kind, value string
+		if err := rows.Scan(&kind, &value); err != nil {
 			rows.Close()
 			return obs, fmt.Errorf("scan retained typed signal: %w", err)
 		}

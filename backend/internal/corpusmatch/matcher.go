@@ -236,7 +236,9 @@ func observedKeys(obs ObservedSignals) []string {
 	})
 }
 
-func normToken(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+func normToken(v string) string {
+	return strings.ToLower(strings.Join(strings.Fields(v), " "))
+}
 
 // normOUI strips MAC separators and returns the 24-bit prefix as 6 lowercase hex chars, or
 // "" if the value is not a usable OUI (mirrors the corpus OUI canonicalization).

@@ -71,6 +71,15 @@ func TestMatch_ExactProductSignature(t *testing.T) {
 	if !ok || !res.ProductSig || res.Manufacturer != "Roku" {
 		t.Fatalf("expected a Roku product-signature match, got ok=%v %+v", ok, res)
 	}
+	// Observations and curated shapes use the same whitespace canonicalization.
+	snap := chromecastSnapshot()
+	snap.Profiles[1].Variants[0].Shape.SSDPServerTokens = []string{"ExampleOS/1.0 UPnP/1.1"}
+	res, ok = NewMatcher(snap).Match(ObservedSignals{
+		SSDPServerTokens: []string{"  ExampleOS/1.0\t\n  UPnP/1.1  "},
+	})
+	if !ok || !res.ProductSig || res.Manufacturer != "Roku" {
+		t.Fatalf("whitespace-equivalent product token did not match, got ok=%v %+v", ok, res)
+	}
 }
 
 func TestMatch_OneGenericFamilyDoesNotMatch(t *testing.T) {
