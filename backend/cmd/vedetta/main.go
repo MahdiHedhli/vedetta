@@ -19,6 +19,7 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/dnsingest"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 	"github.com/vedetta-network/vedetta/backend/internal/dnspoller"
+	"github.com/vedetta-network/vedetta/backend/internal/fingerprint"
 	"github.com/vedetta-network/vedetta/backend/internal/firewall"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/processing"
@@ -441,7 +442,11 @@ func main() {
 		if ouiPath == "" {
 			log.Printf("WARNING: VEDETTA_DB_UPDATE_ENABLED is set but VEDETTA_OUI_DB_PATH is empty; device-DB updater not started")
 		} else {
-			cfg := dbupdate.Config{Enabled: true, InstallDir: filepath.Dir(ouiPath)}
+			cfg := dbupdate.Config{
+				Enabled:     true,
+				InstallDir:  filepath.Dir(ouiPath),
+				OnInstalled: fingerprint.ReloadIEEEOUI,
+			}
 			if repo := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_REPO")); repo != "" {
 				cfg.Repo = repo
 			}

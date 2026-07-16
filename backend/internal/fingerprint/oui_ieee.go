@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -95,9 +96,35 @@ func loadIEEEOUI() map[string]string {
 		if m, err := loadOUICSVFile(path); err == nil {
 			log.Printf("[fingerprint] loaded %d OUI entries from override %s", len(m), path)
 			return m
+		} else if errors.Is(err, os.ErrNotExist) {
+			// A configured generation path is normally absent until the first opt-in
+			// update. Quietly use the embedded baseline during that expected state.
 		} else {
 			log.Printf("[fingerprint] OUI override %s unusable (%v); using embedded baseline", path, err)
 		}
 	}
 	return parseOUICSV(bytes.NewReader(embeddedOUICSV))
+}
+
+// ReloadIEEEOUI validates the currently configured override and atomically publishes it
+// for future lookups. Unlike initial startup, an explicitly configured but unusable file
+// is an error: the signed updater uses this as its post-switch acceptance check and rolls
+// the generation pointer back rather than silently claiming an update while using fallback.
+func ReloadIEEEOUI() error {
+	path := strings.TrimSpace(os.Getenv(ouiDBOverrideEnv))
+	var next map[string]string
+	if path == "" {
+		next = parseOUICSV(bytes.NewReader(embeddedOUICSV))
+	} else {
+		loaded, err := loadOUICSVFile(path)
+		if err != nil {
+			return fmt.Errorf("reload OUI override %s: %w", path, err)
+		}
+		next = loaded
+	}
+	ieeeOUIMu.Lock()
+	ieeeOUI = next
+	ieeeOUIMu.Unlock()
+	log.Printf("[fingerprint] reloaded %d OUI entries", len(next))
+	return nil
 }

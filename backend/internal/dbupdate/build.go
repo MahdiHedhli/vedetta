@@ -33,6 +33,9 @@ func BuildManifest(files map[string][]byte, release, generatedAt string) (*Manif
 		sum := sha256.Sum256(data)
 		m.Files = append(m.Files, FileEntry{Name: name, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data))})
 	}
+	if err := validateManifestStructure(m); err != nil {
+		return nil, nil, err
+	}
 	canonical, err := m.Canonical()
 	if err != nil {
 		return nil, nil, err

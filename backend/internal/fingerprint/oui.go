@@ -548,16 +548,27 @@ func isGlobalUnicastOUI(oui string) bool {
 }
 
 var (
-	ieeeOUIOnce sync.Once
-	ieeeOUI     map[string]string // 6-hex prefix (no separators) -> IEEE vendor
+	ieeeOUIMu sync.RWMutex
+	ieeeOUI   map[string]string // immutable after publication; swapped as one generation
 )
 
-// ieeeIndex lazily loads the embedded (or overridden) IEEE MA-L table, built once.
+// ieeeIndex lazily loads the embedded (or overridden) IEEE MA-L table. ReloadIEEEOUI can
+// atomically publish a newer immutable map after a signed database update.
 func ieeeIndex() map[string]string {
-	ieeeOUIOnce.Do(func() {
-		ieeeOUI = loadIEEEOUI()
-	})
-	return ieeeOUI
+	ieeeOUIMu.RLock()
+	index := ieeeOUI
+	ieeeOUIMu.RUnlock()
+	if index != nil {
+		return index
+	}
+	loaded := loadIEEEOUI()
+	ieeeOUIMu.Lock()
+	if ieeeOUI == nil {
+		ieeeOUI = loaded
+	}
+	index = ieeeOUI
+	ieeeOUIMu.Unlock()
+	return index
 }
 
 // Lookup returns vendor and device type for a given MAC address.

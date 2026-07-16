@@ -2,7 +2,7 @@ name: release-db
 
 # Builds and signs a device-DB bundle (the embedded IEEE OUI table today; the fingerprint
 # corpus later) and publishes it as a DRAFT GitHub release for a human to review and
-# publish. The opt-in client puller fetches the published "latest" release and verifies the
+# publish. The opt-in client selects the highest published db-* calendar version and verifies the
 # ed25519 signature + per-file SHA-256 before applying. Signing uses the
 # VEDETTA_DB_SIGNING_KEY secret, streamed to the signer via stdin so it never lands on disk
 # or argv. Mirrors release.yml: draft only, never auto-published.
@@ -23,6 +23,10 @@ concurrency:
 
 jobs:
   bundle:
+    # workflow_dispatch lets a caller choose any branch. Signing is restricted to the
+    # repository's default protected branch so an unreviewed branch cannot exfiltrate or
+    # misuse the release signing secret.
+    if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     permissions:
       contents: write # create/refresh a DRAFT release only
@@ -34,14 +38,15 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: stable
+          cache: false
 
       - name: Validate the release tag
         env:
           TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$TAG" | grep -qE '^db-[A-Za-z0-9._-]+$'; then
-            echo "::error::tag must look like db-<version> (got '$TAG')"
+          if ! printf '%s' "$TAG" | grep -qE '^db-[0-9]{4}\.(0[1-9]|1[0-2])(\.(0[1-9]|[12][0-9]|3[01]))?(\.[1-9][0-9]*)?$'; then
+            echo "::error::tag must be a monotonic calendar version like db-2026.07 or db-2026.07.15.1 (got '$TAG')"
             exit 1
           fi
 
@@ -73,15 +78,20 @@ jobs:
           ROOT="$PWD"
           mkdir -p "$ROOT/dist"
           cp backend/internal/fingerprint/data/oui.csv "$ROOT/dist/oui.csv"
-          # Stream the key via stdin so it never touches disk or the process argv.
-          printf '%s' "$VEDETTA_DB_SIGNING_KEY" | (
-            cd backend
-            go run ./cmd/dbbundle \
-              -key - \
-              -release "$TAG" \
-              -out "$ROOT/dist" \
-              -file "oui.csv=$ROOT/dist/oui.csv"
-          )
+          # Stream the key via stdin so it never touches disk or argv. Remove the
+          # exported secret before launching go tooling so descendants cannot read it
+          # from their environment.
+          signing_key="$VEDETTA_DB_SIGNING_KEY"
+          unset VEDETTA_DB_SIGNING_KEY
+          signer="$RUNNER_TEMP/vedetta-dbbundle"
+          (cd backend && go build -trimpath -o "$signer" ./cmd/dbbundle)
+          printf '%s' "$signing_key" | "$signer" \
+            -key - \
+            -release "$TAG" \
+            -out "$ROOT/dist" \
+            -file "oui.csv=$ROOT/dist/oui.csv"
+          rm -f "$signer"
+          unset signing_key
           ls -la "$ROOT/dist"
 
       - name: Create/refresh DRAFT release
@@ -94,7 +104,7 @@ jobs:
           body: |
             Signed device-DB bundle. The opt-in client puller verifies the ed25519 signature
             and per-file SHA-256 before applying anything. Review the assets and publish to
-            make this the `latest` release that clients pull.
+            make it eligible for clients to select by signed monotonic `db-*` version.
           files: |
             dist/oui.csv
             dist/manifest.json

@@ -11,11 +11,6 @@ import (
 	"io/fs"
 )
 
-// maxBundleFileBytes caps a single bundle file read during verification so a manifest that
-// claims a huge size cannot be used to exhaust memory. The OUI table is ~1.3 MB; leave
-// generous headroom for a future corpus snapshot without going unbounded.
-const maxBundleFileBytes = 64 << 20 // 64 MiB
-
 var (
 	// ErrTrustKey is returned when the compiled-in trust key is missing or malformed.
 	ErrTrustKey = errors.New("dbupdate: trusted public key is not configured")

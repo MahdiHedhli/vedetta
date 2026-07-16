@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -20,7 +21,7 @@ func buildSignedBundle(t *testing.T, files map[string]string) (*Manifest, []byte
 		t.Fatalf("generate key: %v", err)
 	}
 	fsys := fstest.MapFS{}
-	m := &Manifest{SchemaVersion: manifestSchemaVersion, Release: "db-test", GeneratedAt: "2026-07-15T00:00:00Z"}
+	m := &Manifest{SchemaVersion: manifestSchemaVersion, Release: "db-2026.07", GeneratedAt: "2026-07-15T00:00:00Z"}
 	for name, content := range files {
 		sum := sha256.Sum256([]byte(content))
 		m.Files = append(m.Files, FileEntry{Name: name, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(content))})
@@ -117,7 +118,7 @@ func TestManifest_CanonicalIsOrderIndependent(t *testing.T) {
 }
 
 func TestParseManifest(t *testing.T) {
-	valid := `{"schema_version":1,"release":"db-test","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"oui.csv","sha256":"` + hexZero() + `","bytes":10}]}`
+	valid := `{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"oui.csv","sha256":"` + hexZero() + `","bytes":10}]}`
 	if _, err := ParseManifest([]byte(valid)); err != nil {
 		t.Fatalf("valid manifest rejected: %v", err)
 	}
@@ -126,16 +127,16 @@ func TestParseManifest(t *testing.T) {
 		json string
 		want error
 	}{
-		"unknown schema":  {`{"schema_version":9,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestSchema},
-		"empty files":     {`{"schema_version":1,"files":[]}`, ErrManifestEmpty},
-		"duplicate name":  {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1},{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestDuplicate},
-		"path traversal":  {`{"schema_version":1,"files":[{"name":"../etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
-		"absolute path":   {`{"schema_version":1,"files":[{"name":"/etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
-		"non-hex sha":     {`{"schema_version":1,"files":[{"name":"a","sha256":"nothex","bytes":1}]}`, ErrManifestFile},
-		"negative bytes":  {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":-1}]}`, ErrManifestFile},
-		"oversized file":  {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":314572800}]}`, ErrManifestFile},                                                                 // 300 MiB > per-file cap
-		"oversized total": {`{"schema_version":1,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":209715200},{"name":"b","sha256":"` + hexZero() + `","bytes":209715200}]}`, ErrManifestTooLarge}, // 2×200 MiB > total cap
-		"unknown field":   {`{"schema_version":1,"extra":true,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, nil},                                                                        // decode error, not a sentinel
+		"unknown schema":  {`{"schema_version":9,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestSchema},
+		"empty files":     {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[]}`, ErrManifestEmpty},
+		"duplicate name":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1},{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestDuplicate},
+		"path traversal":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"../etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
+		"absolute path":   {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"/etc/passwd","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestFile},
+		"non-hex sha":     {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"nothex","bytes":1}]}`, ErrManifestFile},
+		"negative bytes":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"` + hexZero() + `","bytes":-1}]}`, ErrManifestFile},
+		"oversized file":  {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"` + hexZero() + `","bytes":67108865}]}`, ErrManifestFile},
+		"oversized total": {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"a","sha256":"` + hexZero() + `","bytes":67108864},{"name":"b","sha256":"` + hexZero() + `","bytes":67108864},{"name":"c","sha256":"` + hexZero() + `","bytes":67108864},{"name":"d","sha256":"` + hexZero() + `","bytes":67108864},{"name":"e","sha256":"` + hexZero() + `","bytes":1}]}`, ErrManifestTooLarge},
+		"unknown field":   {`{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","extra":true,"files":[{"name":"a","sha256":"` + hexZero() + `","bytes":1}]}`, nil}, // decode error, not a sentinel
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -147,6 +148,37 @@ func TestParseManifest(t *testing.T) {
 				t.Errorf("got %v, want %v", err, c.want)
 			}
 		})
+	}
+}
+
+func TestParseManifest_RejectsTrailingJSONAndBadMetadata(t *testing.T) {
+	valid := `{"schema_version":1,"release":"db-2026.07","generated_at":"2026-07-15T00:00:00Z","files":[{"name":"oui.csv","sha256":"` + hexZero() + `","bytes":10}]}`
+	if _, err := ParseManifest([]byte(valid + " \n\t")); err != nil {
+		t.Fatalf("trailing whitespace rejected: %v", err)
+	}
+	if _, err := ParseManifest([]byte(valid + `{}`)); err == nil {
+		t.Fatal("trailing JSON value accepted")
+	}
+	for _, bad := range []string{
+		strings.Replace(valid, "db-2026.07", "v0.1.0", 1),
+		strings.Replace(valid, "db-2026.07", "db-2026.02.31", 1),
+		strings.Replace(valid, "db-2026.07", "db-2026.07.15.01", 1),
+		strings.Replace(valid, "2026-07-15T00:00:00Z", "2026-07-15T00:00:00-04:00", 1),
+	} {
+		if _, err := ParseManifest([]byte(bad)); !errors.Is(err, ErrManifestMetadata) {
+			t.Errorf("bad metadata: got %v, want ErrManifestMetadata", err)
+		}
+	}
+}
+
+func TestDBReleaseVersionOrdering(t *testing.T) {
+	ordered := []string{"db-2026.07", "db-2026.07.01", "db-2026.07.01.1", "db-2026.08", "db-2027.01"}
+	for i := 1; i < len(ordered); i++ {
+		previous, okPrevious := parseDBReleaseVersion(ordered[i-1])
+		current, okCurrent := parseDBReleaseVersion(ordered[i])
+		if !okPrevious || !okCurrent || compareDBReleaseVersion(previous, current) >= 0 {
+			t.Fatalf("expected %s < %s", ordered[i-1], ordered[i])
+		}
 	}
 }
 

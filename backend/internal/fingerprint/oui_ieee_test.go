@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -111,5 +112,49 @@ func TestLoadIEEEOUI_PartialOverrideFallsBack(t *testing.T) {
 	}
 	if v := m["000000"]; !strings.Contains(v, "XEROX") {
 		t.Fatalf("embedded fallback was not retained: 000000=%q", v)
+	}
+}
+
+func TestReloadIEEEOUI_AtomicallyPublishesOverride(t *testing.T) {
+	t.Cleanup(func() { _ = ReloadIEEEOUI() })
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oui.csv")
+	override := bytes.Replace(embeddedOUICSV, []byte("000000,XEROX CORPORATION"), []byte("000000,Reloaded Vendor"), 1)
+	if bytes.Equal(override, embeddedOUICSV) {
+		t.Fatal("test fixture did not replace the baseline vendor")
+	}
+	if err := os.WriteFile(path, override, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ouiDBOverrideEnv, path)
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Engine{}).Lookup("00:00:00:00:00:01"); got == nil || got.Vendor != "Reloaded Vendor" {
+		t.Fatalf("lookup did not see reloaded generation: %#v", got)
+	}
+
+	// Repeated publication while readers are active exercises the immutable map swap under
+	// the race detector; no reader should observe a partial map or data race.
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = (&Engine{}).Lookup("00:00:00:00:00:01")
+			}
+		}()
+	}
+	for i := 0; i < 3; i++ {
+		if err := ReloadIEEEOUI(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+
+	t.Setenv(ouiDBOverrideEnv, "")
+	if err := ReloadIEEEOUI(); err != nil {
+		t.Fatalf("restore embedded index: %v", err)
 	}
 }

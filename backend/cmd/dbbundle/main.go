@@ -63,6 +63,9 @@ func run() error {
 		if !ok || name == "" || path == "" {
 			return fmt.Errorf("invalid -file %q, want name=path", spec)
 		}
+		if _, duplicate := contents[name]; duplicate {
+			return fmt.Errorf("duplicate -file name %q", name)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)

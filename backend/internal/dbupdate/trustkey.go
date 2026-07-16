@@ -12,8 +12,8 @@ import (
 // applied.
 //
 // PLACEHOLDER — this is intentionally empty. Generate the production keypair with
-// scripts/gen-db-signing-key.sh, store the private key as the CI secret, and replace this
-// constant with the printed public key. While it is empty, TrustedKey returns ErrTrustKey
+// `cd backend && go run ./cmd/dbkeygen`, store the private key as the CI secret, and replace
+// this constant with the printed public key. While it is empty, TrustedKey returns ErrTrustKey
 // and the puller refuses to apply any bundle (fail closed), so an unconfigured build can
 // never be tricked into installing an unverifiable update.
 const trustedPublicKeyBase64 = ""

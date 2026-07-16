@@ -11,8 +11,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // manifestSchemaVersion is the on-disk manifest schema this client understands. Bump it
@@ -22,6 +26,10 @@ const manifestSchemaVersion = 1
 // maxManifestFiles bounds a manifest so a malformed or hostile one cannot exhaust memory
 // on the Pi-4 floor. The real bundle carries a handful of files (OUI table + corpus parts).
 const maxManifestFiles = 64
+
+// maxBundleFileBytes is the single per-file contract shared by manifest parsing,
+// bundle construction, downloading, and verification.
+const maxBundleFileBytes = 64 << 20 // 64 MiB
 
 // maxBundleTotalBytes caps the summed declared size of a bundle. It bounds how much a
 // manifest can make the client download even before per-file limits apply, so a hostile
@@ -33,12 +41,14 @@ var (
 	ErrManifestSchema = errors.New("dbupdate: unsupported manifest schema version")
 	// ErrManifestEmpty is returned when a manifest lists no files.
 	ErrManifestEmpty = errors.New("dbupdate: manifest lists no files")
-	// ErrManifestTooLarge is returned when a manifest lists more files than allowed.
+	// ErrManifestTooLarge is returned when file count or aggregate bytes exceed a cap.
 	ErrManifestTooLarge = errors.New("dbupdate: manifest lists too many files")
 	// ErrManifestFile is returned for a malformed file entry (name, hash, or size).
 	ErrManifestFile = errors.New("dbupdate: manifest file entry is malformed")
 	// ErrManifestDuplicate is returned when a file name appears more than once.
 	ErrManifestDuplicate = errors.New("dbupdate: manifest lists a duplicate file name")
+	// ErrManifestMetadata is returned when release/version metadata is malformed.
+	ErrManifestMetadata = errors.New("dbupdate: manifest release metadata is malformed")
 )
 
 // sha256HexRE matches a lowercase hex SHA-256 digest.
@@ -47,6 +57,72 @@ var sha256HexRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // safeNameRE matches a bundle-relative file name: one or more path segments of
 // [A-Za-z0-9._-], no separators that could escape the install directory.
 var safeNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$`)
+
+// Device-DB tags are monotonically ordered calendar versions. Optional day and
+// revision components allow more than one release per month without making
+// ordering dependent on GitHub publication time.
+var dbReleaseTagRE = regexp.MustCompile(`^db-([0-9]{4})\.([0-9]{2})(?:\.([0-9]{2}))?(?:\.([0-9]+))?$`)
+
+type dbReleaseVersion struct {
+	year, month, day, revision int
+}
+
+func parseDBReleaseVersion(tag string) (dbReleaseVersion, bool) {
+	trimmed := strings.TrimSpace(tag)
+	if tag != trimmed {
+		return dbReleaseVersion{}, false
+	}
+	match := dbReleaseTagRE.FindStringSubmatch(trimmed)
+	if match == nil {
+		return dbReleaseVersion{}, false
+	}
+	values := [4]int{}
+	for i := range values {
+		if match[i+1] == "" {
+			continue
+		}
+		value, err := strconv.Atoi(match[i+1])
+		if err != nil {
+			return dbReleaseVersion{}, false
+		}
+		values[i] = value
+	}
+	if values[0] < 2000 || values[1] < 1 || values[1] > 12 ||
+		(match[3] != "" && (values[2] < 1 || values[2] > 31)) ||
+		(match[4] != "" && (values[3] < 1 || (len(match[4]) > 1 && match[4][0] == '0'))) {
+		return dbReleaseVersion{}, false
+	}
+	if match[3] != "" {
+		date := time.Date(values[0], time.Month(values[1]), values[2], 0, 0, 0, 0, time.UTC)
+		if date.Year() != values[0] || int(date.Month()) != values[1] || date.Day() != values[2] {
+			return dbReleaseVersion{}, false
+		}
+	}
+	return dbReleaseVersion{year: values[0], month: values[1], day: values[2], revision: values[3]}, true
+}
+
+func compareDBReleaseVersion(a, b dbReleaseVersion) int {
+	av := [...]int{a.year, a.month, a.day, a.revision}
+	bv := [...]int{b.year, b.month, b.day, b.revision}
+	for i := range av {
+		if av[i] < bv[i] {
+			return -1
+		}
+		if av[i] > bv[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
+func parseGeneratedAt(value string) (time.Time, bool) {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	_, offset := parsed.Zone()
+	return parsed.UTC(), offset == 0
+}
 
 // FileEntry pins one bundle file to its SHA-256 and size.
 type FileEntry struct {
@@ -96,32 +172,49 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("dbupdate: decode manifest: %w", err)
 	}
-	if dec.More() {
-		return nil, fmt.Errorf("dbupdate: manifest has trailing data")
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("dbupdate: manifest has trailing data")
+		}
+		return nil, fmt.Errorf("dbupdate: decode trailing manifest data: %w", err)
 	}
+	if err := validateManifestStructure(&m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+func validateManifestStructure(m *Manifest) error {
 	if m.SchemaVersion != manifestSchemaVersion {
-		return nil, fmt.Errorf("%w: %d", ErrManifestSchema, m.SchemaVersion)
+		return fmt.Errorf("%w: %d", ErrManifestSchema, m.SchemaVersion)
+	}
+	if _, ok := parseDBReleaseVersion(m.Release); !ok {
+		return fmt.Errorf("%w: release %q", ErrManifestMetadata, m.Release)
+	}
+	if _, ok := parseGeneratedAt(m.GeneratedAt); !ok {
+		return fmt.Errorf("%w: generated_at %q", ErrManifestMetadata, m.GeneratedAt)
 	}
 	if len(m.Files) == 0 {
-		return nil, ErrManifestEmpty
+		return ErrManifestEmpty
 	}
 	if len(m.Files) > maxManifestFiles {
-		return nil, fmt.Errorf("%w: %d", ErrManifestTooLarge, len(m.Files))
+		return fmt.Errorf("%w: %d", ErrManifestTooLarge, len(m.Files))
 	}
 	seen := make(map[string]struct{}, len(m.Files))
 	var total int64
 	for _, f := range m.Files {
-		if !isSafeName(f.Name) || !sha256HexRE.MatchString(f.SHA256) || f.Bytes < 0 || f.Bytes > maxBundleTotalBytes {
-			return nil, fmt.Errorf("%w: %q", ErrManifestFile, f.Name)
+		if !isSafeName(f.Name) || !sha256HexRE.MatchString(f.SHA256) || f.Bytes < 0 || f.Bytes > maxBundleFileBytes {
+			return fmt.Errorf("%w: %q", ErrManifestFile, f.Name)
 		}
 		if _, dup := seen[f.Name]; dup {
-			return nil, fmt.Errorf("%w: %q", ErrManifestDuplicate, f.Name)
+			return fmt.Errorf("%w: %q", ErrManifestDuplicate, f.Name)
 		}
 		seen[f.Name] = struct{}{}
 		total += f.Bytes // each f.Bytes <= cap and <= 64 files, so this cannot overflow int64
 	}
 	if total > maxBundleTotalBytes {
-		return nil, fmt.Errorf("%w: %d bytes total", ErrManifestTooLarge, total)
+		return fmt.Errorf("%w: %d bytes total", ErrManifestTooLarge, total)
 	}
-	return &m, nil
+	return nil
 }
