@@ -158,4 +158,25 @@ describe('UpdateNotice', () => {
     expect(authFetch).toHaveBeenCalledTimes(2);
     expect(screen.getByText(/Vedetta v1\.4\.0 is available/)).toBeInTheDocument();
   });
+
+  it('refetches immediately when the browser credential changes', async () => {
+    authFetch
+      .mockResolvedValueOnce({ ok: false })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          enabled: true,
+          software: { latest: 'v1.4.0', update_available: true },
+          device_db: { update_available: false },
+        }),
+      });
+
+    const { rerender } = render(<UpdateNotice authRefreshKey="" />);
+    await waitFor(() => expect(authFetch).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/Vedetta v1\.4\.0 is available/)).not.toBeInTheDocument();
+
+    rerender(<UpdateNotice authRefreshKey="replacement-admin-token" />);
+    expect(await screen.findByText(/Vedetta v1\.4\.0 is available/)).toBeInTheDocument();
+    expect(authFetch).toHaveBeenCalledTimes(2);
+  });
 });

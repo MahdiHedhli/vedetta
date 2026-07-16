@@ -29,7 +29,7 @@ function rememberDismissed(kind, tag) {
   }
 }
 
-export default function UpdateNotice() {
+export default function UpdateNotice({ authRefreshKey = '' }) {
   const [status, setStatus] = useState(null);
   const [, forceRender] = useReducer((x) => x + 1, 0);
 
@@ -57,7 +57,7 @@ export default function UpdateNotice() {
       alive = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [authRefreshKey]);
 
   if (!status || !status.enabled) return null;
 

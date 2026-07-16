@@ -8,7 +8,7 @@ COPY backend/ .
 COPY VERSION ./VERSION
 RUN VERSION="$(cat VERSION)" && \
     test "$(wc -l < VERSION | tr -d ' ')" = "1" && \
-    printf '%s' "$VERSION" | grep -Eq '^v[0-9A-Za-z][0-9A-Za-z.+-]*$' && \
+    printf '%s' "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' && \
     go mod tidy && \
     CGO_ENABLED=1 GOOS=linux go build -trimpath \
       -ldflags="-s -w -X main.buildVersion=${VERSION}" \

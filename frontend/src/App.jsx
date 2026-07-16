@@ -760,7 +760,7 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
-        <UpdateNotice />
+        <UpdateNotice authRefreshKey={adminToken} />
         {view === 'dashboard' ? (
           <DashboardView
             devices={devices} scanStatus={scanStatus} newDeviceCount={newDeviceCount}
