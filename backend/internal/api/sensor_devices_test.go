@@ -126,7 +126,7 @@ func TestHandleSensorDevicesPreservesPerHostObservationTime(t *testing.T) {
 	router := NewRouter(srv)
 	sensorID := "sensor-host-time"
 	token := registerTestSensor(t, router, sensorID)
-	observed := time.Date(2026, 7, 14, 9, 30, 0, 0, time.UTC)
+	observed := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 
 	w := postSensorDevices(t, router, token, sensorID, map[string]any{
 		"sensor_id": sensorID,

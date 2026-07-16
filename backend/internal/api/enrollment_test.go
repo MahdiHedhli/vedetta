@@ -139,14 +139,15 @@ func TestEnrollmentIdempotentReplay(t *testing.T) {
 		router.ServeHTTP(w, req)
 		return w
 	}
-	tokenOf := func(w *httptest.ResponseRecorder) string {
+	registrationOf := func(w *httptest.ResponseRecorder) (string, string) {
 		t.Helper()
 		var m map[string]any
 		if err := json.NewDecoder(w.Body).Decode(&m); err != nil {
 			t.Fatalf("decode register response: %v", err)
 		}
 		tok, _ := m["auth_token"].(string)
-		return tok
+		epoch, _ := m["delivery_epoch"].(string)
+		return tok, epoch
 	}
 
 	code := mintEnrollmentCode(t, router, admin)
@@ -156,9 +157,19 @@ func TestEnrollmentIdempotentReplay(t *testing.T) {
 	if w1.Code != http.StatusOK {
 		t.Fatalf("first register: expected 200, got %d: %s", w1.Code, w1.Body.String())
 	}
-	tok1 := tokenOf(w1)
+	tok1, epoch1 := registrationOf(w1)
 	if tok1 == "" {
 		t.Fatal("first register did not return an auth_token")
+	}
+	if epoch1 == "" {
+		t.Fatal("first register did not return a delivery epoch")
+	}
+
+	// Simulate a delivery-session subsystem failure after provisioning has
+	// committed. The raw bearer must still be replayed; returning 500 here would
+	// strand the sensor because the identity and token already exist.
+	if _, err := db.Exec(`DROP TABLE arp_cache_delivery_epochs`); err != nil {
+		t.Fatalf("disable delivery epoch store: %v", err)
 	}
 
 	// The sensor "lost" that response. It retries with the SAME code and SAME
@@ -167,9 +178,12 @@ func TestEnrollmentIdempotentReplay(t *testing.T) {
 	if w2.Code != http.StatusOK {
 		t.Fatalf("idempotent retry: expected 200, got %d: %s", w2.Code, w2.Body.String())
 	}
-	tok2 := tokenOf(w2)
+	tok2, epoch2 := registrationOf(w2)
 	if tok2 != tok1 {
 		t.Fatalf("idempotent retry returned a different token: %q vs %q", tok2, tok1)
+	}
+	if epoch2 != "" {
+		t.Fatalf("failed delivery-session issue returned epoch %q, want provisional empty value", epoch2)
 	}
 
 	// The recovered token must actually authenticate.

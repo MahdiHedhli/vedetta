@@ -602,7 +602,9 @@ func (db *DB) macConflicts(tx *sql.Tx, candidateID, incomingMAC string) (bool, e
 		return false, fmt.Errorf("read candidate mac for conflict check: %w", err)
 	}
 	if candMAC != "" {
-		return normalizeAddress("mac", candMAC) != incomingMAC, nil
+		if normalizeAddress("mac", candMAC) != incomingMAC {
+			return true, nil
+		}
 	}
 
 	// Cache-only MAC evidence is intentionally too weak to resolve a device, but

@@ -545,12 +545,15 @@ func TestPushDevicesRejectsEveryPartialSuccessSignal(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		statusCode int
+		accepted   int
 		failed     int
 		wantError  bool
 	}{
-		{name: "207 status", statusCode: http.StatusMultiStatus, failed: 0, wantError: true},
-		{name: "failed body", statusCode: http.StatusOK, failed: 1, wantError: true},
-		{name: "complete", statusCode: http.StatusOK, failed: 0, wantError: false},
+		{name: "207 status", statusCode: http.StatusMultiStatus, accepted: 1, failed: 0, wantError: true},
+		{name: "failed body", statusCode: http.StatusOK, accepted: 1, failed: 1, wantError: true},
+		{name: "missing accepted", statusCode: http.StatusOK, accepted: 0, failed: 0, wantError: true},
+		{name: "over-acknowledged", statusCode: http.StatusOK, accepted: 2, failed: 0, wantError: true},
+		{name: "complete", statusCode: http.StatusOK, accepted: 1, failed: 0, wantError: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tokenPath := testTokenPath(t)
@@ -564,7 +567,7 @@ func TestPushDevicesRejectsEveryPartialSuccessSignal(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.statusCode)
-				_ = json.NewEncoder(w).Encode(deviceReportResponse{Accepted: 1, Failed: tc.failed})
+				_ = json.NewEncoder(w).Encode(deviceReportResponse{Accepted: tc.accepted, Failed: tc.failed})
 			}))
 			defer server.Close()
 

@@ -341,6 +341,47 @@ func TestNormalizeSensorReportTimesFutureFirstPinsNewValues(t *testing.T) {
 	}
 }
 
+func TestNormalizeSensorReportTimesSeparateRequestsRespectRetainedExactPins(t *testing.T) {
+	db := newCorrelationDB(t)
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	predecessor := now.Add(30 * time.Minute)
+	future := now.Add(80 * time.Minute)
+	first, err := db.NormalizeSensorReportTimes(context.Background(), "sensor-retained-pin", []time.Time{future}, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	futureNormalized := first[sensorUpstreamTimeKey(future)]
+	second, err := db.NormalizeSensorReportTimes(context.Background(), "sensor-retained-pin", []time.Time{predecessor, future}, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessorNormalized := second[sensorUpstreamTimeKey(predecessor)]
+	if !second[sensorUpstreamTimeKey(future)].Equal(futureNormalized) {
+		t.Fatal("seed future mapping moved while creating plausible predecessor pin")
+	}
+
+	// This earlier value arrives in a separate request that omits both stored
+	// keys. Returning it raw would place it after the retained, receipt-plausible
+	// predecessor and permanently invert their upstream order.
+	plausible := now.Add(20 * time.Minute)
+	third, err := db.NormalizeSensorReportTimes(context.Background(), "sensor-retained-pin", []time.Time{plausible}, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plausibleNormalized := third[sensorUpstreamTimeKey(plausible)]
+	if plausibleNormalized.After(predecessorNormalized) {
+		t.Fatalf("separate request crossed retained exact pin: plausible=%s predecessor=%s",
+			plausibleNormalized, predecessorNormalized)
+	}
+	var persisted int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sensor_report_time_normalizations WHERE sensor_id=?`, "sensor-retained-pin").Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != 3 {
+		t.Fatalf("persisted mappings = %d, want 3", persisted)
+	}
+}
+
 func TestNormalizeSensorReportTimesDistantFutureClustersRemainMonotonic(t *testing.T) {
 	db := newCorrelationDB(t)
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)

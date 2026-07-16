@@ -582,6 +582,14 @@ func resolveLocalScope(scope ipv4Scope, preferred string, detect func() ([]Detec
 		// Multiple IPv4 addresses/aliases on one physical interface are still one
 		// link choice. Prefer the most-specific containing subnet for sweep context.
 		existing, exists := candidatesByInterface[candidate.iface]
+		if exists && existing.network.String() != candidate.network.String() &&
+			!existing.network.Contains(candidate.network.IP) &&
+			!candidate.network.Contains(existing.network.IP) {
+			return localScope{}, fmt.Errorf(
+				"target matches multiple disjoint prefixes on interface %q; narrow the target",
+				candidate.iface,
+			)
+		}
 		candidatePrefix, _ := candidate.network.Mask.Size()
 		existingPrefix := -1
 		if exists {

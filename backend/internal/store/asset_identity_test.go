@@ -1525,12 +1525,20 @@ func TestUnsequencedARPCacheCannotFuseAcrossSeparateObservations(t *testing.T) {
 				Segment: "lan", SensorID: "legacy-sensor", ObservedAt: base.Add(time.Minute),
 			}
 			if order == "active-first" {
-				_, _ = db.ObserveDevice(active)
-				_, _ = db.ObserveDevice(cache)
+				if _, err := db.ObserveDevice(active); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ObserveDevice(cache); err != nil {
+					t.Fatal(err)
+				}
 			} else {
-				_, _ = db.ObserveDevice(cache)
+				if _, err := db.ObserveDevice(cache); err != nil {
+					t.Fatal(err)
+				}
 				active.ObservedAt = base.Add(time.Minute)
-				_, _ = db.ObserveDevice(active)
+				if _, err := db.ObserveDevice(active); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var fused int
 			if err := db.QueryRow(`SELECT COUNT(*) FROM devices WHERE discovery_method=?`, arpLiveFusionSource).Scan(&fused); err != nil {
@@ -1739,7 +1747,9 @@ func TestObserveDeviceNativeICMPARPAllowsOnlyScopedNetworkPair(t *testing.T) {
 		&gotMAC, &hostname, &vendor, &model, &friendly, &ports, &services, &method); err != nil {
 		t.Fatal(err)
 	}
-	if normalizeAddress("mac", gotMAC) != normalizeAddress("mac", mac) || hostname != "" || vendor != "" ||
+	// A vendor derived locally from the allowed MAC/OUI is safe. The supplied
+	// descriptive vendor remains untrusted and must not cross this source boundary.
+	if normalizeAddress("mac", gotMAC) != normalizeAddress("mac", mac) || hostname != "" || vendor == "spliced-vendor" ||
 		model != "" || friendly != "" || ports != "[]" || services != "[]" || method != arpLiveFusionSource {
 		t.Fatalf("joined source boundary = mac=%q host=%q vendor=%q model=%q friendly=%q ports=%s services=%s method=%q",
 			gotMAC, hostname, vendor, model, friendly, ports, services, method)
@@ -1888,6 +1898,112 @@ func TestObserveDeviceMergedFamilyHMACOnlyMACVetoesLegacyIPFallback(t *testing.T
 	if replacementID == targetID || replacementID == childID {
 		t.Fatalf("replacement reused conflicting family: replacement=%q target=%q child=%q",
 			replacementID, targetID, childID)
+	}
+}
+
+func TestMacConflictsChecksMergedFamilyWhenCanonicalMACMatches(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 7, 15, 18, 40, 0, 0, time.UTC)
+	canonicalMAC := "00:00:5E:00:53:E1"
+	childMAC := "00:00:5E:00:53:E2"
+
+	created, err := db.ObserveDevice(DeviceObservation{
+		Host: discovery.DiscoveredHost{
+			IPAddress: "192.0.2.220", MACAddress: canonicalMAC,
+			Hostname: "family-canonical", DiscoverySource: "passive_dhcp",
+		},
+		Segment: "lan", SensorID: "sensor-a", ObservedAt: base,
+	})
+	if err != nil || !created {
+		t.Fatalf("create canonical device: created=%v err=%v", created, err)
+	}
+	var canonicalID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE mac_address=?`, canonicalMAC).Scan(&canonicalID); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err = db.ObserveDevice(DeviceObservation{
+		Host: discovery.DiscoveredHost{
+			IPAddress: "192.0.2.221", MACAddress: childMAC,
+			Status: "observed", DiscoverySource: "arp_cache",
+		},
+		Segment: "lan", SensorID: "sensor-a", ObservedAt: base.Add(time.Second),
+	})
+	if err != nil || !created {
+		t.Fatalf("create cache child: created=%v err=%v", created, err)
+	}
+	var childID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address='192.0.2.221'`).Scan(&childID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.MergeDevices(context.Background(), childID, canonicalID, "same synthetic device", "test-admin"); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	conflict, err := db.macConflicts(tx, canonicalID, canonicalMAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conflict {
+		t.Fatal("matching canonical MAC masked contradictory active MAC evidence on merged child")
+	}
+}
+
+func TestARPCacheRefreshDoesNotTouchAnotherSensorsNetworkAttachment(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 7, 15, 19, 0, 0, 0, time.UTC)
+	observedAt := base.Add(time.Hour)
+	ip := "192.0.2.230"
+	mac := "00:00:5E:00:53:F0"
+
+	created, err := db.ObserveDevice(DeviceObservation{
+		Host: discovery.DiscoveredHost{
+			IPAddress: ip, MACAddress: mac, Hostname: "sensor-b-device",
+			DiscoverySource: "passive_dhcp",
+		},
+		Segment: "lan", SensorID: "sensor-b", ObservedAt: base,
+	})
+	if err != nil || !created {
+		t.Fatalf("create sensor-b device: created=%v err=%v", created, err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE mac_address=?`, mac).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	// Sensor A has independent strong address history for the canonical device,
+	// while the inventory's current network attachment still belongs to sensor B.
+	if _, err := db.Exec(`INSERT INTO device_address_history
+		(binding_id, device_id, address_type, address_value, segment, sensor_id,
+		 first_seen, last_seen, valid_from, valid_until, evidence_source, confidence, created_at)
+		VALUES (?, ?, 'ip', ?, 'lan', 'sensor-a', ?, ?, ?, NULL, 'passive_dhcp', 0.9, ?)`,
+		"synthetic-sensor-a-binding", deviceID, ip, base, observedAt, base, base); err != nil {
+		t.Fatal(err)
+	}
+	epoch := issueTestCacheDeliveryEpoch(t, db, "sensor-a")
+	created, err = db.ObserveDevice(DeviceObservation{
+		Host: discovery.DiscoveredHost{
+			IPAddress: ip, MACAddress: mac, Status: "observed", DiscoverySource: "arp_cache",
+		},
+		Segment: "lan", SensorID: "sensor-a", ObservedAt: observedAt,
+		DeliveryEpoch: epoch, DeliverySequence: 1,
+	})
+	if err != nil || created {
+		t.Fatalf("corroborating cache observation: created=%v err=%v", created, err)
+	}
+	var networkSensor string
+	var networkLastSeen time.Time
+	if err := db.QueryRow(`SELECT sensor_id, last_seen FROM device_networks WHERE device_id=? AND segment='lan'`, deviceID).
+		Scan(&networkSensor, &networkLastSeen); err != nil {
+		t.Fatal(err)
+	}
+	if networkSensor != "sensor-b" || !networkLastSeen.Equal(base) {
+		t.Fatalf("sensor-a refreshed sensor-b attachment: sensor=%q last_seen=%s, want sensor-b/%s",
+			networkSensor, networkLastSeen, base)
 	}
 }
 

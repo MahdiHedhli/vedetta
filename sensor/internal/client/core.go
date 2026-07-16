@@ -312,7 +312,9 @@ func (c *CoreClient) PushDevices(ctx context.Context, result *netscan.ScanResult
 	// Core uses 207 for partial persistence. A 2xx transport status is not enough:
 	// the whole observation batch must be retried idempotently so failed hosts are
 	// never silently dropped. Preserve the original per-host ObservedAt values.
-	if status == http.StatusMultiStatus || response.Failed > 0 {
+	if status == http.StatusMultiStatus ||
+		response.Failed != 0 ||
+		response.Accepted != len(report.Hosts) {
 		return fmt.Errorf("POST /api/v1/sensor/devices partially persisted batch: status=%d accepted=%d failed=%d", status, response.Accepted, response.Failed)
 	}
 	return nil

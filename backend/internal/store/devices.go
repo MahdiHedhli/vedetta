@@ -635,7 +635,7 @@ func (db *DB) observeARPCacheDevice(host discovery.DiscoveredHost, observedAt ti
 		return false, err
 	}
 	if deviceID != "" {
-		if err := db.refreshCurrentDeviceFromARPCacheTx(tx, deviceID, host.IPAddress, segment, observedAt); err != nil {
+		if err := db.refreshCurrentDeviceFromARPCacheTx(tx, deviceID, host.IPAddress, segment, sensorID, observedAt); err != nil {
 			return false, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -1171,7 +1171,7 @@ func (db *DB) currentDeviceForARPCacheTx(tx *sql.Tx, ip, mac, segment, sensorID 
 	return match, nil
 }
 
-func (db *DB) refreshCurrentDeviceFromARPCacheTx(tx *sql.Tx, deviceID, ip, segment string, observedAt time.Time) error {
+func (db *DB) refreshCurrentDeviceFromARPCacheTx(tx *sql.Tx, deviceID, ip, segment, sensorID string, observedAt time.Time) error {
 	if _, err := tx.Exec(`UPDATE devices SET
 		first_seen = MIN(first_seen, ?), last_seen = MAX(last_seen, ?)
 		WHERE device_id = ? AND ip_address = ? AND segment = ?`,
@@ -1182,8 +1182,8 @@ func (db *DB) refreshCurrentDeviceFromARPCacheTx(tx *sql.Tx, deviceID, ip, segme
 	// manufacture a weak attachment or replace a newer live IP.
 	if _, err := tx.Exec(`UPDATE device_networks SET
 		first_seen = MIN(first_seen, ?), last_seen = MAX(last_seen, ?)
-		WHERE device_id = ? AND segment = ? AND ip_address = ?`,
-		observedAt, observedAt, deviceID, segment, ip); err != nil {
+		WHERE device_id = ? AND segment = ? AND ip_address = ? AND sensor_id = ?`,
+		observedAt, observedAt, deviceID, segment, ip, strings.TrimSpace(sensorID)); err != nil {
 		return fmt.Errorf("refresh current network from ARP cache: %w", err)
 	}
 	return nil

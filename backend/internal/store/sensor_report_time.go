@@ -655,11 +655,23 @@ func (db *DB) NormalizeSensorReportTimes(ctx context.Context, sensorID string, u
 	}
 	sort.Slice(plausible, func(i, j int) bool { return plausible[i].upstream.Before(plausible[j].upstream) })
 
-	// Exact request members and retained raw-envelope endpoints are immutable
-	// ordering pins. A newly seen plausible value is promoted only if returning it
-	// raw would cross one of those pins. Covered raw values were removed above, so
-	// first classification wins in either raw-first or mixed-first arrival order.
-	pins := sensorReportRawPins(requestExact, rawEpochs)
+	// Exact request members, retained mappings that were receipt-plausible when
+	// first classified, and raw-envelope endpoints are immutable ordering pins.
+	// Including plausible mappings omitted from this request preserves ordering
+	// across separate deliveries. Deliberately exclude omitted mappings whose raw
+	// clock was already implausible at creation: a later plausible timestamp that
+	// moves backward across one is an NTP correction and must remain raw rather
+	// than being dragged into the stale clock epoch.
+	retainedExact := append([]sensorReportTimeMapping(nil), requestExact...)
+	for _, mapping := range existing {
+		if mapping.createdAt.IsZero() ||
+			mapping.upstream.Before(mapping.createdAt.Add(-sensorReportPastSkew)) ||
+			mapping.upstream.After(mapping.createdAt.Add(maxFutureSkew)) {
+			continue
+		}
+		retainedExact = append(retainedExact, mapping)
+	}
+	pins := sensorReportRawPins(retainedExact, rawEpochs)
 	normalizedUpstream := append([]time.Time(nil), missingNormalized...)
 	var planned []sensorReportTimeMapping
 	for {

@@ -1290,8 +1290,11 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 					deliveryEpoch, epochErr := s.DB.IssueARPCacheDeliveryEpoch(body.SensorID)
 					if epochErr != nil {
 						log.Printf("Sensor %s delivery-session issue failed: %v", body.SensorID, epochErr)
-						writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to establish sensor delivery session"})
-						return
+						// The bearer was already committed and is the only recoverable copy.
+						// Return it even when the optional ARP-cache delivery session cannot
+						// be issued; an empty epoch keeps cache evidence provisional until a
+						// later registration succeeds instead of stranding the sensor.
+						deliveryEpoch = ""
 					}
 					log.Printf("Sensor %s re-registered via idempotent enrollment replay — returning existing token %s", body.SensorID, tokenID)
 					writeJSON(w, http.StatusOK, sensorRegistrationResponse{
@@ -1513,8 +1516,10 @@ func (s *Server) handleSensorRegister(w http.ResponseWriter, r *http.Request) {
 	deliveryEpoch, err := s.DB.IssueARPCacheDeliveryEpoch(body.SensorID)
 	if err != nil {
 		log.Printf("Sensor %s delivery-session issue failed: %v", body.SensorID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to establish sensor delivery session"})
-		return
+		// Registration/token persistence has already committed. Withholding a
+		// freshly minted raw bearer here would make the credential unrecoverable.
+		// Empty means ARP-cache evidence remains provisional/fail-closed.
+		deliveryEpoch = ""
 	}
 	response.DeliveryEpoch = deliveryEpoch
 

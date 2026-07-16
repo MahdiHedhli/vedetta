@@ -587,6 +587,15 @@ func TestResolveLocalScopeUsesContainingLinkAndFailsClosed(t *testing.T) {
 	if resolved, err := resolveLocalScope(narrow, "", aliases, index); err != nil || resolved.iface != "lan0" || resolved.network.String() != "192.0.2.0/25" {
 		t.Fatalf("same-interface aliases were treated as ambiguity: resolved=%+v err=%v", resolved, err)
 	}
+	disjointAliases := func() ([]DetectedSubnet, error) {
+		return []DetectedSubnet{
+			{Interface: "lan0", IPAddress: "192.0.2.200", CIDR: "192.0.2.0/24"},
+			{Interface: "lan0", IPAddress: "192.0.3.200", CIDR: "192.0.3.0/24"},
+		}, nil
+	}
+	if _, err := resolveLocalScope(wider, "lan0", disjointAliases, index); err == nil {
+		t.Fatal("wide target silently selected one of two disjoint same-interface prefixes")
+	}
 
 	ambiguous := func() ([]DetectedSubnet, error) {
 		return []DetectedSubnet{
