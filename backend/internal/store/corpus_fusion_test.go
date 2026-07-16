@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -162,6 +163,80 @@ func TestCorpusFusionRetainsCurrentlyAssociatedStableMAC(t *testing.T) {
 	}
 	if len(obs.OUIPrefixes) != 1 || obs.OUIPrefixes[0] != "00:00:5E:00:53:58" {
 		t.Fatalf("currently associated stable MAC aged out of corpus fusion: %v", obs.OUIPrefixes)
+	}
+}
+
+func TestCorpusFusionUsesAndClearsRecursiveMergedFamily(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	base := time.Now().UTC()
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.59", MACAddress: "00:00:5E:00:53:59",
+		DiscoverySource: "nmap_active", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.60", MACAddress: "00:00:5E:00:53:60",
+		Services: []string{"_family._tcp"}, DiscoverySource: "passive_mdns", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	var targetID, childID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.59").Scan(&targetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.60").Scan(&childID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO device_signals
+		(device_id, field, value, source, confidence, first_observed, last_observed)
+		VALUES (?, 'model', 'stale-corpus-model', ?, 0.85, ?, ?)`,
+		childID, SourceCorpus, base, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.MergeDevices(context.Background(), childID, targetID,
+		"synthetic merged-family corpus regression", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, targetID, discovery.DiscoveredHost{}, base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.OUIPrefixes) != 2 {
+		t.Fatalf("merged-family OUIs = %v, want both family members", obs.OUIPrefixes)
+	}
+	if len(obs.MDNSServices) != 1 || obs.MDNSServices[0] != "_family._tcp" {
+		t.Fatalf("merged-child mDNS evidence missing from corpus fusion: %v", obs.MDNSServices)
+	}
+	if err := deleteCorpusSignalsTx(tx, targetID); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := db.resolveCanonicalFields(tx, targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := canonical["model"].value; got == "stale-corpus-model" {
+		t.Fatalf("merged-child corpus projection survived family clear: %q", got)
+	}
+	var corpusRows int
+	if err := tx.QueryRow(`WITH RECURSIVE family(device_id) AS (
+			SELECT ? UNION SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT COUNT(*) FROM device_signals WHERE source = ?
+		  AND device_id IN (SELECT device_id FROM family)`, targetID, SourceCorpus).Scan(&corpusRows); err != nil {
+		t.Fatal(err)
+	}
+	if corpusRows != 0 {
+		t.Fatalf("merged family retained %d corpus projection rows", corpusRows)
 	}
 }
 

@@ -90,8 +90,13 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 	cutoff := observedAt.UTC().Add(-corpusSignalRecency)
 	protocolCutoff := observedAt.UTC().Add(-mdnsNameRecencyWindow)
 
-	rows, err := tx.Query(`SELECT DISTINCT h.address_value FROM device_address_history h
-		WHERE h.device_id = ? AND h.address_type = 'mac'
+	rows, err := tx.Query(`WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT DISTINCT h.address_value FROM device_address_history h
+		WHERE h.device_id IN (SELECT device_id FROM family) AND h.address_type = 'mac'
 		  AND h.valid_from <= ? AND (h.valid_until IS NULL OR ? < h.valid_until)`,
 		deviceID, observedAt, observedAt)
 	if err != nil {
@@ -111,8 +116,13 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 	}
 	rows.Close()
 
-	rows, err = tx.Query(`SELECT field, value, source FROM device_signals
-		WHERE device_id = ? AND source != ? AND first_observed <= ?
+	rows, err = tx.Query(`WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT field, value, source FROM device_signals
+		WHERE device_id IN (SELECT device_id FROM family) AND source != ? AND first_observed <= ?
 		  AND last_observed >= ? AND last_observed <= ?`,
 		deviceID, SourceCorpus, observedAt, cutoff, observedAt)
 	if err != nil {
@@ -141,8 +151,13 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 	}
 	rows.Close()
 
-	rows, err = tx.Query(`SELECT evidence_type, value_display FROM device_identity_evidence
-		WHERE device_id = ? AND value_display != ''
+	rows, err = tx.Query(`WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT evidence_type, value_display FROM device_identity_evidence
+		WHERE device_id IN (SELECT device_id FROM family) AND value_display != ''
 		  AND first_seen <= ? AND last_seen >= ?
 		  AND valid_from <= ? AND (valid_until IS NULL OR ? < valid_until)
 		  AND EXISTS (SELECT 1 FROM device_identity_evidence_validity v
@@ -211,7 +226,13 @@ func corpusDerivedSignalsForObserved(obs corpusmatch.ObservedSignals) []signalUp
 }
 
 func deleteCorpusSignalsTx(tx *sql.Tx, deviceID string) error {
-	if _, err := tx.Exec(`DELETE FROM device_signals WHERE device_id = ? AND source = ?`, deviceID, SourceCorpus); err != nil {
+	if _, err := tx.Exec(`WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		DELETE FROM device_signals WHERE source = ?
+		  AND device_id IN (SELECT device_id FROM family)`, deviceID, SourceCorpus); err != nil {
 		return fmt.Errorf("delete stale corpus signals: %w", err)
 	}
 	return nil
