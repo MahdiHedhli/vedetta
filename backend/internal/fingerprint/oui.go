@@ -501,13 +501,12 @@ var ouiDatabase = map[string]OUIResult{
 	// "f4:54:6b": {Vendor: "Element", DeviceType: "smart_speaker"},  // REMOVED: duplicate key
 }
 
-// extractOUI returns the first 6 hex characters of a MAC/prefix, lowercased, skipping
-// separators (":", "-", " ") and stopping as soon as 6 are collected. Invalid input
-// is rejected before it can reach either lookup table. It avoids the intermediate
-// allocations of a full lowercase-and-strip on this hot lookup path.
+// extractOUI validates a three-octet prefix or complete EUI-48, returning the first 6
+// hex characters lowercased. Separators (":", "-", " ") are ignored, but the entire
+// input is scanned so an incomplete or malformed suffix cannot produce attribution.
 func extractOUI(mac string) (string, bool) {
 	var buf [6]byte
-	idx := 0
+	hexCount := 0
 	for i := 0; i < len(mac); i++ {
 		c := mac[i]
 		if c == ':' || c == '-' || c == ' ' {
@@ -519,13 +518,15 @@ func extractOUI(mac string) (string, bool) {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
 			return "", false
 		}
-		buf[idx] = c
-		idx++
-		if idx == 6 {
-			return string(buf[:]), true
+		if hexCount < len(buf) {
+			buf[hexCount] = c
 		}
+		hexCount++
 	}
-	return "", false
+	if hexCount != 6 && hexCount != 12 {
+		return "", false
+	}
+	return string(buf[:]), true
 }
 
 // isGlobalUnicastOUI reports whether the OUI can identify a hardware vendor on an
@@ -547,28 +548,9 @@ func isGlobalUnicastOUI(oui string) bool {
 }
 
 var (
-	curatedOUIOnce sync.Once
-	curatedOUI     map[string]OUIResult // 6-hex prefix (no separators) -> curated result
-
 	ieeeOUIOnce sync.Once
 	ieeeOUI     map[string]string // 6-hex prefix (no separators) -> IEEE vendor
 )
-
-// curatedIndex normalizes the human-authored ouiDatabase (whose literal keys carry
-// colons, e.g. "ac:bc:32") into separator-free 6-hex keys so it actually matches the
-// stripped lookup key. Without this the curated overlay never matched and was dead code.
-func curatedIndex() map[string]OUIResult {
-	curatedOUIOnce.Do(func() {
-		idx := make(map[string]OUIResult, len(ouiDatabase))
-		for k, v := range ouiDatabase {
-			if key, ok := extractOUI(k); ok {
-				idx[key] = v
-			}
-		}
-		curatedOUI = idx
-	})
-	return curatedOUI
-}
 
 // ieeeIndex lazily loads the embedded (or overridden) IEEE MA-L table, built once.
 func ieeeIndex() map[string]string {
@@ -580,27 +562,21 @@ func ieeeIndex() map[string]string {
 
 // Lookup returns vendor and device type for a given MAC address.
 // MAC should be in format "XX:XX:XX" or "XXXXXX", case-insensitive.
-// The curated overlay is consulted first (it carries device-type hints for common
-// home/SMB gear); the full IEEE MA-L table is the vendor-only fallback. Returns nil if
-// neither matches.
+// The IEEE MA-L table is authoritative and returns vendor-only evidence. The legacy
+// curated map is intentionally not consulted: it contains stale/conflicting assignments
+// and OUI alone cannot safely establish a device type. Returns nil when IEEE has no match.
 func (e *Engine) Lookup(mac string) *OUIResult {
 	if mac == "" {
 		return nil
 	}
 
-	// Extract the OUI (first 3 octets) without allocating on this hot path.
+	// Extract the OUI (first 3 octets) after validating the complete input.
 	oui, ok := extractOUI(mac)
 	if !ok || !isGlobalUnicastOUI(oui) {
 		return nil
 	}
 
-	// Curated overlay first — cleaner vendor names + device-type hints.
-	if result, ok := curatedIndex()[oui]; ok {
-		result.Confidence = 0.2 // OUI-only match
-		return &result
-	}
-
-	// IEEE MA-L fallback — vendor only, no device type.
+	// IEEE MA-L vendor only; device type requires stronger corroborating evidence.
 	if vendor, ok := ieeeIndex()[oui]; ok {
 		return &OUIResult{Vendor: vendor, Confidence: 0.2}
 	}

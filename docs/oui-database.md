@@ -5,35 +5,32 @@ hardware vendor. This is the coarsest device-identity signal — it answers "who
 NIC," not "what is this device" — but it is cheap, offline, and the foundation the
 higher-confidence fingerprint signals build on.
 
-The lookup lives in `backend/internal/fingerprint` and has two layers.
+The lookup lives in `backend/internal/fingerprint` and uses IEEE MA-L as the
+authoritative OUI source.
 
-## Layers
+## Lookup behavior
 
-1. **Curated overlay** (`ouiDatabase` in `oui.go`) — a hand-maintained set of ~200
-   common home/SMB prefixes that also carry a **device-type hint** (`router`, `camera`,
-   `smart_speaker`, …) and a cleaned-up vendor name (`"Apple"` rather than
-   `"Apple, Inc."`). This is the only source of device-type hints.
-2. **IEEE MA-L fallback** (`data/oui.csv`, embedded via `go:embed` in `oui_ieee.go`) —
-   the full public IEEE 24-bit OUI registry (~39.7k prefixes), vendor name only, no
-   device type.
+`data/oui.csv`, embedded via `go:embed` in `oui_ieee.go`, contains the full public IEEE
+24-bit MA-L registry (~39.7k prefixes). It produces vendor-only evidence; device type
+requires stronger corroboration from hostname, services, model data, or active probes.
+
+The legacy `ouiDatabase` map remains in `oui.go` for a future audited hint migration,
+but it is intentionally not consulted. It contains stale and conflicting assignments,
+and before this change its colon-formatted keys never matched the old stripped lookup
+key. Enabling those rows would create new false vendor, device-type, and risk labels.
 
 `Engine.Lookup` validates and normalizes the MAC (lowercase, separators stripped),
 rejects multicast and locally administered/randomized addresses as non-vendor evidence,
-then resolves **curated first, IEEE second**:
+then resolves against IEEE:
 
 | Match          | Vendor            | Device type | Confidence |
 | -------------- | ----------------- | ----------- | ---------- |
-| Curated        | curated name      | hint (may be empty) | 0.2 |
-| IEEE fallback  | IEEE name         | —           | 0.2        |
+| IEEE MA-L      | IEEE name         | —           | 0.2        |
 | Neither        | *nil*             | —           | —          |
 
 Confidence stays at `0.2` because an OUI match alone is weak — a prefix identifies the
 NIC vendor, and a single vendor ships everything from doorbells to servers. The corpus
 matcher (a later phase) fuses this with stronger signals.
-
-> The curated map's literal keys are colon-formatted (`"ac:bc:32"`), so it is normalized
-> into a separator-free index once at first use. (Before that index existed the overlay
-> silently never matched — see the piece-2 commit.)
 
 ## Data provenance
 

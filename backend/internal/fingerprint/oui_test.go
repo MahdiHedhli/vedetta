@@ -2,36 +2,36 @@ package fingerprint
 
 import "testing"
 
-func TestLookup_CuratedColonKeyMatches(t *testing.T) {
-	// Regression: ouiDatabase keys carry colons ("ac:bc:32") while Lookup strips them.
-	// Before the normalized curated index this never matched and the overlay was dead.
+func TestLookup_IEEEVendorIsAuthoritative(t *testing.T) {
 	e := NewEngine()
 	r := e.Lookup("ac:bc:32:de:ad:be")
 	if r == nil {
-		t.Fatal("curated Apple prefix ac:bc:32 did not match (colon-key regression)")
+		t.Fatal("IEEE Apple prefix ac:bc:32 did not match")
 	}
-	if r.Vendor != "Apple" {
-		t.Errorf("vendor = %q, want curated %q", r.Vendor, "Apple")
+	if r.Vendor != "Apple, Inc." {
+		t.Errorf("vendor = %q, want IEEE %q", r.Vendor, "Apple, Inc.")
 	}
-	if r.Confidence != 0.2 {
-		t.Errorf("confidence = %v, want 0.2", r.Confidence)
-	}
-}
-
-func TestLookup_CuratedDeviceTypeHint(t *testing.T) {
-	e := NewEngine()
-	r := e.Lookup("b8:27:eb:00:00:01") // Raspberry Pi Foundation
-	if r == nil || r.DeviceType != "computer" {
-		t.Fatalf("expected Raspberry Pi device_type=computer, got %+v", r)
+	if r.DeviceType != "" {
+		t.Errorf("OUI-only evidence must not assign a device type, got %q", r.DeviceType)
 	}
 }
 
-func TestLookup_CuratedWinsOverIEEE(t *testing.T) {
-	// acbc32 is Apple in both tables; curated ("Apple") must win over IEEE ("Apple, Inc.").
+func TestLookup_StaleCuratedConflictCannotOverrideIEEE(t *testing.T) {
 	e := NewEngine()
-	r := e.Lookup("ACBC32000000")
-	if r == nil || r.Vendor != "Apple" {
-		t.Fatalf("curated overlay should win, got %+v", r)
+	// The legacy curated map incorrectly labels 00:0a:95 as Dell/computer, while the
+	// current IEEE registry assigns it to Apple. IEEE must win and no type may leak.
+	r := e.Lookup("00:0a:95:12:34:56")
+	if r == nil || r.Vendor != "Apple, Inc." || r.DeviceType != "" {
+		t.Fatalf("stale curated assignment overrode IEEE: %+v", r)
+	}
+}
+
+func TestLookup_UncorroboratedCuratedPrefixIgnored(t *testing.T) {
+	e := NewEngine()
+	// This Roku entry exists only in the legacy curated table, not the current MA-L
+	// registry. A stale local row is not manufacturer evidence.
+	if r := e.Lookup("d4:a5:d8:12:34:56"); r != nil {
+		t.Fatalf("uncorroborated curated assignment produced evidence: %+v", r)
 	}
 }
 
@@ -64,10 +64,11 @@ func TestExtractOUI(t *testing.T) {
 		{"ac bc 32", "acbc32", true},          // spaces
 		{"acbc32", "acbc32", true},            // no separators
 		{"ac:bc:32:de:ad:be", "acbc32", true}, // full MAC — stops after 6
-		{"AcBc32dead", "acbc32", true},        // mixed case, early stop
+		{"AcBc32dead", "", false},             // ten hex digits is not a prefix/EUI-48
 		{"ab:cd", "", false},                  // fewer than 6 hex
 		{"ac:bg:32", "", false},               // non-hex input
 		{"zz:zz:zz", "", false},               // non-hex input
+		{"ac:bc:32:not-a-mac", "", false},     // malformed suffix after valid prefix
 		{"", "", false},                       // empty
 		{":::::", "", false},                  // only separators
 	}
