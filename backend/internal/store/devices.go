@@ -371,6 +371,10 @@ func (db *DB) ObserveDevice(observation DeviceObservation) (bool, error) {
 	if fpResult.OSFamily != "" {
 		derived = append(derived, signalUpsert{field: "os_family", value: fpResult.OSFamily, source: SourceHostnamePattern, confidence: fpResult.FingerprintConfidence})
 	}
+	// Community device-corpus (spec 008) class match: a corroborated vendor/model/device_type
+	// hint. Written as descriptive signals at SourceCorpus (0.85) so confidence-weighted
+	// resolution keeps it below a device's own mDNS TXT and below any operator correction.
+	derived = append(derived, corpusDerivedSignals(host)...)
 	if err := db.upsertSignalsTx(tx, deviceID, derived, scanTime); err != nil {
 		return false, err
 	}
