@@ -1,12 +1,17 @@
 package store
 
 import (
+	"database/sql"
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/corpusmatch"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 )
+
+const corpusSignalRecency = 30 * 24 * time.Hour
 
 // corpusObservedSignals projects a discovery observation into the corpus shape vocabulary so
 // the local matcher can compare it against curated device-class shapes. Hostname templates are
@@ -14,14 +19,29 @@ import (
 // work, out of scope for this cut; the other signal families carry recognition.
 func corpusObservedSignals(host discovery.DiscoveredHost) corpusmatch.ObservedSignals {
 	obs := corpusmatch.ObservedSignals{
-		MDNSServices: host.Services,
-		TCPPorts:     portsToUint16(host.OpenPorts),
+		TCPPorts: portsToUint16(host.OpenPorts),
 	}
 	if host.MACAddress != "" {
 		obs.OUIPrefixes = []string{host.MACAddress} // the matcher normalizes to a 24-bit prefix
 	}
-	if host.Model != "" {
-		obs.MDNSModels = append(obs.MDNSModels, host.Model)
+	source := strings.ToLower(strings.TrimSpace(host.DiscoverySource))
+	switch source {
+	case "passive_mdns", "mdns":
+		obs.MDNSServices = append(obs.MDNSServices, host.Services...)
+		if host.Model != "" {
+			obs.MDNSModels = append(obs.MDNSModels, host.Model)
+		}
+		if host.Vendor != "" {
+			obs.MDNSVendors = append(obs.MDNSVendors, host.Vendor)
+		}
+	case "passive_ssdp", "ssdp":
+		if host.Vendor != "" {
+			obs.SSDPServerTokens = append(obs.SSDPServerTokens, host.Vendor)
+		}
+	case "passive_dhcp", "dhcp":
+		if host.Vendor != "" {
+			obs.DHCPVendorClasses = append(obs.DHCPVendorClasses, host.Vendor)
+		}
 	}
 	for _, ev := range host.IdentityEvidence {
 		switch ev.Type {
@@ -44,12 +64,84 @@ func corpusObservedSignals(host discovery.DiscoveredHost) corpusmatch.ObservedSi
 	return obs
 }
 
+// corpusObservedSignalsTx combines the current report with safe, already-correlated local
+// device state. This is what lets a MAC/OUI report and a later mDNS report satisfy the
+// two-family rule without recovering HMAC-only identity values. Corpus-derived rows are never
+// read back, preventing a prior match from sustaining itself.
+func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discovery.DiscoveredHost, observedAt time.Time) (corpusmatch.ObservedSignals, error) {
+	obs := corpusObservedSignals(host)
+	cutoff := observedAt.UTC().Add(-corpusSignalRecency)
+
+	var macAddress string
+	if err := tx.QueryRow(`SELECT COALESCE(mac_address, '') FROM devices WHERE device_id = ?`, deviceID).
+		Scan(&macAddress); err != nil {
+		return obs, fmt.Errorf("read retained corpus signals: %w", err)
+	}
+	if macAddress != "" {
+		obs.OUIPrefixes = append(obs.OUIPrefixes, macAddress)
+	}
+
+	rows, err := tx.Query(`SELECT field, value, source FROM device_signals
+		WHERE device_id = ? AND source != ? AND last_observed >= ?`, deviceID, SourceCorpus, cutoff)
+	if err != nil {
+		return obs, fmt.Errorf("read retained descriptive signals: %w", err)
+	}
+	for rows.Next() {
+		var field, value, source string
+		if err := rows.Scan(&field, &value, &source); err != nil {
+			rows.Close()
+			return obs, fmt.Errorf("scan retained descriptive signal: %w", err)
+		}
+		switch {
+		case source == SourceMDNSTxt && field == "model":
+			obs.MDNSModels = append(obs.MDNSModels, value)
+		case source == SourceMDNSTxt && field == "vendor":
+			obs.MDNSVendors = append(obs.MDNSVendors, value)
+		case source == SourceSSDP && field == "vendor":
+			obs.SSDPServerTokens = append(obs.SSDPServerTokens, value)
+		case source == SourceDHCPHostname && field == "vendor":
+			obs.DHCPVendorClasses = append(obs.DHCPVendorClasses, value)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return obs, fmt.Errorf("iterate retained descriptive signals: %w", err)
+	}
+	rows.Close()
+
+	rows, err = tx.Query(`SELECT evidence_type, value_display FROM device_identity_evidence
+		WHERE device_id = ? AND valid_until IS NULL AND value_display != ''
+		  AND last_seen >= ? AND evidence_type IN ('mdns_service', 'ssdp_device_type')`, deviceID, cutoff)
+	if err != nil {
+		return obs, fmt.Errorf("read retained typed signals: %w", err)
+	}
+	for rows.Next() {
+		var kind, value string
+		if err := rows.Scan(&kind, &value); err != nil {
+			rows.Close()
+			return obs, fmt.Errorf("scan retained typed signal: %w", err)
+		}
+		switch kind {
+		case "mdns_service":
+			obs.MDNSServices = append(obs.MDNSServices, value)
+		case "ssdp_device_type":
+			obs.SSDPDeviceTypes = append(obs.SSDPDeviceTypes, value)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return obs, fmt.Errorf("iterate retained typed signals: %w", err)
+	}
+	rows.Close()
+	return obs, nil
+}
+
 // corpusDerivedSignals runs the active corpus matcher over an observation and returns the
 // descriptive signal upserts for a class match. Confidence is capped by both SourceCorpus
 // (below a device's own mDNS TXT and user_corrected) and the curated variant's confidence, so
 // it cannot inflate a weak corpus claim. Returns nil when no corpus is loaded or nothing matches.
-func corpusDerivedSignals(host discovery.DiscoveredHost) []signalUpsert {
-	res, ok := corpusmatch.Active().Match(corpusObservedSignals(host))
+func corpusDerivedSignalsForObserved(obs corpusmatch.ObservedSignals) []signalUpsert {
+	res, ok := corpusmatch.Active().Match(obs)
 	if !ok {
 		return nil
 	}
@@ -70,6 +162,94 @@ func corpusDerivedSignals(host discovery.DiscoveredHost) []signalUpsert {
 	add("device_type", res.DeviceType)
 	add("os_family", res.OSFamily)
 	return out
+}
+
+func deleteCorpusSignalsTx(tx *sql.Tx, deviceID string) error {
+	if _, err := tx.Exec(`DELETE FROM device_signals WHERE device_id = ? AND source = ?`, deviceID, SourceCorpus); err != nil {
+		return fmt.Errorf("delete stale corpus signals: %w", err)
+	}
+	return nil
+}
+
+// ClearCorpusSignals removes every persisted corpus projection and recomputes affected device
+// rows from non-corpus sources. Core calls this on startup and before activating a replacement
+// corpus so removing or changing a signed snapshot takes effect even for quiet devices.
+func (db *DB) ClearCorpusSignals() error {
+	db.corpusProjectionMu.Lock()
+	defer db.corpusProjectionMu.Unlock()
+	return db.clearCorpusSignals()
+}
+
+// ActivateCorpusGeneration clears the prior generation's persisted projections and then
+// invokes an infallible process-state activation while device observations are excluded.
+// This prevents an in-flight observation matched by the old generation from committing
+// stale labels after the clear. If clearing fails, activate is not called.
+func (db *DB) ActivateCorpusGeneration(activate func()) error {
+	db.corpusProjectionMu.Lock()
+	defer db.corpusProjectionMu.Unlock()
+	if err := db.clearCorpusSignals(); err != nil {
+		return err
+	}
+	activate()
+	return nil
+}
+
+func (db *DB) clearCorpusSignals() error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin corpus signal clear: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT DISTINCT device_id FROM device_signals WHERE source = ?`, SourceCorpus)
+	if err != nil {
+		return fmt.Errorf("list corpus signal devices: %w", err)
+	}
+	var deviceIDs []string
+	for rows.Next() {
+		var deviceID string
+		if err := rows.Scan(&deviceID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan corpus signal device: %w", err)
+		}
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate corpus signal devices: %w", err)
+	}
+	rows.Close()
+	if _, err := tx.Exec(`DELETE FROM device_signals WHERE source = ?`, SourceCorpus); err != nil {
+		return fmt.Errorf("clear corpus signals: %w", err)
+	}
+
+	for _, deviceID := range deviceIDs {
+		canonical, err := db.resolveCanonicalFields(tx, deviceID)
+		if err != nil {
+			return err
+		}
+		var customName, friendlyName, hostname, macAddress, ipAddress string
+		if err := tx.QueryRow(`SELECT COALESCE(custom_name, ''), COALESCE(friendly_name, ''),
+			COALESCE(hostname, ''), COALESCE(mac_address, ''), COALESCE(ip_address, '')
+			FROM devices WHERE device_id = ?`, deviceID).
+			Scan(&customName, &friendlyName, &hostname, &macAddress, &ipAddress); err != nil {
+			return fmt.Errorf("read device for corpus projection clear: %w", err)
+		}
+		vendor := canonical["vendor"].value
+		model := canonical["model"].value
+		deviceType := canonical["device_type"].value
+		osFamily := canonical["os_family"].value
+		displayName := deriveDisplayName(customName, friendlyName, model, vendor, hostname, macAddress, ipAddress)
+		if _, err := tx.Exec(`UPDATE devices SET vendor = ?, model = ?, device_type = ?,
+			os_family = ?, display_name = ? WHERE device_id = ?`,
+			vendor, model, deviceType, osFamily, displayName, deviceID); err != nil {
+			return fmt.Errorf("clear device corpus projection: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit corpus signal clear: %w", err)
+	}
+	return nil
 }
 
 func portsToUint16(ports []int) []uint16 {

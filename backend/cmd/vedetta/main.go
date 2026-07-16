@@ -74,6 +74,14 @@ func main() {
 	}
 	defer db.Close()
 
+	// Corpus-derived labels belong to a particular signed snapshot. Clear persisted
+	// projections before any ingestion workers start; quiet devices must not retain
+	// labels after the updater is disabled or its corpus is removed. A failure would
+	// leave operator-visible classification in an unknown generation, so fail closed.
+	if err := db.ClearCorpusSignals(); err != nil {
+		log.Fatalf("Failed to clear prior device-corpus projections: %v", err)
+	}
+
 	// Seed default whitelist rules if none exist
 	if err := db.SeedDefaultWhitelistRules(); err != nil {
 		log.Printf("WARNING: failed to seed default whitelist rules: %v", err)
@@ -438,7 +446,6 @@ func main() {
 	// installedDBTag lets the update notifier report the running signed device-DB generation.
 	// It stays nil unless the opt-in updater below is active.
 	var installedDBTag func() string
-
 	// Opt-in signed device-DB updater. Off unless VEDETTA_DB_UPDATE_ENABLED is set; even
 	// then it stays inert (fails closed) until a trust root is compiled in. It verifies a
 	// release's signature + hashes before applying and keeps the last-good DB otherwise.
@@ -453,7 +460,7 @@ func main() {
 				// Prepare both managed consumers after a generation switch, then publish both
 				// only if every file validates. A failure leaves the old in-process pair intact
 				// while the updater rolls the generation pointer back.
-				OnInstalled: reloadDeviceDBConsumers,
+				OnInstalled: func() error { return reloadDeviceDBConsumers(db) },
 			}
 			if repo := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_REPO")); repo != "" {
 				cfg.Repo = repo
@@ -542,7 +549,7 @@ func activateDeviceDBConsumers(installDir string) error {
 
 // reloadDeviceDBConsumers stages the currently switched generation for both consumers.
 // The updater restores its symlink if preparation fails; active process state is untouched.
-func reloadDeviceDBConsumers() error {
+func reloadDeviceDBConsumers(db *store.DB) error {
 	oui, err := fingerprint.PrepareReloadIEEEOUI()
 	if err != nil {
 		return err
@@ -551,9 +558,12 @@ func reloadDeviceDBConsumers() error {
 	if err != nil {
 		return err
 	}
-	oui.Activate()
-	corpus.Activate()
-	return nil
+	// Clear database projections and publish both infallible swaps while observations are
+	// excluded. If clearing fails, process state is untouched and the updater rolls back.
+	return db.ActivateCorpusGeneration(func() {
+		oui.Activate()
+		corpus.Activate()
+	})
 }
 
 func envEnabled(value string) bool {

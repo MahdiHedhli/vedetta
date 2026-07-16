@@ -8,11 +8,16 @@ signals — contributing to the corpus is a separate, opt-in path.
 
 ## What it does
 
-For each observed device, Core projects its currently captured signals (OUI, mDNS service
-types / TXT model / TXT vendor, SSDP device type / server token, DHCP option-55 sequence /
-vendor class, and TCP ports) into the corpus shape vocabulary and matches them against
-curated device-class shapes. The corpus schema also reserves hostname templates and UDP
-ports, but Core does not claim those families until its observation model supplies them.
+For each observed device, Core projects the current report's supported signals (OUI, mDNS
+service types / TXT model / TXT vendor, SSDP device type / server token, DHCP option-55
+sequence / vendor class, and TCP ports) plus recently retained, already-correlated OUI,
+mDNS, and SSDP evidence into the corpus shape vocabulary. Retained descriptive and typed
+evidence is limited to 30 days; the device's already-associated stable MAC remains eligible.
+That correlation lets, for example, a MAC-bearing discovery and a later mDNS report for the
+same stable device satisfy the two-family rule.
+Corpus-derived output is never read back as input, so a prior match cannot sustain itself.
+The corpus schema also reserves hostname templates and UDP ports, but Core does not claim
+those families until its observation model supplies them safely.
 
 A device **matches** a corpus variant when either:
 
@@ -41,7 +46,15 @@ confidence**. In the confidence-weighted resolver that means:
   never merge two distinct devices.
 
 A corpus match is advisory context; it cannot create, suppress, resolve, or reprioritize a
-finding on its own.
+finding on its own. It is also withheld from the local risk/EOL detector input path.
+
+Corpus signals are a replaceable projection of the active signed generation, not permanent
+identity facts. Each observation replaces that device's prior corpus rows. On startup and
+when a new device-DB generation activates, Core transactionally removes every prior corpus
+projection and reprojects affected device labels from non-corpus evidence. The clear and
+in-process matcher swap exclude concurrent device observations, so an old-generation match
+cannot be committed after activation. Removing `corpus.json`, disabling the updater, or
+installing a changed snapshot therefore cannot leave a quiet device labeled indefinitely.
 
 ## Delivery
 
