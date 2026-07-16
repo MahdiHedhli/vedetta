@@ -1,0 +1,101 @@
+name: release-db
+
+# Builds and signs a device-DB bundle (the embedded IEEE OUI table today; the fingerprint
+# corpus later) and publishes it as a DRAFT GitHub release for a human to review and
+# publish. The opt-in client puller fetches the published "latest" release and verifies the
+# ed25519 signature + per-file SHA-256 before applying. Signing uses the
+# VEDETTA_DB_SIGNING_KEY secret, streamed to the signer via stdin so it never lands on disk
+# or argv. Mirrors release.yml: draft only, never auto-published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Device-DB release tag, e.g. db-2026.07"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-db-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create/refresh a DRAFT release only
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: stable
+
+      - name: Validate the release tag
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TAG" | grep -qE '^db-[A-Za-z0-9._-]+$'; then
+            echo "::error::tag must look like db-<version> (got '$TAG')"
+            exit 1
+          fi
+
+      - name: Refuse to replace an already-published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          rows="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | [.tag_name, .draft] | @tsv')"
+          while IFS=$'\t' read -r tag is_draft; do
+            if [ "$tag" = "$TAG" ] && [ "$is_draft" != "true" ]; then
+              echo "::error::release '$TAG' is already published; refusing to replace live assets"
+              exit 1
+            fi
+          done <<< "$rows"
+
+      - name: Build and sign the bundle
+        env:
+          VEDETTA_DB_SIGNING_KEY: ${{ secrets.VEDETTA_DB_SIGNING_KEY }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VEDETTA_DB_SIGNING_KEY:-}" ]; then
+            echo "::error::VEDETTA_DB_SIGNING_KEY is not set — mint a keypair with 'go run ./cmd/dbkeygen' (in backend/) and add the private key as this secret"
+            exit 1
+          fi
+          ROOT="$PWD"
+          mkdir -p "$ROOT/dist"
+          cp backend/internal/fingerprint/data/oui.csv "$ROOT/dist/oui.csv"
+          # Stream the key via stdin so it never touches disk or the process argv.
+          printf '%s' "$VEDETTA_DB_SIGNING_KEY" | (
+            cd backend
+            go run ./cmd/dbbundle \
+              -key - \
+              -release "$TAG" \
+              -out "$ROOT/dist" \
+              -file "oui.csv=$ROOT/dist/oui.csv"
+          )
+          ls -la "$ROOT/dist"
+
+      - name: Create/refresh DRAFT release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          draft: true # never auto-publish — review and publish by hand
+          fail_on_unmatched_files: true
+          name: "Device DB ${{ github.event.inputs.tag }}"
+          body: |
+            Signed device-DB bundle. The opt-in client puller verifies the ed25519 signature
+            and per-file SHA-256 before applying anything. Review the assets and publish to
+            make this the `latest` release that clients pull.
+          files: |
+            dist/oui.csv
+            dist/manifest.json
+            dist/manifest.json.sig

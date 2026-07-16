@@ -7,12 +7,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/vedetta-network/vedetta/backend/internal/api"
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
+	"github.com/vedetta-network/vedetta/backend/internal/dbupdate"
 	"github.com/vedetta-network/vedetta/backend/internal/discovery"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsingest"
 	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
@@ -430,6 +432,34 @@ func main() {
 		}
 	}()
 	log.Printf("Retention job started (daily)")
+
+	// Opt-in signed device-DB updater. Off unless VEDETTA_DB_UPDATE_ENABLED is set; even
+	// then it stays inert (fails closed) until a trust root is compiled in. It verifies a
+	// release's signature + hashes before applying and keeps the last-good DB otherwise.
+	if envEnabled(os.Getenv("VEDETTA_DB_UPDATE_ENABLED")) {
+		ouiPath := strings.TrimSpace(os.Getenv("VEDETTA_OUI_DB_PATH"))
+		if ouiPath == "" {
+			log.Printf("WARNING: VEDETTA_DB_UPDATE_ENABLED is set but VEDETTA_OUI_DB_PATH is empty; device-DB updater not started")
+		} else {
+			cfg := dbupdate.Config{Enabled: true, InstallDir: filepath.Dir(ouiPath)}
+			if repo := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_REPO")); repo != "" {
+				cfg.Repo = repo
+			}
+			if raw := strings.TrimSpace(os.Getenv("VEDETTA_DB_UPDATE_INTERVAL")); raw != "" {
+				if d, err := time.ParseDuration(raw); err == nil {
+					cfg.Interval = d
+				} else {
+					log.Printf("Ignoring invalid VEDETTA_DB_UPDATE_INTERVAL %q: %v", raw, err)
+				}
+			}
+			if updater, err := dbupdate.New(cfg); err != nil {
+				log.Printf("WARNING: device-DB updater not started: %v", err)
+			} else {
+				go updater.Run(context.Background())
+				log.Printf("Device-DB updater started (opt-in); installing into %s", cfg.InstallDir)
+			}
+		}
+	}
 
 	router := api.NewRouter(srv)
 
