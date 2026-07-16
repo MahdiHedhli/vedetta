@@ -56,8 +56,8 @@ head -1 "$raw" | grep -q '^Registry,Assignment,Organization Name' \
     || fail "unexpected header — IEEE CSV format may have changed"
 
 # Clean-room normalize: Assignment -> lowercase 6-hex prefix, Organization Name ->
-# vendor; drop the header, non-MA-L, and malformed rows; sort ascending; dedupe. Python
-# csv writes CRLF + minimal quoting, matching the committed table byte-for-byte.
+# vendor; drop the header, non-MA-L, and malformed rows; sort ascending; dedupe. The
+# writer uses an explicit LF terminator so refresh diffs stay stable across platforms.
 python3 - "$raw" "$normalized" <<'PY' || fail "normalize failed"
 import csv, sys
 src, dst = sys.argv[1], sys.argv[2]
@@ -76,7 +76,7 @@ with open(src, newline='', encoding='utf-8', errors='replace') as f:
             continue
         rows[prefix] = vendor
 with open(dst, 'w', newline='', encoding='utf-8') as f:
-    w = csv.writer(f)  # default lineterminator '\r\n', QUOTE_MINIMAL
+    w = csv.writer(f, lineterminator='\n')
     w.writerow(['prefix', 'vendor'])
     for prefix in sorted(rows):
         w.writerow([prefix, rows[prefix]])

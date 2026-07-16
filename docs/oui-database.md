@@ -17,8 +17,9 @@ The lookup lives in `backend/internal/fingerprint` and has two layers.
    the full public IEEE 24-bit OUI registry (~39.7k prefixes), vendor name only, no
    device type.
 
-`Engine.Lookup` normalizes the MAC (lowercase, separators stripped), then resolves
-**curated first, IEEE second**:
+`Engine.Lookup` validates and normalizes the MAC (lowercase, separators stripped),
+rejects multicast and locally administered/randomized addresses as non-vendor evidence,
+then resolves **curated first, IEEE second**:
 
 | Match          | Vendor            | Device type | Confidence |
 | -------------- | ----------------- | ----------- | ---------- |
@@ -34,12 +35,12 @@ matcher (a later phase) fuses this with stronger signals.
 > into a separator-free index once at first use. (Before that index existed the overlay
 > silently never matched — see the piece-2 commit.)
 
-## Data provenance & license
+## Data provenance
 
 `data/oui.csv` is derived from the authoritative IEEE registry at
-<https://standards-oui.ieee.org/oui/oui.csv>. The IEEE publishes the OUI/MA-L assignments
-for public use and redistribution, so the table ships in-repo and compiled into the
-binary — no network call at runtime, no third-party fingerprint service.
+<https://standards-oui.ieee.org/oui/oui.csv>, which IEEE provides as its downloadable
+MA-L public listing. Vedetta normalizes that listing and ships it in-repo and compiled
+into the binary — no network call at runtime, no third-party fingerprint service.
 
 The file is the registry normalized to a compact two-column shape:
 
@@ -83,6 +84,7 @@ then opens — or force-refreshes — a single `automation/oui-update` pull requ
 ## Runtime override
 
 `Lookup` prefers an on-disk table at `VEDETTA_OUI_DB_PATH` over the embedded baseline,
-falling back to the baseline if that file is missing or unusable (it is never allowed to
-replace the table with an empty one). This is the install path for the signed device-DB
-bundle delivered by a later phase; unset, the embedded table is authoritative.
+falling back to the baseline if that file is missing or unusable. An override must contain
+at least 30,000 unique valid MA-L rows; a tiny or truncated file cannot silently erase the
+embedded registry's coverage. This is the install path for the signed device-DB bundle
+delivered by a later phase; unset, the embedded table is authoritative.

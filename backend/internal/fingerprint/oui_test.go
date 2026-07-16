@@ -66,6 +66,8 @@ func TestExtractOUI(t *testing.T) {
 		{"ac:bc:32:de:ad:be", "acbc32", true}, // full MAC — stops after 6
 		{"AcBc32dead", "acbc32", true},        // mixed case, early stop
 		{"ab:cd", "", false},                  // fewer than 6 hex
+		{"ac:bg:32", "", false},               // non-hex input
+		{"zz:zz:zz", "", false},               // non-hex input
 		{"", "", false},                       // empty
 		{":::::", "", false},                  // only separators
 	}
@@ -79,7 +81,13 @@ func TestExtractOUI(t *testing.T) {
 
 func TestLookup_Rejects(t *testing.T) {
 	e := NewEngine()
-	for _, in := range []string{"", "ab:cd", "zz:zz:zz"} {
+	for _, in := range []string{
+		"",
+		"ab:cd",
+		"zz:zz:zz",
+		"02:07:01:12:34:56", // locally administered/private; historical registry hit
+		"11:00:aa:12:34:56", // multicast; historical registry hit
+	} {
 		if r := e.Lookup(in); r != nil {
 			t.Errorf("Lookup(%q) = %+v, want nil", in, r)
 		}

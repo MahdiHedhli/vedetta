@@ -11,9 +11,17 @@ import (
 	"strings"
 )
 
-// ouiDBOverrideEnv names an optional on-disk OUI table that supersedes the compiled-in
-// baseline. The Phase-3 signed-bundle puller installs a refreshed table at this path.
-const ouiDBOverrideEnv = "VEDETTA_OUI_DB_PATH"
+const (
+	// ouiDBOverrideEnv names an optional on-disk OUI table that supersedes the
+	// compiled-in baseline. The Phase-3 signed-bundle puller installs a refreshed table
+	// at this path.
+	ouiDBOverrideEnv = "VEDETTA_OUI_DB_PATH"
+
+	// minimumFullOUIRows keeps a truncated but syntactically valid override from
+	// silently replacing the complete embedded registry with a handful of entries.
+	// Keep this aligned with the updater's production OUI_MIN_ROWS default.
+	minimumFullOUIRows = 30000
+)
 
 // embeddedOUICSV is the full IEEE MA-L (24-bit OUI) vendor table, refreshed monthly by
 // the update-oui workflow. Shape: "prefix,vendor" with a header row (see data/oui.csv).
@@ -65,8 +73,8 @@ func isHex6(s string) bool {
 }
 
 // loadOUICSVFile parses an on-disk OUI CSV. It errors if the file can't be read or
-// yields no usable rows, so a truncated/garbage override is rejected rather than
-// silently replacing the baseline with an empty table.
+// does not contain a plausibly complete registry, so a truncated/garbage override is
+// rejected rather than silently erasing most of the embedded baseline's coverage.
 func loadOUICSVFile(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -74,8 +82,8 @@ func loadOUICSVFile(path string) (map[string]string, error) {
 	}
 	defer f.Close()
 	m := parseOUICSV(f)
-	if len(m) == 0 {
-		return nil, fmt.Errorf("no usable OUI rows in %s", path)
+	if len(m) < minimumFullOUIRows {
+		return nil, fmt.Errorf("only %d usable OUI rows in %s; need at least %d", len(m), path, minimumFullOUIRows)
 	}
 	return m, nil
 }

@@ -502,8 +502,9 @@ var ouiDatabase = map[string]OUIResult{
 }
 
 // extractOUI returns the first 6 hex characters of a MAC/prefix, lowercased, skipping
-// separators (":", "-", " ") and stopping as soon as 6 are collected. It avoids the
-// intermediate allocations of a full lowercase-and-strip on this hot lookup path.
+// separators (":", "-", " ") and stopping as soon as 6 are collected. Invalid input
+// is rejected before it can reach either lookup table. It avoids the intermediate
+// allocations of a full lowercase-and-strip on this hot lookup path.
 func extractOUI(mac string) (string, bool) {
 	var buf [6]byte
 	idx := 0
@@ -512,8 +513,11 @@ func extractOUI(mac string) (string, bool) {
 		if c == ':' || c == '-' || c == ' ' {
 			continue
 		}
-		if c >= 'A' && c <= 'Z' {
+		if c >= 'A' && c <= 'F' {
 			c = c - 'A' + 'a'
+		}
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return "", false
 		}
 		buf[idx] = c
 		idx++
@@ -522,6 +526,24 @@ func extractOUI(mac string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// isGlobalUnicastOUI reports whether the OUI can identify a hardware vendor on an
+// Ethernet link. Locally administered (including randomized/private) and multicast
+// addresses are not manufacturer evidence even when their first 24 bits happen to be
+// present in the historical IEEE registry.
+func isGlobalUnicastOUI(oui string) bool {
+	if len(oui) != 6 {
+		return false
+	}
+	hexNibble := func(c byte) byte {
+		if c <= '9' {
+			return c - '0'
+		}
+		return c - 'a' + 10
+	}
+	firstOctet := hexNibble(oui[0])<<4 | hexNibble(oui[1])
+	return firstOctet&0x03 == 0
 }
 
 var (
@@ -568,7 +590,7 @@ func (e *Engine) Lookup(mac string) *OUIResult {
 
 	// Extract the OUI (first 3 octets) without allocating on this hot path.
 	oui, ok := extractOUI(mac)
-	if !ok {
+	if !ok || !isGlobalUnicastOUI(oui) {
 		return nil
 	}
 

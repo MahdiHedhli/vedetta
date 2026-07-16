@@ -21,6 +21,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write # push the automation branch (never main)
       pull-requests: write # open/refresh the update PR
