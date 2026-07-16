@@ -1,6 +1,7 @@
 package dbupdate
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -324,22 +325,73 @@ func TestNew_DoesNotMutateCallerHTTPClient(t *testing.T) {
 	}
 }
 
+func TestNew_DefaultsUnboundedCallerHTTPTimeout(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			client := &http.Client{Timeout: timeout}
+			u, err := New(Config{InstallDir: t.TempDir(), PublicKey: pub, HTTPClient: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if client.Timeout != timeout {
+				t.Fatalf("caller's timeout mutated from %s to %s", timeout, client.Timeout)
+			}
+			if u.client.Timeout != defaultHTTPTimeout {
+				t.Fatalf("updater timeout = %s, want %s", u.client.Timeout, defaultHTTPTimeout)
+			}
+		})
+	}
+}
+
+func TestNew_CopiesCallerPublicKey(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	want := append(ed25519.PublicKey(nil), pub...)
+	u, err := New(Config{InstallDir: t.TempDir(), PublicKey: pub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub[0] ^= 0xff
+	if !bytes.Equal(u.cfg.PublicKey, want) {
+		t.Fatal("caller mutation changed updater trust root")
+	}
+}
+
+func TestNew_RejectsRepoDotSegments(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	for _, repo := range []string{"../repo", "./repo", "owner/..", "owner/."} {
+		t.Run(repo, func(t *testing.T) {
+			if _, err := New(Config{Repo: repo, InstallDir: t.TempDir(), PublicKey: pub}); err == nil {
+				t.Fatalf("accepted unsafe Repo %q", repo)
+			}
+		})
+	}
+	if _, err := New(Config{Repo: "owner.with-dots/repo_name-1", InstallDir: t.TempDir(), PublicKey: pub}); err != nil {
+		t.Fatalf("rejected valid Repo: %v", err)
+	}
+}
+
 func TestUpdater_ConcurrentChecksInstallOnce(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	const repo = "owner/repo"
 	srv := newReleaseServer(t, repo, "db-2026.08", map[string]string{"oui.csv": "new\n"}, priv)
-	u, err := New(Config{Enabled: true, Repo: repo, APIBaseURL: srv.URL,
-		InstallDir: filepath.Join(t.TempDir(), "current"), PublicKey: pub})
-	if err != nil {
-		t.Fatal(err)
+	dir := filepath.Join(t.TempDir(), "current")
+	updaters := make([]*Updater, 2)
+	for i := range updaters {
+		var err error
+		updaters[i], err = New(Config{Enabled: true, Repo: repo, APIBaseURL: srv.URL,
+			InstallDir: dir, PublicKey: pub})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	start := make(chan struct{})
 	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		go func() {
+	for _, u := range updaters {
+		go func(u *Updater) {
 			<-start
 			errs <- u.Update(context.Background())
-		}()
+		}(u)
 	}
 	close(start)
 	var installed, current int

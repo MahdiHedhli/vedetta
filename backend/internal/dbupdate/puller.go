@@ -18,9 +18,11 @@ import (
 	"time"
 )
 
-// repoRE matches an "owner/repo" GitHub slug, validated before it is interpolated into an
-// API URL path.
+// repoRE matches the allowed characters in an "owner/repo" GitHub slug. validRepoSlug
+// additionally rejects dot path components before the value is interpolated into an API URL.
 var repoRE = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+var installDirLocks sync.Map // map[absolute-clean-install-dir]*sync.Mutex
 
 const (
 	// DefaultRepo is the official source of signed device-DB releases.
@@ -77,7 +79,6 @@ type Config struct {
 
 // Updater pulls, verifies, and installs signed device-DB bundles.
 type Updater struct {
-	mu           sync.Mutex
 	cfg          Config
 	client       *http.Client
 	allowedHosts map[string]struct{}
@@ -90,7 +91,7 @@ func New(cfg Config) (*Updater, error) {
 	if cfg.Repo == "" {
 		cfg.Repo = DefaultRepo
 	}
-	if !repoRE.MatchString(cfg.Repo) {
+	if !validRepoSlug(cfg.Repo) {
 		return nil, fmt.Errorf("dbupdate: invalid Repo %q, want owner/repo", cfg.Repo)
 	}
 	if cfg.APIBaseURL == "" {
@@ -102,6 +103,11 @@ func New(cfg Config) (*Updater, error) {
 	if cfg.InstallDir == "" {
 		return nil, errors.New("dbupdate: InstallDir is required")
 	}
+	installDir, err := filepath.Abs(cfg.InstallDir)
+	if err != nil {
+		return nil, fmt.Errorf("dbupdate: resolve InstallDir: %w", err)
+	}
+	cfg.InstallDir = filepath.Clean(installDir)
 	if cfg.PublicKey == nil {
 		key, err := TrustedKey()
 		if err != nil {
@@ -112,6 +118,9 @@ func New(cfg Config) (*Updater, error) {
 	if len(cfg.PublicKey) != ed25519.PublicKeySize {
 		return nil, ErrTrustKey
 	}
+	// PublicKey is a slice. Keep an immutable copy so a caller cannot mutate the trust
+	// root after New has validated it.
+	cfg.PublicKey = append(ed25519.PublicKey(nil), cfg.PublicKey...)
 	base, err := url.Parse(cfg.APIBaseURL)
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return nil, fmt.Errorf("dbupdate: invalid APIBaseURL %q", cfg.APIBaseURL)
@@ -133,6 +142,9 @@ func New(cfg Config) (*Updater, error) {
 		// Do not mutate the caller's shared client when installing our redirect policy.
 		copy := *cfg.HTTPClient
 		client = &copy
+		if client.Timeout <= 0 {
+			client.Timeout = defaultHTTPTimeout
+		}
 	}
 	// Constrain redirects to the allowed hosts so a hostile API response cannot redirect the
 	// fetch at an internal address (defense in depth; the signature is the ultimate gate).
@@ -153,6 +165,19 @@ func New(cfg Config) (*Updater, error) {
 		logger = log.Default()
 	}
 	return &Updater{cfg: cfg, client: client, allowedHosts: allowed, log: logger}, nil
+}
+
+func validRepoSlug(repo string) bool {
+	if !repoRE.MatchString(repo) {
+		return false
+	}
+	owner, name, ok := strings.Cut(repo, "/")
+	return ok && owner != "." && owner != ".." && name != "." && name != ".."
+}
+
+func installDirLock(path string) *sync.Mutex {
+	lock, _ := installDirLocks.LoadOrStore(path, &sync.Mutex{})
+	return lock.(*sync.Mutex)
 }
 
 // isLoopback reports whether host is a loopback name, used only to permit an http test
@@ -219,12 +244,16 @@ var errUpToDate = errors.New("dbupdate: already at the latest release")
 // touches the installed files unless a fully-verified newer bundle is ready, so a failed or
 // unverifiable update leaves the last-good DB in place.
 func (u *Updater) Update(ctx context.Context) error {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
 	if !u.cfg.Enabled {
 		return ErrDisabled
 	}
+	// Different Updater instances may target the same generation pointer. Serialize the
+	// complete discovery/check/download/install flow by normalized InstallDir so two
+	// instances cannot race an older release over a newer one.
+	lock := installDirLock(u.cfg.InstallDir)
+	lock.Lock()
+	defer lock.Unlock()
+
 	rel, err := u.latestRelease(ctx)
 	if err != nil {
 		return err
@@ -233,19 +262,8 @@ func (u *Updater) Update(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("dbupdate: selected release has invalid tag %q", rel.TagName)
 	}
-	if installed, err := u.installedTag(); err == nil {
-		installedVersion, ok := parseDBReleaseVersion(installed)
-		if !ok {
-			return fmt.Errorf("dbupdate: installed release tag %q is invalid", installed)
-		}
-		switch compareDBReleaseVersion(available, installedVersion) {
-		case 0:
-			return errUpToDate
-		case -1:
-			return fmt.Errorf("%w: installed %s, available %s", ErrDowngrade, installed, rel.TagName)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("dbupdate: read installed release: %w", err)
+	if err := u.requireNewerThanInstalled(available, rel.TagName); err != nil {
+		return err
 	}
 
 	tmp, err := os.MkdirTemp("", "vedetta-dbupdate-*")
@@ -298,11 +316,40 @@ func (u *Updater) Update(ctx context.Context) error {
 	if err := VerifyBundle(os.DirFS(tmp), manifest, sig, u.cfg.PublicKey); err != nil {
 		return fmt.Errorf("dbupdate: verification failed, keeping last-good: %w", err)
 	}
+	// Re-read the signed installed tag immediately before the pointer switch. The
+	// process-wide lock prevents another Updater instance from changing it, while this
+	// second check also fails closed if an external actor changed the managed generation
+	// during the network/download phase.
+	if err := u.requireNewerThanInstalled(available, rel.TagName); err != nil {
+		return err
+	}
 	if err := u.installGeneration(manifest, tmp); err != nil {
 		return err
 	}
 	u.log.Printf("[dbupdate] installed device-DB release %s (%d files)", rel.TagName, len(manifest.Files))
 	return nil
+}
+
+func (u *Updater) requireNewerThanInstalled(available dbReleaseVersion, availableTag string) error {
+	installed, err := u.installedTag()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("dbupdate: read installed release: %w", err)
+	}
+	installedVersion, ok := parseDBReleaseVersion(installed)
+	if !ok {
+		return fmt.Errorf("dbupdate: installed release tag %q is invalid", installed)
+	}
+	switch compareDBReleaseVersion(available, installedVersion) {
+	case 0:
+		return errUpToDate
+	case -1:
+		return fmt.Errorf("%w: installed %s, available %s", ErrDowngrade, installed, availableTag)
+	default:
+		return nil
+	}
 }
 
 // latestRelease finds the highest monotonically-versioned published device-DB release.

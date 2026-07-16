@@ -45,10 +45,30 @@ jobs:
           TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$TAG" | grep -qE '^db-[0-9]{4}\.(0[1-9]|1[0-2])(\.(0[1-9]|[12][0-9]|3[01]))?(\.[1-9][0-9]*)?$'; then
-            echo "::error::tag must be a monotonic calendar version like db-2026.07 or db-2026.07.15.1 (got '$TAG')"
-            exit 1
-          fi
+          python3 - "$TAG" <<'PY'
+          import datetime
+          import re
+          import sys
+
+          tag = sys.argv[1]
+          match = re.fullmatch(
+              r"db-([0-9]{4})\.(0[1-9]|1[0-2])(?:\.(0[1-9]|[12][0-9]|3[01]))?(?:\.([1-9][0-9]*))?",
+              tag,
+          )
+          if match is None or int(match.group(1)) < 2000:
+              print(
+                  f"::error::tag must be a monotonic calendar version like "
+                  f"db-2026.07 or db-2026.07.15.1 (got {tag!r})",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          if match.group(3) is not None:
+              try:
+                  datetime.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+              except ValueError:
+                  print(f"::error::tag contains an impossible calendar date (got {tag!r})", file=sys.stderr)
+                  raise SystemExit(1)
+          PY
 
       - name: Refuse to replace an already-published release
         env:

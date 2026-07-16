@@ -75,8 +75,5 @@ updater. Core reloads the OUI index after a successful switch without requiring 
 When disabled (the default), the embedded table—refreshed monthly in-repo by the
 `update-oui` workflow—is authoritative.
 
-## Update notifications
-
-Whether or not auto-update is enabled, the dashboard can surface that a newer device-DB (or
-Vedetta) release exists. That notifier is read-only (a version check) and is documented
-separately.
+Dashboard notification for newer device-DB or Vedetta releases is planned separately; it is
+not part of this updater or the current operator UI.
