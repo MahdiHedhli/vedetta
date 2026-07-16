@@ -88,6 +88,7 @@ func corpusObservedSignals(host discovery.DiscoveredHost) corpusmatch.ObservedSi
 func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discovery.DiscoveredHost, observedAt time.Time) (corpusmatch.ObservedSignals, error) {
 	obs := corpusObservedSignals(host)
 	cutoff := observedAt.UTC().Add(-corpusSignalRecency)
+	protocolCutoff := observedAt.UTC().Add(-mdnsNameRecencyWindow)
 
 	rows, err := tx.Query(`SELECT DISTINCT h.address_value FROM device_address_history h
 		WHERE h.device_id = ? AND h.address_type = 'mac'
@@ -152,13 +153,13 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 		  AND ((evidence_type = 'mdns_service' AND EXISTS
 		    (SELECT 1 FROM device_identity_evidence_strength s
 		      WHERE s.evidence_id = device_identity_evidence.evidence_id
-		        AND s.source = 'passive_mdns' AND s.observed_at <= ?))
+		        AND s.source = 'passive_mdns' AND s.observed_at >= ? AND s.observed_at <= ?))
 		    OR (evidence_type = 'ssdp_device_type' AND EXISTS
 		    (SELECT 1 FROM device_identity_evidence_strength s
 		      WHERE s.evidence_id = device_identity_evidence.evidence_id
-		        AND s.source = 'passive_ssdp' AND s.observed_at <= ?)))`,
+		        AND s.source = 'passive_ssdp' AND s.observed_at >= ? AND s.observed_at <= ?)))`,
 		deviceID, observedAt, cutoff, observedAt, observedAt, observedAt, observedAt,
-		observedAt, observedAt)
+		protocolCutoff, observedAt, protocolCutoff, observedAt)
 	if err != nil {
 		return obs, fmt.Errorf("read retained typed signals: %w", err)
 	}

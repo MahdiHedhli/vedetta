@@ -189,6 +189,104 @@ func TestCorpusFusionDoesNotBackdateFutureProtocolProvenance(t *testing.T) {
 	}
 }
 
+func TestCorpusFusionDoesNotReviveStaleProtocolProvenance(t *testing.T) {
+	if err := corpusmatch.EnableManagedCorpus(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	db := testDB(t)
+	at := time.Now().UTC()
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.55", DiscoverySource: "nmap_active", Status: "up",
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.55").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	observations := []struct {
+		time       time.Time
+		source     string
+		confidence float64
+	}{
+		{time: at.Add(-20 * 24 * time.Hour), source: "passive_mdns", confidence: 0.4},
+		{time: at, source: "legacy_import", confidence: 0.9},
+	}
+	for _, observation := range observations {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
+			DeviceIdentityEvidenceInput{
+				Type: "mdns_service", Value: "_stale._tcp", DisplayValue: "_stale._tcp",
+				Source: observation.source, Confidence: observation.confidence,
+			}, observation.time, false)
+		if err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	obs, err := db.corpusObservedSignalsTx(tx, deviceID, discovery.DiscoveredHost{}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.MDNSServices) != 0 {
+		t.Fatalf("non-protocol refresh revived stale passive-mDNS provenance: %+v", obs.MDNSServices)
+	}
+}
+
+func TestIdentityEvidenceStrengthRecordsBoundedSourceRecencyCheckpoints(t *testing.T) {
+	db := testDB(t)
+	base := time.Now().UTC().Add(-10 * 24 * time.Hour)
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.56", DiscoverySource: "nmap_active", Status: "up",
+	}, base); err != nil {
+		t.Fatal(err)
+	}
+	var deviceID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE ip_address = ?`, "192.0.2.56").Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	for _, observedAt := range []time.Time{base, base.Add(time.Hour), base.Add(8 * 24 * time.Hour)} {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.upsertIdentityEvidenceTx(tx, deviceID, "default", "sensor-1",
+			DeviceIdentityEvidenceInput{
+				Type: "mdns_service", Value: "_bounded._tcp", DisplayValue: "_bounded._tcp",
+				Source: "passive_mdns", Confidence: 0.8,
+			}, observedAt, false)
+		if err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var strengthRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_identity_evidence_strength s
+		JOIN device_identity_evidence e ON e.evidence_id = s.evidence_id
+		WHERE e.device_id = ? AND e.evidence_type = 'mdns_service'`, deviceID).Scan(&strengthRows); err != nil {
+		t.Fatal(err)
+	}
+	if strengthRows != 2 {
+		t.Fatalf("source recency history rows = %d, want 2 bounded checkpoints", strengthRows)
+	}
+}
+
 func TestCorpusDerivedSignalsCapsConfidenceAtVariantConfidence(t *testing.T) {
 	dir := t.TempDir()
 	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","model":"Player","device_type":"media_player"},"variants":[{"variant_id":"v","confidence_bp":4200,"shape":{"schema_version":1,"ssdp_server_tokens":["example/player"]}}]}]}`
