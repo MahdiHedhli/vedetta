@@ -32,9 +32,9 @@ func Reduce(host discovery.DiscoveredHost) (corpusmatch.CanonicalShapeV1, error)
 		if ev.Type != "dhcp_option_55" {
 			continue
 		}
-		candidate := parseOption55(ev.Value)
-		if len(candidate) == 0 {
-			continue
+		candidate, err := parseOption55(ev.Value)
+		if err != nil {
+			return corpusmatch.CanonicalShapeV1{}, err
 		}
 		if len(shape.DHCPOption55) != 0 && !equalU16(shape.DHCPOption55, candidate) {
 			return corpusmatch.CanonicalShapeV1{}, fmt.Errorf("corpuscontrib: conflicting dhcp_option_55 observations")
@@ -88,9 +88,15 @@ func sortedUniqueU16(ports []int) []uint16 {
 
 func normOUI(v string) string {
 	var b strings.Builder
-	for _, c := range strings.ToLower(v) {
+	for _, c := range v {
 		if c == ':' || c == '-' || c == '.' || c == ' ' {
 			continue
+		}
+		if c >= 'A' && c <= 'F' {
+			c += 'a' - 'A'
+		}
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return ""
 		}
 		b.WriteRune(c)
 	}
@@ -105,14 +111,29 @@ func normOUI(v string) string {
 	return s
 }
 
-func parseOption55(v string) []uint16 {
-	var out []uint16
-	for _, tok := range strings.FieldsFunc(v, func(r rune) bool { return r < '0' || r > '9' }) {
-		if n, err := strconv.Atoi(tok); err == nil && n >= 1 && n <= 254 {
-			out = append(out, uint16(n))
-		}
+func parseOption55(v string) ([]uint16, error) {
+	parts := strings.Split(v, ",")
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("corpuscontrib: dhcp_option_55 is empty")
 	}
-	return out
+	out := make([]uint16, 0, len(parts))
+	for _, part := range parts {
+		tok := strings.TrimSpace(part)
+		if tok == "" {
+			return nil, fmt.Errorf("corpuscontrib: dhcp_option_55 contains an empty code")
+		}
+		for i := 0; i < len(tok); i++ {
+			if tok[i] < '0' || tok[i] > '9' {
+				return nil, fmt.Errorf("corpuscontrib: dhcp_option_55 contains a non-decimal code")
+			}
+		}
+		n, err := strconv.Atoi(tok)
+		if err != nil || n < 1 || n > 254 {
+			return nil, fmt.Errorf("corpuscontrib: dhcp_option_55 code must be 1..254")
+		}
+		out = append(out, uint16(n))
+	}
+	return out, nil
 }
 
 func equalU16(a, b []uint16) bool {

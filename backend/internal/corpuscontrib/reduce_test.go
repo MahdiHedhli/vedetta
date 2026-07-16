@@ -57,6 +57,9 @@ func TestReduce_RejectsConflictingOrMalformedShapes(t *testing.T) {
 	if shape, err := Reduce(discovery.DiscoveredHost{MACAddress: "02:11:22:33:44:55"}); err != nil || len(shape.OUIPrefixes) != 0 {
 		t.Fatalf("locally administered MAC must not become an OUI: shape=%+v err=%v", shape, err)
 	}
+	if shape, err := Reduce(discovery.DiscoveredHost{MACAddress: "00005é00:53:01"}); err != nil || len(shape.OUIPrefixes) != 0 {
+		t.Fatalf("non-ASCII MAC text must not become an OUI: shape=%+v err=%v", shape, err)
+	}
 	_, err := Reduce(discovery.DiscoveredHost{IdentityEvidence: []discovery.IdentityEvidence{
 		{Type: "dhcp_option_55", Value: "1,3,6"},
 		{Type: "dhcp_option_55", Value: "1,3,15"},
@@ -69,6 +72,14 @@ func TestReduce_RejectsConflictingOrMalformedShapes(t *testing.T) {
 	}}})
 	if err == nil {
 		t.Fatal("duplicate DHCP option code was accepted")
+	}
+	for _, value := range []string{"1,999,3", "1,foo,3", "1,,3", "0,3", "1,255"} {
+		_, err = Reduce(discovery.DiscoveredHost{IdentityEvidence: []discovery.IdentityEvidence{{
+			Type: "dhcp_option_55", Value: value,
+		}}})
+		if err == nil {
+			t.Errorf("malformed DHCP option-55 value %q was accepted", value)
+		}
 	}
 }
 
@@ -108,6 +119,14 @@ func TestValidateCandidateRejectsEveryStringCarrier(t *testing.T) {
 				t.Fatal("candidate passed structural gate")
 			}
 		})
+	}
+}
+
+func TestValidateCandidateAcceptsUppercaseGlobalOUI(t *testing.T) {
+	if err := ValidateCandidate(corpusmatch.CanonicalShapeV1{
+		SchemaVersion: 1, OUIPrefixes: []string{"00005E"},
+	}); err != nil {
+		t.Fatalf("uppercase global OUI was rejected: %v", err)
 	}
 }
 
