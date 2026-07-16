@@ -171,6 +171,18 @@ func (u *Updater) InstallDir() string {
 	return u.cfg.InstallDir
 }
 
+// InstalledTag returns the tag of the currently-installed signed device-DB release, or ""
+// if none has been installed yet. It never errors — a missing state file is the clean
+// first-run state — so read-only callers (e.g. the update-status notifier) can use it
+// directly.
+func (u *Updater) InstalledTag() string {
+	tag, err := u.installedTag()
+	if err != nil {
+		return ""
+	}
+	return tag
+}
+
 // ActivateConsumer validates that an existing install path is one of this updater's
 // managed generation pointers before allowing a consumer to read it. An absent path is the
 // clean first-run state. This keeps consumer startup behind the same ownership boundary as

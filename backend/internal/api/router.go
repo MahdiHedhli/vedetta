@@ -27,6 +27,7 @@ import (
 	"github.com/vedetta-network/vedetta/backend/internal/processing"
 	"github.com/vedetta-network/vedetta/backend/internal/store"
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
+	"github.com/vedetta-network/vedetta/backend/internal/updatecheck"
 )
 
 // Server holds dependencies for all API handlers.
@@ -40,6 +41,10 @@ type Server struct {
 	Enroll      *EnrollmentStore
 	Processor   *processing.Processor
 	FeedHealth  FeedHealthProvider
+
+	// UpdateChecker serves the read-only release-availability status for the dashboard's
+	// update notifier. Optional (nil disables the notice).
+	UpdateChecker *updatecheck.Checker
 
 	// SetupCode is the single-use first-admin bootstrap code (GHSA-6cmx). It is set
 	// at boot ONLY while no active admin token exists, and is cleared once the first
@@ -155,6 +160,7 @@ func NewRouter(srv *Server) http.Handler {
 			r.Get("/findings/{findingID}", srv.handleFindingDetail)
 			r.Get("/finding-suppressions", srv.handleListFindingSuppressions)
 			r.Get("/health/detection", srv.handleDetectionHealth)
+			r.Get("/update-status", srv.handleUpdateStatus)
 			r.Get("/auth/session", srv.handleAuthSession)
 			// Telemetry opt-in is a read-scope read: the telemetry daemon polls it
 			// each tick with its read token to decide whether to export (issue #37).
