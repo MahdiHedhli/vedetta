@@ -46,19 +46,33 @@ func corpusObservedSignals(host discovery.DiscoveredHost) corpusmatch.ObservedSi
 	for _, ev := range host.IdentityEvidence {
 		switch ev.Type {
 		case "mdns_service":
-			obs.MDNSServices = append(obs.MDNSServices, ev.Value)
+			if source == "passive_mdns" || source == "mdns" {
+				obs.MDNSServices = append(obs.MDNSServices, ev.Value)
+			}
 		case "mdns_txt_model":
-			obs.MDNSModels = append(obs.MDNSModels, ev.Value)
+			if source == "passive_mdns" || source == "mdns" {
+				obs.MDNSModels = append(obs.MDNSModels, ev.Value)
+			}
 		case "mdns_txt_vendor":
-			obs.MDNSVendors = append(obs.MDNSVendors, ev.Value)
+			if source == "passive_mdns" || source == "mdns" {
+				obs.MDNSVendors = append(obs.MDNSVendors, ev.Value)
+			}
 		case "ssdp_device_type":
-			obs.SSDPDeviceTypes = append(obs.SSDPDeviceTypes, ev.Value)
+			if source == "passive_ssdp" || source == "ssdp" {
+				obs.SSDPDeviceTypes = append(obs.SSDPDeviceTypes, ev.Value)
+			}
 		case "ssdp_server_token":
-			obs.SSDPServerTokens = append(obs.SSDPServerTokens, ev.Value)
+			if source == "passive_ssdp" || source == "ssdp" {
+				obs.SSDPServerTokens = append(obs.SSDPServerTokens, ev.Value)
+			}
 		case "dhcp_vendor_class":
-			obs.DHCPVendorClasses = append(obs.DHCPVendorClasses, ev.Value)
+			if source == "passive_dhcp" || source == "dhcp" {
+				obs.DHCPVendorClasses = append(obs.DHCPVendorClasses, ev.Value)
+			}
 		case "dhcp_option_55":
-			obs.DHCPOption55 = parseOption55(ev.Value)
+			if source == "passive_dhcp" || source == "dhcp" {
+				obs.DHCPOption55 = parseOption55(ev.Value)
+			}
 		}
 	}
 	return obs
@@ -109,15 +123,17 @@ func (db *DB) corpusObservedSignalsTx(tx *sql.Tx, deviceID string, host discover
 	}
 	rows.Close()
 
-	rows, err = tx.Query(`SELECT evidence_type, value_display FROM device_identity_evidence
+	rows, err = tx.Query(`SELECT evidence_type, value_display, source FROM device_identity_evidence
 		WHERE device_id = ? AND valid_until IS NULL AND value_display != ''
-		  AND last_seen >= ? AND evidence_type IN ('mdns_service', 'ssdp_device_type')`, deviceID, cutoff)
+		  AND last_seen >= ?
+		  AND ((evidence_type = 'mdns_service' AND source = 'passive_mdns')
+		    OR (evidence_type = 'ssdp_device_type' AND source = 'passive_ssdp'))`, deviceID, cutoff)
 	if err != nil {
 		return obs, fmt.Errorf("read retained typed signals: %w", err)
 	}
 	for rows.Next() {
-		var kind, value string
-		if err := rows.Scan(&kind, &value); err != nil {
+		var kind, value, source string
+		if err := rows.Scan(&kind, &value, &source); err != nil {
 			rows.Close()
 			return obs, fmt.Errorf("scan retained typed signal: %w", err)
 		}

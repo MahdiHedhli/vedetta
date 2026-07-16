@@ -71,6 +71,36 @@ func TestCorpusObservedSignalsDoesNotRelabelActiveServicesAsMDNS(t *testing.T) {
 	}
 }
 
+func TestCorpusFusionDoesNotRetainActiveServicesAsMDNS(t *testing.T) {
+	dir := t.TempDir()
+	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","device_type":"media"},"variants":[{"variant_id":"v","confidence_bp":9000,"shape":{"schema_version":1,"oui_prefixes":["acbc32"],"mdns_services":["_googlecast._tcp"]}}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "corpus.json"), []byte(snap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := corpusmatch.EnableManagedCorpus(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = corpusmatch.EnableManagedCorpus(t.TempDir()) })
+
+	db := testDB(t)
+	now := time.Now().UTC()
+	for i, services := range [][]string{{"_googlecast._tcp"}, nil} {
+		if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+			IPAddress: "192.0.2.52", MACAddress: "ac:bc:32:11:22:33",
+			Services: services, DiscoverySource: "nmap_active", Status: "up",
+		}, now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var corpusRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM device_signals WHERE source = ?`, SourceCorpus).Scan(&corpusRows); err != nil {
+		t.Fatal(err)
+	}
+	if corpusRows != 0 {
+		t.Fatalf("active service was retained as mDNS and produced %d corpus rows", corpusRows)
+	}
+}
+
 func TestCorpusDerivedSignalsCapsConfidenceAtVariantConfidence(t *testing.T) {
 	dir := t.TempDir()
 	snap := `{"schema_version":1,"profiles":[{"profile_id":"p","labels":{"manufacturer":"Example","model":"Player","device_type":"media_player"},"variants":[{"variant_id":"v","confidence_bp":4200,"shape":{"schema_version":1,"ssdp_server_tokens":["example/player"]}}]}]}`
@@ -82,9 +112,12 @@ func TestCorpusDerivedSignalsCapsConfidenceAtVariantConfidence(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = corpusmatch.EnableManagedCorpus(t.TempDir()) })
 
-	sigs := corpusDerivedSignalsForObserved(corpusObservedSignals(discovery.DiscoveredHost{IdentityEvidence: []discovery.IdentityEvidence{{
-		Type: "ssdp_server_token", Value: "Example/Player",
-	}}}))
+	sigs := corpusDerivedSignalsForObserved(corpusObservedSignals(discovery.DiscoveredHost{
+		DiscoverySource: "passive_ssdp",
+		IdentityEvidence: []discovery.IdentityEvidence{{
+			Type: "ssdp_server_token", Value: "Example/Player",
+		}},
+	}))
 	if len(sigs) == 0 {
 		t.Fatal("SSDP server token did not reach the corpus matcher")
 	}
