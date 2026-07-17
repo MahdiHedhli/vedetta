@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -55,6 +56,22 @@ func (s *Server) handleConfirmDeviceIdentity(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"action": action})
+}
+
+// handleConsolidateMACOwners runs the one-time repair of runaway MAC-conflict
+// device sprawl: it collapses every burned-in MAC owned by more than one canonical
+// device to a single deterministic survivor and hard-deletes the duplicates. It is
+// idempotent (a no-op once each MAC has one owner). Operators should take a DB
+// backup first; the operation is destructive by design.
+func (s *Server) handleConsolidateMACOwners(w http.ResponseWriter, r *http.Request) {
+	report, err := s.DB.ConsolidateMACOwners(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	s.logInfo("devices", fmt.Sprintf("MAC-owner consolidation by %s: %d group(s), %d duplicate(s) removed",
+		requestActor(r), report.Groups, report.AbsorbedCount))
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (s *Server) handleMergeDevices(w http.ResponseWriter, r *http.Request) {

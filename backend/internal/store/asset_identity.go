@@ -730,13 +730,22 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 	for _, r := range ranks[:3] {
 		candidates := map[string]struct{}{}
 		var matchedTypes []string
+		macMatchValues := map[string]struct{}{}
 		for _, in := range evidence {
 			kind := strings.ToLower(strings.TrimSpace(in.Type))
 			if !r.requireConfirmed && !r.types[kind] {
 				continue
 			}
-			if normalizeIdentityValue(kind, in.Value) == "" {
+			normalizedValue := normalizeIdentityValue(kind, in.Value)
+			if normalizedValue == "" {
 				continue
+			}
+			if r.name == "mac" {
+				// The consolidation gate must consider every valid MAC presented by
+				// this request, including values that have no existing owner. Otherwise
+				// duplicate known MAC A plus distinct unseen MAC B looks like one value
+				// and incorrectly collapses A's owners instead of preserving a conflict.
+				macMatchValues[normalizedValue] = struct{}{}
 			}
 			valueHash := identityValueHMAC(key, kind, in.Value)
 			query := `SELECT e.device_id FROM device_identity_evidence e
@@ -802,7 +811,23 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 			}
 		}
 		if len(candidates) > 1 {
-			return identityResolution("", 0, "conflicting_identity_evidence", matchedTypes, len(candidates)), nil
+			// A burned-in (globally administered) MAC identifies exactly ONE physical
+			// NIC, so >1 canonical owner of the same value_hmac is data corruption, not
+			// a legitimate ambiguity. Vetoing here makes UpsertDevice mint yet another
+			// owner on every observation — an unbounded device-sprawl loop. Instead
+			// attach to a single deterministic owner (matching the consolidation
+			// survivor rule). Every OTHER >1 case keeps the conflict veto unchanged:
+			// operator/stable ranks (real stable-ID collisions), the weak-alias rank
+			// below, randomized/locally-administered MACs, and two distinct MAC values.
+			if r.name == "mac" && macOwnerConsolidable(macMatchValues) {
+				chosen, err := deterministicOwnerTx(ctx, tx, candidates)
+				if err != nil {
+					return DeviceIdentityResolution{}, err
+				}
+				candidates = map[string]struct{}{chosen: {}}
+			} else {
+				return identityResolution("", 0, "conflicting_identity_evidence", matchedTypes, len(candidates)), nil
+			}
 		}
 		for id := range candidates {
 			if strongID != "" && strongID != id {
@@ -1035,6 +1060,50 @@ func (db *DB) macConflictsAt(tx *sql.Tx, candidateID, incomingMAC string, at tim
 func isLocallyAdministeredMAC(value string) bool {
 	mac, err := net.ParseMAC(strings.TrimSpace(value))
 	return err == nil && len(mac) > 0 && mac[0]&0x02 != 0
+}
+
+// macOwnerConsolidable reports whether a >1-owner MAC conflict is safe to collapse
+// to a single deterministic owner (rather than veto). It is true only when EXACTLY
+// ONE distinct, non-empty, globally-administered (burned-in) MAC value matched:
+// such a MAC identifies one physical NIC, so multiple canonical owners are
+// corruption. Two distinct matched values (genuine different-MAC conflict) or a
+// randomized/locally-administered value keep the conflict veto. Values are already
+// normalized (see the capture site), so representation differences of one MAC
+// collapse to a single entry here.
+func macOwnerConsolidable(values map[string]struct{}) bool {
+	if len(values) != 1 {
+		return false
+	}
+	for v := range values {
+		if v == "" {
+			return false
+		}
+		return !isLocallyAdministeredMAC(v)
+	}
+	return false
+}
+
+// deterministicOwnerTx picks a single stable survivor among candidate device IDs:
+// oldest devices.first_seen, tiebroken by lowest device_id. This is the SAME rule
+// the one-time MAC-owner consolidation uses, so the resolver keeps landing on the
+// exact device consolidation preserves (no post-cleanup owner flip).
+func deterministicOwnerTx(ctx context.Context, tx *sql.Tx, candidates map[string]struct{}) (string, error) {
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("deterministic owner: empty candidate set")
+	}
+	ids := make([]any, 0, len(candidates))
+	for id := range candidates {
+		ids = append(ids, id)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	var chosen string
+	err := tx.QueryRowContext(ctx,
+		`SELECT device_id FROM devices WHERE device_id IN (`+placeholders+`)
+		 ORDER BY first_seen ASC, device_id ASC LIMIT 1`, ids...).Scan(&chosen)
+	if err != nil {
+		return "", fmt.Errorf("select deterministic mac owner: %w", err)
+	}
+	return chosen, nil
 }
 
 func identityOUI(value string) string {
