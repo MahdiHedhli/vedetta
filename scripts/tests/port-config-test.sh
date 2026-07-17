@@ -339,5 +339,23 @@ assert_true "update-all waits on local Core readiness after rebuild" grep -Fq \
   '"${LOCAL_CORE_URL}/readyz"' "${REPO_ROOT}/scripts/update-all.sh"
 assert_true "update-all preserves the remote sensor Core override" grep -Fq \
   'SENSOR_CORE_URL="${VEDETTA_CORE_URL:-${LOCAL_CORE_URL}}"' "${REPO_ROOT}/scripts/update-all.sh"
+assert_true "upgrade pins the reviewed Compose graph" grep -Fq \
+  'export COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade requires target readiness" grep -Fq \
+  'wait_readiness "$HEALTH_TIMEOUT"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "legacy liveness fallback is limited to readyz 404" grep -Fq \
+  '[ "$allow_legacy" = "1" ] && [ "$code" = "404" ]' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade takes an atomic single-run lock" grep -Fq \
+  'if ! mkdir "$LOCK_DIR"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade rejects untracked build inputs" grep -Fq \
+  'git ls-files --others --exclude-standard' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "volume guard compares the rendered name to the original volume" grep -Fq \
+  'volume_name == expected' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "volume guard requires a named volume mount" grep -Fq \
+  'mt == "volume" && ms == "vedetta-data" && md == "/data"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_false "cold restore never suppresses data-deletion failure" grep -Fq \
+  'rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_false "update-all never starts uncertain tags after build failure" grep -Fq \
+  'Attempting to start with previous images' "${REPO_ROOT}/scripts/update-all.sh"
 
 echo "1..${pass_count}"

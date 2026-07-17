@@ -8,7 +8,7 @@
 #
 # This script makes every Core upgrade recoverable:
 #
-#   1. Snapshot the Core DB (+ .env + telemetry/threat-network volumes) BEFORE
+#   1. Snapshot the Core DB (+ .env + telemetry state) BEFORE
 #      the database can change. Healthy backend: the old stack keeps serving
 #      through checkout+build and an online `.backup` is taken seconds before
 #      the container swap, so a rollback discards almost nothing. Backend down
@@ -17,14 +17,15 @@
 #      during an incident).
 #   2. Check out a pinned tag/commit and rebuild.
 #   3. Bring the upgraded stack up.
-#   4. Verify: backend health, then `PRAGMA foreign_key_check` (expect 0 rows)
+#   4. Verify: backend readiness, then `PRAGMA foreign_key_check` (expect 0 rows)
 #      and `PRAGMA integrity_check` (expect "ok").
-#   5. On ANY failure: stop the backend, restore the pre-upgrade snapshot into
-#      the volume, check out the previous version, bring it back up, and exit
-#      non-zero with the captured backend log.
+#   5. On failure: attempt to stop the backend, restore the pre-upgrade snapshot,
+#      check out the previous version, and bring it back up. If any recovery
+#      precondition cannot be proven safe, halt with the stack stopped and the
+#      snapshot intact. Always exit non-zero with the captured backend log.
 #
 # Rollback = restore the pre-upgrade snapshot, NOT run an older binary on the
-# migrated DB. Migrations 025/026 are forward-only; see
+# migrated DB. Migrations 025–030 are forward-only; see
 # docs/backup-restore-rollback.md.
 #
 # Usage:
@@ -40,9 +41,9 @@
 #   -y, --yes                 Non-interactive; do not prompt before upgrading.
 #       --from <ref>          Rollback target (default: HEAD before checkout).
 #       --no-cache            Build images with --no-cache.
-#       --skip-aux            Do not snapshot telemetry-state / threat-network-data.
+#       --skip-aux            Do not snapshot telemetry-state.
 #       --prune-on-success    Delete the snapshot after a fully verified upgrade.
-#       --health-timeout <s>  Seconds to wait for backend health (default 120).
+#       --health-timeout <s>  Seconds to wait for backend readiness (default 120).
 #   -h, --help                Show this help.
 #
 set -Eeuo pipefail
@@ -71,11 +72,17 @@ fi
 
 PROJECT_DIR="${VEDETTA_UPGRADE_HOME}"
 SCRIPT_DIR="${PROJECT_DIR}/scripts"
+LOCK_DIR=""
+LOCK_HELD=0
 
 # Registered FIRST thing in the child: even an exit during argument parsing
 # (--help, a bad flag) must remove the re-exec temp copy.
 cleanup() {
   local rc=$?
+  if [ "${LOCK_HELD:-0}" = "1" ] && [ -n "${LOCK_DIR:-}" ]; then
+    rm -f "${LOCK_DIR}/owner" 2>/dev/null || true
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
   [ -n "${VEDETTA_UPGRADE_SELF:-}" ] && rm -f "$VEDETTA_UPGRADE_SELF" 2>/dev/null || true
   exit "$rc"
 }
@@ -148,6 +155,12 @@ source "${SCRIPT_DIR}/lib/port-config.sh"
 BACKEND_PORT="$(vedetta_resolve_port VEDETTA_BACKEND_PORT 8080 "${PROJECT_DIR}/.env")"
 
 cd "$PROJECT_DIR"
+
+# Use exactly the reviewed repository Compose graph. An ambient COMPOSE_FILE or
+# an automatic docker-compose.override.yml can otherwise redirect build contexts,
+# services, or volumes while the script still claims to upgrade this checkout.
+unset COMPOSE_PATH_SEPARATOR
+export COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
 
 # ─── Docker / Compose helpers ────────────────────────────────────────────────
 detect_project() {
@@ -295,14 +308,34 @@ remove_temp_backup() {
     || docker run --rm -v "${VOL_DATA}:/data" "$HELPER_IMAGE" rm -f "/data/pre-${TS}.db" 2>/dev/null
 }
 
-wait_health() {
-  local timeout="$1" i
+wait_readiness() {
+  local timeout="$1" allow_legacy="${2:-0}" i code
   # 10#: force base-10 — a leading-zero timeout (e.g. "08") would otherwise be
   # parsed as octal and crash the arithmetic context.
   for ((i = 0; i < 10#$timeout; i++)); do
-    if curl -fsS -m 3 "http://127.0.0.1:${BACKEND_PORT}/healthz" >/dev/null 2>&1; then return 0; fi
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 1 --max-time 3 \
+      "http://127.0.0.1:${BACKEND_PORT}/readyz" 2>/dev/null || true)"
+    [ "$code" = "200" ] && return 0
+    # A rollback or pre-upgrade stack may predate /readyz. Only those explicitly
+    # legacy-tolerant calls may accept bare liveness on a real 404; verification
+    # of the target release is always strict readiness.
+    if [ "$allow_legacy" = "1" ] && [ "$code" = "404" ] &&
+       curl -fsS --connect-timeout 1 --max-time 3 \
+         "http://127.0.0.1:${BACKEND_PORT}/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
     sleep 1
   done
+  return 1
+}
+
+reject_untracked_inputs() {
+  local untracked
+  untracked="$(git ls-files --others --exclude-standard)"
+  [ -z "$untracked" ] && return 0
+  err "untracked files are present and could enter a Docker build context:"
+  printf '%s\n' "$untracked" | sed -n '1,20p' | sed 's/^/    /' >&2
+  err "Move, ignore, commit, or remove them before a pinned upgrade."
   return 1
 }
 
@@ -321,15 +354,18 @@ if ! docker image inspect "$HELPER_IMAGE" >/dev/null 2>&1; then
     || { err "could not pull ${HELPER_IMAGE} — refusing to start an upgrade whose rollback needs it."; exit 2; }
 fi
 
-# Only uncommitted changes to TRACKED files block checkout; untracked files
-# (operator notes, older checkouts without backups/ in .gitignore) must not
-# false-positive. Refresh the stat cache first so stale mtimes don't either.
+# Both tracked changes and non-ignored untracked files block a pinned upgrade.
+# Docker builds consume the filesystem, not only Git's index, so an untracked Go,
+# JavaScript, Docker, or Compose input would make a tag build non-reproducible.
+# Ignored runtime state (notably .env) remains allowed; COMPOSE_FILE is pinned above
+# so an ignored automatic override cannot replace the reviewed deployment graph.
 git update-index -q --refresh 2>/dev/null || true
 if ! git diff-index --quiet HEAD --; then
   err "working tree has uncommitted changes — commit or stash them first."
   err "(the upgrade and its rollback both run 'git checkout', which needs a clean tree.)"
   exit 2
 fi
+reject_untracked_inputs || exit 2
 
 PREV_REF="$(git rev-parse HEAD)"
 # Prefer the symbolic name for the rollback checkout so an operator who was on
@@ -413,6 +449,21 @@ case "${BACKUP_ROOT}/" in
     exit 2
     ;;
 esac
+
+# Atomic cross-platform single-upgrader lock. macOS does not ship flock, so use
+# mkdir's atomic create and fail closed on a stale lock instead of guessing that a
+# possibly-live recovery may be interrupted safely.
+LOCK_DIR="${BACKUP_ROOT}/.upgrade.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  err "another upgrade is running, or a stale lock remains: ${LOCK_DIR}"
+  err "Do not remove it until you have confirmed no upgrade/rollback process is active."
+  exit 2
+fi
+LOCK_HELD=1
+chmod 700 "$LOCK_DIR"
+printf 'pid=%s\nhost=%s\nstarted=%s\n' "$$" "$(hostname 2>/dev/null || echo unknown)" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${LOCK_DIR}/owner"
+
 SNAP_DIR="${BACKUP_ROOT}/upgrade-${TS}"
 LOG="${SNAP_DIR}/upgrade-${TS}.log"
 # The snapshot holds the live DB, API tokens, and .env — owner-only from the
@@ -457,7 +508,7 @@ restore_main_volume() {
       ;;
     cold)
       docker run --rm -v "${VOL_DATA}:/data" -v "${SNAP_DIR}:/backup:ro" "$HELPER_IMAGE" \
-        sh -ec 'rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true
+        sh -ec 'rm -rf /data/* /data/.[!.]* /data/..?*
                 tar xzf "/backup/$1" -C /data' _ "$(basename "$SNAP_ARTIFACT")"
       ;;
     *) return 1 ;;
@@ -473,7 +524,7 @@ restore_aux_volume() {
   art="${SNAP_DIR}/${key}-${TS}.tar.gz"
   { [ -n "$vol" ] && [ -f "$art" ]; } || return 0
   docker run --rm -v "${vol}:/data" -v "${SNAP_DIR}:/backup:ro" "$HELPER_IMAGE" \
-    sh -ec 'rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true
+    sh -ec 'rm -rf /data/* /data/.[!.]* /data/..?*
             tar xzf "/backup/$1" -C /data' _ "$(basename "$art")" \
     && ok "Restored ${key} from the pre-upgrade snapshot."
 }
@@ -547,7 +598,7 @@ do_rollback() {
       if [ "$tags_ok" = "1" ]; then
         warn "The backend went down on its own during the attempt — restarting the previous version…"
         compose_up_core || { err "restart failed — run: docker compose up -d"; return 1; }
-        if wait_health 60; then ok "Backend is back up (previous version)."
+        if wait_readiness 60 1; then ok "Backend is back up (previous version)."
         else warn "Backend restarted but not healthy within 60s — check: docker compose logs backend"; fi
       else
         err "The backend is DOWN (it exited during the attempt) and the compose image"
@@ -638,13 +689,13 @@ do_rollback() {
     # was retagged and the DB was untouched — restart the stack as it was.
     warn "No build had started — restarting the stack as it was before the attempt…"
     compose_up_core || { halt_rollback "restarting the Core services failed"; return 1; }
-    if wait_health 60; then ok "Stack is back up (pre-upgrade state)."
+    if wait_readiness 60 1; then ok "Stack is back up (pre-upgrade state)."
     else warn "Stack restarted but not healthy within 60s (the cold path implies it was already unhealthy before the attempt)."; fi
     return 0
   fi
   compose_up_core || { halt_rollback "starting the previous version's Core services failed"; return 1; }
 
-  if wait_health 60; then ok "Previous version is back up and healthy at ${PREV_DESC}."
+  if wait_readiness 60 1; then ok "Previous version is back up and ready at ${PREV_DESC}."
   else err "Previous version did not become healthy within 60s — check: docker compose logs backend"; fi
 }
 
@@ -680,13 +731,14 @@ cat <<EOF
   Current version:   ${PREV_DESC}
   Target version:    ${TARGET_DESC}
   Snapshot dir:      ${SNAP_DIR}
-  Health URL:        http://127.0.0.1:${BACKEND_PORT}/healthz
+  Readiness URL:     http://127.0.0.1:${BACKEND_PORT}/readyz
 ───────────────────────────────────────────────────────────
   Steps: checkout → build → snapshot (DB + .env + aux volumes;
   online seconds before the swap — or FIRST, cold, if the backend
-  is already down) → up → verify (health, foreign_key_check,
-  integrity_check). On ANY failure the pre-upgrade snapshot is
-  restored and the stack returns to ${PREV_DESC}.
+  is already down) → up → verify (readiness, foreign_key_check,
+  integrity_check). On failure, rollback restores the snapshot and
+  ${PREV_DESC}; if safe automatic recovery is impossible, Vedetta
+  halts with the stack stopped and the snapshot intact.
 ═══════════════════════════════════════════════════════════
 EOF
 
@@ -726,24 +778,25 @@ finalize_snapshot() {
     warn "No .env next to docker-compose.yml — skipping .env backup."
   fi
 
-  # Auxiliary volumes (cold tarball; best-effort — the Core DB is what matters).
+  # Auxiliary state (best-effort — the Core DB is what matters). Do not archive
+  # threat-network-data here: this Core-only upgrade intentionally leaves the
+  # profile-gated service running, so a live volume tar would not be a valid
+  # SQLite backup. Its runbook uses sqlite3 .backup instead.
   if [ "$SKIP_AUX" != "1" ]; then
-    local key vol out
-    for key in telemetry-state threat-network-data; do
-      vol="$(resolve_volume "$key" || true)"
-      if [ -n "$vol" ] && volume_exists "$vol"; then
-        out="${key}-${TS}.tar.gz"
-        if docker run --rm -v "${vol}:/data:ro" -v "${SNAP_DIR}:/backup" "$HELPER_IMAGE" \
-             sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
-             _ "${out}" "${SUDO_UID:-$(id -u)}:${SUDO_GID:-$(id -g)}"; then
-          ok "Snapshotted ${key} → ${out}"
-        else
-          warn "Could not snapshot ${key} (continuing; auxiliary volume)."
-        fi
+    local key="telemetry-state" vol out
+    vol="$(resolve_volume "$key" || true)"
+    if [ -n "$vol" ] && volume_exists "$vol"; then
+      out="${key}-${TS}.tar.gz"
+      if docker run --rm -v "${vol}:/data:ro" -v "${SNAP_DIR}:/backup" "$HELPER_IMAGE" \
+           sh -ec 'tar czf "/backup/$1" -C /data . && chown "$2" "/backup/$1"' \
+           _ "${out}" "${SUDO_UID:-$(id -u)}:${SUDO_GID:-$(id -g)}"; then
+        ok "Snapshotted ${key} → ${out}"
       else
-        warn "No ${key} volume present — skipping."
+        warn "Could not snapshot ${key} (continuing; auxiliary volume)."
       fi
-    done
+    else
+      warn "No ${key} volume present — skipping."
+    fi
   fi
 
   chmod -R go-rwx "$SNAP_DIR" 2>/dev/null || true   # snapshots hold DB + tokens + .env
@@ -759,7 +812,7 @@ finalize_snapshot() {
 # rollback discards at most the swap window's writes, not the whole build's.
 step "Choosing snapshot strategy…"
 WARM=0
-if backend_running && wait_health 5; then
+if backend_running && wait_readiness 5 1; then
   WARM=1
   ok "Backend is healthy — online snapshot will be taken right before the swap."
 else
@@ -791,6 +844,9 @@ else
   step "No target ref given — rebuilding the current checkout in place."
 fi
 
+# Re-evaluate after checkout because the target ref can change ignore rules.
+reject_untracked_inputs || fail "target checkout exposes untracked build inputs"
+
 step "Building Core images${NO_CACHE:+ (--no-cache)}…"
 BUILD_STARTED=1
 compose_build_core || fail "docker compose build failed"
@@ -799,17 +855,25 @@ compose_build_core || fail "docker compose build failed"
 # volume at /data — checking only the top-level volume declaration is not
 # enough (a ref can keep the key while remapping backend to another volume).
 # If the strings pair up wrong (e.g. vedetta-data remounted elsewhere), the
-# fail-closed backend cannot find its DB and the normal health-timeout
+# fail-closed backend cannot find its DB and the normal readiness-timeout
 # rollback runs; this guard blocks the SILENT case where an empty volume
 # would pass every check while the real data stayed stranded in ${VOL_DATA}.
 backend_mounts_data_volume() {
-  docker compose config 2>/dev/null | awk '
-    /^  [^ ]/      { inb = ($0 ~ /^  backend:$/) }
-    inb && /^ *- / { s = 0; t = 0 }   # new mount entry — the pair must co-occur
-    inb && /source: vedetta-data$/ { s = 1 }
-    inb && /target: \/data$/       { t = 1 }
-    inb && s && t  { found = 1 }
-    END { exit !found }
+  docker compose config 2>/dev/null | awk -v expected="$VOL_DATA" '
+    function finish_mount() {
+      if (inb && mt == "volume" && ms == "vedetta-data" && md == "/data") mounted = 1
+    }
+    /^services:$/ { section = "services"; next }
+    /^volumes:$/  { finish_mount(); inb = 0; section = "volumes"; next }
+    section == "services" && /^  [^ ]/ {
+      finish_mount(); inb = ($0 == "  backend:"); mt = ms = md = ""; next
+    }
+    inb && /^      - type: / { finish_mount(); mt = $3; ms = md = ""; next }
+    inb && /^        source: / { ms = $2; next }
+    inb && /^        target: / { md = $2; next }
+    section == "volumes" && /^  [^ ]/ { inv = ($0 == "  vedetta-data:"); next }
+    inv && /^    name: / { volume_name = $2; next }
+    END { finish_mount(); exit !(mounted && volume_name == expected) }
   '
 }
 if ! backend_mounts_data_volume; then
@@ -865,9 +929,9 @@ NEW_STACK_UP=1
 compose_up_core || fail "starting the upgraded Core services failed"
 
 # ─── 4. Verify ────────────────────────────────────────────────────────────────
-step "Waiting up to ${HEALTH_TIMEOUT}s for the backend to become healthy…"
-wait_health "$HEALTH_TIMEOUT" || fail "backend did not become healthy within ${HEALTH_TIMEOUT}s (migration crash-loop?)"
-ok "Backend healthy."
+step "Waiting up to ${HEALTH_TIMEOUT}s for the backend to become ready…"
+wait_readiness "$HEALTH_TIMEOUT" || fail "backend did not become ready within ${HEALTH_TIMEOUT}s (migration crash-loop or readiness failure?)"
+ok "Backend ready."
 
 step "Verifying database integrity…"
 # NB: set the busy timeout with the SILENT `.timeout` dot-command, not an inline
@@ -902,7 +966,7 @@ cat <<EOF
 
 ═══════════════════════════════════════════════════════════
   ✓ Core upgraded to ${TARGET_DESC} and verified.
-      • backend healthy
+      • backend ready
       • foreign_key_check clean
       • integrity_check ok
 ═══════════════════════════════════════════════════════════

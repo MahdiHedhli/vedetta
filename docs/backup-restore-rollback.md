@@ -211,17 +211,19 @@ git fetch --tags
 > stopped**. Pass `--from <known-good-ref>` to give it somewhere safe to
 > return to.
 
-It snapshots the Core DB, a copy of `.env`, and the `telemetry-state` /
-`threat-network-data` volumes into `../vedetta-backups/upgrade-<timestamp>/` —
-a sibling of the repository, **deliberately outside it**, so snapshots can
-never enter a Docker build context or be affected by `git checkout` (override
-with `VEDETTA_BACKUP_DIR`). It holds your DB and API tokens — keep it private.
-Keep each snapshot until the new version has proven itself in daily use.
+It snapshots the Core DB, a copy of `.env`, and best-effort `telemetry-state`
+into `../vedetta-backups/upgrade-<timestamp>/` — a sibling of the repository,
+**deliberately outside it**, so snapshots can never enter a Docker build context
+or be affected by `git checkout` (override with `VEDETTA_BACKUP_DIR`). It holds
+your DB and API tokens — keep it private. Keep each snapshot until the new
+version has proven itself in daily use.
 
 The script upgrades **Core services only** (the profile-less set: backend,
 frontend, collector, telemetry). Community-profile services such as a locally
 run `threat-network` are never rebuilt, restarted, or rolled back by it — they
-keep their own data and runbook (docs/threat-network-operations.md).
+keep their own data and runbook (docs/threat-network-operations.md). In
+particular, `upgrade.sh` does not tar the live `threat-network-data` volume;
+use the consistent online SQLite backup in section 1 for that database.
 
 > **Crash-looping-backend caveat.** Migrations run on boot and are fail-closed:
 > a failure aborts startup (`log.Fatalf`). When the backend is already down or
@@ -279,9 +281,9 @@ migrations run there.
 > checkout, or continue past a failed restore — the script says exactly why).
 
 If an update misbehaves, stop the upgraded Core before restoring. For any release
-that ran a database migration, including migration 025 (asset identity and
-findings) or 026 (retained sensor identities), restore the pre-update database
-together with the previous image.
+that ran a database migration, including migrations 025–030 (asset findings,
+retained sensor identities, and temporal ARP evidence), restore the pre-update
+database together with the previous image.
 Do not run the older image against the expanded database: older device-merge,
 suppression, and retention code does not understand the new finding/evidence/audit
 relationships.
@@ -315,9 +317,9 @@ unset VED_TOKEN VED_BACKEND_PORT
 Because the pre-update backup predates the new migration, restoring it returns
 both the code **and** the database to a known-good, mutually-compatible state.
 
-> Migrations 025 and 026 are forward-only. Rollback across either requires the backup taken
-> **before** updating; deleting its tables or reusing the migrated database with
-> an older binary is not a supported rollback path.
+> Migrations 025–030 are forward-only. Rollback across any of them requires the
+> backup taken **before** updating; deleting its tables or reusing the migrated
+> database with an older binary is not a supported rollback path.
 
 The Threat Network corpus migration is likewise forward-only operationally.
 Its state pointer is monotonic and must never be edited backward to "restore" a
