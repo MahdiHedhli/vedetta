@@ -3121,7 +3121,10 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
       let response = await attempt(false);
       if (response.status === 409) {
         const body = await response.json().catch(() => ({}));
-        if (body.code === 'replacement_stale' && window.confirm('The replacement also looks offline — promote it anyway?')) {
+        if (body.code === 'replacement_stale') {
+          // Offer to promote a known-offline replacement anyway. Declining is a
+          // clean no-op, not an error.
+          if (!window.confirm('The replacement also looks offline — promote it anyway?')) return;
           response = await attempt(true);
         } else {
           // primary_changed / primary_recovered / other: surface and refresh so the

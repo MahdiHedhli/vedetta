@@ -101,6 +101,26 @@ describe('SensorsView replace-primary', () => {
     expect(screen.queryByRole('button', { name: 'Replace stale primary' })).not.toBeInTheDocument();
   });
 
+  it('aborts cleanly (no error) when the operator declines the stale-replacement override', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(true).mockReturnValueOnce(false);
+    try {
+      authFetch.mockResolvedValueOnce({ ok: false, status: 409, json: vi.fn().mockResolvedValue({ code: 'replacement_stale', error: 'not online' }) });
+      const refresh = vi.fn().mockResolvedValue();
+      const offlineReplacement = { ...healthyReplacement, status: 'offline', last_seen: minutesAgo(20) };
+      const user = userEvent.setup();
+      render(<SensorsView sensors={[stalePrimary, offlineReplacement]} removedSensors={[]} onSetup={vi.fn()} onRefreshSensors={refresh} />);
+
+      await user.click(screen.getByRole('button', { name: 'Replace stale primary' }));
+
+      // Declined the escalation: exactly one POST, no error banner, no refetch.
+      expect(authFetch).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(refresh).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
   it('re-posts with force after confirming a stale-replacement override', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     try {
