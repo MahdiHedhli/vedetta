@@ -268,7 +268,11 @@ volume_still_mounted() { [ -n "$(docker ps -q --filter "volume=${VOL_DATA}" 2>/d
 stop_project_core_containers() {
   local core all profile_only ids id svc
   core="$(core_services)" && [ -n "$core" ] || return 1
-  all="$(COMPOSE_PROFILES='*' docker compose config --services 2>/dev/null || true)"
+  # If profile enumeration fails, there is no safe way to distinguish the
+  # Core containers from profile-gated services. Propagate the error before
+  # stopping anything rather than treating an unknown set as empty.
+  all="$(COMPOSE_PROFILES='*' docker compose config --services)" && [ -n "$all" ] \
+    || return 1
   profile_only="$(printf '%s\n' "$all" | grep -Fxv "$core" 2>/dev/null || true)"
   ids="$(docker ps -q --filter "label=com.docker.compose.project=${PROJECT}" 2>/dev/null)" || return 1
   [ -z "$ids" ] && return 0
@@ -402,11 +406,11 @@ export COMPOSE_PROJECT_NAME="$PROJECT"
 # git checkout can change the compose file — the quiesce sweep spares these
 # services even when the target ref removed or renamed them.
 PROFILE_ONLY_ORIG=""
-_core_orig="$(core_services 2>/dev/null || true)"
-if [ -n "$_core_orig" ]; then
-  _all_orig="$(COMPOSE_PROFILES='*' docker compose config --services 2>/dev/null || true)"
-  PROFILE_ONLY_ORIG="$(printf '%s\n' "$_all_orig" | grep -Fxv "$_core_orig" 2>/dev/null || true)"
-fi
+_core_orig="$(core_services)" && [ -n "$_core_orig" ] \
+  || { err "could not resolve the original Core service set"; exit 2; }
+_all_orig="$(COMPOSE_PROFILES='*' docker compose config --services)" && [ -n "$_all_orig" ] \
+  || { err "could not resolve the original profile-gated service set"; exit 2; }
+PROFILE_ONLY_ORIG="$(printf '%s\n' "$_all_orig" | grep -Fxv "$_core_orig" 2>/dev/null || true)"
 unset _core_orig _all_orig
 
 VOL_DATA="$(resolve_volume vedetta-data || true)"

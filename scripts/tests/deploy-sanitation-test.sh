@@ -1620,7 +1620,7 @@ ok not_grep 'docker ' "$UPDATE_LOG" "ignored collector input performs no Docker 
 setup_update_case pinned-build-failure
 run_update "$UPDATE_A" "" "1"
 ok test "$UPDATE_RC" -ne 0 "reviewed Docker build failure makes pinned deployment fail"
-ok not_grep 'up -d --no-build' "$UPDATE_LOG" "pinned build failure never starts stale images"
+ok bash -c '! grep -Eq '\''^docker([[:space:]]+[^[:space:]]+)*[[:space:]]+up([[:space:]]|$)'\'' "$1"' _ "$UPDATE_LOG" "pinned build failure makes no Compose up invocation"
 ok not_grep 'go build' "$UPDATE_LOG" "pinned build failure skips sensor build"
 ok not_grep 'systemctl restart' "$UPDATE_LOG" "pinned build failure skips sensor restart"
 ok grep -Fq 'Docker build FAILED — NOT starting the previous images.' "$UPDATE_OUTPUT" "pinned build failure reports its fail-closed recovery boundary"
@@ -1629,7 +1629,7 @@ ok not_grep 'Update complete.' "$UPDATE_OUTPUT" "pinned build failure never clai
 setup_update_case unpinned-build-failure
 run_update "" "" "1"
 ok test "$UPDATE_RC" -ne 0 "standalone Docker build failure fails closed"
-ok not_grep 'up -d --no-build backend frontend collector telemetry' "$UPDATE_LOG" "standalone build failure never starts uncertain partially-retagged images"
+ok bash -c '! grep -Eq '\''^docker([[:space:]]+[^[:space:]]+)*[[:space:]]+up([[:space:]]|$)'\'' "$1"' _ "$UPDATE_LOG" "standalone build failure makes no Compose up invocation"
 ok grep -Fq 'Docker build FAILED — NOT starting the previous images.' "$UPDATE_OUTPUT" "standalone build failure explains its stopped recovery state"
 
 setup_update_case invalid-expected-length

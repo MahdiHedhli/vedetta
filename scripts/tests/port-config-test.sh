@@ -353,6 +353,8 @@ assert_true "volume guard compares the rendered name to the original volume" gre
   'volume_name == expected' "${REPO_ROOT}/scripts/upgrade.sh"
 assert_true "volume guard requires a named volume mount" grep -Fq \
   'mt == "volume" && ms == "vedetta-data" && md == "/data"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_false "profile discovery never suppresses Compose errors" grep -Fq \
+  "COMPOSE_PROFILES='*' docker compose config --services 2>/dev/null || true" "${REPO_ROOT}/scripts/upgrade.sh"
 assert_false "cold restore never suppresses data-deletion failure" grep -Fq \
   'rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true' "${REPO_ROOT}/scripts/upgrade.sh"
 assert_false "update-all never starts uncertain tags after build failure" grep -Fq \
