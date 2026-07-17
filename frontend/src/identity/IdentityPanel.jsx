@@ -1,7 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { confirmDeviceIdentity, listActiveDeviceMerges, mergeDevices, splitDeviceMerge } from './api';
 
 const LOW_CONFIDENCE = 0.75;
+// Above this many candidates the panel would dominate the Devices page, so it starts
+// collapsed (the operator expands it deliberately). See the redeploy/MAC-sprawl UX notes.
+const COLLAPSE_THRESHOLD = 8;
 const CONFIRMABLE_EVIDENCE = new Set([
   'dhcp_client_id', 'dhcp_option_55', 'ssdp_uuid', 'ssdp_device_type',
   'mdns_name', 'mdns_service', 'hostname', 'mac',
@@ -101,6 +104,17 @@ export function IdentityPanel({ devices = [], findings = [], events = [], canAdm
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [collapsed, setCollapsed] = useState(false);
+  const collapseDecided = useRef(false);
+
+  // Start collapsed the first time the queue is large enough to dominate the page. Only auto-
+  // decide once, so a manual expand/collapse afterwards sticks.
+  useEffect(() => {
+    if (!collapseDecided.current && candidates.length > COLLAPSE_THRESHOLD) {
+      setCollapsed(true);
+      collapseDecided.current = true;
+    }
+  }, [candidates.length]);
 
   useEffect(() => {
     if (!selectedID || !candidates.some((device) => device.device_id === selectedID)) {
@@ -160,8 +174,8 @@ export function IdentityPanel({ devices = [], findings = [], events = [], canAdm
   const confirm = async (event) => {
     event.preventDefault();
     const chosen = evidence[Number(evidenceIndex)];
-    if (!selected || !chosen || !confirmReason.trim()) {
-      setError('Select identity evidence and provide a confirmation reason.');
+    if (!selected || !chosen) {
+      setError('Select identity evidence to confirm.');
       return;
     }
     setSaving(true);
@@ -243,11 +257,22 @@ export function IdentityPanel({ devices = [], findings = [], events = [], canAdm
           <h3 className="font-medium text-gray-100">Needs Identification</h3>
           <p className="text-xs text-gray-500 mt-1">Confirm ambiguous evidence or reversibly merge duplicate asset records.</p>
         </div>
-        <span className={`text-xs px-2 py-1 rounded ${candidates.length + unresolvedCount > 0 ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}>
-          {candidates.length} device{candidates.length === 1 ? '' : 's'} · {unresolvedCount} unresolved finding{unresolvedCount === 1 ? '' : 's'}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs px-2 py-1 rounded ${candidates.length + unresolvedCount > 0 ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}>
+            {candidates.length} device{candidates.length === 1 ? '' : 's'} · {unresolvedCount} unresolved finding{unresolvedCount === 1 ? '' : 's'}
+          </span>
+          <button
+            type="button"
+            onClick={() => { setCollapsed((value) => !value); collapseDecided.current = true; }}
+            aria-expanded={!collapsed}
+            className="text-xs border border-gray-700 hover:border-gray-500 text-gray-300 px-2 py-1 rounded"
+          >
+            {collapsed ? 'Expand' : 'Collapse'}
+          </button>
+        </div>
       </div>
 
+      {!collapsed && (<>
       {unresolvedCount > 0 && (
         <p className="mt-3 text-xs text-amber-200/80 bg-amber-500/10 border border-amber-500/20 rounded p-2">
           {unresolvedCount} finding{unresolvedCount === 1 ? '' : 's'} cannot yet be attached to a stable device. More identity evidence is required before an operator action is safe.
@@ -282,7 +307,7 @@ export function IdentityPanel({ devices = [], findings = [], events = [], canAdm
                   </select>
                 </label>
                 {evidence.length === 0 && <p className="text-xs text-amber-300">This device has no confirmable identity evidence yet.</p>}
-                <label className="text-xs text-gray-400 block">Confirmation reason
+                <label className="text-xs text-gray-400 block">Confirmation reason <span className="text-gray-600">(optional)</span>
                   <input value={confirmReason} onChange={(event) => setConfirmReason(event.target.value)} className="mt-1 w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm" placeholder="Why this evidence belongs to this asset" />
                 </label>
                 <button type="submit" disabled={saving || evidence.length === 0} className="bg-amber-500 hover:bg-amber-400 disabled:bg-gray-700 text-gray-950 px-3 py-2 rounded text-sm font-medium">Confirm identity</button>
@@ -348,6 +373,7 @@ export function IdentityPanel({ devices = [], findings = [], events = [], canAdm
           ))}
         </div>
       )}
+      </>)}
 
       {error && <p role="alert" className="text-xs text-red-400 mt-3">{error}</p>}
       {message && <p role="status" className="text-xs text-emerald-300 mt-3">{message}</p>}

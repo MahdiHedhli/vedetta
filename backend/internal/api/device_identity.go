@@ -37,9 +37,10 @@ func (s *Server) handleConfirmDeviceIdentity(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "a supported identity evidence type and value are required"})
 		return
 	}
-	if strings.TrimSpace(body.Reason) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "confirmation reason is required"})
-		return
+	// The confirmation reason is optional. Default it so the audit trail stays populated.
+	reason := strings.TrimSpace(body.Reason)
+	if reason == "" {
+		reason = "operator confirmed"
 	}
 	body.Evidence.Type = kind
 	body.Evidence.Source = "operator"
@@ -48,7 +49,7 @@ func (s *Server) handleConfirmDeviceIdentity(w http.ResponseWriter, r *http.Requ
 		observedAt = body.ObservedAt.UTC()
 	}
 	action, err := s.DB.ConfirmDeviceIdentity(r.Context(), deviceID, body.Evidence,
-		body.Segment, body.SensorID, requestActor(r), body.Reason, observedAt)
+		body.Segment, body.SensorID, requestActor(r), reason, observedAt)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
