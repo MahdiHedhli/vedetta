@@ -64,13 +64,25 @@ func (db *DB) ConsolidateMACOwners(ctx context.Context) (MACConsolidationReport,
 		return report, err
 	}
 
-	// Devices carrying a second distinct active MAC are ambiguous hardware — never
+	// Resolve every evidence row to its current canonical family. Soft-merged child
+	// rows retain evidence for auditability and the live resolver canonicalizes those
+	// rows before building its candidate set, so consolidation must use the same
+	// ownership model or it can leave a residual owner behind.
+	const canonicalFamiliesCTE = `WITH RECURSIVE device_family(device_id, canonical_id) AS (
+		SELECT device_id, device_id FROM devices WHERE merged_into_device_id IS NULL
+		UNION ALL
+		SELECT d.device_id, f.canonical_id FROM devices d
+		JOIN device_family f ON d.merged_into_device_id = f.device_id
+	)`
+
+	// Families carrying a second distinct active MAC are ambiguous hardware — never
 	// absorb them into a group (they may be the sole owner of the other MAC).
 	multiMAC := map[string]struct{}{}
-	mmRows, err := tx.QueryContext(ctx, `
-		SELECT device_id FROM device_identity_evidence
-		WHERE evidence_type = 'mac' AND valid_until IS NULL
-		GROUP BY device_id HAVING COUNT(DISTINCT value_hmac) > 1`)
+	mmRows, err := tx.QueryContext(ctx, canonicalFamiliesCTE+`
+		SELECT f.canonical_id FROM device_identity_evidence e
+		JOIN device_family f ON f.device_id = e.device_id
+		WHERE e.evidence_type = 'mac' AND e.valid_until IS NULL
+		GROUP BY f.canonical_id HAVING COUNT(DISTINCT e.value_hmac) > 1`)
 	if err != nil {
 		return report, fmt.Errorf("scan multi-mac devices: %w", err)
 	}
@@ -96,29 +108,48 @@ func (db *DB) ConsolidateMACOwners(ctx context.Context) (MACConsolidationReport,
 	// left behind) and no post-cleanup owner flip.
 	type owner struct {
 		id        string
-		mac       string
 		firstSeen time.Time
 	}
-	byHash := map[string]map[string]owner{} // value_hmac -> device_id -> owner
-	rows, err := tx.QueryContext(ctx, `
-		SELECT e.device_id, e.value_hmac, COALESCE(d.mac_address, ''), d.first_seen
+	type ownerGroup struct {
+		owners    map[string]owner
+		plaintext string
+	}
+	byHash := map[string]*ownerGroup{} // value_hmac -> canonical family owners + plaintext proof
+	rows, err := tx.QueryContext(ctx, canonicalFamiliesCTE+`
+		SELECT f.canonical_id, e.value_hmac,
+		       COALESCE(evidence_device.mac_address, ''),
+		       COALESCE(canonical_device.mac_address, ''),
+		       canonical_device.first_seen
 		FROM device_identity_evidence e
-		JOIN devices d ON d.device_id = e.device_id AND d.merged_into_device_id IS NULL
+		JOIN device_family f ON f.device_id = e.device_id
+		JOIN devices evidence_device ON evidence_device.device_id = e.device_id
+		JOIN devices canonical_device ON canonical_device.device_id = f.canonical_id
 		WHERE e.evidence_type = 'mac' AND e.valid_until IS NULL`)
 	if err != nil {
 		return report, fmt.Errorf("enumerate mac evidence owners: %w", err)
 	}
 	for rows.Next() {
-		var id, vh, mac string
+		var id, vh, evidenceMAC, canonicalMAC string
 		var firstSeen time.Time
-		if err := rows.Scan(&id, &vh, &mac, &firstSeen); err != nil {
+		if err := rows.Scan(&id, &vh, &evidenceMAC, &canonicalMAC, &firstSeen); err != nil {
 			rows.Close()
 			return report, err
 		}
-		if byHash[vh] == nil {
-			byHash[vh] = map[string]owner{}
+		group := byHash[vh]
+		if group == nil {
+			group = &ownerGroup{owners: map[string]owner{}}
+			byHash[vh] = group
 		}
-		byHash[vh][id] = owner{id: id, mac: mac, firstSeen: firstSeen}
+		group.owners[id] = owner{id: id, firstSeen: firstSeen}
+		if group.plaintext == "" {
+			for _, mac := range []string{evidenceMAC, canonicalMAC} {
+				normalized := normalizeIdentityValue("mac", mac)
+				if normalized != "" && identityValueHMAC(key, "mac", normalized) == vh {
+					group.plaintext = normalized
+					break
+				}
+			}
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return report, err
@@ -130,7 +161,8 @@ func (db *DB) ConsolidateMACOwners(ctx context.Context) (MACConsolidationReport,
 	// Build the absorbed->survivor mapping.
 	type pair struct{ absorbed, survivor string }
 	var pairs []pair
-	for vh, ownerSet := range byHash {
+	for _, group := range byHash {
+		ownerSet := group.owners
 		if len(ownerSet) < 2 {
 			continue
 		}
@@ -138,16 +170,21 @@ func (db *DB) ConsolidateMACOwners(ctx context.Context) (MACConsolidationReport,
 		for _, m := range ownerSet {
 			members = append(members, m)
 		}
-		// Verify this value_hmac is a burned-in MAC via a member whose plaintext
-		// column hashes to it; skip if none can prove it (opaque) or it is randomized.
-		plaintext := ""
+		// Verify this value_hmac is a burned-in MAC via a family member whose
+		// plaintext column hashes to it; skip if none can prove it (opaque) or it is
+		// randomized.
+		plaintext := group.plaintext
+		if plaintext == "" || isLocallyAdministeredMAC(plaintext) {
+			continue
+		}
+		ambiguous := false
 		for _, m := range members {
-			if m.mac != "" && identityValueHMAC(key, "mac", m.mac) == vh {
-				plaintext = m.mac
+			if _, ok := multiMAC[m.id]; ok {
+				ambiguous = true
 				break
 			}
 		}
-		if plaintext == "" || isLocallyAdministeredMAC(plaintext) {
+		if ambiguous {
 			continue
 		}
 		sort.Slice(members, func(i, j int) bool {
@@ -159,9 +196,6 @@ func (db *DB) ConsolidateMACOwners(ctx context.Context) (MACConsolidationReport,
 		survivor := members[0].id // oldest first_seen == the resolver's deterministic owner
 		var absorbed []string
 		for _, m := range members[1:] {
-			if _, skip := multiMAC[m.id]; skip {
-				continue // ambiguous hardware; must keep (owns another MAC)
-			}
 			absorbed = append(absorbed, m.id)
 		}
 		if len(absorbed) == 0 {
@@ -174,10 +208,6 @@ func (db *DB) ConsolidateMACOwners(ctx context.Context) (MACConsolidationReport,
 		}
 	}
 
-	if len(pairs) == 0 {
-		report.FKClean = true
-		return report, tx.Commit() // natural no-op (idempotent re-run)
-	}
 	report.AbsorbedCount = len(pairs)
 
 	// A temp mapping table keeps every statement set-based and free of large IN

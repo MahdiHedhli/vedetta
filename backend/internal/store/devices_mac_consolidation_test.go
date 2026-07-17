@@ -19,6 +19,9 @@ func fkViolationCount(t *testing.T, db *DB) int {
 	for rows.Next() {
 		n++
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("foreign_key_check iteration: %v", err)
+	}
 	return n
 }
 
@@ -118,6 +121,9 @@ func TestConsolidateMACOwners_CollapsesRunaway(t *testing.T) {
 	if rep2.Groups != 0 || rep2.AbsorbedCount != 0 {
 		t.Fatalf("second run should be a no-op, got %+v", rep2)
 	}
+	if !rep2.FKClean {
+		t.Fatalf("idempotent run must still execute foreign_key_check, got %+v", rep2)
+	}
 }
 
 // TestConsolidateMACOwners_ExcludesMultiMACHardware proves conservatism: a device
@@ -130,6 +136,7 @@ func TestConsolidateMACOwners_ExcludesMultiMACHardware(t *testing.T) {
 	macC := "00:00:5E:00:53:C0"
 
 	seedMACOwner(t, db, "survA", base, macA, "lan", "sensor-a")
+	seedMACOwner(t, db, "cleanA", base.Add(30*time.Minute), macA, "lan", "sensor-a")
 	seedMACOwner(t, db, "dupA", base.Add(time.Hour), macA, "lan", "sensor-a")
 	// Give dupA a second, distinct burned-in MAC -> ambiguous hardware.
 	tx, err := db.Begin()
@@ -151,9 +158,67 @@ func TestConsolidateMACOwners_ExcludesMultiMACHardware(t *testing.T) {
 		t.Fatalf("consolidate: %v", err)
 	}
 	if rep.AbsorbedCount != 0 || rep.Groups != 0 {
-		t.Fatalf("multi-MAC device must not be absorbed, got %+v", rep)
+		t.Fatalf("a group containing multi-MAC hardware must be skipped entirely, got %+v", rep)
 	}
-	if !deviceExists(t, db, "survA") || !deviceExists(t, db, "dupA") {
-		t.Fatal("both owners must survive when the duplicate is ambiguous hardware")
+	if !deviceExists(t, db, "survA") || !deviceExists(t, db, "cleanA") || !deviceExists(t, db, "dupA") {
+		t.Fatal("every owner must survive when any group member is ambiguous hardware")
+	}
+	var markerCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM settings WHERE key='mac_owner_consolidation_v1'`).Scan(&markerCount); err != nil {
+		t.Fatalf("read completion marker: %v", err)
+	}
+	if markerCount != 1 || !rep.FKClean {
+		t.Fatalf("no-op run must validate FKs and record completion: marker=%d report=%+v", markerCount, rep)
+	}
+}
+
+// TestConsolidateMACOwners_CanonicalizesMergedChildEvidence keeps cleanup aligned
+// with the resolver. Evidence retained on a soft-merged child still makes its
+// canonical family an owner; consolidation must see that family, absorb the
+// duplicate canonical root, and repoint the retained child to the survivor.
+func TestConsolidateMACOwners_CanonicalizesMergedChildEvidence(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 5, 27, 21, 14, 14, 0, time.UTC)
+	mac := "00:00:5E:00:53:31"
+
+	seedMACOwner(t, db, "survivor", base, mac, "lan", "sensor-a")
+	if _, err := db.Exec(`INSERT INTO devices
+		(device_id, first_seen, last_seen, ip_address, mac_address, segment)
+		VALUES ('canonical-duplicate', ?, ?, '', '', 'lan')`, base.Add(time.Hour), base.Add(time.Hour)); err != nil {
+		t.Fatalf("seed canonical duplicate: %v", err)
+	}
+	seedMACOwner(t, db, "merged-child", base.Add(2*time.Hour), mac, "lan", "sensor-a")
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.mergeDevices(tx, "canonical-duplicate", "merged-child", "fixture"); err != nil {
+		tx.Rollback()
+		t.Fatalf("soft merge fixture: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit fixture: %v", err)
+	}
+
+	rep, err := db.ConsolidateMACOwners(context.Background())
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if rep.Groups != 1 || rep.AbsorbedCount != 1 || !rep.FKClean {
+		t.Fatalf("merged-child owner was not consolidated: %+v", rep)
+	}
+	if deviceExists(t, db, "canonical-duplicate") {
+		t.Fatal("duplicate canonical root survived consolidation")
+	}
+	var redirect string
+	if err := db.QueryRow(`SELECT merged_into_device_id FROM devices WHERE device_id='merged-child'`).Scan(&redirect); err != nil {
+		t.Fatalf("read retained child redirect: %v", err)
+	}
+	if redirect != "survivor" {
+		t.Fatalf("retained child redirect=%q, want survivor", redirect)
+	}
+	got := resolveStrengthMAC(t, db, base.Add(3*time.Hour), "sensor-a", "lan", mac)
+	if got.DeviceID != "survivor" || got.Reason != "mac_identity_evidence" {
+		t.Fatalf("post-cleanup MAC resolution = %+v", got)
 	}
 }

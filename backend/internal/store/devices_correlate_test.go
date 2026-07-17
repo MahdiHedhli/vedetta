@@ -801,7 +801,7 @@ func TestResolve_RunawayMAC_TwoFormats_StillCollapses(t *testing.T) {
 
 	got, err := db.ResolveDeviceAt(context.Background(), DeviceIdentityResolutionRequest{
 		Timestamp: base.Add(2 * time.Hour), Segment: "lan", SensorID: "sensor-a",
-		MACAddress: "00:00:5E:00:53:01", // colon form, appended as mac evidence
+		MACAddress: "00:00:5E:00:53:01",                                                      // colon form, appended as mac evidence
 		Evidence:   []DeviceIdentityEvidenceInput{{Type: "mac", Value: "00-00-5e-00-53-01"}}, // hyphen/lower form of the same MAC
 	})
 	if err != nil {
@@ -809,6 +809,35 @@ func TestResolve_RunawayMAC_TwoFormats_StillCollapses(t *testing.T) {
 	}
 	if got.DeviceID != "surv" || got.Reason != "mac_identity_evidence" {
 		t.Fatalf("same MAC in two formats must still collapse to the survivor, got %+v", got)
+	}
+}
+
+// TestResolve_RunawayMAC_UnseenSecondValueStillConflicts proves the collapse gate
+// considers all valid MACs presented by a request, not only values that already
+// match an owner. Duplicate presentations of known MAC A plus a distinct unseen
+// MAC B are genuine multi-MAC evidence and must not collapse A's corrupt owners.
+func TestResolve_RunawayMAC_UnseenSecondValueStillConflicts(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 5, 27, 21, 14, 14, 0, time.UTC)
+	macA := "00:00:5E:00:53:01"
+	macB := "00:00:5E:00:53:02"
+
+	seedMACOwner(t, db, "owner-a", base, macA, "lan", "sensor-a")
+	seedMACOwner(t, db, "owner-b", base.Add(time.Hour), macA, "lan", "sensor-a")
+
+	got, err := db.ResolveDeviceAt(context.Background(), DeviceIdentityResolutionRequest{
+		Timestamp: base.Add(2 * time.Hour), Segment: "lan", SensorID: "sensor-a",
+		MACAddress: macA,
+		Evidence: []DeviceIdentityEvidenceInput{
+			{Type: "mac", Value: "00-00-5e-00-53-01"}, // duplicate known A
+			{Type: "mac", Value: macB},                // distinct unseen B
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.DeviceID != "" || got.Reason != "conflicting_identity_evidence" {
+		t.Fatalf("known A plus unseen B must remain a distinct-MAC conflict, got %+v", got)
 	}
 }
 

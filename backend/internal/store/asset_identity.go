@@ -736,8 +736,16 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 			if !r.requireConfirmed && !r.types[kind] {
 				continue
 			}
-			if normalizeIdentityValue(kind, in.Value) == "" {
+			normalizedValue := normalizeIdentityValue(kind, in.Value)
+			if normalizedValue == "" {
 				continue
+			}
+			if r.name == "mac" {
+				// The consolidation gate must consider every valid MAC presented by
+				// this request, including values that have no existing owner. Otherwise
+				// duplicate known MAC A plus distinct unseen MAC B looks like one value
+				// and incorrectly collapses A's owners instead of preserving a conflict.
+				macMatchValues[normalizedValue] = struct{}{}
 			}
 			valueHash := identityValueHMAC(key, kind, in.Value)
 			query := `SELECT e.device_id FROM device_identity_evidence e
@@ -800,13 +808,6 @@ func (db *DB) resolveDeviceAtTx(ctx context.Context, tx *sql.Tx, req DeviceIdent
 			}
 			if matchedThisType && !identitySliceContains(matchedTypes, kind) {
 				matchedTypes = append(matchedTypes, kind)
-			}
-			if r.name == "mac" && matchedThisType {
-				// Key on the SAME normalized value the candidate/value_hmac match uses,
-				// so one physical MAC presented in two textual formats (colon vs hyphen
-				// vs Cisco-dotted, upper/lower) counts once and does not defeat the
-				// collapse gate below.
-				macMatchValues[normalizeIdentityValue("mac", in.Value)] = struct{}{}
 			}
 		}
 		if len(candidates) > 1 {
