@@ -40,7 +40,7 @@ describe('Needs Identification workflow', () => {
     const changed = vi.fn();
     render(<IdentityPanel devices={[source, target]} canAdmin={true} onChanged={changed} />);
 
-    await user.type(screen.getByLabelText('Confirmation reason'), 'Matched the asset inventory label');
+    await user.type(screen.getByLabelText(/Confirmation reason/), 'Matched the asset inventory label');
     await user.click(screen.getByRole('button', { name: 'Confirm identity' }));
 
     await waitFor(() => expect(confirmDeviceIdentity).toHaveBeenCalledWith('device-source', expect.objectContaining({
@@ -52,6 +52,46 @@ describe('Needs Identification workflow', () => {
     // The server remains authoritative. If the next device payload still says
     // this identity is low-confidence, the conflict must remain visible.
     expect(screen.getAllByText('Hallway camera').length).toBeGreaterThan(0);
+  });
+
+  it('confirms without a reason because the reason field is optional', async () => {
+    const user = userEvent.setup();
+    render(<IdentityPanel devices={[source, target]} canAdmin={true} onChanged={vi.fn()} />);
+
+    // No reason typed. The operator can still confirm; the server backfills the audit reason.
+    await user.click(screen.getByRole('button', { name: 'Confirm identity' }));
+
+    await waitFor(() => expect(confirmDeviceIdentity).toHaveBeenCalledWith('device-source', expect.objectContaining({
+      evidence: expect.objectContaining({ type: 'mac', value: '00:00:5E:00:53:01' }),
+      reason: '',
+    })));
+  });
+
+  it('starts collapsed when the queue is large enough to dominate the page', async () => {
+    const user = userEvent.setup();
+    const many = Array.from({ length: 9 }, (_, index) => ({
+      device_id: `device-${index}`,
+      display_name: `Camera ${index}`,
+      identity_confidence: 0.42,
+      signals: [{ field: 'mac', value: `00:00:5E:00:53:${index.toString(16).padStart(2, '0')}` }],
+    }));
+    render(<IdentityPanel devices={many} canAdmin={true} onChanged={vi.fn()} />);
+
+    // The header stays, but the body (merge tooling) is hidden until the operator expands it.
+    expect(screen.getByRole('heading', { name: 'Needs Identification' })).toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: 'Expand' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Merge duplicate device records')).not.toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(screen.getByText('Merge duplicate device records')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Collapse' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('stays expanded for a small queue', () => {
+    render(<IdentityPanel devices={[source, target]} canAdmin={true} onChanged={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Collapse' })).toBeInTheDocument();
+    expect(screen.getByText('Merge duplicate device records')).toBeInTheDocument();
   });
 
   it('navigates to the canonical device after merge and can auditably undo it', async () => {
