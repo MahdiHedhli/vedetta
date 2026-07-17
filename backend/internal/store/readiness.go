@@ -18,7 +18,7 @@ import (
 // must never read healthy. Bump this in lockstep whenever a new migration file is
 // added AND the inline schema is brought to parity; the guard test
 // TestExpectedSchemaMigrationMatchesLatestFile fails loudly if the two drift.
-const ExpectedSchemaMigration = "026_sensor_tombstones.sql"
+const ExpectedSchemaMigration = "030_arp_cache_states.sql"
 
 // VerifyReadable runs a trivial query on a pooled connection so a database that is
 // open but cannot actually serve reads (locked, corrupt header, or vanished under a

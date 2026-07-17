@@ -14,9 +14,9 @@ import (
 
 // TestExpectedSchemaMigrationMatchesLatestFile is the drift guard: the runtime
 // ExpectedSchemaMigration constant (what /readyz treats as "current") MUST equal the
-// highest-numbered migration file the binary ships. Add 027_*.sql without bumping the
-// constant and this fails — which is the whole point, because otherwise a fresh,
-// fully-migrated DB would read as "ahead" of the constant and /readyz would 503.
+// highest-numbered migration file the binary ships. Add a later migration without
+// bumping the constant and this fails — which is the whole point, because otherwise
+// a fresh, fully-migrated DB would read as "ahead" of the constant and /readyz would 503.
 func TestExpectedSchemaMigrationMatchesLatestFile(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {

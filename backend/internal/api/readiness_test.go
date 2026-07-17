@@ -47,6 +47,9 @@ func TestReadyz_HealthyReturns200(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /readyz = %d, want 200 (body %s)", w.Code, w.Body.String())
 	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	if body["ready"] != true {
 		t.Errorf("ready = %v, want true", body["ready"])
 	}

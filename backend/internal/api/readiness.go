@@ -122,7 +122,10 @@ func (m *ReadinessMonitor) handleReadyz(w http.ResponseWriter, r *http.Request) 
 // milliseconds and the very first probe still answers 200; on a huge DB the probe
 // times out NOT ready, which the compose start_period absorbs until the scan lands.
 func (m *ReadinessMonitor) deepStatus(ctx context.Context) deepCheckResult {
-	now := time.Now().UTC()
+	// Keep the monotonic component for cache-age decisions. LAN appliances can see
+	// substantial wall-clock corrections after boot/NTP sync; those must not make a
+	// cached readiness result appear fresh indefinitely.
+	now := time.Now()
 
 	m.mu.Lock()
 	cached := m.deep
@@ -165,7 +168,7 @@ func (m *ReadinessMonitor) refreshDeep() {
 			log.Printf("readiness deep check panicked: %v", rec)
 			res = deepCheckResult{healthy: false, reason: fmt.Sprintf("deep check panicked: %v", rec)}
 		}
-		res.at = time.Now().UTC()
+		res.at = time.Now()
 
 		m.mu.Lock()
 		first := m.deep.at.IsZero()
@@ -226,6 +229,9 @@ func summarizeViolations(violations []string) string {
 // only inspects the status code, but a JSON body keeps the endpoint useful for humans
 // and curl-based debugging.
 func writeReadyz(w http.ResponseWriter, status int, reason string, extra map[string]any) {
+	// Readiness is live operational state. A reverse proxy or browser must not reuse a
+	// prior 200 after the database becomes unhealthy (or a prior 503 after recovery).
+	w.Header().Set("Cache-Control", "no-store")
 	body := map[string]any{
 		"ready":  status == http.StatusOK,
 		"status": http.StatusText(status),
