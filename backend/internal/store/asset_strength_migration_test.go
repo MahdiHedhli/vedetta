@@ -206,11 +206,13 @@ func TestMigration028PopulatedUpgradePreservesParentsActionsAndFKs(t *testing.T)
 func TestStrengthHistoryInlineFallbackSchemaAndBackfillAreIdempotent(t *testing.T) {
 	db := newCorrelationDB(t)
 	var migrations int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrations); err != nil {
+	var head string
+	if err := db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(id), '') FROM schema_migrations`).Scan(&migrations, &head); err != nil {
 		t.Fatal(err)
 	}
-	if migrations != 0 {
-		t.Fatalf("test did not exercise inline fallback; migration ledger has %d rows", migrations)
+	if migrations != 1 || head != ExpectedSchemaMigration {
+		t.Fatalf("inline fallback migration ledger = count %d, head %q; want count 1, head %q",
+			migrations, head, ExpectedSchemaMigration)
 	}
 	for _, table := range []string{"device_address_binding_strength", "device_address_binding_validity",
 		"device_identity_evidence_strength", "device_identity_evidence_validity"} {

@@ -335,8 +335,8 @@ assert_false "raced symlink target receives no credential link" sh -c \
   'find "$1" -mindepth 1 -maxdepth 1 -print -quit | grep -q .' sh "${SYMLINK_RACE_TARGET}"
 assert_false "raced symlink install reports no success" grep -q '^Wrote ' "${TMP_DIR}/symlink-race.out"
 
-assert_true "update-all checks the local Core after rebuild" grep -Fq \
-  'curl -sf "${LOCAL_CORE_URL}/healthz"' "${REPO_ROOT}/scripts/update-all.sh"
+assert_true "update-all waits on local Core readiness after rebuild" grep -Fq \
+  '"${LOCAL_CORE_URL}/readyz"' "${REPO_ROOT}/scripts/update-all.sh"
 assert_true "update-all preserves the remote sensor Core override" grep -Fq \
   'SENSOR_CORE_URL="${VEDETTA_CORE_URL:-${LOCAL_CORE_URL}}"' "${REPO_ROOT}/scripts/update-all.sh"
 

@@ -45,15 +45,23 @@ echo "▸ Starting Core services..."
 docker compose up -d
 echo ""
 
-# Wait for backend health check
-echo "▸ Waiting for backend to become healthy..."
-for i in $(seq 1 30); do
-    if curl -sf "http://localhost:${BACKEND_PORT}/healthz" > /dev/null 2>&1; then
-        echo "  Backend healthy."
+# Wait for backend READINESS, not mere liveness. /readyz returns 200 only once
+# migrations have applied, the schema head matches this build, and the DB passes its
+# integrity/foreign-key check — so this loop waits through the migration window and
+# won't declare a half-migrated or broken upgrade "ready". (60s comfortably exceeds
+# the compose start_period; /readyz 503s until Core is genuinely ready.)
+echo "▸ Waiting for backend to become ready (/readyz)..."
+for i in $(seq 1 60); do
+    if curl -sf --connect-timeout 1 --max-time 5 "http://localhost:${BACKEND_PORT}/readyz" > /dev/null 2>&1; then
+        echo "  Backend ready."
         break
     fi
-    if [ "$i" -eq 30 ]; then
-        echo "  WARNING: Backend did not become healthy within 30s."
+    if [ "$i" -eq 60 ]; then
+        # A timed-out readiness wait is a FAILED update (mid-migration or broken DB),
+        # not a cosmetic warning — exit non-zero so callers/automation see it.
+        echo "  ERROR: Backend did not become ready within 60s."
+        echo "  Diagnose: docker logs vedetta-backend  and  curl http://localhost:${BACKEND_PORT}/readyz"
+        exit 1
     fi
     sleep 1
 done

@@ -35,7 +35,7 @@
 
 ### Protection Model (Pragmatic for Alpha Self-Hosted)
 - **Public (always allowed)**:
-  - `/status`, `/version`, `/healthz`
+  - `/status`, `/version`, `/healthz` (liveness), `/readyz` (readiness)
   - `/auth/setup-status`
   - `POST /auth/tokens` (special bootstrap behavior already exists)
 

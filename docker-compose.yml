@@ -101,13 +101,25 @@ services:
       - vedetta-data:/data
     networks:
       - vedetta
-    depends_on:
-      - collector
+    # No depends_on: Core only needs its data volume to start. It must NOT depend on
+    # collector — collector now waits for Core to be *healthy* (below), and a mutual
+    # dependency would be a compose cycle. Collector pushes to Core, never the reverse.
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      # REAL readiness (GET /readyz), not the false-green liveness probe. /readyz opens
+      # the store, runs SELECT 1, verifies the recorded schema migration head equals the
+      # binary's expected latest, and returns the cached integrity/foreign-key result —
+      # so a behind, half-migrated, or corrupt DB reports 503 (unhealthy) instead of a
+      # bare "HTTP is up" 200. Dependents gated on `condition: service_healthy` below
+      # therefore never start against a broken/mid-migration Core.
+      # Plain GET with the body discarded (not --spider): BusyBox wget happens to GET,
+      # but GNU wget --spider sends HEAD — the explicit form works under either binary.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/readyz"]
       interval: 30s
       timeout: 5s
       retries: 3
+      # Opening + migrating a large DB (and the first readiness scan) takes a few
+      # seconds; don't count probe failures against the container until then.
+      start_period: 40s
     restart: unless-stopped
 
   # --- React + Tailwind Dashboard ---
@@ -122,7 +134,10 @@ services:
     networks:
       - vedetta
     depends_on:
-      - backend
+      # Wait for Core to pass /readyz, not merely to start — the dashboard must never
+      # come up against a backend that is mid-migration or serving a broken DB.
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   # --- Fluent Bit Log Collector ---
@@ -149,6 +164,11 @@ services:
       - pihole-logs:/var/log/pihole:ro
     networks:
       - vedetta
+    depends_on:
+      # Don't push syslog/DNS records at a Core that hasn't finished migrating. Gating
+      # on health (not just start) means the collector waits until /readyz passes.
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   # --- Telemetry Daemon (ON by default — opt out with VEDETTA_TELEMETRY_OPTIN=false) ---
@@ -177,7 +197,10 @@ services:
     networks:
       - vedetta
     depends_on:
-      - backend
+      # Telemetry reads the DB volume and polls Core's GET /api/v1/events, so wait for
+      # Core to be healthy (migrations complete) rather than merely started.
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   # --- Central Threat Intelligence Backend (COMMUNITY — normally runs OFF-NODE) ---

@@ -41,6 +41,7 @@ type Server struct {
 	Enroll      *EnrollmentStore
 	Processor   *processing.Processor
 	FeedHealth  FeedHealthProvider
+	Readiness   *ReadinessMonitor
 
 	// UpdateChecker serves the read-only release-availability status for the dashboard's
 	// update notifier. Optional (nil disables the notice).
@@ -115,6 +116,9 @@ func NewRouter(srv *Server) http.Handler {
 	if srv.Processor == nil && srv.DB != nil {
 		srv.Processor = processing.NewProcessor(srv.DB, srv.Enricher)
 	}
+	if srv.Readiness == nil && srv.DB != nil {
+		srv.Readiness = NewReadinessMonitor(srv.DB)
+	}
 	sensorRegistrationLimiter := newIPRateLimiter(5, time.Minute)
 	sensorAuthCheckLimiter := newIPRateLimiter(sensorAuthCheckRequestsPerMinute, time.Minute)
 
@@ -124,7 +128,29 @@ func NewRouter(srv *Server) http.Handler {
 
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// /healthz stays a pure liveness probe: middleware.Heartbeat answers 200 without
+	// ever touching the DB, proving only that HTTP is up. Anything already pointed at
+	// it keeps working unchanged.
 	r.Use(middleware.Heartbeat("/healthz"))
+
+	// /readyz is the REAL readiness probe (see ReadinessMonitor): it exercises the
+	// store, checks the schema migration head, and returns the cached integrity result,
+	// so a behind/half-migrated/corrupt DB reads NOT ready. Public and unauthenticated
+	// like /healthz and /version — it exposes only readiness state and the schema
+	// version, no network or inventory data. The compose healthcheck targets this.
+	// Registered UNCONDITIONALLY: with no DB there is no monitor, and a probe must see
+	// 503 "not ready", never 404. Both GET and HEAD are served — chi does not fall back
+	// HEAD→GET on its own, and HEAD-based probers (GNU wget --spider, curl -I) would
+	// otherwise get 405. (BusyBox wget --spider issues GET, but don't depend on that.)
+	readyz := func(w http.ResponseWriter, r *http.Request) {
+		if srv.Readiness == nil {
+			writeReadyz(w, http.StatusServiceUnavailable, "database not configured", nil)
+			return
+		}
+		srv.Readiness.handleReadyz(w, r)
+	}
+	r.Get("/readyz", readyz)
+	r.Head("/readyz", readyz)
 
 	frontendDir := os.Getenv("VEDETTA_FRONTEND_DIR")
 	if frontendDir == "" {

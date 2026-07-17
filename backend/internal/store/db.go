@@ -318,20 +318,7 @@ func migrationForeignKeyViolations(ctx context.Context, conn *sql.Conn) (violati
 			retErr = errors.Join(retErr, fmt.Errorf("close foreign_key_check rows: %w", err))
 		}
 	}()
-
-	for rows.Next() {
-		var table, parent sql.NullString
-		var rowid, fkID sql.NullInt64
-		if err := rows.Scan(&table, &rowid, &parent, &fkID); err != nil {
-			return nil, fmt.Errorf("scan foreign_key_check: %w", err)
-		}
-		violations = append(violations,
-			fmt.Sprintf("%s(rowid=%d)->%s", table.String, rowid.Int64, parent.String))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("foreign_key_check rows: %w", err)
-	}
-	return violations, nil
+	return scanForeignKeyViolations(rows)
 }
 
 // ensureSingleActiveSensorToken collapses any duplicate active sensor tokens
@@ -475,6 +462,17 @@ func (db *DB) applyInlineFallback() error {
 	}
 	if err := db.ensureSensorReportTimeSchema(); err != nil {
 		return err
+	}
+	// Record the schema head so a successful inline build reports the same migration
+	// head as the file-migration path. The readiness probe (GET /readyz) requires
+	// schema_migrations' MAX(id) to equal ExpectedSchemaMigration; without this an
+	// inline-built database would read as "behind" forever. INSERT OR IGNORE keeps
+	// re-opens idempotent, and stamping the latest id also means a later open WITH the
+	// migration files present skips re-applying it.
+	if _, err := db.Exec(
+		`INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)`,
+		ExpectedSchemaMigration, time.Now().UTC()); err != nil {
+		return fmt.Errorf("record inline schema head: %w", err)
 	}
 	log.Println("Inline fallback migration applied")
 	return nil
