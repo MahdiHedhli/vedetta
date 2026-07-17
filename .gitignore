@@ -378,3 +378,9 @@ labs.*/
 .local-*/
 .local_*/
 .local.*/
+
+# Pre-upgrade snapshots taken by scripts/upgrade.sh. Each holds the live Core DB,
+# a copy of .env, API tokens, and auxiliary-volume archives. The script requires
+# its live snapshot directory to be outside this repository; this is a final
+# defense against accidentally staging an older or manually copied backup.
+backups/

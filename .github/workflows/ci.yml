@@ -214,6 +214,8 @@ jobs:
           persist-credentials: false
       - name: Install Lua
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
+      - name: Port configuration and upgrade safety guards
+        run: bash scripts/tests/port-config-test.sh
       # BLOCKING: the syslog/CEF parser regex correctness guard is interpreter-
       # version-independent (pure Python) and must always pass.
       - name: syslog/CEF parser regression guard

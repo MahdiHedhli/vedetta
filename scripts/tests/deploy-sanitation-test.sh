@@ -1620,17 +1620,17 @@ ok not_grep 'docker ' "$UPDATE_LOG" "ignored collector input performs no Docker 
 setup_update_case pinned-build-failure
 run_update "$UPDATE_A" "" "1"
 ok test "$UPDATE_RC" -ne 0 "reviewed Docker build failure makes pinned deployment fail"
-ok not_grep 'up -d --no-build' "$UPDATE_LOG" "pinned build failure never starts stale images"
+ok bash -c '! grep -Eq '\''^docker([[:space:]]+[^[:space:]]+)*[[:space:]]+up([[:space:]]|$)'\'' "$1"' _ "$UPDATE_LOG" "pinned build failure makes no Compose up invocation"
 ok not_grep 'go build' "$UPDATE_LOG" "pinned build failure skips sensor build"
 ok not_grep 'systemctl restart' "$UPDATE_LOG" "pinned build failure skips sensor restart"
-ok grep -Fq 'refusing to start stale images' "$UPDATE_OUTPUT" "pinned build failure reports its fail-closed recovery boundary"
+ok grep -Fq 'Docker build FAILED — NOT starting the previous images.' "$UPDATE_OUTPUT" "pinned build failure reports its fail-closed recovery boundary"
 ok not_grep 'Update complete.' "$UPDATE_OUTPUT" "pinned build failure never claims update completion"
 
 setup_update_case unpinned-build-failure
 run_update "" "" "1"
-is "$UPDATE_RC" "0" "standalone Docker build failure retains recovery behavior"
-ok grep -Fq 'up -d --no-build backend frontend collector telemetry' "$UPDATE_LOG" "standalone build failure restores previous default-service containers"
-ok grep -Fq 'WARNING: Running on stale images.' "$UPDATE_OUTPUT" "standalone build failure labels its recovery state"
+ok test "$UPDATE_RC" -ne 0 "standalone Docker build failure fails closed"
+ok bash -c '! grep -Eq '\''^docker([[:space:]]+[^[:space:]]+)*[[:space:]]+up([[:space:]]|$)'\'' "$1"' _ "$UPDATE_LOG" "standalone build failure makes no Compose up invocation"
+ok grep -Fq 'Docker build FAILED — NOT starting the previous images.' "$UPDATE_OUTPUT" "standalone build failure explains its stopped recovery state"
 
 setup_update_case invalid-expected-length
 INVALID_EXPECTED="$(printf 'a%.0s' {1..41})"

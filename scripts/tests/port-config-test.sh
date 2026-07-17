@@ -339,5 +339,101 @@ assert_true "update-all waits on local Core readiness after rebuild" grep -Fq \
   '"${LOCAL_CORE_URL}/readyz"' "${REPO_ROOT}/scripts/update-all.sh"
 assert_true "update-all preserves the remote sensor Core override" grep -Fq \
   'SENSOR_CORE_URL="${VEDETTA_CORE_URL:-${LOCAL_CORE_URL}}"' "${REPO_ROOT}/scripts/update-all.sh"
+assert_true "upgrade pins the reviewed Compose graph" grep -Fq \
+  'export COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade requires target readiness" grep -Fq \
+  'wait_readiness "$HEALTH_TIMEOUT"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "legacy liveness fallback is limited to readyz 404" grep -Fq \
+  '[ "$allow_legacy" = "1" ] && [ "$code" = "404" ]' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade takes an atomic single-run lock" grep -Fq \
+  'if ! mkdir "$LOCK_DIR"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade rejects untracked build inputs" grep -Fq \
+  'git ls-files --others --exclude-per-directory=.gitignore' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade ignores no ambient Git exclude source" grep -Fq \
+  'excludes from .git/info/exclude or core.excludesFile' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade rejects tracked-ignore build inputs" grep -Fq \
+  'git ls-files --others --ignored --exclude-per-directory=.gitignore --' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade checks empty ignored build directories" grep -Fq \
+  -- '--directory -- backend frontend collector telemetry siem/migrations' "${REPO_ROOT}/scripts/upgrade.sh"
+
+run_upgrade_guard_case() {
+  local name="$1" ignore_rule="$2" setup_kind="$3"
+  local work="${TMP_DIR}/upgrade-guard-${name}" bin="${TMP_DIR}/upgrade-guard-${name}-bin"
+  local output="${TMP_DIR}/upgrade-guard-${name}.out" rc=0
+
+  mkdir -p "${work}/scripts/lib" "${work}/backend" "$bin"
+  cp "${REPO_ROOT}/scripts/upgrade.sh" "${work}/scripts/upgrade.sh"
+  cp "${REPO_ROOT}/scripts/lib/port-config.sh" "${work}/scripts/lib/port-config.sh"
+  printf '%s\n' 'tracked build root' >"${work}/backend/README"
+  printf '%s\n' '.env' "$ignore_rule" >"${work}/.gitignore"
+  git -C "$work" init -q
+  git -C "$work" add .gitignore scripts backend/README
+  git -C "$work" -c user.name=test -c user.email=test@example.com commit -qm base
+
+  case "$setup_kind" in
+    ambient)
+      printf '%s\n' 'backend/ambient.go' >>"${work}/.git/info/exclude"
+      printf '%s\n' 'package ambient' >"${work}/backend/ambient.go"
+      ;;
+    ignored-file)
+      printf '%s\n' 'package secret' >"${work}/backend/secret_inject.go"
+      ;;
+    ignored-directory)
+      mkdir -p "${work}/backend/vendor"
+      ;;
+    safe-runtime)
+      printf '%s\n' 'VEDETTA_SETUP_CODE=synthetic' >"${work}/.env"
+      ;;
+  esac
+
+  # The guard runs before any Compose discovery or volume operation. Only the
+  # two Docker preflight probes are allowed; an unexpected call fails closed.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "compose version"|"image inspect") exit 0 ;;' \
+    '  *) exit 97 ;;' \
+    'esac' >"${bin}/docker"
+  chmod +x "${bin}/docker"
+
+  PATH="${bin}:${PATH}" "${work}/scripts/upgrade.sh" --yes --from guard-probe-missing \
+    >"$output" 2>&1 || rc=$?
+  UPGRADE_GUARD_RC="$rc"
+  UPGRADE_GUARD_OUTPUT="$output"
+}
+
+run_upgrade_guard_case ambient '' ambient
+assert_eq 2 "$UPGRADE_GUARD_RC" "upgrader rejects info/exclude build input"
+assert_true "ambient-exclude rejection comes from production guard" grep -Fq \
+  'untracked files are present and could enter a Docker build context' "$UPGRADE_GUARD_OUTPUT"
+
+run_upgrade_guard_case ignored-file '*secret*' ignored-file
+assert_eq 2 "$UPGRADE_GUARD_RC" "upgrader rejects tracked-ignore build input"
+assert_true "tracked-ignore rejection comes from production guard" grep -Fq \
+  'ignored files are present and could enter a Docker build context' "$UPGRADE_GUARD_OUTPUT"
+
+run_upgrade_guard_case ignored-directory 'vendor/' ignored-directory
+assert_eq 2 "$UPGRADE_GUARD_RC" "upgrader rejects empty ignored build directory"
+assert_true "empty-directory rejection comes from production guard" grep -Fq \
+  'ignored build directory is present: backend/vendor' "$UPGRADE_GUARD_OUTPUT"
+
+run_upgrade_guard_case safe-runtime '' safe-runtime
+assert_eq 2 "$UPGRADE_GUARD_RC" "safe ignored runtime state reaches later ref validation"
+assert_true "root runtime env passes production build-input guards" grep -Fq \
+  -- '--from ref not found: guard-probe-missing' "$UPGRADE_GUARD_OUTPUT"
+assert_true "volume guard compares the rendered name to the original volume" grep -Fq \
+  'volume_name == expected' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "volume guard requires a named volume mount" grep -Fq \
+  'mt == "volume" && ms == "vedetta-data" && md == "/data"' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_false "profile discovery never suppresses Compose errors" grep -Fq \
+  "COMPOSE_PROFILES='*' docker compose config --services 2>/dev/null || true" "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "failed startup checks whether a new backend actually started" grep -Fq \
+  "docker inspect -f '{{.State.StartedAt}}'" "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "failed startup defaults to migration-safe rollback" grep -Fq \
+  'NEW_STACK_UP=1  # fail closed unless non-execution is positively established' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_false "cold restore never suppresses data-deletion failure" grep -Fq \
+  'rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_false "update-all never starts uncertain tags after build failure" grep -Fq \
+  'Attempting to start with previous images' "${REPO_ROOT}/scripts/update-all.sh"
 
 echo "1..${pass_count}"
