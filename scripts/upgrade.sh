@@ -335,12 +335,68 @@ wait_readiness() {
 
 reject_untracked_inputs() {
   local untracked
-  untracked="$(git ls-files --others --exclude-standard)"
+
+  # Deliberately consult only the reviewed .gitignore files here. Ambient
+  # excludes from .git/info/exclude or core.excludesFile must not be allowed to
+  # hide a local source file that Docker will still copy into an image.
+  untracked="$(git ls-files --others --exclude-per-directory=.gitignore)" \
+    || { err "could not inspect untracked files safely"; return 1; }
   [ -z "$untracked" ] && return 0
   err "untracked files are present and could enter a Docker build context:"
   printf '%s\n' "$untracked" | sed -n '1,20p' | sed 's/^/    /' >&2
-  err "Move, ignore, commit, or remove them before a pinned upgrade."
+  err "Commit, remove, or relocate them before a pinned upgrade."
   return 1
+}
+
+reject_ignored_build_inputs() {
+  local ignored_build ignored_directories artifact entry
+
+  # Tracked .gitignore rules are broader than the Docker ignore files (for
+  # example *secret* and vendor/). Permit only generated artifacts that the
+  # reviewed Dockerfiles cannot consume; every other ignored entry under a
+  # Core build root makes the pinned image non-reproducible.
+  for artifact in backend/vedetta telemetry/telemetry; do
+    if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+      if [ ! -f "$artifact" ] || [ -L "$artifact" ]; then
+        err "unsupported ignored build artifact: ${artifact}"
+        return 1
+      fi
+    fi
+  done
+  ignored_build="$(git ls-files --others --ignored --exclude-per-directory=.gitignore -- \
+    backend frontend collector telemetry siem/migrations \
+    ':(exclude)backend/vedetta' \
+    ':(exclude)telemetry/telemetry' \
+    ':(exclude,glob)frontend/node_modules/**' \
+    ':(exclude,glob)frontend/dist/**' \
+    ':(exclude)frontend/.env' \
+    ':(exclude,glob)frontend/.env.*')" \
+    || { err "could not inspect ignored build inputs safely"; return 1; }
+  if [ -n "$ignored_build" ]; then
+    err "ignored files are present and could enter a Docker build context:"
+    printf '%s\n' "$ignored_build" | sed -n '1,20p' | sed 's/^/    /' >&2
+    err "Commit, remove, or relocate them before a pinned upgrade."
+    return 1
+  fi
+
+  # File-only enumeration misses an empty ignored vendor/ directory. It is not
+  # useful runtime state, so reject it too and keep the rule easy to audit.
+  ignored_directories="$(git ls-files --others --ignored --exclude-per-directory=.gitignore \
+    --directory -- backend frontend collector telemetry siem/migrations)" \
+    || { err "could not inspect ignored build directories safely"; return 1; }
+  while IFS= read -r entry; do
+    case "$entry" in
+      ""|backend/vedetta|telemetry/telemetry|\
+      frontend/node_modules|frontend/node_modules/|\
+      frontend/dist|frontend/dist/|frontend/.env|frontend/.env.*)
+        ;;
+      *)
+        err "ignored build directory is present: ${entry}"
+        return 1
+        ;;
+    esac
+  done <<<"$ignored_directories"
+  return 0
 }
 
 # ─── Preflight (nothing changed yet — plain exits, no rollback) ───────────────
@@ -358,7 +414,7 @@ if ! docker image inspect "$HELPER_IMAGE" >/dev/null 2>&1; then
     || { err "could not pull ${HELPER_IMAGE} — refusing to start an upgrade whose rollback needs it."; exit 2; }
 fi
 
-# Both tracked changes and non-ignored untracked files block a pinned upgrade.
+# Both tracked changes and unreviewed build inputs block a pinned upgrade.
 # Docker builds consume the filesystem, not only Git's index, so an untracked Go,
 # JavaScript, Docker, or Compose input would make a tag build non-reproducible.
 # Ignored runtime state (notably .env) remains allowed; COMPOSE_FILE is pinned above
@@ -370,6 +426,7 @@ if ! git diff-index --quiet HEAD --; then
   exit 2
 fi
 reject_untracked_inputs || exit 2
+reject_ignored_build_inputs || exit 2
 
 PREV_REF="$(git rev-parse HEAD)"
 # Prefer the symbolic name for the rollback checkout so an operator who was on
@@ -850,6 +907,7 @@ fi
 
 # Re-evaluate after checkout because the target ref can change ignore rules.
 reject_untracked_inputs || fail "target checkout exposes untracked build inputs"
+reject_ignored_build_inputs || fail "target checkout exposes ignored build inputs"
 
 step "Building Core images${NO_CACHE:+ (--no-cache)}…"
 BUILD_STARTED=1

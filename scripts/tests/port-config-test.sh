@@ -348,7 +348,28 @@ assert_true "legacy liveness fallback is limited to readyz 404" grep -Fq \
 assert_true "upgrade takes an atomic single-run lock" grep -Fq \
   'if ! mkdir "$LOCK_DIR"' "${REPO_ROOT}/scripts/upgrade.sh"
 assert_true "upgrade rejects untracked build inputs" grep -Fq \
-  'git ls-files --others --exclude-standard' "${REPO_ROOT}/scripts/upgrade.sh"
+  'git ls-files --others --exclude-per-directory=.gitignore' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade ignores no ambient Git exclude source" grep -Fq \
+  'excludes from .git/info/exclude or core.excludesFile' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade rejects tracked-ignore build inputs" grep -Fq \
+  'git ls-files --others --ignored --exclude-per-directory=.gitignore --' "${REPO_ROOT}/scripts/upgrade.sh"
+assert_true "upgrade checks empty ignored build directories" grep -Fq \
+  -- '--directory -- backend frontend collector telemetry siem/migrations' "${REPO_ROOT}/scripts/upgrade.sh"
+
+UPGRADE_EXCLUDE_REPO="${TMP_DIR}/upgrade-excludes"
+mkdir -p "${UPGRADE_EXCLUDE_REPO}/backend"
+git -C "${UPGRADE_EXCLUDE_REPO}" init -q
+printf '%s\n' 'backend/ambient.go' >>"${UPGRADE_EXCLUDE_REPO}/.git/info/exclude"
+printf '%s\n' 'package ambient' >"${UPGRADE_EXCLUDE_REPO}/backend/ambient.go"
+assert_eq 'backend/ambient.go' \
+  "$(git -C "${UPGRADE_EXCLUDE_REPO}" ls-files --others --exclude-per-directory=.gitignore)" \
+  "reviewed-ignore scan exposes info/exclude build input"
+printf '%s\n' '*secret*' >"${UPGRADE_EXCLUDE_REPO}/.gitignore"
+printf '%s\n' 'package secret' >"${UPGRADE_EXCLUDE_REPO}/backend/secret_inject.go"
+assert_eq 'backend/secret_inject.go' \
+  "$(git -C "${UPGRADE_EXCLUDE_REPO}" ls-files --others --ignored \
+      --exclude-per-directory=.gitignore -- backend)" \
+  "tracked-ignore scan exposes ignored build input"
 assert_true "volume guard compares the rendered name to the original volume" grep -Fq \
   'volume_name == expected' "${REPO_ROOT}/scripts/upgrade.sh"
 assert_true "volume guard requires a named volume mount" grep -Fq \
