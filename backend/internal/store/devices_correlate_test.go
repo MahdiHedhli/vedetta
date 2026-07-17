@@ -8,6 +8,7 @@ package store
 // All values are synthetic: RFC 5737 IPs (192.0.2.x) and 00:00:5E:00:53:xx MACs.
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -717,6 +718,141 @@ func TestRandomizedMACAliasVetoChecksMergedFamily(t *testing.T) {
 	}
 	if !conflict {
 		t.Fatal("stable MAC retained on a merged child did not veto randomized alias folding")
+	}
+}
+
+// seedMACOwner inserts a bare device row and gives it active MAC identity
+// evidence for `mac`, so a test can construct the corrupt >1-owner-of-one-MAC
+// state that the runaway-sprawl loop produced in production.
+func seedMACOwner(t *testing.T, db *DB, deviceID string, firstSeen time.Time, mac, segment, sensorID string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO devices (device_id, first_seen, last_seen, ip_address, mac_address, segment)
+		VALUES (?, ?, ?, ?, ?, ?)`, deviceID, firstSeen, firstSeen, "", mac, segment); err != nil {
+		t.Fatalf("seed device %s: %v", deviceID, err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := db.upsertIdentityEvidenceTx(tx, deviceID, segment, sensorID,
+		DeviceIdentityEvidenceInput{Type: "mac", Value: mac, Source: "event", Confidence: 0.95, Sensitive: true},
+		firstSeen, false); err != nil {
+		tx.Rollback()
+		t.Fatalf("seed mac evidence for %s: %v", deviceID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed %s: %v", deviceID, err)
+	}
+}
+
+// TestResolve_RunawayMACConflict_AttachesToDeterministicOwner is the regression
+// guard for the runaway device-sprawl loop: a burned-in MAC bound to MULTIPLE
+// canonical devices (data corruption) must resolve to ONE deterministic owner
+// (oldest first_seen), NOT return an empty conflict. Before the fix, the empty
+// conflict made UpsertDevice mint a brand-new device on every observation, adding
+// another owner and growing the conflict without bound.
+func TestResolve_RunawayMACConflict_AttachesToDeterministicOwner(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 5, 27, 21, 14, 14, 0, time.UTC)
+	mac := "00:00:5E:00:53:01" // globally administered (burned-in)
+
+	// Seed a corrupt 3-owner state, oldest first.
+	seedMACOwner(t, db, "dev-oldest", base, mac, "lan", "sensor-a")
+	seedMACOwner(t, db, "dev-mid", base.Add(time.Hour), mac, "lan", "sensor-a")
+	seedMACOwner(t, db, "dev-new", base.Add(2*time.Hour), mac, "lan", "sensor-a")
+	if n := countDevices(t, db); n != 3 {
+		t.Fatalf("seed expected 3 devices, got %d", n)
+	}
+
+	got := resolveStrengthMAC(t, db, base.Add(3*time.Hour), "sensor-a", "lan", mac)
+	if got.DeviceID != "dev-oldest" {
+		t.Fatalf("multi-owner MAC must resolve to the oldest owner deterministically, got %+v", got)
+	}
+	if got.Reason != "mac_identity_evidence" {
+		t.Fatalf("expected mac_identity_evidence, got reason %q", got.Reason)
+	}
+
+	// The loop is broken: repeated observations attach to the survivor and create
+	// NO new devices.
+	for i := 0; i < 5; i++ {
+		if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+			IPAddress: "192.0.2.80", MACAddress: mac, DiscoverySource: "passive_arp",
+		}, base.Add(time.Duration(4+i)*time.Hour), "lan"); err != nil {
+			t.Fatalf("observation %d: %v", i, err)
+		}
+	}
+	if n := countDevices(t, db); n != 3 {
+		t.Fatalf("runaway loop not broken: got %d devices after 5 observations, want 3", n)
+	}
+}
+
+// TestResolve_RunawayMAC_TwoFormats_StillCollapses guards the normalization fix:
+// the same burned-in MAC presented in two textual formats within one request (the
+// request MAC is appended as one mac evidence item, plus an explicit mac evidence
+// item in another format) must still be treated as ONE value and collapse to the
+// deterministic owner — not read as two distinct values and fall through to a veto.
+func TestResolve_RunawayMAC_TwoFormats_StillCollapses(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 5, 27, 21, 14, 14, 0, time.UTC)
+	mac := "00:00:5E:00:53:01"
+
+	seedMACOwner(t, db, "surv", base, mac, "lan", "sensor-a")
+	seedMACOwner(t, db, "dup1", base.Add(time.Hour), mac, "lan", "sensor-a")
+
+	got, err := db.ResolveDeviceAt(context.Background(), DeviceIdentityResolutionRequest{
+		Timestamp: base.Add(2 * time.Hour), Segment: "lan", SensorID: "sensor-a",
+		MACAddress: "00:00:5E:00:53:01", // colon form, appended as mac evidence
+		Evidence:   []DeviceIdentityEvidenceInput{{Type: "mac", Value: "00-00-5e-00-53-01"}}, // hyphen/lower form of the same MAC
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.DeviceID != "surv" || got.Reason != "mac_identity_evidence" {
+		t.Fatalf("same MAC in two formats must still collapse to the survivor, got %+v", got)
+	}
+}
+
+// TestResolve_RandomizedMultiOwner_StillConflicts proves the collapse is scoped to
+// burned-in MACs: a randomized (locally administered) MAC held by two devices in a
+// segment stays a conflict (macOwnerConsolidable=false), so #114's randomized-MAC
+// handling and the general conflict veto are unaffected.
+func TestResolve_RandomizedMultiOwner_StillConflicts(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 5, 27, 21, 14, 14, 0, time.UTC)
+	mac := "02:00:5E:00:53:01" // locally administered (randomized)
+
+	seedMACOwner(t, db, "rand-a", base, mac, "lan", "sensor-a")
+	seedMACOwner(t, db, "rand-b", base.Add(time.Hour), mac, "lan", "sensor-a")
+
+	got := resolveStrengthMAC(t, db, base.Add(2*time.Hour), "sensor-a", "lan", mac)
+	if got.DeviceID != "" || got.Reason != "conflicting_identity_evidence" {
+		t.Fatalf("randomized multi-owner MAC must stay a conflict, got %+v", got)
+	}
+}
+
+// TestResolve_TwoDistinctBurnedInMACs_StillConflicts proves a genuine different-MAC
+// conflict (two distinct burned-in values matched) is NOT collapsed.
+func TestResolve_TwoDistinctBurnedInMACs_StillConflicts(t *testing.T) {
+	db := newCorrelationDB(t)
+	base := time.Date(2026, 5, 27, 21, 14, 14, 0, time.UTC)
+	macA := "00:00:5E:00:53:0A"
+	macB := "00:00:5E:00:53:0B"
+	seedMACOwner(t, db, "dev-a", base, macA, "lan", "sensor-a")
+	seedMACOwner(t, db, "dev-b", base.Add(time.Hour), macB, "lan", "sensor-a")
+
+	// An observation presenting BOTH MACs matches two different owners by two
+	// distinct values -> genuine conflict, no collapse.
+	got, err := db.ResolveDeviceAt(context.Background(), DeviceIdentityResolutionRequest{
+		Timestamp: base.Add(2 * time.Hour), Segment: "lan", SensorID: "sensor-a",
+		Evidence: []DeviceIdentityEvidenceInput{
+			{Type: "mac", Value: macA}, {Type: "mac", Value: macB},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.DeviceID != "" || got.Reason != "conflicting_identity_evidence" {
+		t.Fatalf("two distinct burned-in MACs must stay a conflict, got %+v", got)
 	}
 }
 
