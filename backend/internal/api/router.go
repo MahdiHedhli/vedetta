@@ -224,6 +224,7 @@ func NewRouter(srv *Server) http.Handler {
 			r.Put("/devices/{deviceID}", srv.handleUpdateDevice)
 			r.Post("/devices/{deviceID}/confirm", srv.handleConfirmDeviceIdentity)
 			r.Post("/devices/merge", srv.handleMergeDevices)
+			r.Post("/devices/consolidate-mac-owners", srv.handleConsolidateMACOwners)
 			r.Post("/device-merges/{actionID}/split", srv.handleUndoDeviceMerge)
 		})
 
