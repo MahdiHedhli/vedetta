@@ -489,7 +489,7 @@ umask "$_orig_umask"
 exec 3>&1 4>&2
 exec > >(tee -a "$LOG") 2>&1
 
-NEW_STACK_UP=0        # the upgraded stack was started (DB may be migrated)
+NEW_STACK_UP=0        # target backend started or cannot be disproved (DB may be migrated)
 STACK_WAS_STOPPED=0   # we took the previously-running stack down ourselves
 BUILD_STARTED=0       # docker compose build ran (images may be partially retagged)
 SNAP_MODE=""
@@ -929,8 +929,29 @@ fi
 
 # ─── 4. Bring the stack up ────────────────────────────────────────────────────
 step "Starting the upgraded stack…"
-NEW_STACK_UP=1
-compose_up_core || fail "starting the upgraded Core services failed"
+backend_cid_before_up="$(docker compose ps -aq backend | head -n1)" \
+  || fail "could not record the pre-upgrade backend container identity"
+if compose_up_core; then
+  NEW_STACK_UP=1
+else
+  # `compose up` can fail before the backend starts (for example, a host-port
+  # conflict in another service). Restoring the online snapshot in that case
+  # would discard writes accepted between .backup and quiescence even though no
+  # target process could have migrated the live DB. Conversely, a partially
+  # successful up may create/start backend before another service fails, so
+  # compare container identity and StartedAt rather than assuming either state.
+  NEW_STACK_UP=1  # fail closed unless non-execution is positively established
+  if backend_cid_after_up="$(docker compose ps -aq backend | head -n1)"; then
+    if [ -z "$backend_cid_after_up" ] || [ "$backend_cid_after_up" = "$backend_cid_before_up" ]; then
+      NEW_STACK_UP=0
+    elif backend_started_at="$(docker inspect -f '{{.State.StartedAt}}' "$backend_cid_after_up")"; then
+      case "$backend_started_at" in
+        ''|0001-01-01T00:00:00*) NEW_STACK_UP=0 ;;
+      esac
+    fi
+  fi
+  fail "starting the upgraded Core services failed"
+fi
 
 # ─── 4. Verify ────────────────────────────────────────────────────────────────
 step "Waiting up to ${HEALTH_TIMEOUT}s for the backend to become ready…"
