@@ -356,20 +356,71 @@ assert_true "upgrade rejects tracked-ignore build inputs" grep -Fq \
 assert_true "upgrade checks empty ignored build directories" grep -Fq \
   -- '--directory -- backend frontend collector telemetry siem/migrations' "${REPO_ROOT}/scripts/upgrade.sh"
 
-UPGRADE_EXCLUDE_REPO="${TMP_DIR}/upgrade-excludes"
-mkdir -p "${UPGRADE_EXCLUDE_REPO}/backend"
-git -C "${UPGRADE_EXCLUDE_REPO}" init -q
-printf '%s\n' 'backend/ambient.go' >>"${UPGRADE_EXCLUDE_REPO}/.git/info/exclude"
-printf '%s\n' 'package ambient' >"${UPGRADE_EXCLUDE_REPO}/backend/ambient.go"
-assert_eq 'backend/ambient.go' \
-  "$(git -C "${UPGRADE_EXCLUDE_REPO}" ls-files --others --exclude-per-directory=.gitignore)" \
-  "reviewed-ignore scan exposes info/exclude build input"
-printf '%s\n' '*secret*' >"${UPGRADE_EXCLUDE_REPO}/.gitignore"
-printf '%s\n' 'package secret' >"${UPGRADE_EXCLUDE_REPO}/backend/secret_inject.go"
-assert_eq 'backend/secret_inject.go' \
-  "$(git -C "${UPGRADE_EXCLUDE_REPO}" ls-files --others --ignored \
-      --exclude-per-directory=.gitignore -- backend)" \
-  "tracked-ignore scan exposes ignored build input"
+run_upgrade_guard_case() {
+  local name="$1" ignore_rule="$2" setup_kind="$3"
+  local work="${TMP_DIR}/upgrade-guard-${name}" bin="${TMP_DIR}/upgrade-guard-${name}-bin"
+  local output="${TMP_DIR}/upgrade-guard-${name}.out" rc=0
+
+  mkdir -p "${work}/scripts/lib" "${work}/backend" "$bin"
+  cp "${REPO_ROOT}/scripts/upgrade.sh" "${work}/scripts/upgrade.sh"
+  cp "${REPO_ROOT}/scripts/lib/port-config.sh" "${work}/scripts/lib/port-config.sh"
+  printf '%s\n' 'tracked build root' >"${work}/backend/README"
+  printf '%s\n' '.env' "$ignore_rule" >"${work}/.gitignore"
+  git -C "$work" init -q
+  git -C "$work" add .gitignore scripts backend/README
+  git -C "$work" -c user.name=test -c user.email=test@example.com commit -qm base
+
+  case "$setup_kind" in
+    ambient)
+      printf '%s\n' 'backend/ambient.go' >>"${work}/.git/info/exclude"
+      printf '%s\n' 'package ambient' >"${work}/backend/ambient.go"
+      ;;
+    ignored-file)
+      printf '%s\n' 'package secret' >"${work}/backend/secret_inject.go"
+      ;;
+    ignored-directory)
+      mkdir -p "${work}/backend/vendor"
+      ;;
+    safe-runtime)
+      printf '%s\n' 'VEDETTA_SETUP_CODE=synthetic' >"${work}/.env"
+      ;;
+  esac
+
+  # The guard runs before any Compose discovery or volume operation. Only the
+  # two Docker preflight probes are allowed; an unexpected call fails closed.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "compose version"|"image inspect") exit 0 ;;' \
+    '  *) exit 97 ;;' \
+    'esac' >"${bin}/docker"
+  chmod +x "${bin}/docker"
+
+  PATH="${bin}:${PATH}" "${work}/scripts/upgrade.sh" --yes --from guard-probe-missing \
+    >"$output" 2>&1 || rc=$?
+  UPGRADE_GUARD_RC="$rc"
+  UPGRADE_GUARD_OUTPUT="$output"
+}
+
+run_upgrade_guard_case ambient '' ambient
+assert_eq 2 "$UPGRADE_GUARD_RC" "upgrader rejects info/exclude build input"
+assert_true "ambient-exclude rejection comes from production guard" grep -Fq \
+  'untracked files are present and could enter a Docker build context' "$UPGRADE_GUARD_OUTPUT"
+
+run_upgrade_guard_case ignored-file '*secret*' ignored-file
+assert_eq 2 "$UPGRADE_GUARD_RC" "upgrader rejects tracked-ignore build input"
+assert_true "tracked-ignore rejection comes from production guard" grep -Fq \
+  'ignored files are present and could enter a Docker build context' "$UPGRADE_GUARD_OUTPUT"
+
+run_upgrade_guard_case ignored-directory 'vendor/' ignored-directory
+assert_eq 2 "$UPGRADE_GUARD_RC" "upgrader rejects empty ignored build directory"
+assert_true "empty-directory rejection comes from production guard" grep -Fq \
+  'ignored build directory is present: backend/vendor' "$UPGRADE_GUARD_OUTPUT"
+
+run_upgrade_guard_case safe-runtime '' safe-runtime
+assert_eq 2 "$UPGRADE_GUARD_RC" "safe ignored runtime state reaches later ref validation"
+assert_true "root runtime env passes production build-input guards" grep -Fq \
+  -- '--from ref not found: guard-probe-missing' "$UPGRADE_GUARD_OUTPUT"
 assert_true "volume guard compares the rendered name to the original volume" grep -Fq \
   'volume_name == expected' "${REPO_ROOT}/scripts/upgrade.sh"
 assert_true "volume guard requires a named volume mount" grep -Fq \
