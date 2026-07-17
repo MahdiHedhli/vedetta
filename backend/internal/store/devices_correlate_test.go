@@ -565,6 +565,104 @@ func TestUpsert_MAClessLinkUp_SurvivesVeto(t *testing.T) {
 	}
 }
 
+// TestUpsert_RandomizedMACRotation_MDNSNameFolds proves the sprawl fix: a device
+// that keeps a UNIQUE mDNS friendly name but rotates its RANDOMIZED (locally
+// administered) MAC must fold into the existing record instead of spawning a new
+// device row per rotation. This is the dominant modern case — phones/laptops with
+// private Wi-Fi addresses on by default.
+func TestUpsert_RandomizedMACRotation_MDNSNameFolds(t *testing.T) {
+	db := newCorrelationDB(t)
+	now := time.Now().UTC()
+	// Locally administered (U/L bit set: first octet 0x02) synthetic MACs.
+	rand1 := "02:00:5E:00:53:01"
+	rand2 := "02:00:5E:00:53:02"
+	rand3 := "02:00:5E:00:53:03"
+
+	first := discovery.DiscoveredHost{IPAddress: "192.0.2.51", MACAddress: rand1, FriendlyName: "Alex Phone", DiscoverySource: "passive_mdns"}
+	if _, err := db.UpsertDevice(first, now, "lan"); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	// A week later the private address has rotated. Same unique mDNS name.
+	rot := discovery.DiscoveredHost{IPAddress: "192.0.2.52", MACAddress: rand2, FriendlyName: "Alex Phone", DiscoverySource: "passive_mdns"}
+	isNew, err := db.UpsertDevice(rot, now.Add(6*24*time.Hour), "lan")
+	if err != nil {
+		t.Fatalf("upsert rotation: %v", err)
+	}
+	if isNew {
+		t.Fatal("a rotated randomized MAC under a unique mDNS name must fold, not create a new device")
+	}
+	// A second rotation still folds (the record now carries rand2, itself randomized).
+	rot2 := discovery.DiscoveredHost{IPAddress: "192.0.2.53", MACAddress: rand3, FriendlyName: "Alex Phone", DiscoverySource: "passive_mdns"}
+	if _, err := db.UpsertDevice(rot2, now.Add(12*24*time.Hour), "lan"); err != nil {
+		t.Fatalf("upsert rotation 2: %v", err)
+	}
+	if n := countDevices(t, db); n != 1 {
+		t.Fatalf("randomized-MAC rotation sprawled: got %d devices, want 1", n)
+	}
+}
+
+// TestUpsert_RandomizedMACRotation_HostnameFolds is the same fix via the direct
+// hostname rule: a specific (non-generic) hostname carries the continuity while
+// the randomized MAC rotates.
+func TestUpsert_RandomizedMACRotation_HostnameFolds(t *testing.T) {
+	db := newCorrelationDB(t)
+	now := time.Now().UTC()
+	rand1 := "06:00:5E:00:53:11"
+	rand2 := "06:00:5E:00:53:12"
+
+	first := discovery.DiscoveredHost{IPAddress: "192.0.2.61", MACAddress: rand1, Hostname: "alex-laptop", DiscoverySource: "passive_dhcp"}
+	if _, err := db.UpsertDevice(first, now, "lan"); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	rot := discovery.DiscoveredHost{IPAddress: "192.0.2.62", MACAddress: rand2, Hostname: "alex-laptop", DiscoverySource: "passive_dhcp"}
+	isNew, err := db.UpsertDevice(rot, now.Add(time.Hour), "lan")
+	if err != nil {
+		t.Fatalf("upsert rotation: %v", err)
+	}
+	if isNew {
+		t.Fatal("a rotated randomized MAC under a unique specific hostname must fold, not create a new device")
+	}
+	if n := countDevices(t, db); n != 1 {
+		t.Fatalf("randomized-MAC rotation sprawled: got %d devices, want 1", n)
+	}
+}
+
+// TestUpsert_RandomizedMAC_DoesNotClobberStableHardware proves the relaxation is
+// bounded: a randomized observation that shares an alias with a candidate pinned
+// to a STABLE (globally administered) MAC must NOT fold — folding would risk a
+// wrong merge and overwrite a durable hardware key with an ephemeral one. Prefer a
+// duplicate row (spec NFR-4).
+func TestUpsert_RandomizedMAC_DoesNotClobberStableHardware(t *testing.T) {
+	db := newCorrelationDB(t)
+	now := time.Now().UTC()
+	stable := "00:00:5E:00:53:F1" // globally administered (U/L bit clear)
+	random := "02:00:5E:00:53:F2" // locally administered
+
+	burnedIn := discovery.DiscoveredHost{IPAddress: "192.0.2.71", MACAddress: stable, FriendlyName: "Living Room TV", DiscoverySource: "passive_mdns"}
+	if _, err := db.UpsertDevice(burnedIn, now, "lan"); err != nil {
+		t.Fatalf("upsert burned-in: %v", err)
+	}
+	in := discovery.DiscoveredHost{IPAddress: "192.0.2.72", MACAddress: random, FriendlyName: "Living Room TV", DiscoverySource: "passive_mdns"}
+	isNew, err := db.UpsertDevice(in, now.Add(time.Minute), "lan")
+	if err != nil {
+		t.Fatalf("upsert randomized: %v", err)
+	}
+	if !isNew {
+		t.Fatal("a randomized observation must not fold into a stable-MAC record on an alias alone")
+	}
+	if n := countDevices(t, db); n != 2 {
+		t.Fatalf("randomized observation clobbered stable hardware: got %d devices, want 2", n)
+	}
+	// The stable MAC must survive intact.
+	var cnt int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM devices WHERE mac_address = ?`, stable).Scan(&cnt); err != nil {
+		t.Fatalf("count stable: %v", err)
+	}
+	if cnt != 1 {
+		t.Fatalf("stable MAC record was overwritten: count=%d, want 1", cnt)
+	}
+}
+
 // --- Data-integrity regression: deterministic canonical resolution -----------
 
 // TestResolveCanonicalFields_DeterministicTie guards resolveCanonicalFields

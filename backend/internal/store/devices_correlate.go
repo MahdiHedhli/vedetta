@@ -476,7 +476,7 @@ func (db *DB) matchByAlias(tx *sql.Tx, host correlationInput, seg string, now ti
 				// a differently-MAC'd device — that is a distinct physical device, not an
 				// update. Without this the mac_address CASE-write in UpsertDevice would
 				// silently overwrite the stored MAC and collapse two devices into one.
-				macConflict, err := db.macConflicts(tx, id, host.mac)
+				macConflict, err := db.macConflictsForAlias(tx, id, host.mac)
 				if err != nil {
 					return res, err
 				}
@@ -520,7 +520,7 @@ func (db *DB) matchByAlias(tx *sql.Tx, host correlationInput, seg string, now ti
 				// replacement hardware reusing a DHCP hostname, or two IoT units) is a
 				// distinct device. Skip so the caller creates a new record instead of
 				// stealing this one and overwriting its MAC.
-				macConflict, err := db.macConflicts(tx, id, host.mac)
+				macConflict, err := db.macConflictsForAlias(tx, id, host.mac)
 				if err != nil {
 					return res, err
 				}
@@ -641,6 +641,51 @@ func (db *DB) macConflicts(tx *sql.Tx, candidateID, incomingMAC string) (bool, e
 	// match the incoming value. Never let a matching weak edge mask another
 	// contradictory edge on the same provisional.
 	return active > matching, nil
+}
+
+// macConflictsForAlias is the MAC-conflict veto used by the ALIAS rules (mDNS
+// name, hostname). It relaxes the strict macConflicts check for RANDOMIZED
+// (locally administered) incoming MACs.
+//
+// A locally administered MAC is ephemeral: phones and laptops rotate a private
+// Wi-Fi address by design, so a difference from the candidate's stored MAC is not
+// evidence of distinct hardware. Left strict, the veto spawns a brand-new device
+// row on every rotation — the "MAC sprawl" that dominates the inventory once a
+// household runs modern default-randomizing clients. When the incoming MAC is
+// randomized we let the alias rule's own continuity guards decide instead (a
+// UNIQUE mDNS instance name / specific non-generic hostname within segment +
+// 7-day recency, plus the hostname-conflict veto on the mDNS rule).
+//
+// The relaxation is bounded: a randomized observation may fold only into a
+// candidate that is NOT pinned to a stable, globally administered MAC. Folding
+// into burned-in hardware would both risk a wrong merge (two distinct devices
+// that happen to share an alias) and clobber a durable hardware key with an
+// ephemeral one, so a stable-MAC candidate keeps the strict veto and the caller
+// creates a duplicate row instead (spec NFR-4: prefer a duplicate over a wrong
+// merge). Globally administered incoming MACs are stable keys and always use the
+// strict check.
+func (db *DB) macConflictsForAlias(tx *sql.Tx, candidateID, incomingMAC string) (bool, error) {
+	if incomingMAC != "" && isLocallyAdministeredMAC(incomingMAC) {
+		return db.candidateHasStableMAC(tx, candidateID)
+	}
+	return db.macConflicts(tx, candidateID, incomingMAC)
+}
+
+// candidateHasStableMAC reports whether the candidate device (following merge
+// redirects) carries a non-empty, globally administered canonical MAC — a durable
+// hardware key. Used by macConflictsForAlias to keep a randomized observation
+// from folding into, and overwriting, real burned-in hardware.
+func (db *DB) candidateHasStableMAC(tx *sql.Tx, candidateID string) (bool, error) {
+	canonicalID, err := db.canonicalDeviceIDTx(tx, candidateID)
+	if err != nil {
+		return false, err
+	}
+	var candMAC string
+	err = tx.QueryRow(`SELECT COALESCE(mac_address, '') FROM devices WHERE device_id = ?`, canonicalID).Scan(&candMAC)
+	if err != nil && err != sql.ErrNoRows {
+		return false, fmt.Errorf("read candidate mac for stability check: %w", err)
+	}
+	return candMAC != "" && !isLocallyAdministeredMAC(candMAC), nil
 }
 
 // hostnameConflicts reports whether the candidate device carries a specific
