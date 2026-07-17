@@ -40,6 +40,90 @@ const active = {
   is_primary: false,
 };
 
+const minutesAgo = (m) => new Date(Date.now() - m * 60_000).toISOString();
+
+const stalePrimary = {
+  sensor_id: 'old', hostname: 'macstudio', os: 'darwin', arch: 'arm64', version: '0.1.0',
+  cidr: '192.0.2.0/24', first_seen: '2026-05-27T00:00:00Z', last_seen: minutesAgo(30),
+  status: 'offline', is_primary: true,
+};
+const healthyReplacement = {
+  sensor_id: 'new', hostname: 'macstudio', os: 'darwin', arch: 'arm64', version: '0.1.0',
+  cidr: '192.0.2.0/24', first_seen: minutesAgo(20), last_seen: minutesAgo(0),
+  status: 'online', is_primary: false,
+};
+
+describe('SensorsView replace-primary', () => {
+  beforeEach(() => authFetch.mockReset());
+
+  it('offers Replace on a healthy sensor when the primary is stale and posts the pinned old primary', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      authFetch.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ status: 'replaced', primary: 'new', removed: 'old' }) });
+      const refresh = vi.fn().mockResolvedValue();
+      const user = userEvent.setup();
+      render(<SensorsView sensors={[stalePrimary, healthyReplacement]} removedSensors={[]} onSetup={vi.fn()} onRefreshSensors={refresh} />);
+
+      await user.click(screen.getByRole('button', { name: 'Replace stale primary' }));
+
+      expect(authFetch).toHaveBeenCalledWith('/api/v1/sensor/new/replace-primary', {
+        method: 'POST', body: { old_primary_id: 'old', force: false },
+      });
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it('badges a same-hostname candidate as a likely redeploy of the stale primary', () => {
+    render(<SensorsView sensors={[stalePrimary, healthyReplacement]} removedSensors={[]} onSetup={vi.fn()} />);
+    expect(screen.getByText('likely redeploy of macstudio')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Replace stale primary' })).toBeInTheDocument();
+  });
+
+  it('offers no Replace while the primary is online', () => {
+    const online = { ...stalePrimary, status: 'online', last_seen: minutesAgo(0) };
+    render(<SensorsView sensors={[online, healthyReplacement]} removedSensors={[]} onSetup={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Replace stale primary' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/likely redeploy/)).not.toBeInTheDocument();
+  });
+
+  it('does not offer Replace until the stale primary passes the grace window', () => {
+    const recentlyOffline = { ...stalePrimary, status: 'offline', last_seen: minutesAgo(5) };
+    render(<SensorsView sensors={[recentlyOffline, healthyReplacement]} removedSensors={[]} onSetup={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Replace stale primary' })).not.toBeInTheDocument();
+  });
+
+  it('explains the dead-end when the only sensor is a stale primary', () => {
+    render(<SensorsView sensors={[stalePrimary]} removedSensors={[]} onSetup={vi.fn()} />);
+    expect(screen.getByText(/only sensor and it's the primary/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Replace stale primary' })).not.toBeInTheDocument();
+  });
+
+  it('re-posts with force after confirming a stale-replacement override', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      authFetch
+        .mockResolvedValueOnce({ ok: false, status: 409, json: vi.fn().mockResolvedValue({ code: 'replacement_stale', error: 'not online' }) })
+        .mockResolvedValueOnce({ ok: true, json: vi.fn().mockResolvedValue({ status: 'replaced' }) });
+      const refresh = vi.fn().mockResolvedValue();
+      const offlineReplacement = { ...healthyReplacement, status: 'offline', last_seen: minutesAgo(20) };
+      const user = userEvent.setup();
+      render(<SensorsView sensors={[stalePrimary, offlineReplacement]} removedSensors={[]} onSetup={vi.fn()} onRefreshSensors={refresh} />);
+
+      await user.click(screen.getByRole('button', { name: 'Replace stale primary' }));
+
+      await waitFor(() => expect(authFetch).toHaveBeenCalledTimes(2));
+      expect(authFetch).toHaveBeenLastCalledWith('/api/v1/sensor/new/replace-primary', {
+        method: 'POST', body: { old_primary_id: 'old', force: true },
+      });
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+});
+
 describe('SensorsView sensor lifecycle', () => {
   beforeEach(() => authFetch.mockReset());
 

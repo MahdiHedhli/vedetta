@@ -322,12 +322,15 @@ func NewRouter(srv *Server) http.Handler {
 				r.Get("/work", srv.handleSensorWork)
 			})
 
-			// Dashboard-facing sensor management routes — now protected with admin auth.
-			// In bootstrap mode (no tokens yet) they remain open for first-run setup.
+			// Dashboard-facing sensor management routes. RequireStrictAdmin always
+			// requires a valid admin bearer token — there is no bootstrap bypass, so
+			// these routes are intentionally unreachable until the first admin token
+			// exists (GHSA-6cmx); first-run setup completes admin creation first.
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireStrictAdmin(srv.DB))
 				r.Get("/list", srv.handleSensorList)
 				r.Put("/{sensorID}/primary", srv.handleSetPrimarySensor)
+				r.Post("/{sensorID}/replace-primary", srv.handleReplacePrimarySensor)
 				r.Delete("/{sensorID}", srv.handleDeleteSensor)
 			})
 		})
@@ -2039,6 +2042,72 @@ func (s *Server) handleDeleteSensor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":     "removed",
 		"sensor_id":  sensorID,
+		"removed_at": removedAt,
+	})
+}
+
+// handleReplacePrimarySensor promotes a healthy replacement to primary and retires
+// the old primary in one atomic step, resolving the redeploy trap where a dead
+// primary is otherwise un-removable. {sensorID} is the REPLACEMENT; the body pins
+// the reviewed old primary. force overrides the online/recovered guards.
+func (s *Server) handleReplacePrimarySensor(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+	replacementID := chi.URLParam(r, "sensorID")
+	if replacementID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "replacement sensor_id required"})
+		return
+	}
+	var body struct {
+		OldPrimaryID string `json:"old_primary_id"`
+		Reason       string `json:"reason"`
+		Force        bool   `json:"force"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	if strings.TrimSpace(body.OldPrimaryID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "old_primary_id required"})
+		return
+	}
+
+	actorTokenID := ""
+	if token := auth.GetTokenFromContext(r); token != nil {
+		actorTokenID = token.TokenID
+	}
+	newPrimary, removedAt, err := s.DB.ReplacePrimarySensor(body.OldPrimaryID, replacementID, actorTokenID, body.Reason, body.Force)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrReplaceSameSensor):
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		case errors.Is(err, store.ErrSensorNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "replacement sensor not found"})
+		case errors.Is(err, store.ErrSensorRemoved):
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "replacement sensor identity has been removed", "code": "replacement_removed"})
+		case errors.Is(err, store.ErrReplacementNoCredential):
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "replacement_no_credential"})
+		case errors.Is(err, store.ErrReplacementStale):
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "replacement_stale"})
+		case errors.Is(err, store.ErrOldPrimaryRecovered):
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "primary_recovered"})
+		case errors.Is(err, store.ErrReplacePrimaryMismatch):
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "the primary changed; refresh and retry", "code": "primary_changed"})
+		default:
+			log.Printf("Replace primary sensor %s failed: %v", replacementID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to replace primary sensor"})
+		}
+		return
+	}
+
+	log.Printf("Primary sensor replaced: %s retired, %s promoted", body.OldPrimaryID, replacementID)
+	s.logInfo("sensor", fmt.Sprintf("Primary sensor replaced: %s retired, %s promoted", body.OldPrimaryID, replacementID))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "replaced",
+		"primary":    newPrimary.SensorID,
+		"removed":    body.OldPrimaryID,
 		"removed_at": removedAt,
 	})
 }

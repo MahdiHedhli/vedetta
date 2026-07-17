@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,26 @@ import (
 type execQuerier interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	QueryRow(query string, args ...any) *sql.Row
+}
+
+// SensorOnlineWindow is how recently a sensor must have reported to count as
+// "online". The sensor heartbeat is 30s, so 2 minutes tolerates several missed
+// beats. It is the single source of truth for sensor liveness — the detection-
+// health card (api/findings.go) shares it — so the dashboard and API never
+// disagree on whether a sensor is live.
+const SensorOnlineWindow = 2 * time.Minute
+
+// EffectiveSensorStatus derives a sensor's true liveness from its last_seen, since
+// the stored status column is only ever written 'online' (on report) or 'offline'
+// (on removal) and never decays by elapsed time. A never-reporting or long-silent
+// sensor is "offline"; anything within the online window is "online".
+func EffectiveSensorStatus(lastSeen, now time.Time) string {
+	// A future last_seen (clock skew) yields a negative delta and reads as online,
+	// which is the safe interpretation of "just reported".
+	if !lastSeen.IsZero() && now.Sub(lastSeen) <= SensorOnlineWindow {
+		return "online"
+	}
+	return "offline"
 }
 
 // RegisterSensor creates or updates a sensor record (upsert).
@@ -217,12 +238,14 @@ func (db *DB) ListSensors() ([]models.Sensor, error) {
 	}
 	defer rows.Close()
 
+	now := time.Now().UTC()
 	var sensors []models.Sensor
 	for rows.Next() {
 		var s models.Sensor
 		if err := rows.Scan(&s.SensorID, &s.Hostname, &s.OS, &s.Arch, &s.CIDR, &s.Version, &s.FirstSeen, &s.LastSeen, &s.Status, &s.IsPrimary, &s.Interfaces); err != nil {
 			return nil, err
 		}
+		s.Status = EffectiveSensorStatus(s.LastSeen, now)
 		sensors = append(sensors, s)
 	}
 
@@ -282,6 +305,7 @@ func (db *DB) ListSensorPartitions() ([]models.Sensor, []models.RemovedSensor, e
 	}
 	defer rows.Close()
 
+	now := time.Now().UTC()
 	var active []models.Sensor
 	var removed []models.RemovedSensor
 	for rows.Next() {
@@ -296,12 +320,15 @@ func (db *DB) ListSensorPartitions() ([]models.Sensor, []models.RemovedSensor, e
 			return nil, nil, err
 		}
 		if removedAt.Valid {
+			// Tombstoned rows keep their stored 'offline' (set by RemoveSensor /
+			// ReplacePrimarySensor); only active rows get live-derived status.
 			removed = append(removed, models.RemovedSensor{
 				Sensor:        sensor,
 				RemovedAt:     removedAt.Time.UTC(),
 				RemovalReason: removalReason,
 			})
 		} else {
+			sensor.Status = EffectiveSensorStatus(sensor.LastSeen, now)
 			active = append(active, sensor)
 		}
 	}
@@ -367,6 +394,23 @@ var ErrSensorRemoved = errors.New("sensor identity has been removed")
 // for a metadata refresh no longer is.
 var ErrSensorTokenInactive = errors.New("sensor token is no longer active")
 
+// Replace-primary sentinel errors (beta sensor-redeploy UX).
+var (
+	// ErrReplaceSameSensor: the replacement and the old primary are the same id.
+	ErrReplaceSameSensor = errors.New("a sensor cannot replace itself")
+	// ErrReplacementNoCredential: the replacement is active but holds no live
+	// sensor credential, so promoting it would leave a primary that cannot report.
+	ErrReplacementNoCredential = errors.New("replacement sensor has no active credential")
+	// ErrReplacementStale: the replacement is not currently online (override: force).
+	ErrReplacementStale = errors.New("replacement sensor is not currently online")
+	// ErrOldPrimaryRecovered: the primary being replaced has resumed reporting
+	// since the operator reviewed it (override: force).
+	ErrOldPrimaryRecovered = errors.New("primary sensor has resumed reporting")
+	// ErrReplacePrimaryMismatch: the reviewed primary is no longer the current
+	// active primary (it moved or was removed under us), so nothing was replaced.
+	ErrReplacePrimaryMismatch = errors.New("expected primary is no longer the current primary")
+)
+
 // RemoveSensor tombstones a non-primary sensor, revokes only sensor-scoped
 // credentials, and records an audit event in one transaction. It never deletes
 // the identity row or historical token rows: SensorExists must stay true forever
@@ -425,11 +469,176 @@ func (db *DB) RemoveSensor(sensorID, actorTokenID, reason string) (time.Time, er
 	return now, nil
 }
 
+// ReplacePrimarySensor atomically retires a (typically stale) primary sensor by
+// promoting a healthy replacement in its place: it promotes the replacement to
+// primary AND tombstones+revokes the old primary in one transaction. This removes
+// the redeploy trap where a new sensor registers as non-primary and the old, dead
+// primary cannot be removed (a primary is never directly removable).
+//
+// The old primary is PINNED by the exact id the operator reviewed and asserted via
+// RowsAffected, never derived from is_primary=TRUE alone — so a concurrent
+// re-election (RefreshSensorWithActiveToken promotes on --primary) can never make
+// this tombstone+revoke the wrong, healthy sensor. Write ordering (promote first)
+// takes SQLite's single writer lock before the guard reads and guarantees the
+// active fleet never transitions through zero primary. force overrides ONLY the
+// replacement-not-online guard; the old-primary-recovered guard is never
+// overridable, so a recovered primary can never be force-tombstoned mid-collection.
+//
+// Guards, in order: same-id (ErrReplaceSameSensor); replacement must be active,
+// non-removed, and hold a live sensor credential (ErrSensorNotFound /
+// ErrSensorRemoved / ErrReplacementNoCredential); replacement online unless force
+// (ErrReplacementStale); old must not have resumed reporting (ErrOldPrimaryRecovered,
+// not force-overridable); old still the exact current active primary
+// (ErrReplacePrimaryMismatch).
+func (db *DB) ReplacePrimarySensor(expectedOldPrimaryID, replacementID, actorTokenID, reason string, force bool) (models.Sensor, time.Time, error) {
+	expectedOldPrimaryID = strings.TrimSpace(expectedOldPrimaryID)
+	replacementID = strings.TrimSpace(replacementID)
+	if expectedOldPrimaryID == "" || replacementID == "" {
+		return models.Sensor{}, time.Time{}, ErrSensorNotFound
+	}
+	if expectedOldPrimaryID == replacementID {
+		return models.Sensor{}, time.Time{}, ErrReplaceSameSensor
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "replaced primary " + expectedOldPrimaryID
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return models.Sensor{}, time.Time{}, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+
+	// S1: promote the replacement. First write -> takes the writer lock before the
+	// guard reads. Requires it be active, non-removed, and hold a live credential so
+	// the new primary can actually report.
+	res, err := tx.Exec(`
+		UPDATE sensors SET is_primary = TRUE
+		WHERE sensor_id = ? AND removed_at IS NULL
+		  AND EXISTS (SELECT 1 FROM api_tokens WHERE sensor_id = ? AND scope = ? AND revoked = 0)
+	`, replacementID, replacementID, auth.ScopeSensor)
+	if err != nil {
+		return models.Sensor{}, time.Time{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var removedAt sql.NullTime
+		switch err := tx.QueryRow(`SELECT removed_at FROM sensors WHERE sensor_id = ?`, replacementID).Scan(&removedAt); {
+		case errors.Is(err, sql.ErrNoRows):
+			return models.Sensor{}, time.Time{}, ErrSensorNotFound
+		case err != nil:
+			return models.Sensor{}, time.Time{}, err
+		case removedAt.Valid:
+			return models.Sensor{}, time.Time{}, ErrSensorRemoved
+		default:
+			return models.Sensor{}, time.Time{}, ErrReplacementNoCredential
+		}
+	}
+
+	// S2: replacement must be online (unless forced) so we don't retire the current
+	// primary in favor of a sensor that is itself dead.
+	if !force {
+		var repLastSeen time.Time
+		if err := tx.QueryRow(`SELECT last_seen FROM sensors WHERE sensor_id = ?`, replacementID).Scan(&repLastSeen); err != nil {
+			return models.Sensor{}, time.Time{}, err
+		}
+		if EffectiveSensorStatus(repLastSeen, now) != "online" {
+			return models.Sensor{}, time.Time{}, ErrReplacementStale
+		}
+	}
+
+	// S2b: never retire a primary that is reporting again. If it has resumed since
+	// the operator viewed it, refuse. This guard is deliberately NOT force-overridable
+	// (force only overrides the replacement-not-online check): a live, actively
+	// collecting primary must be retired through the ordinary make-primary + remove
+	// flow, never force-tombstoned out from under live data collection — otherwise a
+	// human-timed "promote anyway" retry could silently kill a recovered primary.
+	// Scoped to the ACTUAL current primary: if the reviewed id is not the active
+	// primary, skip here and let S3 return the more precise mismatch error.
+	{
+		var oldLastSeen time.Time
+		switch err := tx.QueryRow(`SELECT last_seen FROM sensors WHERE sensor_id = ? AND is_primary = TRUE AND removed_at IS NULL`, expectedOldPrimaryID).Scan(&oldLastSeen); {
+		case err == nil:
+			if EffectiveSensorStatus(oldLastSeen, now) == "online" {
+				return models.Sensor{}, time.Time{}, ErrOldPrimaryRecovered
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			// not the current active primary; S3 asserts and returns mismatch
+		default:
+			return models.Sensor{}, time.Time{}, err
+		}
+	}
+
+	// S3: tombstone + demote the OLD primary, pinned to the reviewed id and asserted
+	// to still be the current active primary. rows==0 means it moved/was removed.
+	res, err = tx.Exec(`
+		UPDATE sensors
+		SET is_primary = FALSE, removed_at = ?, removed_by_token_id = ?, removal_reason = ?, status = 'offline'
+		WHERE sensor_id = ? AND is_primary = TRUE AND removed_at IS NULL
+	`, now, actorTokenID, reason, expectedOldPrimaryID)
+	if err != nil {
+		return models.Sensor{}, time.Time{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return models.Sensor{}, time.Time{}, ErrReplacePrimaryMismatch
+	}
+
+	// S4: heal any stray extra active primaries (a corrupt >1-primary fleet). Cannot
+	// touch the replacement (excluded) and cannot reach zero (replacement stays TRUE).
+	if _, err := tx.Exec(`
+		UPDATE sensors SET is_primary = FALSE
+		WHERE sensor_id != ? AND removed_at IS NULL AND is_primary = TRUE
+	`, replacementID); err != nil {
+		return models.Sensor{}, time.Time{}, err
+	}
+
+	// S5: revoke ONLY the old primary's sensor-scoped credential.
+	if _, err := tx.Exec(`
+		UPDATE api_tokens SET revoked = 1
+		WHERE sensor_id = ? AND scope = ? AND revoked = 0
+	`, expectedOldPrimaryID, auth.ScopeSensor); err != nil {
+		return models.Sensor{}, time.Time{}, err
+	}
+
+	// S6: audit. event_type 'removed' satisfies the schema CHECK; details records the
+	// replacement so a replace is distinguishable from a plain operator removal.
+	details := fmt.Sprintf(`{"replaced_by":%q}`, replacementID)
+	if err := insertSensorLifecycleWithDetailsOn(tx, expectedOldPrimaryID, "removed", actorTokenID, reason, details, now); err != nil {
+		return models.Sensor{}, time.Time{}, err
+	}
+
+	// S7: read back the new primary for the response.
+	var newPrimary models.Sensor
+	if err := tx.QueryRow(`
+		SELECT sensor_id, hostname, os, arch, cidr, version, first_seen, last_seen, status, is_primary, interfaces
+		FROM sensors WHERE sensor_id = ?
+	`, replacementID).Scan(&newPrimary.SensorID, &newPrimary.Hostname, &newPrimary.OS, &newPrimary.Arch, &newPrimary.CIDR,
+		&newPrimary.Version, &newPrimary.FirstSeen, &newPrimary.LastSeen, &newPrimary.Status, &newPrimary.IsPrimary, &newPrimary.Interfaces); err != nil {
+		return models.Sensor{}, time.Time{}, err
+	}
+	newPrimary.Status = EffectiveSensorStatus(newPrimary.LastSeen, now)
+
+	if err := tx.Commit(); err != nil {
+		return models.Sensor{}, time.Time{}, err
+	}
+	return newPrimary, now, nil
+}
+
 func insertSensorLifecycleOn(q execQuerier, sensorID, eventType, actor, reason string, at time.Time) error {
+	return insertSensorLifecycleWithDetailsOn(q, sensorID, eventType, actor, reason, "{}", at)
+}
+
+// insertSensorLifecycleWithDetailsOn records a lifecycle event with a JSON details
+// blob (e.g. {"replaced_by":"<id>"} to distinguish a replace from a plain removal;
+// event_type stays within the schema CHECK of 'removed'|'reactivated').
+func insertSensorLifecycleWithDetailsOn(q execQuerier, sensorID, eventType, actor, reason, details string, at time.Time) error {
+	if strings.TrimSpace(details) == "" {
+		details = "{}"
+	}
 	_, err := q.Exec(`
 		INSERT INTO sensor_lifecycle_events
 			(event_id, sensor_id, event_type, actor, reason, details, created_at)
-		VALUES (?, ?, ?, ?, ?, '{}', ?)
-	`, uuid.NewString(), sensorID, eventType, actor, reason, at.UTC())
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, uuid.NewString(), sensorID, eventType, actor, reason, details, at.UTC())
 	return err
 }
