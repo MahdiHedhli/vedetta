@@ -671,21 +671,45 @@ func (db *DB) macConflictsForAlias(tx *sql.Tx, candidateID, incomingMAC string) 
 	return db.macConflicts(tx, candidateID, incomingMAC)
 }
 
-// candidateHasStableMAC reports whether the candidate device (following merge
-// redirects) carries a non-empty, globally administered canonical MAC — a durable
-// hardware key. Used by macConflictsForAlias to keep a randomized observation
-// from folding into, and overwriting, real burned-in hardware.
+// candidateHasStableMAC reports whether the candidate device family (following
+// merge redirects and including redirected children) carries a non-empty,
+// globally administered canonical MAC — a durable hardware key. Soft merges
+// preserve child rows for auditability, and an operator may choose a MAC-less or
+// randomized record as the canonical target, so checking only that target would
+// discard stable hardware evidence retained on a child.
+//
+// Used by macConflictsForAlias to keep a randomized observation from folding
+// into, and overwriting, real burned-in hardware.
 func (db *DB) candidateHasStableMAC(tx *sql.Tx, candidateID string) (bool, error) {
 	canonicalID, err := db.canonicalDeviceIDTx(tx, candidateID)
 	if err != nil {
 		return false, err
 	}
-	var candMAC string
-	err = tx.QueryRow(`SELECT COALESCE(mac_address, '') FROM devices WHERE device_id = ?`, canonicalID).Scan(&candMAC)
-	if err != nil && err != sql.ErrNoRows {
-		return false, fmt.Errorf("read candidate mac for stability check: %w", err)
+	rows, err := tx.Query(`WITH RECURSIVE family(device_id) AS (
+			SELECT ?
+			UNION
+			SELECT d.device_id FROM devices d
+			JOIN family f ON d.merged_into_device_id = f.device_id
+		)
+		SELECT COALESCE(d.mac_address, '')
+		FROM devices d JOIN family f ON f.device_id = d.device_id`, canonicalID)
+	if err != nil {
+		return false, fmt.Errorf("read candidate mac family for stability check: %w", err)
 	}
-	return candMAC != "" && !isLocallyAdministeredMAC(candMAC), nil
+	defer rows.Close()
+	for rows.Next() {
+		var candMAC string
+		if err := rows.Scan(&candMAC); err != nil {
+			return false, fmt.Errorf("scan candidate mac family for stability check: %w", err)
+		}
+		if candMAC != "" && !isLocallyAdministeredMAC(candMAC) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate candidate mac family for stability check: %w", err)
+	}
+	return false, nil
 }
 
 // hostnameConflicts reports whether the candidate device carries a specific

@@ -663,6 +663,63 @@ func TestUpsert_RandomizedMAC_DoesNotClobberStableHardware(t *testing.T) {
 	}
 }
 
+// TestRandomizedMACAliasVetoChecksMergedFamily protects the soft-merge audit
+// model. A stable hardware MAC can remain on a redirected child when an operator
+// chooses a MAC-less or randomized record as the canonical target. The alias
+// relaxation must inspect that whole family; checking only the canonical row
+// would allow a new randomized observation to fold into a family already pinned
+// to stable hardware.
+func TestRandomizedMACAliasVetoChecksMergedFamily(t *testing.T) {
+	db := newCorrelationDB(t)
+	now := time.Now().UTC()
+	random := "02:00:5E:00:53:E1"
+	stable := "00:00:5E:00:53:E2"
+
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.81", MACAddress: random, Hostname: "alex-laptop",
+		DiscoverySource: "passive_dhcp",
+	}, now, "lan"); err != nil {
+		t.Fatalf("upsert randomized canonical candidate: %v", err)
+	}
+	if _, err := db.UpsertDevice(discovery.DiscoveredHost{
+		IPAddress: "192.0.2.82", MACAddress: stable, Hostname: "stable-child",
+		DiscoverySource: "passive_dhcp",
+	}, now.Add(time.Second), "lan"); err != nil {
+		t.Fatalf("upsert stable child: %v", err)
+	}
+
+	var canonicalID, stableID string
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE mac_address = ?`, random).Scan(&canonicalID); err != nil {
+		t.Fatalf("read randomized candidate: %v", err)
+	}
+	if err := db.QueryRow(`SELECT device_id FROM devices WHERE mac_address = ?`, stable).Scan(&stableID); err != nil {
+		t.Fatalf("read stable child: %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.mergeDevices(tx, canonicalID, stableID, "operator merge fixture"); err != nil {
+		t.Fatalf("merge stable child under randomized canonical: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit merge fixture: %v", err)
+	}
+
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	conflict, err := db.macConflictsForAlias(tx, canonicalID, "06:00:5E:00:53:E3")
+	if err != nil {
+		t.Fatalf("check randomized alias conflict: %v", err)
+	}
+	if !conflict {
+		t.Fatal("stable MAC retained on a merged child did not veto randomized alias folding")
+	}
+}
+
 // --- Data-integrity regression: deterministic canonical resolution -----------
 
 // TestResolveCanonicalFields_DeterministicTie guards resolveCanonicalFields
