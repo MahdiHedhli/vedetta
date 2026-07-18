@@ -15,8 +15,9 @@ The design treats the LLM as an **untrusted, injectable, confused-deputy-by-defa
 component**. Every attacker-controllable telemetry string it sees is data, never
 instructions; it holds a new least-privilege scope that is never admin; and it can
 never mutate protected operational state on its own authority. Its only writes are
-explicitly scoped pending-proposal and append-only audit rows. Correctness of the
-model is a usability property, never a security control.
+explicitly scoped pending proposals plus server-generated audit entries for reads
+and proposal submission. Correctness of the model is a usability property, never a
+security control.
 
 ## User-visible outcome
 
@@ -42,16 +43,18 @@ No tool proxies a raw `models.*` DTO. Every read goes through a new Core
 assistant-projection endpoint that emits an **allowlist-only** redacted shape, so a
 struct field added later is dropped by default.
 
-- **`list_findings(status, priority, disposition, device_id, page, limit≤50)`** →
+- **`list_findings(status, priority, disposition, session_device_alias, page,
+  limit≤50)`** →
   a summarized triage worklist: `{finding_id, detector, category, priority, status,
   disposition, occurrence_count, first/last_seen, allowed/blocked/observed counts,
-  sanitized title, needs_identification}`. The raw primary observable is not
-  emitted — only `observable_type` and a **defanged** form. Backed by a new
-  `GET /api/v1/assistant/findings`, never raw `/findings`.
+  sanitized title, session_device_alias, needs_identification}`. The raw primary
+  observable is not emitted — only `observable_type` and a **defanged** form. Backed
+  by a new `GET /api/v1/assistant/findings`, never raw `/findings`.
 - **`get_finding(finding_id, evidence_limit, event_limit)`** → exactly these
   top-level keys and no raw Finding DTO fields: `{finding_id, detector, category,
   priority, status, disposition, occurrence_count, first_seen, last_seen,
-  observable{type,defanged_value}, device{alias,type,is_new,needs_identification},
+  observable{type,defanged_value}, device{session_alias,type,is_new,
+  needs_identification},
   reason, recommended_action, evidence[], supporting_events_summary,
   injection_suspected}`. Every user-, device-, feed-, and event-controlled string is
   emitted only through the sanitizer: NFC-normalized, control/zero-width/bidi/tag
@@ -67,18 +70,18 @@ struct field added later is dropped by default.
 - **`explain_finding(finding_id)`** — the flagship. A **composed verdict**, not an
   endpoint passthrough: `{headline, what_tripped, confidence{level,score,drivers,
   caveats}, base_rate{how_common, similar_total, dismissed_pct, interpretation},
-  device{alias,is_new,needs_identification}, recommended_action{verb,
+  device{session_alias,is_new,needs_identification}, recommended_action{verb,
   guarded_tool_to_call, reversible}}`. `recommended_action` only **names** a guarded
   tool; it never executes. This is the core "triage for non-experts" surface.
 - **`finding_stats()`** → 7-day aggregate counts by priority/status/disposition;
   feeds `explain_finding`'s base rate. No attacker-controlled strings.
-- **`summarize_events(window, bucket, device_id?, category?)`** → aggregate/timeline
-  counts only, never raw event rows (event bodies carry the most
+- **`summarize_events(window, bucket, session_device_alias?, category?)`** →
+  aggregate/timeline counts only, never raw event rows (event bodies carry the most
   attacker-controlled content).
 - **`list_devices(new_only, needs_identification, page, limit)`** → per device
-  `{device_id, sanitized alias, OUI-derived vendor (low trust), is_new,
-  needs_identification, active_finding_count}`. Raw MAC, raw hostname, `CustomName`,
-  and `Notes` are never emitted.
+  `{session_device_alias, sanitized display_alias, OUI-derived vendor (low trust),
+  is_new, needs_identification, active_finding_count}`. Raw MAC, raw hostname,
+  `CustomName`, and `Notes` are never emitted.
 - **`get_system_status()`** → Core health, sensor liveness, detection-pipeline/feed
   freshness, update posture (over `RequireRead` `/status` + `/update-status` +
   `/health/detection`). Backs the troubleshooting use case.
@@ -127,8 +130,10 @@ Token minting stays `RequireStrictAdmin`: `handleCreateToken` accepts
 `scope=assistant` alongside `admin`, `ingest`, `read`, and `sensor` only from an
 admin caller, never during bootstrap; its validation error must list `assistant`.
 Assistant tokens always receive a non-NULL, server-selected `expires_at` no later
-than the configured maximum assistant-token TTL. `api_tokens` gains an `expires_at`
-column (forward-only migration; `NULL` = legacy for non-assistant scopes only);
+than the configured maximum assistant-token TTL. The `api_tokens` migration adds
+`assistant` to the stored scope constraint, adds `expires_at`, and updates the
+token model plus persistence/issuance path to store assistant expirations
+(forward-only migration; `NULL` = legacy for non-assistant scopes only);
 `ValidateToken` rejects expired assistant tokens, assistant tokens with NULL
 `expires_at`, and assistant tokens whose expiry exceeds the configured bound while
 preserving NULL-as-legacy behavior for existing non-assistant tokens. Tests cover
@@ -219,7 +224,9 @@ backstops are the scope ceiling and human confirmation.
   consent, and that endpoint is disabled for cloud transports.
 - Device aliases are session-scoped and rotating, derived from a key **distinct**
   from the telemetry HMAC key, so a provider cannot build a durable cross-session
-  identity graph.
+  identity graph. Tool outputs and tool parameters use `session_device_alias`; Core
+  keeps the per-session alias-to-canonical-`device_id` mapping server-side and never
+  sends canonical persistent device IDs in cloud projections.
 - **No coupling to telemetry/community.** No assistant read or action path can
   trigger an outbound telemetry or community-DB submission (verified by test); the
   "community data never linked to install/UID/IP" guarantee is untouched.
@@ -242,8 +249,11 @@ backstops are the scope ceiling and human confirmation.
   window, response-byte ceiling), per-session rate limiting, and query deadlines.
   Assistant reads use a dedicated read-only SQLite connection pool opened with
   `mode=ro`, WAL journal mode, a short busy timeout, bounded read transactions, and
-  context deadlines on every query; tests must show long assistant reads do not hold
-  writer locks or starve ingest/detection writers.
+  context deadlines on every query. This reduces writer contention but is not magic:
+  long reads may still pin checkpoints and grow the WAL, and cancellation behavior
+  depends on the SQLite driver actually interrupting blocked calls. Tests must cover
+  writer progress under assistant reads, checkpoint/WAL-growth monitoring or
+  mitigation, and the selected driver's query-cancellation limits.
 - Runs unprivileged with resource limits; a circuit breaker sheds assistant load
   when `/health/detection` shows ingest lag.
 - MCP/transport dependencies pinned by exact version + hash (prefer a lean
@@ -256,9 +266,13 @@ Every read and every proposed/approved/rejected/executed action writes an
 **immutable, append-only** `assistant_audit` row (actor = assistant token id,
 model/deployment id, transport = local vs cloud, evidence hash, rationale,
 `injection_suspected`, human-approver id, lifecycle state) that no scope can update
-or delete. Every assistant-caused mutation is reversible (deactivate suppression,
-unack, restore status) and surfaced in an operator digest. An admin-only kill switch
-(`assistant.enabled=false` and token revoke) is always present.
+or delete. Assistant-originated audit entries are limited to server-generated read
+and proposal-submitted events; approval, rejection, execution, and reversal audit
+rows are generated only by Core from authenticated admin state transitions, never
+from assistant-supplied lifecycle fields. Every assistant-caused mutation is
+reversible (deactivate suppression, unack, restore status) and surfaced in an
+operator digest. An admin-only kill switch (`assistant.enabled=false` and token
+revoke) is always present.
 
 ## Phasing
 
@@ -283,8 +297,10 @@ Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
 
 ## Migration and compatibility
 
-- Additive, forward-only migrations: `api_tokens.expires_at` (NULL = legacy
-  unaffected), `assistant_audit`, `assistant_proposals`, and `assistant.*` settings.
+- Additive, forward-only migrations: extend the `api_tokens` scope constraint to
+  include `assistant`, add `api_tokens.expires_at` (NULL = legacy unaffected for
+  non-assistant scopes), add `assistant_audit`, `assistant_proposals`, and
+  `assistant.*` settings.
 - The one `ScopeSatisfies` clause is purely additive; existing `RequireRead` /
   `RequireStrictAdmin` route groups are unchanged, so no existing token's authority
   changes.

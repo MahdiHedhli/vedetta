@@ -21,8 +21,9 @@ The LLM is **untrusted, injectable, and a confused deputy by default.** We assum
 Because of this, security rests on three structural backstops that do not depend on
 model behavior: **(1)** a least-privilege scope that can never directly mutate
 protected operational state, but can write explicitly scoped pending-proposal and
-append-only audit rows, **(2)** Core-side human confirmation with a server-computed
-effect, and **(3)** the assistant's structural inability to relax detection (no
+server-generated read/proposal audit entries, **(2)** Core-side human confirmation
+with a server-computed effect and server-generated approval/execution audit records,
+and **(3)** the assistant's structural inability to relax detection (no
 wildcard/standing suppression, no resolve/downgrade, no action on critical/high or
 trusted IOC/IPS findings).
 
@@ -92,15 +93,17 @@ settings.
   adapter tricked into using its Core credential for something the user didn't intend.
 
 **Controls** — a dedicated `ScopeAssistant` that satisfies **read only** and itself
-(never admin), while admin does not satisfy assistant for exact-scope provenance;
-plus a single new write route (`POST /api/v1/assistant/proposals`) gated by
-`RequireStrictAuth + RequireExactScope(ScopeAssistant)`; every existing
-`RequireStrictAdmin` route left untouched (the scope literally cannot call them);
-admin-only, non-bootstrap token minting; mandatory server-selected short TTL via a
-new non-NULL `expires_at` for assistant tokens; adapter holds only an assistant
-token (`0600`, never logged) and refuses to boot with an admin token. Net capability
-of the credential: **read + write-a-pending-proposal + append-only audit rows,
-nothing else.**
+(never admin), while admin satisfies read but admin-vs-assistant proposal provenance
+is enforced by `RequireExactScope(ScopeAssistant)` rather than by
+`ScopeSatisfies`; plus a single new write route (`POST
+/api/v1/assistant/proposals`) gated by `RequireStrictAuth +
+RequireExactScope(ScopeAssistant)`; every existing `RequireStrictAdmin` route left
+untouched (the scope literally cannot call them); admin-only, non-bootstrap token
+minting; mandatory server-selected short TTL via a new non-NULL `expires_at` for
+assistant tokens; adapter holds only an assistant token (`0600`, never logged) and
+refuses to boot with an admin token. Net capability of the credential: **read +
+write-a-pending-proposal + server-generated read/proposal audit entries, nothing
+else.**
 
 **Residual risk** — a leaked assistant token can read (minimized) data and file
 proposals a human must still approve; bounded by TTL, rate limits, and revocation.
@@ -146,10 +149,13 @@ non-loopback listener; per-install MCP session secret (constant-time), CORS deni
 Origin/Host validated; adapter has no outbound/file tools; static hash-pinned tool
 manifest (hash in `/status`); per-tool row/window/byte caps + rate limits + query
 deadlines; assistant reads use a dedicated `mode=ro` SQLite pool, WAL journal mode,
-short busy timeout, bounded read transactions, and context deadlines so assistant
-queries cannot hold writer locks or starve ingest/detection writers; unprivileged
-with resource limits + a detection-lag circuit breaker; pinned+hashed deps, SBOM in
-CI, provenance verification; a tool-poisoning audit as a pre-ship gate.
+short busy timeout, bounded read transactions, and context deadlines. Long reads may
+still pin checkpoints and grow the WAL, and cancellation only works to the degree the
+chosen SQLite driver interrupts blocked calls; acceptance coverage must include
+writer-progress tests, WAL/checkpoint growth monitoring or mitigation, and
+driver-specific cancellation limits. The adapter runs unprivileged with resource
+limits + a detection-lag circuit breaker; deps are pinned+hashed, SBOMed in CI, and
+provenance-verified; a tool-poisoning audit is a pre-ship gate.
 
 **Residual risk** — a compromised host running the local model can still misuse a
 valid assistant token within its (minimal) scope; bounded by everything in Surface 3
@@ -158,19 +164,21 @@ and 4.
 ## Acceptance gates (must all pass before guarded actions ship)
 
 1. `ScopeAssistant` exists; a table-driven `ScopeSatisfies` test proves it satisfies
-   read and itself, **never admin**, and admin does not satisfy assistant for
-   exact-scope proposal provenance. Negative route tests prove an assistant Bearer
-   gets 403 on every admin mutation route
+   read and itself, **never admin**; admin satisfies read; and `RequireExactScope`
+   enforces admin != assistant on proposal routes even if `ScopeSatisfies` preserves
+   existing admin-read behavior. Negative route tests prove an assistant Bearer gets
+   403 on every admin mutation route
    (tokens, enrollment, sensor/device mgmt, telemetry settings, whitelist,
    suppression CRUD, `DELETE /finding-suppressions/{id}`, scan, strict-admin finding
    routes); positive tests prove it reaches only the read set + `POST
    /api/v1/assistant/proposals`.
 2. `handleCreateToken` accepts `scope=assistant` only from an admin, never at
-   bootstrap, and its validation error lists assistant; newly issued assistant tokens
-   always receive a non-NULL `expires_at` no later than the configured maximum TTL;
-   `ValidateToken` rejects expired, NULL-expiry, or over-long assistant tokens while
-   preserving legacy NULL behavior for non-assistant scopes; adapter refuses an admin
-   token.
+   bootstrap, and its validation error lists assistant; the migration adds assistant
+   to the `api_tokens` scope constraint and adds `expires_at`; the token model,
+   persistence, and issuance path store assistant expirations no later than the
+   configured maximum TTL; `ValidateToken` rejects expired, NULL-expiry, or
+   over-long assistant tokens while preserving legacy NULL behavior for non-assistant
+   scopes; adapter refuses an admin token.
 3. No guarded action mutates state from an LLM tool call: an automated
    propose → human-approve → execute test proves a proposal can't execute without a
    Core-side human approval, a client `confirmed` flag alone never mutates, and the
@@ -195,7 +203,10 @@ and 4.
    `0.0.0.0`, refuses an unauthenticated non-loopback listener (tested); adapter has
    no outbound capability beyond Core-loopback + the configured LLM endpoint.
 10. Append-only `assistant_audit` for every read/proposal/approval/rejection/
-    execution (no scope can update/delete); every mutation reversible (test asserts
+    execution (no scope can update/delete); assistant-originated audit rows are
+    limited to server-generated read and proposal-submitted events, while Core
+    server-generates approval/rejection/execution/reversal records from
+    authenticated admin state transitions; every mutation reversible (test asserts
     reversal restores active); rate limit + circuit breaker + kill switch present.
 11. spec.md states the "never silently resolve/downgrade" rule verbatim; this file
     maps every gate to a threat; full build/vet/test green, tree clean, no homelab
