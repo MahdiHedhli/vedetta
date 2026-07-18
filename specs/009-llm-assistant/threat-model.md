@@ -22,9 +22,11 @@ Because of this, security rests on three structural backstops that do not depend
 model behavior: **(1)** a least-privilege scope that can never directly mutate
 protected operational state, but can write explicitly scoped pending-action and
 server-generated read/action audit entries, **(2)** Core executes only on a
-server-authenticated, **present-human** acceptance — a WebAuthn user-verification
-assertion, or an interactive session + CSRF that **rejects all bearer tokens (admin
-included)** — single-use, TTL-bound, `params_hash`-pinned, on a channel the
+server-authenticated, **present-human** acceptance — WebAuthn/passkey
+user-verification or an equivalent step-up/user-presence primitive. A real
+dashboard session with CSRF + Origin/Host checks is browser hardening, **not**
+sufficient human presence by itself. The accept route must **reject all bearer
+tokens (admin included)** and be single-use, TTL-bound, `params_hash`-pinned, on a channel the
 model/adapter/local-harness cannot reach, forge, auto-trigger, or replay, with a
 server-computed effect and Core-generated approval/execution audit records, and
 **(3)** the assistant's structural inability to relax detection (no wildcard/standing
@@ -94,8 +96,11 @@ triggers telemetry/community egress. **Cloud-in-v1 additions:** the full-fidelit
 is a property of the session's ultimate model destination, **forbidden whenever any
 cloud/remote endpoint is configured or reachable in the session**, with no local→cloud
 downgrade and whole-session minimization; Core **independently verifies loopback**
-(Core makes the full-fidelity call, or a distinct per-request consent names the actual
-destination) rather than trusting an adapter-declared endpoint; and the **same Core-
+(Core makes the full-fidelity call itself to a verified loopback endpoint, or a
+distinct per-request consent confirms that Core-verified loopback destination)
+rather than trusting an adapter-declared endpoint. Per-request consent can never
+select a remote/cloud destination and can never override the cloud/remote
+full-fidelity prohibition; and the **same Core-
 side minimizer applies to the model rationale and conversation context** egressed to
 cloud. The human-accept boundary is local and model-location-independent.
 
@@ -148,8 +153,9 @@ approval-card CSRF/clickjacking; an ambient-session confused deputy; a broad/sta
 suppression that hides future threats.
 
 **Controls** — high-entropy **server-generated** `action_id` (never model-supplied);
-accept requires the **human-presence primitive**, not id-possession, and **rejects all
-bearers (admin included)**; a **server-only `accept_nonce` that never appears on any
+accept requires the **human-presence primitive** (not browser session presence or
+CSRF alone), not id-possession, and **rejects all bearers (admin included)**; a
+**server-only `accept_nonce` that never appears on any
 MCP channel**; atomic **single-use compare-and-set + TTL**; at accept, **re-derive
 params + `params_hash` compare + re-render + void-on-any-material-drift (409)**;
 **re-check ceiling + policy + IOC-strength (fail-closed)**; accept reachable **only**
@@ -233,10 +239,13 @@ eligibility; changes are audited and reversible and can never breach the code ce
    refuses an admin token.
 3. **Accept requires a present human** *(replaces the old propose-and-confirm gate)*.
    An automated prepare → accept → execute test proves **no action executes without a
-   genuine human-presence acceptance** (WebAuthn user-verification over
-   `action_id||nonce`, or an interactive session + CSRF); an admin **bearer** (not just
-   the assistant token) gets 403/challenge on the accept route and cannot accept
-   headlessly; a client `confirmed=true` / any MCP-channel input never mutates; the
+   genuine human-presence acceptance** (WebAuthn/passkey user-verification over
+   `action_id||nonce`, or an equivalent step-up/user-presence primitive). A
+   dashboard session with CSRF + Origin/Host protects the browser flow but is not
+   sufficient by itself; an admin **bearer** (not just the assistant token) gets
+   403/challenge on the accept route and cannot accept headlessly; browser
+   automation/local-harness flows without the step-up fail; a client
+   `confirmed=true` / any MCP-channel input never mutates; the
    effect executed is server-computed from stored params. If the human-presence
    primitive is not yet built, the assistant ships propose-only and this gate blocks
    execution.
@@ -271,8 +280,10 @@ eligibility; changes are audited and reversible and can never breach the code ce
     raw `/events`/`/devices`; unknown/added struct fields drop by default.
 12. **Cloud whole-session minimization** *(now a v1 gate)*. Full-fidelity raw-QNAME is
     forbidden whenever any cloud/remote endpoint is configured/reachable in the session;
-    no local→cloud downgrade mid-session; a non-loopback "local" is Core-classified
-    remote and force-minimized (loopback Core-verified, not adapter-declared); the
+    no local→cloud downgrade mid-session; per-request consent may only confirm a
+    Core-verified loopback destination, never a remote/cloud destination, and cannot
+    override this prohibition; a non-loopback "local" is Core-classified remote and
+    force-minimized (loopback Core-verified, not adapter-declared); the
     minimizer applies to the model rationale + conversation context; cloud requires
     per-install + per-session disclosure + second ack with no egress before consent;
     eTLD+1 max on cloud for all domain observables including public IOC matches.

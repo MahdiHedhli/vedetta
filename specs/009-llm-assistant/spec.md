@@ -203,11 +203,15 @@ never the auth model.
    - **Primary:** a WebAuthn/passkey **user-verification** assertion signed over
      `action_id || accept_nonce` — the model host cannot produce a user-verified
      assertion, so accept is provably a present human bound to the exact action.
-   - **Fallback:** real server-side dashboard sessions (HttpOnly, `SameSite=Strict`
-     cookie + CSRF + Origin/Host allowlist) **distinct from API bearers**; the accept
-     route rejects **all** bearer tokens (admin included).
+   - **Supporting browser hardening:** real server-side dashboard sessions (HttpOnly,
+     `SameSite=Strict` cookie + CSRF + Origin/Host allowlist) **distinct from API
+     bearers**; the accept route rejects **all** bearer tokens (admin included).
+     Session + CSRF/Origin checks are not sufficient human presence by themselves; if
+     WebAuthn/passkey or an equivalent step-up/user-presence primitive is absent, v1
+     remains propose-only.
 
-   The accept body carries **only** `action_id` (+ the assertion/CSRF) and zero params.
+   The accept body carries **only** `action_id` (+ the WebAuthn/equivalent step-up
+   proof, with any browser CSRF token as supporting channel hardening) and zero params.
 4. **Execute.** On a valid accept, Core: re-derives params from **current** finding
    state and re-verifies `params_hash`; re-renders the effect and **voids (409, forces
    a fresh request)** on **any** material drift — not just severity escalation but any
@@ -326,10 +330,12 @@ backstops are the scope ceiling and the human-presence accept.
   **forbidden whenever any cloud/remote endpoint is configured or reachable in the
   session**; no local→cloud downgrade mid-session; the minimized tier applies to the
   **whole session** including previously-fetched data; Core **independently verifies
-  loopback** (Core makes the full-fidelity LLM call itself, or full QNAME is gated
-  behind a distinct per-request consent naming the actual destination) rather than
-  trusting an adapter-declared endpoint; a non-loopback "local" misconfig is
-  force-classified remote. The **same Core-side minimizer** applies to the model
+  loopback** (Core makes the full-fidelity LLM call itself to a verified loopback
+  endpoint, or full QNAME is gated behind distinct per-request consent confirming that
+  Core-verified loopback destination) rather than trusting an adapter-declared
+  endpoint. Per-request consent can never select a remote/cloud destination and can
+  never override the cloud/remote full-fidelity prohibition; a non-loopback "local"
+  misconfig is force-classified remote. The **same Core-side minimizer** applies to the model
   rationale and any conversation context egressed to cloud, not just tool telemetry.
 - **Never-egress denylist, enforced in Core** (not the adapter) and tested: raw
   MAC, raw client/source IPs, the per-install HMAC key / `SourceHash` preimage, API
@@ -401,8 +407,8 @@ revoke) is always present.
   `api_tokens.expires_at` migration + TTL enforcement;
   `assistant.enabled`/`assistant.mode` settings (default off/read-only);
   `assistant_audit`, `assistant_actions`, and `assistant_action_policy` tables
-  (forward-only); **human-presence-primitive groundwork** (interactive session/CSRF or
-  WebAuthn), since it gates Phase 3.
+  (forward-only); **human-presence-primitive groundwork** (WebAuthn/passkey or
+  equivalent step-up, plus browser-session CSRF/Origin hardening), since it gates Phase 3.
 - **Phase 2 — read-only assistant, local + cloud:** dedicated assistant-projection
   endpoints (allowlist DTOs) + the sanitizer/hardening layer with the injection-corpus
   build gate; the stdio MCP adapter with **read tools only**; **both** the local
@@ -483,10 +489,11 @@ Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
 3. *(Resolved in review)* The non-actionable ceiling is bound to spec-007's shared
    `trusted_high_confidence_ioc_or_ips` predicate (plus critical/high).
 4. **Human-presence primitive (blocking):** choose **primary** WebAuthn/passkey
-   user-verification bound to `action_id || nonce`, or **fallback** real server-side
-   sessions (HttpOnly `SameSite=Strict` cookie + CSRF + Origin/Host) that reject **all**
-   bearers including a stolen admin bearer used headlessly. Code-first Phase-3
-   prerequisite.
+   user-verification bound to `action_id || nonce`, or an equivalent step-up/user-
+   presence primitive. Real server-side sessions (HttpOnly `SameSite=Strict` cookie +
+   CSRF + Origin/Host) are required browser hardening and must reject **all** bearers
+   including a stolen admin bearer used headlessly, but are not sufficient human
+   presence by themselves. Code-first Phase-3 prerequisite.
 5. **Severity/risk policy (to-be-finalized):** eligible bands; severity-only vs
    severity × confidence × IOC-strength; discrete vs continuous score; medium-suppress
    default (proposed: **blocked**); per-class friction; per-action TTL; stricter under
