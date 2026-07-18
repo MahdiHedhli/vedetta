@@ -92,21 +92,25 @@ settings.
 - Over-scoped credential; a pre-admin LAN peer reaching a bootstrap-open route; an
   adapter tricked into using its Core credential for something the user didn't intend.
 
-**Controls** — a dedicated `ScopeAssistant` that satisfies **read only** and itself
-(never admin), while admin satisfies read but admin-vs-assistant proposal provenance
-is enforced by `RequireExactScope(ScopeAssistant)` rather than by
-`ScopeSatisfies`; plus a single new write route (`POST
-/api/v1/assistant/proposals`) gated by `RequireStrictAuth +
-RequireExactScope(ScopeAssistant)`; every existing `RequireStrictAdmin` route left
-untouched (the scope literally cannot call them); admin-only, non-bootstrap token
-minting; mandatory server-selected short TTL via a new non-NULL `expires_at` for
-assistant tokens; adapter holds only an assistant token (`0600`, never logged) and
-refuses to boot with an admin token. Net capability of the credential: **read +
+**Controls** — a dedicated `ScopeAssistant` that reaches read data only through
+dedicated assistant projection routes, never generic `RequireRead` routes.
+`ScopeAssistant` satisfies itself only, never `ScopeRead` or `ScopeAdmin`;
+admin continues to satisfy existing read routes and may use an explicit
+assistant-read gate for projections, but does not satisfy exact assistant scope for
+proposal provenance. The single new write route (`POST
+/api/v1/assistant/proposals`) is gated by `RequireStrictAuth +
+RequireExactScope(ScopeAssistant)`; every existing `RequireRead` raw telemetry route
+and every `RequireStrictAdmin` route is left untouched and unavailable to assistant
+tokens. Admin-only, non-bootstrap token minting; mandatory server-selected short TTL
+via a new non-NULL `expires_at` for assistant tokens; adapter holds only an
+assistant token (`0600`, never logged) and refuses to boot with an admin token. Net
+capability of the credential: **redacted assistant-projection reads +
 write-a-pending-proposal + server-generated read/proposal audit entries, nothing
 else.**
 
-**Residual risk** — a leaked assistant token can read (minimized) data and file
-proposals a human must still approve; bounded by TTL, rate limits, and revocation.
+**Residual risk** — a leaked assistant token can read minimized projection data and
+file proposals a human must still approve; bounded by TTL, route isolation, rate
+limits, and revocation.
 
 ## Surface 4 — Guarded-action abuse
 
@@ -164,13 +168,15 @@ and 4.
 ## Acceptance gates (must all pass before guarded actions ship)
 
 1. `ScopeAssistant` exists; a table-driven `ScopeSatisfies` test proves it satisfies
-   read and itself, **never admin**; admin satisfies read; and `RequireExactScope`
-   enforces admin != assistant on proposal routes even if `ScopeSatisfies` preserves
-   existing admin-read behavior. Negative route tests prove an assistant Bearer gets
-   403 on every admin mutation route
-   (tokens, enrollment, sensor/device mgmt, telemetry settings, whitelist,
-   suppression CRUD, `DELETE /finding-suppressions/{id}`, scan, strict-admin finding
-   routes); positive tests prove it reaches only the read set + `POST
+   itself only, **never read/admin**; admin still satisfies read; assistant-read
+   projection middleware admits assistant/admin and rejects other scopes; and
+   `RequireExactScope` enforces admin != assistant on proposal routes. Negative route
+   tests prove an assistant Bearer gets 403 on every existing raw `RequireRead`
+   endpoint and every admin mutation route (raw events, raw devices, raw findings,
+   raw status/update/detection-health routes, tokens, enrollment, sensor/device mgmt,
+   telemetry settings, whitelist, suppression CRUD,
+   `DELETE /finding-suppressions/{id}`, scan, strict-admin finding routes).
+   Positive tests prove it reaches only assistant-projection routes + `POST
    /api/v1/assistant/proposals`.
 2. `handleCreateToken` accepts `scope=assistant` only from an admin, never at
    bootstrap, and its validation error lists assistant; the migration adds assistant

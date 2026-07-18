@@ -83,8 +83,9 @@ struct field added later is dropped by default.
   is_new, needs_identification, active_finding_count}`. Raw MAC, raw hostname,
   `CustomName`, and `Notes` are never emitted.
 - **`get_system_status()`** → Core health, sensor liveness, detection-pipeline/feed
-  freshness, update posture (over `RequireRead` `/status` + `/update-status` +
-  `/health/detection`). Backs the troubleshooting use case.
+  freshness, and update posture through assistant-projection endpoints. It may reuse
+  existing status query internals, but it must not authorize the assistant token
+  against generic `RequireRead` routes. Backs the troubleshooting use case.
 - **`list_suppressions()`** → existing finding-suppression rules so the model can
   avoid recommending a duplicate or over-broad suppression.
 
@@ -110,13 +111,19 @@ a `proposal_id` and "queued, awaiting human approval."
 ### Least-privilege scope
 
 Add `ScopeAssistant TokenScope = "assistant"` in `backend/internal/auth/auth.go`.
-Extend `ScopeSatisfies` with **exactly one** cross-scope clause: an assistant token
-satisfies `ScopeRead` (so it transparently passes every existing `RequireRead` route
-with zero change to those groups). `ScopeAssistant` also satisfies itself, but
-**never** satisfies `ScopeAdmin`; `ScopeAdmin` still satisfies `ScopeRead` but does
-**not** satisfy `ScopeAssistant`. Admins mint assistant tokens and approve proposals
-through strict-admin routes, but they do not call assistant-proposal routes under
-admin scope.
+`ScopeAssistant` is a distinct, non-hierarchical scope: it satisfies itself only,
+never `ScopeRead` or `ScopeAdmin`. `ScopeAdmin` continues to satisfy `ScopeRead` for
+the existing dashboard/API hierarchy, but does not satisfy `ScopeAssistant`.
+Existing generic `RequireRead` route groups remain unavailable to assistant tokens,
+including raw events, devices, findings, and status endpoints that were not designed
+as assistant projections.
+
+Add an assistant-read gate for the new projection route group only, for example
+`RequireAssistantRead`, that admits `ScopeAssistant` and `ScopeAdmin` but always
+returns 403 for other scopes. Assistant tokens read only these allowlisted
+projection endpoints; admins may inspect the same projection shape for debugging.
+Admins mint assistant tokens and approve proposals through strict-admin routes, but
+they do not call assistant-proposal routes under admin scope.
 
 The assistant's only write capability is a **new** route group
 `POST /api/v1/assistant/proposals`, gated by
@@ -278,9 +285,10 @@ revoke) is always present.
 
 - **Phase 0 (this spec):** author spec + threat model; owner sign-off; no code.
 - **Phase 1 — least-privilege foundation:** `ScopeAssistant` + the one
-  `ScopeSatisfies` clause + negative/positive scope tests; `api_tokens.expires_at`
-  migration + TTL enforcement; `assistant.enabled`/`assistant.mode` settings (default
-  off/read-only); `assistant_audit` and `assistant_proposals` tables (forward-only).
+  `ScopeSatisfies` self-scope rule + assistant-read middleware + negative/positive
+  scope tests; `api_tokens.expires_at` migration + TTL enforcement;
+  `assistant.enabled`/`assistant.mode` settings (default off/read-only);
+  `assistant_audit` and `assistant_proposals` tables (forward-only).
 - **Phase 2 — read-only assistant:** dedicated assistant-projection endpoints
   (allowlist DTOs) + the sanitizer/hardening layer with the injection-corpus build
   gate; the stdio MCP adapter with **read tools only**; egress ledger; local default.
@@ -301,9 +309,10 @@ Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
   include `assistant`, add `api_tokens.expires_at` (NULL = legacy unaffected for
   non-assistant scopes), add `assistant_audit`, `assistant_proposals`, and
   `assistant.*` settings.
-- The one `ScopeSatisfies` clause is purely additive; existing `RequireRead` /
-  `RequireStrictAdmin` route groups are unchanged, so no existing token's authority
-  changes.
+- `ScopeAssistant` is additive and does not change existing `ScopeRead` /
+  `ScopeAdmin` authority. Existing `RequireRead` / `RequireStrictAdmin` route groups
+  are unchanged for current tokens, while assistant access is isolated to the new
+  assistant projection and proposal route groups.
 - The MCP adapter is a separate, optional component; Core with the assistant
   subsystem disabled behaves exactly as today.
 
