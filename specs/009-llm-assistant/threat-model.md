@@ -19,10 +19,12 @@ The LLM is **untrusted, injectable, and a confused deputy by default.** We assum
   depend on; a local model may ignore it entirely.
 
 Because of this, security rests on three structural backstops that do not depend on
-model behavior: **(1)** a least-privilege scope that can never mutate Core state,
-**(2)** Core-side human confirmation with a server-computed effect, and **(3)** the
-assistant's structural inability to relax detection (no wildcard/standing
-suppression, no resolve/downgrade, no action on critical/high or IOC findings).
+model behavior: **(1)** a least-privilege scope that can never directly mutate
+protected operational state, but can write explicitly scoped pending-proposal and
+append-only audit rows, **(2)** Core-side human confirmation with a server-computed
+effect, and **(3)** the assistant's structural inability to relax detection (no
+wildcard/standing suppression, no resolve/downgrade, no action on critical/high or
+trusted IOC/IPS findings).
 
 ## Surface 1 — Indirect prompt injection
 
@@ -69,11 +71,12 @@ classes in/out) + second acknowledgement; a **never-egress denylist enforced in
 Core** (raw MAC, raw client IPs, HMAC key / `SourceHash` preimage, tokens/secrets,
 `Device.Notes`/`CustomName`, bulk QNAME history); **allowlist-only** projection DTOs
 so new struct fields drop by default; server-side redaction before the byte leaves
-Core; eTLD+1 granularity for benign observables (full QNAME only on verified
-loopback with per-request consent; public IOCs the only default full-fidelity
-egress); rotating session-scoped device aliases keyed separately from the telemetry
-HMAC; a per-session egress ledger; TLS-only, body-only (never identifiers in URLs);
-and a tested guarantee that no assistant path triggers telemetry/community egress.
+Core; cloud domain egress capped at eTLD+1 granularity for all observables,
+including public IOC matches (full QNAME only on verified loopback with per-request
+consent and never for cloud transports); rotating session-scoped device aliases
+keyed separately from the telemetry HMAC; a per-session egress ledger; TLS-only,
+body-only (never identifiers in URLs); and a tested guarantee that no assistant path
+triggers telemetry/community egress.
 
 **Residual risk** — once a user opts into cloud, disclosed field classes do leave to
 the named provider; this is consented and minimized, not zero.
@@ -88,13 +91,16 @@ settings.
 - Over-scoped credential; a pre-admin LAN peer reaching a bootstrap-open route; an
   adapter tricked into using its Core credential for something the user didn't intend.
 
-**Controls** — a dedicated `ScopeAssistant` that satisfies **read only** (never
-admin) plus a single new write route (`POST /assistant/proposals`) gated by
-`RequireStrictAuth + RequireExactScope`; every existing `RequireStrictAdmin` route
-left untouched (the scope literally cannot call them); admin-only, non-bootstrap
-token minting; short-TTL + rotation via a new `expires_at`; adapter holds only an
-assistant token (`0600`, never logged) and refuses to boot with an admin token. Net
-capability of the credential: **read + write-a-pending-proposal, nothing else.**
+**Controls** — a dedicated `ScopeAssistant` that satisfies **read only** and itself
+(never admin), while admin does not satisfy assistant for exact-scope provenance;
+plus a single new write route (`POST /api/v1/assistant/proposals`) gated by
+`RequireStrictAuth + RequireExactScope(ScopeAssistant)`; every existing
+`RequireStrictAdmin` route left untouched (the scope literally cannot call them);
+admin-only, non-bootstrap token minting; mandatory server-selected short TTL via a
+new non-NULL `expires_at` for assistant tokens; adapter holds only an assistant
+token (`0600`, never logged) and refuses to boot with an admin token. Net capability
+of the credential: **read + write-a-pending-proposal + append-only audit rows,
+nothing else.**
 
 **Residual risk** — a leaked assistant token can read (minimized) data and file
 proposals a human must still approve; bounded by TTL, rate limits, and revocation.
@@ -115,9 +121,10 @@ human executes in the dashboard under their **own** admin session, against a
 single-target, single-use, TTL-bounded proposals; server-side hard ceilings
 (suppression affects only the one finding and cannot install a future-matching rule —
 instance-write separated from rule-write; never `resolved`/downgrade; critical/high
-and strong/community-IOC findings ineligible); per-token rate limit + circuit breaker
-+ admin kill switch; full reversibility (unack, restore status, deactivate
-suppression); append-only audit of every proposal/approval/rejection/execution.
+and findings matching the shared `trusted_high_confidence_ioc_or_ips` predicate from
+the findings processor ineligible); per-token rate limit + circuit breaker + admin
+kill switch; full reversibility (unack, restore status, deactivate suppression);
+append-only audit of every proposal/approval/rejection/execution.
 **Hard rule:** community/LLM output can never *silently* resolve or downgrade a
 finding.
 
@@ -138,10 +145,11 @@ tailnet-only bind, **never `0.0.0.0`**, hard refusal of an unauthenticated
 non-loopback listener; per-install MCP session secret (constant-time), CORS denied,
 Origin/Host validated; adapter has no outbound/file tools; static hash-pinned tool
 manifest (hash in `/status`); per-tool row/window/byte caps + rate limits + query
-timeouts + a **read-only** SQLite connection with busy-timeout (assistant queries
-can't block writers); unprivileged with resource limits + a detection-lag circuit
-breaker; pinned+hashed deps, SBOM in CI, provenance verification; a tool-poisoning
-audit as a pre-ship gate.
+deadlines; assistant reads use a dedicated `mode=ro` SQLite pool, WAL journal mode,
+short busy timeout, bounded read transactions, and context deadlines so assistant
+queries cannot hold writer locks or starve ingest/detection writers; unprivileged
+with resource limits + a detection-lag circuit breaker; pinned+hashed deps, SBOM in
+CI, provenance verification; a tool-poisoning audit as a pre-ship gate.
 
 **Residual risk** — a compromised host running the local model can still misuse a
 valid assistant token within its (minimal) scope; bounded by everything in Surface 3
@@ -150,22 +158,27 @@ and 4.
 ## Acceptance gates (must all pass before guarded actions ship)
 
 1. `ScopeAssistant` exists; a table-driven `ScopeSatisfies` test proves it satisfies
-   read and itself, **never admin**, and admin still satisfies assistant. Negative
-   route tests prove an assistant Bearer gets 403 on every admin mutation route
+   read and itself, **never admin**, and admin does not satisfy assistant for
+   exact-scope proposal provenance. Negative route tests prove an assistant Bearer
+   gets 403 on every admin mutation route
    (tokens, enrollment, sensor/device mgmt, telemetry settings, whitelist,
    suppression CRUD, `DELETE /finding-suppressions/{id}`, scan, strict-admin finding
    routes); positive tests prove it reaches only the read set + `POST
-   /assistant/proposals`.
+   /api/v1/assistant/proposals`.
 2. `handleCreateToken` accepts `scope=assistant` only from an admin, never at
-   bootstrap; `expires_at` enforced (expired ⇒ 401; legacy NULL unaffected); adapter
-   refuses an admin token.
+   bootstrap, and its validation error lists assistant; newly issued assistant tokens
+   always receive a non-NULL `expires_at` no later than the configured maximum TTL;
+   `ValidateToken` rejects expired, NULL-expiry, or over-long assistant tokens while
+   preserving legacy NULL behavior for non-assistant scopes; adapter refuses an admin
+   token.
 3. No guarded action mutates state from an LLM tool call: an automated
    propose → human-approve → execute test proves a proposal can't execute without a
    Core-side human approval, a client `confirmed` flag alone never mutates, and the
    effect shown is server-computed.
 4. Assistant suppression affects only the single finding and provably installs no
-   future-matching rule; never `resolved`; never acts on critical/high or
-   strong/community-IOC (store + validation tests).
+   future-matching rule; never `resolved`; never acts on critical/high or findings
+   matching the shared `trusted_high_confidence_ioc_or_ips` predicate (store +
+   validation tests).
 5. Injection-corpus test: adversarial hostnames/QNAMEs/UAs/feed-descriptions/nested
    blobs emerge inside nonce containers, control/zero-width/bidi/tag stripped, URLs
    defanged, within caps, no raw `json.RawMessage`; and the model cannot cause a
@@ -173,8 +186,9 @@ and 4.
 6. Never-egress denylist enforced in Core and tested; no tool proxies raw
    `/events`/`/devices`; unknown/added struct fields drop by default.
 7. Cloud off by default; enabling needs per-install + per-session disclosure + second
-   ack; a test verifies no egress before consent; eTLD+1 max on cloud; non-loopback
-   "local" blocked or forced to minimized profile.
+   ack; a test verifies no egress before consent; eTLD+1 max on cloud for all domain
+   observables including public IOC matches; non-loopback "local" blocked or forced
+   to minimized profile.
 8. Tool manifest is static + hash-pinned (hash in `/status`), passes an
    imperative-verb lint, cannot mutate at runtime; tool-poisoning audit signed off.
 9. Transport: stdio default; HTTP/SSE binds loopback, needs a session secret, never

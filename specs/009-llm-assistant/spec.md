@@ -14,8 +14,9 @@ bounded set of reversible actions that a human executes.
 The design treats the LLM as an **untrusted, injectable, confused-deputy-by-default
 component**. Every attacker-controllable telemetry string it sees is data, never
 instructions; it holds a new least-privilege scope that is never admin; and it can
-never mutate Core state on its own authority. Correctness of the model is a
-usability property, never a security control.
+never mutate protected operational state on its own authority. Its only writes are
+explicitly scoped pending-proposal and append-only audit rows. Correctness of the
+model is a usability property, never a security control.
 
 ## User-visible outcome
 
@@ -47,12 +48,22 @@ struct field added later is dropped by default.
   sanitized title, needs_identification}`. The raw primary observable is not
   emitted — only `observable_type` and a **defanged** form. Backed by a new
   `GET /api/v1/assistant/findings`, never raw `/findings`.
-- **`get_finding(finding_id, evidence_limit, event_limit)`** → one finding's fields
-  plus a bounded, sanitized slice of detection evidence `{detector, category,
-  rationale, source_confidence, feed_freshness, score_contribution, outcome}` and a
-  **count-only** supporting-events summary. `json.RawMessage` blobs
-  (`Finding.Details`/`Evidence`, `device_context`, `IdentityEvidence`) are never
-  passed raw — see [Injection hardening](#injection-hardening).
+- **`get_finding(finding_id, evidence_limit, event_limit)`** → exactly these
+  top-level keys and no raw Finding DTO fields: `{finding_id, detector, category,
+  priority, status, disposition, occurrence_count, first_seen, last_seen,
+  observable{type,defanged_value}, device{alias,type,is_new,needs_identification},
+  reason, recommended_action, evidence[], supporting_events_summary,
+  injection_suspected}`. Every user-, device-, feed-, and event-controlled string is
+  emitted only through the sanitizer: NFC-normalized, control/zero-width/bidi/tag
+  stripped, defanged when it looks like a domain/IP/URL, length-capped, and wrapped
+  in nonce-labelled `untrusted_*` containers. `evidence[]` is bounded by
+  `evidence_limit` and may contain only `{detector, category, rationale,
+  observable_type, defanged_observable, source_confidence, feed_freshness,
+  score_contribution, outcome}`. `supporting_events_summary` is count-only by
+  source/outcome/window and never includes raw rows. `json.RawMessage` blobs
+  (`Finding.Details`/`Evidence`, `device_context`, `IdentityEvidence`) are excluded
+  from the projection and may only contribute values after allowlist projection and
+  sanitization — see [Injection hardening](#injection-hardening).
 - **`explain_finding(finding_id)`** — the flagship. A **composed verdict**, not an
   endpoint passthrough: `{headline, what_tripped, confidence{level,score,drivers,
   caveats}, base_rate{how_common, similar_total, dismissed_pct, interpretation},
@@ -86,16 +97,23 @@ a `proposal_id` and "queued, awaiting human approval."
 - **`propose_suppress_finding_as_noise(finding_id, rationale)`** — highest risk.
   Scoped to the **single current finding instance**; it never creates a
   standing/pattern/wildcard future-matching rule. Hard-blocked on critical/high and
-  on any finding matching a strong/community-corroborated IOC. Un-suppression stays
-  human/admin-only.
+  on any finding where the shared findings processor classifies evidence as
+  `trusted_high_confidence_ioc_or_ips` per spec 007 ("Every trusted high-confidence
+  IOC/IPS result can create a finding regardless of allowlist, blocked state, or
+  suppression"). Community-only evidence stays advisory, but a community-corroborated
+  public IOC linked to trusted IOC/IPS evidence is included in the same predicate.
+  Un-suppression stays human/admin-only.
 
 ### Least-privilege scope
 
 Add `ScopeAssistant TokenScope = "assistant"` in `backend/internal/auth/auth.go`.
-Extend `ScopeSatisfies` with **exactly one** clause: an assistant token satisfies
-`ScopeRead` (so it transparently passes every existing `RequireRead` route with zero
-change to those groups) but **never** satisfies `ScopeAdmin`. Admin remains the
-superuser and still satisfies assistant.
+Extend `ScopeSatisfies` with **exactly one** cross-scope clause: an assistant token
+satisfies `ScopeRead` (so it transparently passes every existing `RequireRead` route
+with zero change to those groups). `ScopeAssistant` also satisfies itself, but
+**never** satisfies `ScopeAdmin`; `ScopeAdmin` still satisfies `ScopeRead` but does
+**not** satisfy `ScopeAssistant`. Admins mint assistant tokens and approve proposals
+through strict-admin routes, but they do not call assistant-proposal routes under
+admin scope.
 
 The assistant's only write capability is a **new** route group
 `POST /api/v1/assistant/proposals`, gated by
@@ -106,11 +124,18 @@ provenance clean (even an admin token does not post proposals). **Every existing
 literally cannot call any of them.
 
 Token minting stays `RequireStrictAdmin`: `handleCreateToken` accepts
-`scope=assistant` only from an admin caller, never during bootstrap. `api_tokens`
-gains an `expires_at` column (forward-only migration; `NULL` = legacy, unaffected);
-`ValidateToken` rejects expired assistant tokens. The adapter is provisioned only an
-assistant token (file mode `0600`, never echoed into output/logs/prompts) and
-**refuses to boot with an admin-scoped token**.
+`scope=assistant` alongside `admin`, `ingest`, `read`, and `sensor` only from an
+admin caller, never during bootstrap; its validation error must list `assistant`.
+Assistant tokens always receive a non-NULL, server-selected `expires_at` no later
+than the configured maximum assistant-token TTL. `api_tokens` gains an `expires_at`
+column (forward-only migration; `NULL` = legacy for non-assistant scopes only);
+`ValidateToken` rejects expired assistant tokens, assistant tokens with NULL
+`expires_at`, and assistant tokens whose expiry exceeds the configured bound while
+preserving NULL-as-legacy behavior for existing non-assistant tokens. Tests cover
+admin issuance, rejected non-admin/bootstrap issuance, max-TTL enforcement, expired
+assistant rejection, and legacy non-assistant NULL compatibility. The adapter is
+provisioned only an assistant token (file mode `0600`, never echoed into
+output/logs/prompts) and **refuses to boot with an admin-scoped token**.
 
 ### Guarded actions: propose-and-confirm (the security boundary)
 
@@ -132,10 +157,11 @@ Server-side hard constraints, enforced regardless of the model: assistant-scope
 suppression affects only the single current finding and provably cannot install or
 reuse a future-matching rule (the instance-write is separated from the rule-write in
 the store); the assistant can never set `resolved` or downgrade out of active;
-critical/high and strong/community-IOC findings are ineligible for assistant
-status-change or suppression; per-token rate limits + a circuit breaker auto-pause on
-abnormal proposal bursts; and an admin-only kill switch (`assistant.enabled=false`,
-or revoke the token) cuts off instantly.
+critical/high findings and findings matching the shared
+`trusted_high_confidence_ioc_or_ips` predicate are ineligible for assistant
+status-change or suppression; per-token rate limits + a circuit breaker auto-pause
+on abnormal proposal bursts; and an admin-only kill switch
+(`assistant.enabled=false`, or revoke the token) cuts off instantly.
 
 **Hard rule:** community or LLM output can never *silently* resolve, downgrade,
 suppress, or reprioritize a finding. Every such change is a human decision with an
@@ -186,11 +212,11 @@ backstops are the scope ceiling and human confirmation.
   tokens/secrets/config, `Device.Notes`/`CustomName` free text, and full bulk DNS
   QNAME history must never appear in any projection response or tool parameter.
 - Redaction happens **server-side before the byte leaves Core**; the adapter is a
-  dumb pipe over already-minimized data. Benign observables egress at most
-  registrable-domain (eTLD+1) granularity; full raw QNAME is reachable only on a
-  verified-loopback local endpoint behind explicit per-request consent;
-  threat-feed-matched IOCs (already public) are the only full-fidelity observables
-  allowed to egress by default.
+  dumb pipe over already-minimized data. Cloud projections always emit domain
+  observables at registrable-domain (eTLD+1) granularity, including public IOC
+  matches; no public-IOC exception bypasses this minimization. Full raw QNAME is
+  reachable only on a verified-loopback local endpoint behind explicit per-request
+  consent, and that endpoint is disabled for cloud transports.
 - Device aliases are session-scoped and rotating, derived from a key **distinct**
   from the telemetry HMAC key, so a provider cannot build a durable cross-session
   identity graph.
@@ -213,9 +239,11 @@ backstops are the scope ceiling and human confirmation.
 - The adapter has **no outbound/network/file tools of its own**; egress is
   restricted to the Core loopback API and the single configured LLM endpoint.
 - Hard server-side caps on every read tool (max rows, mandatory pagination, max time
-  window, response-byte ceiling), per-session rate limiting, query timeouts, and a
-  **read-only SQLite connection with busy-timeout** so assistant queries can never
-  block the ingest/detection writers.
+  window, response-byte ceiling), per-session rate limiting, and query deadlines.
+  Assistant reads use a dedicated read-only SQLite connection pool opened with
+  `mode=ro`, WAL journal mode, a short busy timeout, bounded read transactions, and
+  context deadlines on every query; tests must show long assistant reads do not hold
+  writer locks or starve ingest/detection writers.
 - Runs unprivileged with resource limits; a circuit breaker sheds assistant load
   when `/health/detection` shows ingest lag.
 - MCP/transport dependencies pinned by exact version + hash (prefer a lean
@@ -244,10 +272,10 @@ unack, restore status) and surfaced in an operator digest. An admin-only kill sw
   gate; the stdio MCP adapter with **read tools only**; egress ledger; local default.
   Delivers the full "help me triage" value with zero mutation capability and is
   independently shippable.
-- **Phase 3 — guarded actions:** `POST /assistant/proposals`, the `propose_*` tools,
-  the dashboard proposal queue with server-computed effect diff + human approval,
-  rate limits/circuit breaker/kill switch, reversibility + operator digest. Gate:
-  every acceptance gate green + tool-poisoning audit signed off.
+- **Phase 3 — guarded actions:** `POST /api/v1/assistant/proposals`, the
+  `propose_*` tools, the dashboard proposal queue with server-computed effect diff +
+  human approval, rate limits/circuit breaker/kill switch, reversibility + operator
+  digest. Gate: every acceptance gate green + tool-poisoning audit signed off.
 - **Phase 4 — cloud opt-in:** per-install + per-session consent, second
   acknowledgement, stricter cloud redaction tier, HTTP/SSE transport hardening.
 
@@ -274,7 +302,8 @@ Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
 - The assistant can only **add friction** (ack, mark investigating, suppress one
   finding instance), never **relax** detection: no wildcard/pattern/standing
   suppression or whitelist, no deleting existing safety rules, no resolve/downgrade,
-  no action at all on critical/high or strong/community-IOC findings.
+  no action at all on critical/high findings or findings matching the shared
+  `trusted_high_confidence_ioc_or_ips` predicate.
 - Not a cloud data pipeline by default; local is the only fully-private path and the
   default. No community/telemetry submission ever occurs on the assistant path.
 - Not a new privileged Core trust boundary or a new default listening service
@@ -287,15 +316,15 @@ Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
 ## Constitution check
 
 - **Privacy-first:** local default, off on fresh install, allowlist-only redacted
-  egress, never-egress denylist in Core, no telemetry/community coupling. ✅
+  egress, never-egress denylist in Core, no telemetry/community coupling.
 - **Least privilege:** dedicated non-admin scope; the assistant credential can read +
-  write-a-pending-proposal, nothing else. ✅
+  write-a-pending-proposal, nothing else.
 - **Human-in-the-loop / auditability / reversibility:** every mutation is
-  human-approved under an admin session, append-only audited, and reversible. ✅
+  human-approved under an admin session, append-only audited, and reversible.
 - **Safe by default:** subsystem off by default; stdio/loopback transport; hard
-  refusal of unauthenticated non-loopback listeners. ✅
+  refusal of unauthenticated non-loopback listeners.
 - **No homelab data:** spec, threat model, and fixtures use RFC 5737 / synthetic
-  values only. ✅
+  values only.
 
 ## Open questions for owner
 
