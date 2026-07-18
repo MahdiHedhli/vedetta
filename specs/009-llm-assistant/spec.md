@@ -1,0 +1,317 @@
+# Spec: LLM Assistant via Model Context Protocol (MCP)
+
+Status: **Draft — awaiting owner sign-off (Phase 0).** No code ships against this
+spec until it is approved. See [threat-model.md](threat-model.md) for the security
+analysis every requirement here traces back to.
+
+## Objective
+
+Ship a Vedetta MCP server that lets a prosumer's own LLM — a local model (Ollama,
+LM Studio) or a cloud client (Claude Desktop) — **read their security findings,
+separate real threats from noise, and troubleshoot**, and **propose** a tightly
+bounded set of reversible actions that a human executes.
+
+The design treats the LLM as an **untrusted, injectable, confused-deputy-by-default
+component**. Every attacker-controllable telemetry string it sees is data, never
+instructions; it holds a new least-privilege scope that is never admin; and it can
+never mutate Core state on its own authority. Correctness of the model is a
+usability property, never a security control.
+
+## User-visible outcome
+
+A non-expert opens their LLM client and asks *"is anything wrong on my network?"*
+The assistant answers per finding in plain English: what tripped, a confidence
+level **with caveats** ("the threat feed backing this was stale"), a base rate
+("findings like this are dismissed as noise 82% of the time"), the device
+involved, and one recommended next step.
+
+When the recommended step is a state change, **the assistant does not perform it.**
+It queues a proposal that the operator approves in the Vedetta dashboard, where
+Core shows the exact server-computed effect before the operator clicks. The default
+is a fully local model, so nothing leaves the LAN; the cloud path is off until the
+operator explicitly opts in and acknowledges what will leave. The operator can
+always see the raw finding alongside the assistant's narrative, and every assistant
+read and every proposal is auditable and reversible.
+
+## Functional requirements
+
+### Read tools (over dedicated, redacted projections)
+
+No tool proxies a raw `models.*` DTO. Every read goes through a new Core
+assistant-projection endpoint that emits an **allowlist-only** redacted shape, so a
+struct field added later is dropped by default.
+
+- **`list_findings(status, priority, disposition, device_id, page, limit≤50)`** →
+  a summarized triage worklist: `{finding_id, detector, category, priority, status,
+  disposition, occurrence_count, first/last_seen, allowed/blocked/observed counts,
+  sanitized title, needs_identification}`. The raw primary observable is not
+  emitted — only `observable_type` and a **defanged** form. Backed by a new
+  `GET /api/v1/assistant/findings`, never raw `/findings`.
+- **`get_finding(finding_id, evidence_limit, event_limit)`** → one finding's fields
+  plus a bounded, sanitized slice of detection evidence `{detector, category,
+  rationale, source_confidence, feed_freshness, score_contribution, outcome}` and a
+  **count-only** supporting-events summary. `json.RawMessage` blobs
+  (`Finding.Details`/`Evidence`, `device_context`, `IdentityEvidence`) are never
+  passed raw — see [Injection hardening](#injection-hardening).
+- **`explain_finding(finding_id)`** — the flagship. A **composed verdict**, not an
+  endpoint passthrough: `{headline, what_tripped, confidence{level,score,drivers,
+  caveats}, base_rate{how_common, similar_total, dismissed_pct, interpretation},
+  device{alias,is_new,needs_identification}, recommended_action{verb,
+  guarded_tool_to_call, reversible}}`. `recommended_action` only **names** a guarded
+  tool; it never executes. This is the core "triage for non-experts" surface.
+- **`finding_stats()`** → 7-day aggregate counts by priority/status/disposition;
+  feeds `explain_finding`'s base rate. No attacker-controlled strings.
+- **`summarize_events(window, bucket, device_id?, category?)`** → aggregate/timeline
+  counts only, never raw event rows (event bodies carry the most
+  attacker-controlled content).
+- **`list_devices(new_only, needs_identification, page, limit)`** → per device
+  `{device_id, sanitized alias, OUI-derived vendor (low trust), is_new,
+  needs_identification, active_finding_count}`. Raw MAC, raw hostname, `CustomName`,
+  and `Notes` are never emitted.
+- **`get_system_status()`** → Core health, sensor liveness, detection-pipeline/feed
+  freshness, update posture (over `RequireRead` `/status` + `/update-status` +
+  `/health/detection`). Backs the troubleshooting use case.
+- **`list_suppressions()`** → existing finding-suppression rules so the model can
+  avoid recommending a duplicate or over-broad suppression.
+
+### Guarded tools (propose-only)
+
+Each guarded tool writes a **pending proposal** and performs no mutation. It returns
+a `proposal_id` and "queued, awaiting human approval."
+
+- **`propose_acknowledge_event(event_id, rationale)`** — lowest risk; reversible ack.
+- **`propose_set_finding_status(finding_id, status='investigating', rationale)`** —
+  may propose *investigating* only (does not hide the finding). Can never propose
+  `resolved`, never downgrade out of active, never act on critical/high.
+- **`propose_suppress_finding_as_noise(finding_id, rationale)`** — highest risk.
+  Scoped to the **single current finding instance**; it never creates a
+  standing/pattern/wildcard future-matching rule. Hard-blocked on critical/high and
+  on any finding matching a strong/community-corroborated IOC. Un-suppression stays
+  human/admin-only.
+
+### Least-privilege scope
+
+Add `ScopeAssistant TokenScope = "assistant"` in `backend/internal/auth/auth.go`.
+Extend `ScopeSatisfies` with **exactly one** clause: an assistant token satisfies
+`ScopeRead` (so it transparently passes every existing `RequireRead` route with zero
+change to those groups) but **never** satisfies `ScopeAdmin`. Admin remains the
+superuser and still satisfies assistant.
+
+The assistant's only write capability is a **new** route group
+`POST /api/v1/assistant/proposals`, gated by
+`RequireStrictAuth + RequireExactScope(ScopeAssistant)` (mirrors the sensor group):
+strict auth closes the zero-token bootstrap bypass; exact-scope keeps proposal
+provenance clean (even an admin token does not post proposals). **Every existing
+`RequireStrictAdmin` mutation route is left untouched** — the assistant scope
+literally cannot call any of them.
+
+Token minting stays `RequireStrictAdmin`: `handleCreateToken` accepts
+`scope=assistant` only from an admin caller, never during bootstrap. `api_tokens`
+gains an `expires_at` column (forward-only migration; `NULL` = legacy, unaffected);
+`ValidateToken` rejects expired assistant tokens. The adapter is provisioned only an
+assistant token (file mode `0600`, never echoed into output/logs/prompts) and
+**refuses to boot with an admin-scoped token**.
+
+### Guarded actions: propose-and-confirm (the security boundary)
+
+Safety rests on a **Core-side** two-phase model, not client-side confirmation (a
+local model harness can auto-approve, so a client `confirmed=true` flag is never the
+authorization boundary):
+
+1. **Propose.** A guarded tool writes a row to a new `assistant_proposals` table
+   (`status=pending`); it does **not** invoke the suppress/ack/status handlers.
+2. **Confirm.** The operator reviews an *Assistant Proposals* queue in the dashboard,
+   where Core shows a **server-computed effect diff** derived from the proposal
+   params (never from the LLM's summary), the model's rationale rendered as
+   visibly-quoted **untrusted** text, and an `injection_suspected` banner. Approving
+   invokes the existing `RequireStrictAdmin` handler **under the operator's own admin
+   session**. No batch/approve-all; each proposal is single-target, single-use, and
+   TTL-bounded.
+
+Server-side hard constraints, enforced regardless of the model: assistant-scope
+suppression affects only the single current finding and provably cannot install or
+reuse a future-matching rule (the instance-write is separated from the rule-write in
+the store); the assistant can never set `resolved` or downgrade out of active;
+critical/high and strong/community-IOC findings are ineligible for assistant
+status-change or suppression; per-token rate limits + a circuit breaker auto-pause on
+abnormal proposal bursts; and an admin-only kill switch (`assistant.enabled=false`,
+or revoke the token) cuts off instantly.
+
+**Hard rule:** community or LLM output can never *silently* resolve, downgrade,
+suppress, or reprioritize a finding. Every such change is a human decision with an
+audit trail.
+
+### Injection hardening
+
+Injection is assumed **not** defeated; these controls reduce it, but the real
+backstops are the scope ceiling and human confirmation.
+
+- **Data/instruction separation.** Telemetry is placed only in the tool-**result**
+  channel under typed `untrusted_*` keys — never concatenated into system prompts,
+  tool descriptions, or any instruction position.
+- **Nonce-delimited untrusted containers.** Every untrusted field is wrapped in a
+  per-response, nonce-labelled container; the value is stripped of the sentinel/nonce
+  first so injected content cannot forge a closing tag. A standing system-prompt
+  contract states that such content is observed network data to analyze, never
+  instructions, and can never authorize a tool call.
+- **Unicode hardening** before egress: NFC-normalize; strip C0/C1 controls,
+  zero-width chars, bidi overrides (U+202A–202E, U+2066–2069) and the Unicode Tag
+  block (U+E0000–E007F); punycode-decode domains and flag homographs.
+- **Length caps** with explicit truncation markers (hostname/QNAME 253, User-Agent
+  512, description 1 KB, log line 2 KB).
+- **Never emit `json.RawMessage` blobs raw.** Project through a server-side key
+  allowlist, coerce to strings, recursively strip control/zero-width/bidi/tag chars,
+  cap nesting depth and serialized size, drop unknown keys. The projector is
+  fuzz/property-tested against adversarial blobs as a build gate.
+- **Defang** all URLs/domains; no clickable links.
+- `injection_suspected` flags instruction-shaped fields as a **quality signal**
+  surfaced in the proposal UI — never as the security boundary.
+- **Static tool manifest.** Tool names/descriptions/schemas are code constants with
+  zero runtime/telemetry-derived content, pinned by hash to an in-repo manifest
+  (rug-pull defense); the hash is exposed in `/status`.
+
+### Privacy & data egress
+
+- **Local-first, off by default.** The whole subsystem is off on a fresh install
+  (`assistant.enabled=false`, `assistant.mode=read_only`) until an admin mints a
+  token **and** flips the mode. Local model is the default and the only
+  fully-private path.
+- **Cloud egress is strictly opt-in** per install **and** re-surfaced per session
+  with an honest disclosure that names the destination, states retention, and
+  enumerates exactly which field classes leave (category, priority, registrable
+  domain, OUI vendor, rotating device alias) vs. which never do. Cloud requires a
+  second explicit acknowledgement.
+- **Never-egress denylist, enforced in Core** (not the adapter) and tested: raw
+  MAC, raw client/source IPs, the per-install HMAC key / `SourceHash` preimage, API
+  tokens/secrets/config, `Device.Notes`/`CustomName` free text, and full bulk DNS
+  QNAME history must never appear in any projection response or tool parameter.
+- Redaction happens **server-side before the byte leaves Core**; the adapter is a
+  dumb pipe over already-minimized data. Benign observables egress at most
+  registrable-domain (eTLD+1) granularity; full raw QNAME is reachable only on a
+  verified-loopback local endpoint behind explicit per-request consent;
+  threat-feed-matched IOCs (already public) are the only full-fidelity observables
+  allowed to egress by default.
+- Device aliases are session-scoped and rotating, derived from a key **distinct**
+  from the telemetry HMAC key, so a provider cannot build a durable cross-session
+  identity graph.
+- **No coupling to telemetry/community.** No assistant read or action path can
+  trigger an outbound telemetry or community-DB submission (verified by test); the
+  "community data never linked to install/UID/IP" guarantee is untouched.
+- A per-session, user-visible **egress ledger** ("this session sent N findings /
+  M bytes to <destination>"); TLS-only; no observable/domain/IP/identifier ever in a
+  URL path or query string (body-only).
+
+### MCP transport & adapter hardening
+
+- **stdio is the default transport** (client spawns the adapter locally). HTTP/SSE
+  is opt-in and off by default; when enabled it binds `127.0.0.1` by default, allows
+  an explicit tailnet/WireGuard bind only via config, and **never `0.0.0.0`**; the
+  server hard-refuses to start an unauthenticated non-loopback listener.
+- HTTP/SSE requires a per-install MCP session secret (distinct from the Core token,
+  constant-time compare, rotatable); deny CORS; validate Origin/Host against DNS
+  rebinding.
+- The adapter has **no outbound/network/file tools of its own**; egress is
+  restricted to the Core loopback API and the single configured LLM endpoint.
+- Hard server-side caps on every read tool (max rows, mandatory pagination, max time
+  window, response-byte ceiling), per-session rate limiting, query timeouts, and a
+  **read-only SQLite connection with busy-timeout** so assistant queries can never
+  block the ingest/detection writers.
+- Runs unprivileged with resource limits; a circuit breaker sheds assistant load
+  when `/health/detection` shows ingest lag.
+- MCP/transport dependencies pinned by exact version + hash (prefer a lean
+  first-party Go implementation over a large tree), SBOM scanned in CI. Run the
+  tool-poisoning audit as a pre-ship gate.
+
+### Audit, reversibility, kill switch
+
+Every read and every proposed/approved/rejected/executed action writes an
+**immutable, append-only** `assistant_audit` row (actor = assistant token id,
+model/deployment id, transport = local vs cloud, evidence hash, rationale,
+`injection_suspected`, human-approver id, lifecycle state) that no scope can update
+or delete. Every assistant-caused mutation is reversible (deactivate suppression,
+unack, restore status) and surfaced in an operator digest. An admin-only kill switch
+(`assistant.enabled=false` and token revoke) is always present.
+
+## Phasing
+
+- **Phase 0 (this spec):** author spec + threat model; owner sign-off; no code.
+- **Phase 1 — least-privilege foundation:** `ScopeAssistant` + the one
+  `ScopeSatisfies` clause + negative/positive scope tests; `api_tokens.expires_at`
+  migration + TTL enforcement; `assistant.enabled`/`assistant.mode` settings (default
+  off/read-only); `assistant_audit` and `assistant_proposals` tables (forward-only).
+- **Phase 2 — read-only assistant:** dedicated assistant-projection endpoints
+  (allowlist DTOs) + the sanitizer/hardening layer with the injection-corpus build
+  gate; the stdio MCP adapter with **read tools only**; egress ledger; local default.
+  Delivers the full "help me triage" value with zero mutation capability and is
+  independently shippable.
+- **Phase 3 — guarded actions:** `POST /assistant/proposals`, the `propose_*` tools,
+  the dashboard proposal queue with server-computed effect diff + human approval,
+  rate limits/circuit breaker/kill switch, reversibility + operator digest. Gate:
+  every acceptance gate green + tool-poisoning audit signed off.
+- **Phase 4 — cloud opt-in:** per-install + per-session consent, second
+  acknowledgement, stricter cloud redaction tier, HTTP/SSE transport hardening.
+
+Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
+
+## Migration and compatibility
+
+- Additive, forward-only migrations: `api_tokens.expires_at` (NULL = legacy
+  unaffected), `assistant_audit`, `assistant_proposals`, and `assistant.*` settings.
+- The one `ScopeSatisfies` clause is purely additive; existing `RequireRead` /
+  `RequireStrictAdmin` route groups are unchanged, so no existing token's authority
+  changes.
+- The MCP adapter is a separate, optional component; Core with the assistant
+  subsystem disabled behaves exactly as today.
+
+## Non-goals
+
+- No direct-execute mode: the LLM never changes state on its own authority; there is
+  no `execute_bounded` tool.
+- The assistant scope does not expose token minting/revocation, sensor
+  enrollment/management, device confirm/merge/update, whitelist writes,
+  pattern/global suppression CRUD, scan triggering, or settings/telemetry writes —
+  those stay strict-admin, dashboard-only.
+- The assistant can only **add friction** (ack, mark investigating, suppress one
+  finding instance), never **relax** detection: no wildcard/pattern/standing
+  suppression or whitelist, no deleting existing safety rules, no resolve/downgrade,
+  no action at all on critical/high or strong/community-IOC findings.
+- Not a cloud data pipeline by default; local is the only fully-private path and the
+  default. No community/telemetry submission ever occurs on the assistant path.
+- Not a new privileged Core trust boundary or a new default listening service
+  (stdio-first); no on-box ML runtime is added to Core.
+- Raw event bodies are out of scope for v1 tool output (summaries/evidence only).
+- Client-side confirmation is not a security control; a misleading model *narrative*
+  within read-only bounds is a residual risk, mitigated by always surfacing the raw
+  finding alongside the assistant summary.
+
+## Constitution check
+
+- **Privacy-first:** local default, off on fresh install, allowlist-only redacted
+  egress, never-egress denylist in Core, no telemetry/community coupling. ✅
+- **Least privilege:** dedicated non-admin scope; the assistant credential can read +
+  write-a-pending-proposal, nothing else. ✅
+- **Human-in-the-loop / auditability / reversibility:** every mutation is
+  human-approved under an admin session, append-only audited, and reversible. ✅
+- **Safe by default:** subsystem off by default; stdio/loopback transport; hard
+  refusal of unauthenticated non-loopback listeners. ✅
+- **No homelab data:** spec, threat model, and fixtures use RFC 5737 / synthetic
+  values only. ✅
+
+## Open questions for owner
+
+1. **v1 posture:** confirm **propose-only** (no direct-execute mode) for v1.
+2. **Cloud in v1?** Ship **local-LLM-only** first with cloud deferred, or include the
+   opt-in cloud tier in v1?
+3. **Non-actionable set:** bind the "assistant can never suppress/downgrade" ceiling
+   to the same trusted-high-confidence-IOC class spec 007 uses to raise a finding
+   regardless of allowlist?
+4. **`base_rate` backing:** accept a small new Core aggregate query (per-detector
+   historical suppression rate), or derive from existing stats only?
+5. **Token lifecycle:** admin-minted short-TTL + manual rotation, or auto-rotating
+   credential (matters more if a cloud client ever holds it)?
+6. **Audit home:** Core SQLite only, or also an export path for operators running
+   their own SIEM?
+7. **Scale numbers:** per-token read + proposal rate limits and the circuit-breaker
+   auto-disable threshold for a single-operator homelab.
+8. **Topology:** confirm the adapter is co-located with Core over loopback (setup
+   docs must use the deploy's real Core port).
