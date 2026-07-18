@@ -43,6 +43,30 @@ func main() {
 		}
 	}
 
+	// Maintenance subcommand: one-time repair of runaway MAC-conflict device
+	// sprawl. Runs the same store method as the admin endpoint, but locally with no
+	// API token — e.g. `docker exec vedetta-backend vedetta consolidate-mac-owners`
+	// or a one-shot container mounting the data volume. Idempotent; take a backup
+	// first. Kept ahead of server setup so it never starts listeners.
+	if len(os.Args) > 1 && os.Args[1] == "consolidate-mac-owners" {
+		dbPath := os.Getenv("VEDETTA_DB_PATH")
+		if dbPath == "" {
+			dbPath = "/data/vedetta.db"
+		}
+		db, err := store.Open(dbPath)
+		if err != nil {
+			log.Fatalf("open database: %v", err)
+		}
+		defer db.Close()
+		report, err := db.ConsolidateMACOwners(context.Background())
+		if err != nil {
+			log.Fatalf("consolidate-mac-owners: %v", err)
+		}
+		fmt.Printf("consolidate-mac-owners: %d group(s) collapsed, %d duplicate device row(s) removed, fk_clean=%v\n",
+			report.Groups, report.AbsorbedCount, report.FKClean)
+		return
+	}
+
 	port := os.Getenv("VEDETTA_PORT")
 	if port == "" {
 		port = "8080"
