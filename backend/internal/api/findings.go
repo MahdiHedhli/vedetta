@@ -229,7 +229,7 @@ func (s *Server) handleDetectionHealth(w http.ResponseWriter, r *http.Request) {
 			state := "healthy"
 			if last.IsZero() {
 				state = "initializing"
-			} else if now.Sub(last) > 2*time.Minute {
+			} else if now.Sub(last) > store.SensorOnlineWindow {
 				state = "stale"
 			}
 			var attempt *time.Time

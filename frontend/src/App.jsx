@@ -2983,6 +2983,11 @@ sudo ./vedetta-sensor --core ${coreUrl}${enrollCode ? ` --enroll-code ${enrollCo
 
 // --- Sensors View ---
 
+// Grace window before a stale primary surfaces the destructive Replace affordance —
+// deliberately much longer than the 2-minute online badge so a Core restart or brief
+// link blip never offers a one-click retire.
+const SENSOR_REPLACE_GRACE_MS = 15 * 60 * 1000;
+
 export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSensors }) {
   const [sensorAction, setSensorAction] = useState(null);
   const [sensorActionError, setSensorActionError] = useState('');
@@ -3101,6 +3106,61 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
     }
   };
 
+  const replaceSensor = async (replacement, oldPrimary) => {
+    if (sensorAction || !oldPrimary) return;
+    if (!window.confirm(`Make "${replacement.hostname || replacement.sensor_id}" the primary and retire "${oldPrimary.hostname || oldPrimary.sensor_id}"? This promotes this sensor, then disconnects, hides, and revokes the old primary's credential. Its history is kept.`)) {
+      return;
+    }
+    setSensorActionError('');
+    setSensorAction({ sensorId: replacement.sensor_id, kind: 'replace' });
+    try {
+      const attempt = (force) => authFetch(`/api/v1/sensor/${encodeURIComponent(replacement.sensor_id)}/replace-primary`, {
+        method: 'POST',
+        body: { old_primary_id: oldPrimary.sensor_id, force },
+      });
+      let response = await attempt(false);
+      if (response.status === 409) {
+        const body = await response.json().catch(() => ({}));
+        if (body.code === 'replacement_stale') {
+          // Offer to promote a known-offline replacement anyway. Declining is a
+          // clean no-op, not an error.
+          if (!window.confirm('The replacement also looks offline — promote it anyway?')) return;
+          response = await attempt(true);
+        } else {
+          // primary_changed / primary_recovered / other: surface and refresh so the
+          // operator re-reads current fleet state before retrying.
+          setSensorActionError(body.error || 'Failed to replace the primary sensor.');
+          if (onRefreshSensors) { try { await onRefreshSensors(); } catch { /* ignore refresh error */ } }
+          return;
+        }
+      }
+      if (!response.ok) {
+        setSensorActionError(await responseError(response, 'Failed to replace the primary sensor.'));
+        if (onRefreshSensors) { try { await onRefreshSensors(); } catch { /* ignore refresh error */ } }
+        return;
+      }
+      if (onRefreshSensors) {
+        try {
+          await onRefreshSensors();
+        } catch (error) {
+          setSensorActionError(`Primary replaced, but refreshing the list failed: ${error?.message || 'unknown error'}`);
+        }
+      }
+    } catch (error) {
+      setSensorActionError(error?.message || 'Failed to replace the primary sensor.');
+    } finally {
+      setSensorAction(null);
+    }
+  };
+
+  const primary = sensors.find((s) => s.is_primary);
+  const primaryAgeMs = (() => {
+    const t = Date.parse(primary?.last_seen || '');
+    return Number.isFinite(t) ? Date.now() - t : Infinity;
+  })();
+  const primaryStale = Boolean(primary) && primary.status !== 'online' && primaryAgeMs > SENSOR_REPLACE_GRACE_MS;
+  const soleStalePrimary = primaryStale && sensors.length === 1;
+
   return (
     <>
       <div className="flex items-center justify-between mb-6">
@@ -3145,10 +3205,13 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
                 <div className="flex items-center gap-3 min-w-0">
                   <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-medium truncate">{s.hostname}</p>
                       {s.is_primary && (
                         <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded flex-shrink-0">primary</span>
+                      )}
+                      {!s.is_primary && primaryStale && primary && s.hostname === primary.hostname && (
+                        <span className="text-xs bg-sky-500/15 text-sky-300 px-2 py-0.5 rounded flex-shrink-0">likely redeploy of {primary.hostname}</span>
                       )}
                     </div>
                     <p className="text-xs text-gray-500 truncate">{s.sensor_id}</p>
@@ -3159,13 +3222,30 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
                   <p className="text-xs text-gray-500 break-words">{s.os}/{s.arch} &middot; v{s.version}</p>
                 </div>
               </div>
-              <div className="flex flex-col gap-3 mt-3 pt-3 border-t border-gray-800 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 mt-3 pt-3 border-t border-gray-800 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
                   <span>First seen: {timeAgo(s.first_seen)}</span>
                   <span>Last report: {timeAgo(s.last_seen)}</span>
                 </div>
-                {!s.is_primary && (
+                {s.is_primary ? (
+                  primaryStale && (
+                    <p className="text-xs text-amber-300/90 sm:text-right sm:max-w-sm">
+                      {soleStalePrimary
+                        ? `This is your only sensor and it's the primary, so it can't be removed — Vedetta always keeps one primary collecting data. If you redeployed this host, install the new sensor; it will appear here and you can promote it to retire this one.`
+                        : `This primary hasn't reported in ${timeAgo(s.last_seen)}. A primary can't be removed directly — promote a healthy sensor below to retire it.`}
+                    </p>
+                  )
+                ) : (
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                    {primaryStale && (
+                      <button
+                        onClick={() => replaceSensor(s, primary)}
+                        disabled={Boolean(sensorAction)}
+                        className="min-h-8 rounded px-2 py-1.5 text-xs text-amber-400 hover:bg-amber-500/10 hover:text-amber-300 disabled:cursor-not-allowed disabled:text-gray-600 transition-colors"
+                      >
+                        {sensorAction?.sensorId === s.sensor_id && sensorAction.kind === 'replace' ? 'Replacing…' : 'Replace stale primary'}
+                      </button>
+                    )}
                     <button
                       onClick={() => setPrimary(s.sensor_id)}
                       disabled={Boolean(sensorAction)}
