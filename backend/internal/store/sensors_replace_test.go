@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -81,7 +82,7 @@ func TestReplacePrimarySensor_HappyPath(t *testing.T) {
 		t.Fatalf("set primary old: %v", err)
 	}
 	setLastSeen(t, db, "old", now.Add(-30*time.Minute)) // stale primary
-	setLastSeen(t, db, "new", now)                       // online replacement
+	setLastSeen(t, db, "new", now)                      // online replacement
 
 	newPrimary, removedAt, err := db.ReplacePrimarySensor("old", "new", "admin-1", "redeploy", false)
 	if err != nil {
@@ -106,12 +107,19 @@ func TestReplacePrimarySensor_HappyPath(t *testing.T) {
 	if isPrimary || status != "offline" || removed == nil {
 		t.Fatalf("old not retired: primary=%v status=%q removed=%v", isPrimary, status, removed)
 	}
-	// Old's sensor credential is revoked; new's stays active.
-	var oldRevoked, newRevoked int
-	db.QueryRow(`SELECT COALESCE(MIN(revoked),1) FROM api_tokens WHERE sensor_id='old' AND scope=?`, auth.ScopeSensor).Scan(&oldRevoked)
-	db.QueryRow(`SELECT COALESCE(MAX(revoked),0) FROM api_tokens WHERE sensor_id='new' AND scope=? AND revoked=0`, auth.ScopeSensor).Scan(&newRevoked)
-	if oldRevoked != 1 {
-		t.Fatal("old sensor credential was not revoked")
+	// Old has no active sensor credential; new has exactly one.
+	var oldActive, newActive int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM api_tokens WHERE sensor_id='old' AND scope=? AND revoked=0`, auth.ScopeSensor).Scan(&oldActive); err != nil {
+		t.Fatalf("count old active credentials: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM api_tokens WHERE sensor_id='new' AND scope=? AND revoked=0`, auth.ScopeSensor).Scan(&newActive); err != nil {
+		t.Fatalf("count new active credentials: %v", err)
+	}
+	if oldActive != 0 {
+		t.Fatalf("old active sensor credentials = %d, want 0", oldActive)
+	}
+	if newActive != 1 {
+		t.Fatalf("new active sensor credentials = %d, want 1", newActive)
 	}
 	// Audit: a 'removed' lifecycle event carrying the replacement link.
 	var eventType, details string
@@ -124,6 +132,34 @@ func TestReplacePrimarySensor_HappyPath(t *testing.T) {
 	// SensorExists stays true for the retired identity (tombstone invariant).
 	if ok, _ := db.SensorExists("old"); !ok {
 		t.Fatal("retired sensor identity must still exist")
+	}
+}
+
+func TestReplacePrimarySensor_LifecycleDetailsAreValidJSON(t *testing.T) {
+	db := newReplaceDB(t)
+	now := time.Now().UTC()
+	replacementID := "new\x00sensor"
+	provisionSensor(t, db, "old", "old-host")
+	provisionSensor(t, db, replacementID, "new-host")
+	if err := db.SetPrimarySensor("old"); err != nil {
+		t.Fatalf("set primary old: %v", err)
+	}
+	setLastSeen(t, db, "old", now.Add(-30*time.Minute))
+	setLastSeen(t, db, replacementID, now)
+
+	if _, _, err := db.ReplacePrimarySensor("old", replacementID, "admin-1", "redeploy", false); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	var details string
+	if err := db.QueryRow(`SELECT details FROM sensor_lifecycle_events WHERE sensor_id='old' ORDER BY created_at DESC LIMIT 1`).Scan(&details); err != nil {
+		t.Fatalf("read lifecycle details: %v", err)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(details), &decoded); err != nil {
+		t.Fatalf("lifecycle details are not valid JSON: %q: %v", details, err)
+	}
+	if decoded["replaced_by"] != replacementID {
+		t.Fatalf("replaced_by = %q, want %q", decoded["replaced_by"], replacementID)
 	}
 }
 

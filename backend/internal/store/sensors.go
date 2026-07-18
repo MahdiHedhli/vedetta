@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -404,7 +405,7 @@ var (
 	// ErrReplacementStale: the replacement is not currently online (override: force).
 	ErrReplacementStale = errors.New("replacement sensor is not currently online")
 	// ErrOldPrimaryRecovered: the primary being replaced has resumed reporting
-	// since the operator reviewed it (override: force).
+	// since the operator reviewed it. This guard is never force-overridable.
 	ErrOldPrimaryRecovered = errors.New("primary sensor has resumed reporting")
 	// ErrReplacePrimaryMismatch: the reviewed primary is no longer the current
 	// active primary (it moved or was removed under us), so nothing was replaced.
@@ -602,8 +603,11 @@ func (db *DB) ReplacePrimarySensor(expectedOldPrimaryID, replacementID, actorTok
 
 	// S6: audit. event_type 'removed' satisfies the schema CHECK; details records the
 	// replacement so a replace is distinguishable from a plain operator removal.
-	details := fmt.Sprintf(`{"replaced_by":%q}`, replacementID)
-	if err := insertSensorLifecycleWithDetailsOn(tx, expectedOldPrimaryID, "removed", actorTokenID, reason, details, now); err != nil {
+	details, err := json.Marshal(map[string]string{"replaced_by": replacementID})
+	if err != nil {
+		return models.Sensor{}, time.Time{}, fmt.Errorf("marshal replacement lifecycle details: %w", err)
+	}
+	if err := insertSensorLifecycleWithDetailsOn(tx, expectedOldPrimaryID, "removed", actorTokenID, reason, string(details), now); err != nil {
 		return models.Sensor{}, time.Time{}, err
 	}
 

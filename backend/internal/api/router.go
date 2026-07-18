@@ -2049,7 +2049,8 @@ func (s *Server) handleDeleteSensor(w http.ResponseWriter, r *http.Request) {
 // handleReplacePrimarySensor promotes a healthy replacement to primary and retires
 // the old primary in one atomic step, resolving the redeploy trap where a dead
 // primary is otherwise un-removable. {sensorID} is the REPLACEMENT; the body pins
-// the reviewed old primary. force overrides the online/recovered guards.
+// the reviewed old primary. force overrides only the replacement-online guard;
+// a recovered primary is never force-retired.
 func (s *Server) handleReplacePrimarySensor(w http.ResponseWriter, r *http.Request) {
 	if s.DB == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
