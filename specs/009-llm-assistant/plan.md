@@ -80,7 +80,8 @@ Additive scope isolation, token TTL, settings, storage, and the shared predicate
   admin-superuser behavior preserved for non-assistant scopes); 031 token-table REBUILD + manifest tests green (incl. run against a populated
   `api_tokens` DB preserving legacy NULL non-assistant tokens); assistant-token TTL
   enforcement tests; 032 tables + manifest tests; settings default off/read_only verified;
-  shared predicate differential test (detection == policy engine) green.
+  differential tests green for both independent outputs (existing finding creation unchanged;
+  detection and the policy-engine stub compute identical assistant-eligibility results).
 - **Shippable:** YES. Recommended first cut — scope isolation, the token rebuild, and the
   predicate land under normal review pressure without the adapter's surface area.
 - **Effort/risk:** low / low–medium (the token-table rebuild on the security-critical token

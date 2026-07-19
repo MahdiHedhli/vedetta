@@ -477,9 +477,11 @@ revoke) is always present.
   `assistant.enabled`/`assistant.mode` settings (default off/read-only); the 032
   `assistant_audit` / `assistant_actions` / `assistant_action_policy` tables
   (forward-only). Core with the subsystem off behaves exactly as today.
-- **Shared predicate (in Phase 1a):** extract `trusted_high_confidence_ioc_or_ips` into
-  **one** function reused by the findings processor and the policy engine, proven
-  equivalent by a differential test — detection needs the extraction too, so it lands here.
+- **Assistant eligibility predicate (in Phase 1a):** keep the existing
+  `trusted_high_confidence_ioc_or_ips` / `CreatesFinding` behavior intact for persisted
+  findings, and add a separate shared assistant-eligibility predicate for the policy
+  engine and assistant surfaces. Differential tests must cover both independent outputs
+  so assistant policy work cannot silently change finding creation semantics.
 - **Phase 1b — human-presence primitive (the Phase-3 wall):** Vedetta's first server-side
   sessions + CSRF/Origin hardening + WebAuthn platform-authenticator registration and
   assertion-verification helper. Net-new, high-risk, its own dedicated security review;
