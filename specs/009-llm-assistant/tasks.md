@@ -6,15 +6,18 @@
 ## Phase 1a - Least-privilege Core foundation (Core-only; subsystem OFF; shippable)
 
 - [ ] Add `ScopeAssistant TokenScope = "assistant"` in `backend/internal/auth/auth.go`;
-      leave the `ScopeSatisfies` admin-superuser rule (auth.go:42) UNCHANGED.
+      add a `ScopeSatisfies` guard so `need == ScopeAssistant` is satisfied only by
+      `have == ScopeAssistant`, while the admin-superuser rule continues unchanged for
+      non-assistant scopes.
 - [ ] Add `RequireAssistantRead` middleware admitting `ScopeAssistant` + `ScopeAdmin` by
       explicit membership (not via ScopeSatisfies), 403 for all other scopes.
 - [ ] Enforce action-route isolation with `RequireStrictAuth + RequireExactScope(ScopeAssistant)`
       (mirrors the sensor group, router.go ~316) — bypasses ScopeSatisfies so even admin does
       not create actions.
-- [ ] Scope tests: exhaustive have×need truth table; negative tests that assistant tokens 403
-      on every existing `RequireRead`/`RequireStrictAdmin` route; admin 200 on read gate but
-      403 on the exact-scope action gate.
+- [ ] Scope tests: exhaustive have×need truth table including
+      `ScopeSatisfies(ScopeAdmin, ScopeAssistant) == false`; negative tests that assistant
+      tokens 403 on every existing `RequireRead`/`RequireStrictAdmin` route; admin 200 on
+      read gate but 403 on the exact-scope action gate.
 - [ ] Migration `031_api_tokens_expiry.sql`: REBUILD `api_tokens` (SQLite cannot ALTER a CHECK)
       per the migration 021/017 recipe — new `CHECK(scope IN ('sensor','admin','ingest','read','assistant'))`,
       add `expires_at TIMESTAMP NULL`, INSERT-SELECT rows, DROP/RENAME, recreate the `sensors`
@@ -23,7 +26,10 @@
       `migration_manifest_test.go`. Test 031 against a populated `api_tokens` DB (legacy NULL
       non-assistant tokens preserved).
 - [ ] Thread `ExpiresAt *time.Time` through `auth.Token`, `scanAuthToken`,
-      `CreateToken`/`GenerateToken` (`store/tokens.go`).
+      `CreateToken`/`GenerateToken` (`store/tokens.go`), and update every SELECT/query
+      that scans tokens (`ValidateToken`, list/admin token queries, tests/fixtures) to
+      include `expires_at` in the same column order. Regression: old NULL and new
+      non-NULL tokens scan without `sql: expected ... destinations` errors.
 - [ ] In `ValidateToken` (tokens.go:53) reject expired assistant tokens, assistant tokens with
       NULL `expires_at`, and assistant tokens whose expiry exceeds `VEDETTA_ASSISTANT_MAX_TOKEN_TTL`;
       preserve NULL-as-legacy for non-assistant scopes.
@@ -75,7 +81,10 @@
       `base_rate` v1 reuses `handleFindingStats` 7-day aggregates rather than a new per-detector
       table (open item for owner if resolution is poor).
 - [ ] New `backend/internal/assistant/sanitize` package: NFC-normalize; strip C0/C1,
-      zero-width, bidi (U+202A–202E, U+2066–2069), Unicode Tag block (U+E0000–E007F);
+      zero-width and bidi using explicit Unicode escape/range constants (for example
+      `\u200B-\u200D`, `\uFEFF`, `\u202A-\u202E`, `\u2066-\u2069`) and the Unicode
+      Tag block using explicit `\U000E0000-\U000E007F` ranges; do not paste literal
+      invisible characters into source;
       punycode-decode + homograph-flag; defang domains/IPs/URLs; length-cap (QNAME 253, UA 512,
       description 1KB, log 2KB) with truncation markers; wrap untrusted values in per-response
       nonce-labelled `untrusted_*` containers with the sentinel stripped from the value first.
@@ -206,8 +215,9 @@
 
 Each phase stays privacy-first (local default, off on fresh install, allowlist-only egress,
 never-egress denylist in Core, no telemetry/community coupling), least-privilege (dedicated
-non-admin scope isolated via exact-scope + explicit gate membership, admin-superuser rule
-untouched), human-in-the-loop / auditable / reversible (every mutation a present-human passkey
+non-admin scope isolated via a `ScopeSatisfies` assistant exception, exact-scope actions,
+and explicit gate membership; admin-superuser behavior only for non-assistant scopes),
+human-in-the-loop / auditable / reversible (every mutation a present-human passkey
 accept under the approver's identity, append-only audited), and safe-by-default (subsystem off;
 propose-only until the human-presence primitive ships; stdio/loopback transport; policy
 narrows-only and fails closed on both axes). RFC 5737 / synthetic fixtures only.

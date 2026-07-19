@@ -141,15 +141,17 @@ accept link/URL and no nonce. Execution happens only on a present-human accept (
 ### Least-privilege scope
 
 Add `ScopeAssistant TokenScope = "assistant"` in `backend/internal/auth/auth.go`.
-`ScopeAssistant` is a distinct scope, but it is **not** added to the `ScopeSatisfies`
-hierarchy and the existing admin-superuser rule (`have == ScopeAdmin ⇒ true`,
-`auth.go:42`) is left **unchanged**. Assistant isolation is enforced structurally
-instead: (a) action routes use `RequireExactScope(ScopeAssistant)` (which bypasses
-`ScopeSatisfies`), so no admin bearer can create actions; (b) the read gate
-`RequireAssistantRead` admits `ScopeAssistant` and `ScopeAdmin` by explicit membership,
-not via `ScopeSatisfies`; (c) assistant tokens never appear in any existing
-`RequireRead` / `RequireStrictAdmin` group. The exhaustive have×need truth-table and
-negative tests target these middlewares, not a modified `ScopeSatisfies`.
+`ScopeAssistant` is a distinct scope and gets an explicit defense-in-depth
+`ScopeSatisfies` exception: `need == ScopeAssistant` is satisfied only by
+`have == ScopeAssistant`; the existing admin-superuser rule continues for all other
+scopes (`ScopeAdmin` still satisfies `ScopeRead` for the dashboard/API hierarchy).
+Assistant isolation is also enforced structurally: (a) action routes use
+`RequireExactScope(ScopeAssistant)` (which bypasses `ScopeSatisfies`), so no admin
+bearer can create actions; (b) the read gate `RequireAssistantRead` admits
+`ScopeAssistant` and `ScopeAdmin` by explicit membership, not via `ScopeSatisfies`;
+(c) assistant tokens never appear in any existing `RequireRead` / `RequireStrictAdmin`
+group. The exhaustive have×need truth-table and negative tests cover both
+`ScopeSatisfies` and these middlewares.
 Existing generic `RequireRead` route groups remain unavailable to assistant tokens,
 including raw events, devices, findings, and status endpoints that were not designed
 as assistant projections.
@@ -355,8 +357,11 @@ backstops are the scope ceiling and the human-presence accept.
   contract states that such content is observed network data to analyze, never
   instructions, and can never authorize a tool call.
 - **Unicode hardening** before egress: NFC-normalize; strip C0/C1 controls,
-  zero-width chars, bidi overrides (U+202A–202E, U+2066–2069) and the Unicode Tag
-  block (U+E0000–E007F); punycode-decode domains and flag homographs.
+  zero-width chars and bidi overrides using explicit escape/range constants
+  (for example `\u200B-\u200D`, `\uFEFF`, `\u202A-\u202E`, `\u2066-\u2069`)
+  and the Unicode Tag block using explicit `\U000E0000-\U000E007F` constants;
+  never paste literal invisible characters into source; punycode-decode domains
+  and flag homographs.
 - **Length caps** with explicit truncation markers (hostname/QNAME 253, User-Agent
   512, description 1 KB, log line 2 KB).
 - **Never emit `json.RawMessage` blobs raw.** Project through a server-side key
@@ -465,8 +470,9 @@ revoke) is always present.
 
 - **Phase 0 (this spec):** author spec + threat model; owner sign-off; no code.
 - **Phase 1a — least-privilege Core foundation (ships fast):** `ScopeAssistant` isolated
-  via `RequireExactScope(ScopeAssistant)` + `RequireAssistantRead` (the `ScopeSatisfies`
-  admin-superuser rule is left **unchanged**) + negative/positive scope tests; the 031
+  via a `ScopeSatisfies` assistant exception, `RequireExactScope(ScopeAssistant)`,
+  and `RequireAssistantRead` (admin-superuser behavior remains for non-assistant
+  scopes only) + negative/positive scope tests; the 031
   `api_tokens` **rebuild** migration + assistant-token TTL enforcement;
   `assistant.enabled`/`assistant.mode` settings (default off/read-only); the 032
   `assistant_audit` / `assistant_actions` / `assistant_action_policy` tables

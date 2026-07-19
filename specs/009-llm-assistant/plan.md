@@ -18,8 +18,9 @@ ships and is tested.
 ## Existing paths this builds on
 
 - chi router at `backend/internal/api/router.go`; existing scopes `sensor`/`admin`/`ingest`/`read`
-  in `backend/internal/auth/auth.go`; `ScopeSatisfies` is a blanket admin-superuser
-  (`have == ScopeAdmin ⇒ true`, auth.go:42) — **left unchanged**.
+  in `backend/internal/auth/auth.go`; `ScopeSatisfies` has admin-superuser behavior for
+  normal scopes, but assistant must be explicitly special-cased so
+  `need == ScopeAssistant` is satisfied only by `have == ScopeAssistant`.
 - Middleware templates: `RequireStrictAuth`, `RequireStrictAdmin`, `RequireExactScope`,
   `RequireRead` (`backend/internal/auth/middleware.go`). The sensor group
   (`RequireStrictAuth + RequireExactScope(ScopeSensor)`, router.go ~316) is the template
@@ -75,8 +76,8 @@ Additive scope isolation, token TTL, settings, storage, and the shared predicate
 `assistant.enabled=false` Core is behaviorally identical to today.
 - **Depends on:** Phase 0 (done).
 - **GATE-1a:** scope truth-table + negative tests green (assistant satisfies only itself via
-  `RequireExactScope` + explicit `RequireAssistantRead` membership; admin-superuser rule
-  untouched); 031 token-table REBUILD + manifest tests green (incl. run against a populated
+  `ScopeSatisfies`, `RequireExactScope`, and explicit `RequireAssistantRead` membership;
+  admin-superuser behavior preserved for non-assistant scopes); 031 token-table REBUILD + manifest tests green (incl. run against a populated
   `api_tokens` DB preserving legacy NULL non-assistant tokens); assistant-token TTL
   enforcement tests; 032 tables + manifest tests; settings default off/read_only verified;
   shared predicate differential test (detection == policy engine) green.
@@ -222,8 +223,9 @@ surface into phases with zero mutation and zero off-LAN risk.
 
 Every phase is privacy-first (local default, off on fresh install, allowlist-only egress,
 never-egress denylist in Core, no telemetry/community coupling), least-privilege (dedicated
-non-admin scope isolated via exact-scope + explicit gate membership, admin-superuser rule
-untouched), human-in-the-loop / auditable / reversible (every mutation a present-human passkey
+non-admin scope isolated via a `ScopeSatisfies` assistant exception, exact-scope actions,
+and explicit gate membership; admin-superuser behavior only for non-assistant scopes),
+human-in-the-loop / auditable / reversible (every mutation a present-human passkey
 accept under the approver's identity, append-only audited), and safe-by-default (subsystem off;
 propose-only until the wall ships; stdio/loopback transport; policy narrows-only and fails
 closed on both axes). Synthetic / RFC 5737 fixtures only.
