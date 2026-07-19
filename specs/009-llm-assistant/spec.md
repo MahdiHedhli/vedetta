@@ -200,9 +200,18 @@ never the auth model.
    on next login — it does not silently expire into a re-propose loop.
 3. **Accept (the boundary).** Reachable **only** from the server-rendered card, and
    requires a **human-presence primitive a bearer token cannot satisfy**:
-   - **Primary:** a WebAuthn/passkey **user-verification** assertion signed over
-     `action_id || accept_nonce` — the model host cannot produce a user-verified
-     assertion, so accept is provably a present human bound to the exact action.
+   - **Primary (owner-chosen):** a WebAuthn/passkey **user-verification** assertion
+     bound to `action_id || accept_nonce` — Core issues a challenge derived from those
+     values and accepts only after validating the returned challenge, `webauthn.get`
+     type, RP ID, origin, registered operator credential, and user-verification flag.
+     The model host cannot produce a user-verified assertion, so accept is provably a
+     present human bound to the exact action. The preferred UX is a **platform
+     authenticator** (Touch ID / Windows Hello) — one tap — while cross-platform
+     authenticators such as hardware security keys remain a supported fallback for
+     operators without platform biometric/PIN hardware. (Owner considered a session-only
+     accept given the bounded, reversible action set, but a session proves "a browser is
+     logged in," not "a human approved this now"; a platform-passkey tap is nearly
+     frictionless and is the chosen v1 default.)
    - **Supporting browser hardening:** real server-side dashboard sessions (HttpOnly,
      `SameSite=Strict` cookie + CSRF + Origin/Host allowlist) **distinct from API
      bearers**; the accept route rejects **all** bearer tokens (admin included).
@@ -488,12 +497,14 @@ Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
 2. *(Resolved)* Cloud is **in v1** as an opt-in backend, not deferred.
 3. *(Resolved in review)* The non-actionable ceiling is bound to spec-007's shared
    `trusted_high_confidence_ioc_or_ips` predicate (plus critical/high).
-4. **Human-presence primitive (blocking):** choose **primary** WebAuthn/passkey
-   user-verification bound to `action_id || nonce`, or an equivalent step-up/user-
-   presence primitive. Real server-side sessions (HttpOnly `SameSite=Strict` cookie +
-   CSRF + Origin/Host) are required browser hardening and must reject **all** bearers
-   including a stolen admin bearer used headlessly, but are not sufficient human
-   presence by themselves. Code-first Phase-3 prerequisite.
+4. *(Resolved)* Human-presence primitive = **WebAuthn/passkey user-verification via a
+   platform authenticator by default** (Touch ID / Windows Hello) — one tap, with
+   cross-platform authenticators supported as fallback — bound to
+   `action_id || accept_nonce`. Real server-side sessions (HttpOnly `SameSite=Strict`
+   cookie + CSRF + Origin/Host, rejecting all bearers incl. a stolen admin bearer) are
+   the required transport hardening beneath it, but are not sufficient human presence by
+   themselves. Still a code-first Phase-3 prerequisite (Vedetta has neither sessions nor
+   WebAuthn today).
 5. **Severity/risk policy (to-be-finalized):** eligible bands; severity-only vs
    severity × confidence × IOC-strength; discrete vs continuous score; medium-suppress
    default (proposed: **blocked**); per-class friction; per-action TTL; stricter under
