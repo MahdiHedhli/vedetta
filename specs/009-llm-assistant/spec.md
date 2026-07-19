@@ -100,16 +100,19 @@ struct field added later is dropped by default.
 - **`list_suppressions()`** → existing finding-suppression rules so the model can
   avoid recommending a duplicate or over-broad suppression.
 - **`get_action_status(action_id)`** → the lifecycle status of a pending action
-  (`awaiting_human_accept` | `accepted` | `executed` | `rejected` | `expired`).
-  **Never** returns the accept nonce or any accept material — status only.
+  (`parked` | `awaiting_human_accept` | `accepted` | `executed` | `rejected` |
+  `expired`). `parked` means no accept-capable operator session has received the card,
+  so no review window or `accept_nonce` is active; `awaiting_human_accept` is the API/tool label
+  for a delivered persisted `pending_acceptance` row. **Never** returns the accept nonce
+  or any accept material — status only.
 - **`get_action_policy()`** *(optional)* → the effective severity/risk policy, so the
   model avoids requesting a blocked action and can explain a refusal. Read-only.
 
 ### Guarded tools (human-accepted execution)
 
 Each guarded tool **creates a pending action** and performs no mutation. It returns
-**only** `{action_id, status:"awaiting_human_accept", effect_summary}` — no accept
-link/URL and no nonce. Execution happens only on a present-human accept (see
+**only** `{action_id, status:"parked"|"awaiting_human_accept", effect_summary}` — no
+accept link/URL and no nonce. Execution happens only on a present-human accept (see
 [Human-accepted execution](#human-accepted-execution-the-security-boundary)).
 
 - **`request_acknowledge_event(event_id, rationale)`** — lowest risk; reversible ack.
@@ -129,6 +132,11 @@ link/URL and no nonce. Execution happens only on a present-human accept (see
   stored verbatim in the Core-generated audit row; both are cognitive/audit aids, **not
   security controls** — the WebAuthn user-verification tap is the sole present-human
   control, and the rationale is not required to differ from the model's rationale.
+  The rationale is capped at 512 UTF-8 bytes after NFC normalization; C0/C1 controls,
+  bidi/zero-width controls, and the Unicode Tag block are normalized to visible escapes or
+  stripped according to the shared sanitizer; the verbatim stored value is retained for the
+  same period as `assistant_audit`. Every UI, CSV, JSON, SIEM, and log rendering must apply
+  context-appropriate output encoding/escaping when displaying or exporting it.
 
 ### Least-privilege scope
 
@@ -207,6 +215,12 @@ never the auth model.
    surfaces only as a pending count and is **re-prepared** — fresh `action_id`,
    re-derived params/`params_hash`, re-checked ceiling+policy, fresh `accept_nonce` — on
    next login rather than revived stale.
+   Canonical lifecycle semantics: `parked` is visible only as a count/summary to the
+   operator and has no active review window or usable `accept_nonce`; `pending_acceptance` is the
+   persisted state after first card delivery, with the review window running and the
+   server-only `accept_nonce` minted; `awaiting_human_accept` is the API/tool response label
+   for a delivered `pending_acceptance` action and must never be stored as a separate DB
+   state.
 2. **Card (low-friction, not the boundary).** Core pushes the card only to
    accept-capable operator sessions over an authenticated session channel (never an
    anonymous/read-tier subscriber): the server-computed effect diff, the raw finding,
@@ -244,9 +258,10 @@ never the auth model.
    change (e.g. an identity merge that grew the finding between render and accept);
    re-checks ceiling + policy + severity/IOC-strength (fail-closed); performs an atomic
    single-use compare-and-set (`UPDATE ... WHERE status='pending_acceptance' AND
-   review_window_expires_at>now()`), so replay/double-submit/expired all resolve to 0
+   review_window_expires_at > ?` with a Core-supplied UTC timestamp parameter), so
+   replay/double-submit/expired all resolve to 0
    rows / 409;
-   consumes the nonce; then executes the underlying mutation through the
+   consumes the `accept_nonce`; then executes the underlying mutation through the
    **byte-identical guard stack** the direct-admin dashboard route uses (or with all
    checks in the handler body, never route-group middleware), **under the human
    approver's identity**, using only stored server params.
@@ -270,7 +285,8 @@ set `resolved` or downgrade out of active; critical/high findings and findings
 matching the shared `trusted_high_confidence_ioc_or_ips` predicate are ineligible for
 assistant status-change or suppression; per-token rate limits + a circuit breaker
 auto-pause on abnormal action bursts; and an admin-only kill switch
-(`assistant.enabled=false`, or revoke the token) cuts off instantly.
+(`assistant.enabled=false`, or revoke the token) cuts off instantly, including at accept
+time after a row was prepared.
 
 **Hard rule:** community or LLM output can never *silently* resolve, downgrade,
 suppress, or reprioritize a finding. Every such change is a present-human acceptance
@@ -497,11 +513,11 @@ human-gate convention. Full phase/task detail is in
   non-assistant scopes), `INSERT-SELECT` all rows, `DROP` old, `RENAME`, and recreate the
   FK to `sensors`, the `ux_api_tokens_active_sensor` partial unique index, and
   `idx_api_tokens_hash` / `_sensor` / `_revoked`. A test runs 031 against a populated
-  `api_tokens` DB and asserts legacy non-assistant NULL tokens survive. (Alternatively the
-  DB-level `CHECK` may be dropped in favor of app-level scope validation to avoid
-  rebuilding the live token table — **owner to choose**, see open questions.) Migration
-  **032** adds `assistant_audit`, `assistant_actions`, `assistant_action_policy`, and the
-  `assistant.*` settings.
+  `api_tokens` DB and asserts legacy non-assistant NULL tokens survive, all existing
+  columns/data are preserved, and every token query/scan path includes the new
+  `expires_at` column without runtime scan errors. No alternate CHECK-drop path is allowed.
+  Migration **032** adds `assistant_audit`, `assistant_actions`, `assistant_action_policy`,
+  and the `assistant.*` settings.
 - `ScopeAssistant` is additive and does not change existing `ScopeRead` /
   `ScopeAdmin` authority. Existing `RequireRead` / `RequireStrictAdmin` route groups
   are unchanged for current tokens, while assistant access is isolated to the new

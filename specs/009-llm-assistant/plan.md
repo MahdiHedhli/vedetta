@@ -45,12 +45,14 @@ rests **does not exist as an extractable function today**. What exists is the in
 `trustedIPS` struct (`processing/hardening.go:24`) and the finding-creation rule
 `CreatesFinding = Detector=="ips" || ScoreContribution>=0.30` (`processing/evidence.go:222`),
 plus spec-007 prose including the community-corroborated-public-IOC composition
-(spec 009 lines 123-126). Extracting this is a first-class workstream with its own tests,
-sequenced **before** any policy engine: define the predicate semantics precisely, build it
-as ONE function in `backend/internal/processing` (or a shared package), have BOTH the findings
-processor and the assistant policy engine call it, and prove behavior-equivalence with a
-differential test over a shared synthetic corpus so detection and assistant-eligibility can
-never diverge. Landed in P1a because detection needs the extraction too.
+(spec 009 lines 123-126). Extracting assistant eligibility is a first-class workstream with
+its own tests, sequenced **before** any policy engine: define the predicate semantics
+precisely and build a separate shared assistant-eligibility function in
+`backend/internal/processing` (or a shared package) without replacing or changing existing
+`CreatesFinding` semantics. Differential tests cover both outputs — finding creation and
+assistant eligibility — over a shared synthetic corpus and require the assistant policy-engine
+stub to consume the shared eligibility result rather than re-implement it. Landed in P1a
+because detection context is needed, but the two semantics remain distinct.
 
 ## The acceptance-gate wall (the single most important sequencing constraint)
 
@@ -90,7 +92,7 @@ wait on it.
 - **GATE-1b (the wall's input):** server-session issuance + `RequireDashboardSession` (bearer
   tokens do NOT satisfy it and it does NOT satisfy bearer routes); CSRF + Origin/Host
   allowlist tests; WebAuthn platform-authenticator registration + verify-assertion helper
-  (over a supplied `action_id||nonce` challenge), library pinned by exact version+hash. The
+  (over a supplied `action_id||accept_nonce` challenge), library pinned by exact version+hash. The
   accept route that consumes this ships in P3.
 - **Shippable:** independently reviewable/mergeable as dormant auth groundwork; delivers no
   user-facing feature alone. If it slips, P1a/P2 still ship; only P3 is blocked.

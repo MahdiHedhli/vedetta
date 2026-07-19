@@ -33,18 +33,24 @@
       rejected; over-max-TTL clamped/rejected; expired-assistant rejected; legacy NULL valid.
 - [ ] Add `assistant.enabled` (default false) + `assistant.mode` (default read_only) via
       `SetSetting`/`GetSetting`; admin-only writes through a `RequireStrictAdmin` route;
-      `enabled=false` hard-cuts all assistant routes at middleware.
+      `enabled=false` hard-cuts all assistant data/action/projection routes at middleware.
+      Keep the assistant settings administration route outside that data-route gate, or
+      explicitly exempt it, so administrators can disable and later re-enable the assistant.
+      Tests: disable succeeds, all non-settings assistant routes 403/disabled, re-enable succeeds.
 - [ ] Migration `032_assistant_tables.sql`: `assistant_audit` (append-only, no UPDATE/DELETE
       path in store), `assistant_actions` (action_id, action_type, target_id, params_json,
       params_hash, server_computed_effect, severity_class, ioc_strength, status, accept_nonce,
       review_window_expires_at, accepted_by, reverse_handle, injection_suspected),
       `assistant_action_policy` (versioned, append-only). Store constructors + manifest test.
-- [ ] **Shared predicate (first-class):** extract `trusted_high_confidence_ioc_or_ips` into ONE
-      function in `backend/internal/processing`, replacing the implicit
-      `Detector=="ips" || ScoreContribution>=0.30` (evidence.go:222) + spec-007 community-IOC
-      composition. Both the findings processor and (later) the policy engine call it.
-- [ ] Differential test: detection and a policy-engine stub compute identical predicate results
-      over a shared synthetic corpus.
+- [ ] **Shared assistant-eligibility predicate (first-class):** define a separate
+      `trusted_high_confidence_ioc_or_ips` eligibility function in `backend/internal/processing`
+      without replacing or changing existing `CreatesFinding` semantics
+      (`Detector=="ips" || ScoreContribution>=0.30`, evidence.go:222). The findings processor
+      may annotate both values; the assistant policy engine consumes only the shared eligibility
+      predicate, never a copy.
+- [ ] Differential tests over a shared synthetic corpus assert both outputs independently:
+      existing finding-creation behavior is unchanged, and detection plus a policy-engine stub
+      compute identical assistant-eligibility results.
 
 ## Phase 1b - Human-presence primitive (net-new; the P3 wall; owner security review)
 
@@ -54,7 +60,7 @@
       satisfy existing bearer routes.
 - [ ] WebAuthn platform-authenticator registration (Touch ID / Windows Hello) bound to the
       admin, stored server-side; assertion-verification library pinned by exact version+hash.
-- [ ] `verify-assertion` helper over a supplied `action_id||nonce` challenge, with tests.
+- [ ] `verify-assertion` helper over a supplied `action_id||accept_nonce` challenge, with tests.
       (The accept route that consumes this ships in Phase 3 — this phase delivers a tested
       dependency only.)
 
@@ -126,8 +132,12 @@
 - [ ] Prepare group under `RequireStrictAuth + RequireExactScope(ScopeAssistant)`:
       `POST /assistant/actions` (create pending), `GET /assistant/actions/{id}` (status only,
       never the nonce). The three `request_*` guarded tools return ONLY
-      `{action_id, status:'awaiting_human_accept', effect_summary}`. `action_id` is high-entropy
-      server-generated. At most ONE outstanding action per session.
+      `{action_id, status:'parked'|'awaiting_human_accept', effect_summary}`. `action_id` is high-entropy
+      server-generated. Canonical state mapping: `parked` is stored and visible only as a
+      count/summary before card delivery; `pending_acceptance` is stored after first delivery
+      with the review window and `accept_nonce` active; `awaiting_human_accept` is the API/tool response
+      label for a delivered `pending_acceptance` row, never a persisted DB state. At most ONE
+      outstanding action per session. Endpoint-response tests cover the mapping.
 - [ ] `backend/internal/assistant/policy` engine: `effective = code_ceiling AND admin_policy`
       (narrow-only). Ceiling (non-editable): never resolve/downgrade, never wildcard/standing
       suppress, never act on critical/high, never act on the shared predicate. Fail-closed:
@@ -143,23 +153,30 @@
 - [ ] Execute path: on valid accept re-derive params from CURRENT finding state, re-verify
       params_hash, re-render effect, VOID (409) on ANY material drift; re-check
       ceiling+policy+band+ioc_strength (fail-closed); atomic single-use CAS
-      (`UPDATE ... WHERE status='pending_acceptance' AND review_window_expires_at>now()`) so
-      replay/double-submit/expired → 0 rows/409; consume nonce; execute via the BYTE-IDENTICAL
-      guard stack (`SuppressFinding` single-instance at finding_suppression.go:22, ack path,
-      finding-status set) under the approver's identity, using only stored server params.
+      (`UPDATE ... WHERE status='pending_acceptance' AND review_window_expires_at > ?` with a
+      Core-supplied UTC timestamp parameter) so replay/double-submit/expired → 0 rows/409;
+      consume `accept_nonce`; re-check `assistant.enabled` and the creator assistant token's current
+      validity/revocation/expiry state at accept time before execution; execute via the
+      BYTE-IDENTICAL guard stack (`SuppressFinding` single-instance at
+      finding_suppression.go:22, ack path, finding-status set) under the approver's identity,
+      using only stored server params.
 - [ ] Review-window semantics: window starts at FIRST card delivery to an accept-capable
       session (ack/investigating 5m, suppress 3m, hard ceiling 10m, admin range [1m,10m]). An
       action with no accept-capable session PARKS; on next login it is RE-PREPARED (fresh
-      action_id, re-derive, re-check, fresh nonce), never revived stale. Test the park→login
-      re-prepare path.
+      action_id, re-derive, re-check, fresh `accept_nonce`), never revived stale. Test the
+      park→login re-prepare path and the endpoint response mapping above.
 - [ ] Real-time approval card over an authenticated session channel (SSE/websocket bound to an
       accept-capable logged-in session, never anonymous/read-tier): server-computed effect diff,
       raw finding, quoted-untrusted rationale, `injection_suspected` banner; suppress renders the
       raw finding before Accept is reachable and captures an approver rationale (audit artifact,
-      not a control). Optional cloud-session banner naming the cloud model (friction only).
+      not a control). Rationale is capped at 512 UTF-8 bytes after normalization, sanitized for
+      controls/zero-width/bidi/tag characters, retained with `assistant_audit`, and context-encoded
+      on UI/export/log/SIEM output. Optional cloud-session banner naming the cloud model (friction only).
 - [ ] Per-token rate limits + circuit breaker auto-pausing abnormal action bursts (reuse
       `api/ratelimit.go`); admin kill switch (`assistant.enabled=false` or token revoke) cuts off
-      instantly.
+      instantly. Tests prove disabling `assistant.enabled` or revoking/expiring the creator
+      token after prepare but before accept causes accept to fail and the pending row to become
+      invalid/voided rather than execute.
 - [ ] Reversibility surfaced in an operator digest (`DeactivateFindingSuppression` at
       finding_suppression.go:113; unack; restore status). Append-only `assistant_audit`:
       approval/rejection/execution/reversal rows generated ONLY by Core from authenticated admin

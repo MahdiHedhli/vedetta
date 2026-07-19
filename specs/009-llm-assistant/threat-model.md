@@ -240,7 +240,7 @@ eligibility; changes are audited and reversible and can never breach the code ce
 3. **Accept requires a present human** *(replaces the old propose-and-confirm gate)*.
    An automated prepare → accept → execute test proves **no action executes without a
    genuine human-presence acceptance** (WebAuthn/passkey user-verification over
-   `action_id||nonce`, or an equivalent step-up/user-presence primitive). A
+   `action_id||accept_nonce`, or an equivalent step-up/user-presence primitive). A
    dashboard session with CSRF + Origin/Host protects the browser flow but is not
    sufficient by itself; an admin **bearer** (not just the assistant token) gets
    403/challenge on the accept route and cannot accept headlessly; browser
