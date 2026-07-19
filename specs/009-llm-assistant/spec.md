@@ -124,14 +124,24 @@ link/URL and no nonce. Execution happens only on a present-human accept (see
   IOC/IPS result can create a finding regardless of allowlist, blocked state, or
   suppression"). Community-only evidence stays advisory, but a community-corroborated
   public IOC linked to trusted IOC/IPS evidence is included in the same predicate.
-  Un-suppression stays human/admin-only.
+  Un-suppression stays human/admin-only. The approval card renders the raw finding
+  before Accept is reachable and captures an approver-supplied free-text rationale
+  stored verbatim in the Core-generated audit row; both are cognitive/audit aids, **not
+  security controls** — the WebAuthn user-verification tap is the sole present-human
+  control, and the rationale is not required to differ from the model's rationale.
 
 ### Least-privilege scope
 
 Add `ScopeAssistant TokenScope = "assistant"` in `backend/internal/auth/auth.go`.
-`ScopeAssistant` is a distinct, non-hierarchical scope: it satisfies itself only,
-never `ScopeRead` or `ScopeAdmin`. `ScopeAdmin` continues to satisfy `ScopeRead` for
-the existing dashboard/API hierarchy, but does not satisfy `ScopeAssistant`.
+`ScopeAssistant` is a distinct scope, but it is **not** added to the `ScopeSatisfies`
+hierarchy and the existing admin-superuser rule (`have == ScopeAdmin ⇒ true`,
+`auth.go:42`) is left **unchanged**. Assistant isolation is enforced structurally
+instead: (a) action routes use `RequireExactScope(ScopeAssistant)` (which bypasses
+`ScopeSatisfies`), so no admin bearer can create actions; (b) the read gate
+`RequireAssistantRead` admits `ScopeAssistant` and `ScopeAdmin` by explicit membership,
+not via `ScopeSatisfies`; (c) assistant tokens never appear in any existing
+`RequireRead` / `RequireStrictAdmin` group. The exhaustive have×need truth-table and
+negative tests target these middlewares, not a modified `ScopeSatisfies`.
 Existing generic `RequireRead` route groups remain unavailable to assistant tokens,
 including raw events, devices, findings, and status endpoints that were not designed
 as assistant projections.
@@ -189,15 +199,22 @@ never the auth model.
    `assistant_actions` row: `{action_id = high-entropy server-generated (never
    model-supplied), action_type, target_id, params_json, params_hash pinned at
    create, server_computed_effect, severity_class, ioc_strength,
-   status='pending_acceptance', accept_nonce (server-only, never on any MCP channel),
-   expires_at = now+TTL (default ~5m), accepted_by=NULL, reverse_handle,
-   injection_suspected}`. It does not mutate; it returns only the pending handle.
+   status='parked' until first delivery to an accept-capable session — then
+   'pending_acceptance' with review_window_expires_at set AT DELIVERY (ack/investigating
+   5m, suppress 3m, hard ceiling 10m), accept_nonce (server-only, never on any MCP
+   channel), accepted_by=NULL, reverse_handle, injection_suspected}`. It does not mutate;
+   it returns only the pending handle. A parked action (no accept-capable session yet)
+   surfaces only as a pending count and is **re-prepared** — fresh `action_id`,
+   re-derived params/`params_hash`, re-checked ceiling+policy, fresh `accept_nonce` — on
+   next login rather than revived stale.
 2. **Card (low-friction, not the boundary).** Core pushes the card only to
    accept-capable operator sessions over an authenticated session channel (never an
    anonymous/read-tier subscriber): the server-computed effect diff, the raw finding,
    the quoted-untrusted rationale, and an `injection_suspected` banner. If no
-   accept-capable session is connected, the action queues and a pending count surfaces
-   on next login — it does not silently expire into a re-propose loop.
+   accept-capable session is connected, the action **parks** (its review window is not
+   yet running) and a pending count surfaces on next login, where it is re-prepared
+   before entering the accept window — so it neither silently expires nor revives a
+   stale row.
 3. **Accept (the boundary).** Reachable **only** from the server-rendered card, and
    requires a **human-presence primitive a bearer token cannot satisfy**:
    - **Primary (owner-chosen):** a WebAuthn/passkey **user-verification** assertion
@@ -227,7 +244,8 @@ never the auth model.
    change (e.g. an identity merge that grew the finding between render and accept);
    re-checks ceiling + policy + severity/IOC-strength (fail-closed); performs an atomic
    single-use compare-and-set (`UPDATE ... WHERE status='pending_acceptance' AND
-   expires_at>now()`), so replay/double-submit/expired all resolve to 0 rows / 409;
+   review_window_expires_at>now()`), so replay/double-submit/expired all resolve to 0
+   rows / 409;
    consumes the nonce; then executes the underlying mutation through the
    **byte-identical guard stack** the direct-admin dashboard route uses (or with all
    checks in the handler body, never route-group middleware), **under the human
@@ -258,11 +276,11 @@ auto-pause on abnormal action bursts; and an admin-only kill switch
 suppress, or reprioritize a finding. Every such change is a present-human acceptance
 with an audit trail. The assistant can only **add friction**, never **relax** detection.
 
-### Severity/risk policy layer (to-be-finalized)
+### Severity/risk policy layer (finalized)
 
-A configurable, Core-enforced policy governs per-class eligibility. **Owner has not
-finalized the bands/axis/friction** — only the construction and a conservative default
-are fixed here.
+A configurable, Core-enforced policy governs per-class eligibility. The bands, axis,
+friction, and review-window are **finalized** below; the construction is non-negotiable
+and the default ships safe.
 
 - **Construction (non-negotiable):** `effective = code_constant_ceiling AND
   admin_policy`. Policy can only **narrow**, never widen. The ceiling is a **code
@@ -270,10 +288,13 @@ are fixed here.
   wildcard/standing suppress, never act on critical/high or the shared
   `trusted_high_confidence_ioc_or_ips` predicate. A misconfigured, injected, or
   mis-migrated policy therefore fails **safe** (blocks more).
-- The configurable surface is only `{medium, low, info} × {ack_event,
-  set_status_investigating, suppress_as_noise}`; cells are `{blocked |
-  requires_human_accept}` — there is **no** "auto" or "standing pre-authorization"
-  cell in v1.
+- The configurable surface is exactly the 6 cells `{medium, low} × {ack_event,
+  set_status_investigating, suppress_as_noise}`, matching the real `models.Priority`
+  enum `{critical, high, medium, low}` (`backend/internal/models/finding.go`). There is
+  **no `info` band**; any value outside the four-member enum (empty/unrecognized/
+  unenriched) is the `unknown` bucket and is code-constant blocked. `critical`, `high`,
+  and `unknown` are never cells. Cells are `{blocked | requires_human_accept}` — there is
+  **no** "auto" or "standing pre-authorization" cell in v1.
 - Core-stored, **strict-admin-write only** (`PUT /api/v1/assistant/action-policy`),
   versioned + append-only audited, **assistant read-only**. Enforced at **both**
   prepare-time and accept/execute-time (closes the prepare→accept TOCTOU).
@@ -281,15 +302,28 @@ are fixed here.
   (blocked); null/unknown/unenriched **IOC-strength** ⇒ treated as **strong** (blocked)
   — a medium finding with `ioc_strength=NULL` (enrichment pending) is ineligible for
   suppression.
-- **Conservative default (ships safe; owner may tighten/loosen within the ceiling):**
-  critical/high/trusted-IOC = blocked (ceiling); medium = ack + investigating via
-  `requires_human_accept`, suppress **blocked**; low/info = all three via
-  `requires_human_accept`.
-- **To-be-finalized (owner-gated):** which bands are eligible; severity-only vs
-  severity × confidence × IOC-strength; discrete classes vs a continuous risk score +
-  threshold; per-class friction (typed justification / step-up WebAuthn on
-  higher-risk-but-eligible accepts); per-action TTL; whether policy is stricter under a
-  cloud model. **Recommendation: no standing pre-authorization in v1.**
+- **Default matrix (FINALIZED).** critical/high/unknown = blocked (ceiling/fail-closed,
+  not cells). `medium` and `low`: `ack_event` and `set_status_investigating` =
+  `requires_human_accept`; `suppress_as_noise` = **blocked** by default (admin-widenable
+  within the ceiling). The shipped default therefore enables **no** hide-action at all —
+  `low` is the real most-permissive band, so low-suppress ships off exactly like
+  medium-suppress. Overlay vetoes ANDed on every cell: **V1** `trusted_high_confidence_ioc_or_ips`
+  == TRUE ⇒ blocked for all three actions at any band; **V2** `ioc_strength ∈ {strong,
+  NULL, unknown}` ⇒ `suppress_as_noise` blocked. Effective = `code_ceiling(band) AND
+  admin_policy(cell) AND NOT V1 AND (suppress ? NOT V2 : true)`. `ack_event` has no
+  severity of its own, so its band = **MAX** `Priority` over every finding the event
+  contributes to (an event mapping to no resolvable finding is fail-closed to blocked),
+  and V1 is evaluated against each contributing finding.
+- **Finalized decisions.** Risk axis = discrete severity bands + a boolean IOC veto (no
+  continuous score in v1; a score, if ever added, is an **additional** AND-veto threshold
+  layered on the bands, never a replacement). Confidence is a surfaced caveat, never a
+  gating axis. Per-action review-window: ack 5m / investigating 5m / suppress 3m,
+  code-constant ceiling 10m, admin range [1m, 10m]; it starts at **first card delivery**
+  to an accept-capable session (not at prepare), and a parked action is re-prepared on
+  next login rather than revived stale. Policy is **model-location-independent**:
+  eligibility is byte-identical for local and cloud models; a cloud session may only
+  **raise** friction (a card banner naming the cloud model), never widen eligibility or
+  lower friction. **No standing pre-authorization in v1.**
 
 ### Injection hardening
 
@@ -318,7 +352,10 @@ backstops are the scope ceiling and the human-presence accept.
   surfaced on the approval card — never as the security boundary.
 - **Static tool manifest.** Tool names/descriptions/schemas are code constants with
   zero runtime/telemetry-derived content, pinned by hash to an in-repo manifest
-  (rug-pull defense); the hash is exposed in `/status`.
+  (rug-pull defense); the hash is exposed in `/status`. Because the adapter binary and
+  its live tool manifest reach users in the read-only cloud phase (P2b), the **full
+  tool-poisoning audit and static hash-pinned-manifest verification are a P2b ship gate**
+  (not deferred to P3); P3 re-runs the audit for the added guarded tools.
 
 ### Privacy & data egress
 
@@ -411,19 +448,33 @@ revoke) is always present.
 ## Phasing
 
 - **Phase 0 (this spec):** author spec + threat model; owner sign-off; no code.
-- **Phase 1 — least-privilege foundation:** `ScopeAssistant` + the `ScopeSatisfies`
-  self-scope rule + assistant-read middleware + negative/positive scope tests;
-  `api_tokens.expires_at` migration + TTL enforcement;
-  `assistant.enabled`/`assistant.mode` settings (default off/read-only);
-  `assistant_audit`, `assistant_actions`, and `assistant_action_policy` tables
-  (forward-only); **human-presence-primitive groundwork** (WebAuthn/passkey or
-  equivalent step-up, plus browser-session CSRF/Origin hardening), since it gates Phase 3.
-- **Phase 2 — read-only assistant, local + cloud:** dedicated assistant-projection
-  endpoints (allowlist DTOs) + the sanitizer/hardening layer with the injection-corpus
-  build gate; the stdio MCP adapter with **read tools only**; **both** the local
-  backend and the cloud opt-in read path, with cloud consent + redaction tier + egress
-  ledger + whole-session minimization as Phase-2 acceptance criteria. Delivers the full
-  "help me triage" value with zero mutation capability; independently shippable.
+- **Phase 1a — least-privilege Core foundation (ships fast):** `ScopeAssistant` isolated
+  via `RequireExactScope(ScopeAssistant)` + `RequireAssistantRead` (the `ScopeSatisfies`
+  admin-superuser rule is left **unchanged**) + negative/positive scope tests; the 031
+  `api_tokens` **rebuild** migration + assistant-token TTL enforcement;
+  `assistant.enabled`/`assistant.mode` settings (default off/read-only); the 032
+  `assistant_audit` / `assistant_actions` / `assistant_action_policy` tables
+  (forward-only). Core with the subsystem off behaves exactly as today.
+- **Shared predicate (in Phase 1a):** extract `trusted_high_confidence_ioc_or_ips` into
+  **one** function reused by the findings processor and the policy engine, proven
+  equivalent by a differential test — detection needs the extraction too, so it lands here.
+- **Phase 1b — human-presence primitive (the Phase-3 wall):** Vedetta's first server-side
+  sessions + CSRF/Origin hardening + WebAuthn platform-authenticator registration and
+  assertion-verification helper. Net-new, high-risk, its own dedicated security review;
+  built in parallel so 1a/2 never wait on it, and the accept route that consumes it does
+  not merge until this ships and is tested.
+- **Phase 2a — read-only assistant, LOCAL only (ships fast, zero egress):** dedicated
+  assistant-projection endpoints (allowlist DTOs) + the sanitizer/hardening layer with
+  the injection-corpus build gate; the stdio MCP adapter with **read tools only**; the
+  read-only SQLite pool + per-tool caps. Delivers the full "help me triage" value over a
+  local model with zero mutation and zero off-LAN egress; the largest injection surface,
+  shipped with no state-change risk; independently shippable.
+- **Phase 2b — read-only assistant, CLOUD opt-in (owner-gated):** the opt-in cloud read
+  path — the effectively-irreversible "data leaves the network" boundary — with cloud
+  consent + whole-session minimization + eTLD+1 granularity + Core-side never-egress
+  denylist + per-session egress ledger, and a **full tool-poisoning audit + static
+  hash-pinned-manifest verification** as human-signed ship gates (the adapter binary
+  reaches users here). Owner-gated like Phases 3 and 4.
 - **Phase 3 — human-accepted execution:** `POST /assistant/actions`, the `request_*`
   tools, the accept/reject routes behind the **human-presence primitive (hard
   prerequisite)**, the real-time card, severity-policy enforcement at prepare + accept,
@@ -431,16 +482,26 @@ revoke) is always present.
   Backend-agnostic. Gate: every acceptance gate green + tool-poisoning audit signed off.
 - **Phase 4 — remote transport hardening:** HTTP/SSE session secret, loopback/tailnet
   bind, origin checks (for split-host local models). (The old standalone "cloud" phase
-  is folded into Phase 2.)
+  is folded into Phase 2b.)
 
-Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
+Phases 1b, 2b, 3, and 4 are owner-gated / dedicated-security-review per the spec-kit
+human-gate convention. Full phase/task detail is in
+[`plan.md`](plan.md) and [`tasks.md`](tasks.md).
 
 ## Migration and compatibility
 
-- Additive, forward-only migrations: extend the `api_tokens` scope constraint to
-  include `assistant`, add `api_tokens.expires_at` (NULL = legacy unaffected for
-  non-assistant scopes), add `assistant_audit`, `assistant_actions`,
-  `assistant_action_policy`, and `assistant.*` settings.
+- Additive, forward-only migrations. SQLite cannot `ALTER` a `CHECK` constraint, so
+  migration **031 rebuilds `api_tokens`** following the migration 021/017 recipe:
+  `CREATE api_tokens_new` with `CHECK(scope IN ('sensor','admin','ingest','read','assistant'))`
+  and a new `expires_at TIMESTAMP NULL` column (NULL = legacy unaffected for
+  non-assistant scopes), `INSERT-SELECT` all rows, `DROP` old, `RENAME`, and recreate the
+  FK to `sensors`, the `ux_api_tokens_active_sensor` partial unique index, and
+  `idx_api_tokens_hash` / `_sensor` / `_revoked`. A test runs 031 against a populated
+  `api_tokens` DB and asserts legacy non-assistant NULL tokens survive. (Alternatively the
+  DB-level `CHECK` may be dropped in favor of app-level scope validation to avoid
+  rebuilding the live token table — **owner to choose**, see open questions.) Migration
+  **032** adds `assistant_audit`, `assistant_actions`, `assistant_action_policy`, and the
+  `assistant.*` settings.
 - `ScopeAssistant` is additive and does not change existing `ScopeRead` /
   `ScopeAdmin` authority. Existing `RequireRead` / `RequireStrictAdmin` route groups
   are unchanged for current tokens, while assistant access is isolated to the new
@@ -505,18 +566,25 @@ Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
    the required transport hardening beneath it, but are not sufficient human presence by
    themselves. Still a code-first Phase-3 prerequisite (Vedetta has neither sessions nor
    WebAuthn today).
-5. **Severity/risk policy (to-be-finalized):** eligible bands; severity-only vs
-   severity × confidence × IOC-strength; discrete vs continuous score; medium-suppress
-   default (proposed: **blocked**); per-class friction; per-action TTL; stricter under
-   a cloud model?
-6. **Accept UX vs security:** confirm pending-action TTL (~5m) and any bounded long-poll
-   are UX-only; confirm one-outstanding-pending-action-per-session.
-7. **Card transport:** confirm SSE/websocket bound to an accept-capable logged-in
-   session (no anonymous/read-tier subscriber); confirm queue+notify (not silent-expire)
-   when no operator session is connected.
-8. **Cloud minimization scope:** confirm the Core-side minimizer covers the model
-   rationale + conversation context egressed to cloud, and Core-independent loopback
-   verification for any full-fidelity path.
+5. *(Resolved)* **Severity/risk policy — finalized.** Discrete bands over the real enum
+   `{critical, high, medium, low}` + `unknown` (no `info`); only `{medium, low}` are
+   configurable (6 cells). Default enables ack + investigating on medium/low and **no**
+   suppression (both medium- and low-suppress ship blocked). Two overlay vetoes: V1
+   trusted-IOC (all actions), V2 `ioc_strength ∈ {strong, NULL, unknown}` (suppress only).
+   Confidence is a caveat, not a gating axis; a continuous score, if ever added, is an
+   additional AND-veto, never a replacement. See "Severity/risk policy layer".
+6. *(Resolved)* **Accept UX.** The window is a **review** window that starts at first card
+   delivery (ack/investigating 5m, suppress 3m, ceiling 10m, admin range [1m,10m]) and is
+   UX/anti-staleness only — the load-bearing controls are the single-use CAS, server-only
+   nonce, `params_hash` pin, and void-on-any-drift. One outstanding action per session;
+   parked actions are re-prepared on next login.
+7. *(Resolved)* **Card transport.** SSE/websocket bound to an accept-capable logged-in
+   session (never an anonymous/read-tier subscriber); no operator session ⇒ the action
+   **parks** and re-prepares on next login (never silent-expire, never stale revival).
+8. *(Resolved)* **Cloud minimization scope.** The Core-side minimizer covers the model
+   rationale + conversation context egressed to cloud, with Core-independent loopback
+   verification for any full-fidelity path; full-fidelity QNAME is forbidden whenever any
+   cloud endpoint is reachable in-session (whole-session minimization).
 9. **Carried over:** `base_rate` backing (new per-detector aggregate vs existing stats);
    token lifecycle (short-TTL manual vs auto-rotating — matters more with a cloud
    client); audit home (Core SQLite vs SIEM export); per-token read + action rate limits
