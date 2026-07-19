@@ -201,14 +201,17 @@ never the auth model.
 3. **Accept (the boundary).** Reachable **only** from the server-rendered card, and
    requires a **human-presence primitive a bearer token cannot satisfy**:
    - **Primary (owner-chosen):** a WebAuthn/passkey **user-verification** assertion
-     signed over `action_id || accept_nonce` — the model host cannot produce a
-     user-verified assertion, so accept is provably a present human bound to the exact
-     action. This is a **platform authenticator** (Touch ID / Windows Hello) — one tap,
-     no separate hardware key — so it closes the "present human, this action" gap at low
-     friction. (Owner considered a session-only accept given the bounded, reversible
-     action set, but a session proves "a browser is logged in," not "a human approved
-     this now"; a platform-passkey tap is nearly frictionless and is the chosen v1
-     primitive.)
+     bound to `action_id || accept_nonce` — Core issues a challenge derived from those
+     values and accepts only after validating the returned challenge, `webauthn.get`
+     type, RP ID, origin, registered operator credential, and user-verification flag.
+     The model host cannot produce a user-verified assertion, so accept is provably a
+     present human bound to the exact action. The preferred UX is a **platform
+     authenticator** (Touch ID / Windows Hello) — one tap — while cross-platform
+     authenticators such as hardware security keys remain a supported fallback for
+     operators without platform biometric/PIN hardware. (Owner considered a session-only
+     accept given the bounded, reversible action set, but a session proves "a browser is
+     logged in," not "a human approved this now"; a platform-passkey tap is nearly
+     frictionless and is the chosen v1 default.)
    - **Supporting browser hardening:** real server-side dashboard sessions (HttpOnly,
      `SameSite=Strict` cookie + CSRF + Origin/Host allowlist) **distinct from API
      bearers**; the accept route rejects **all** bearer tokens (admin included).
@@ -495,8 +498,9 @@ Phases 3 and 4 are owner-gated per the spec-kit human-gate convention.
 3. *(Resolved in review)* The non-actionable ceiling is bound to spec-007's shared
    `trusted_high_confidence_ioc_or_ips` predicate (plus critical/high).
 4. *(Resolved)* Human-presence primitive = **WebAuthn/passkey user-verification via a
-   platform authenticator** (Touch ID / Windows Hello) — one tap, no hardware key,
-   bound to `action_id || nonce`. Real server-side sessions (HttpOnly `SameSite=Strict`
+   platform authenticator by default** (Touch ID / Windows Hello) — one tap, with
+   cross-platform authenticators supported as fallback — bound to
+   `action_id || accept_nonce`. Real server-side sessions (HttpOnly `SameSite=Strict`
    cookie + CSRF + Origin/Host, rejecting all bearers incl. a stolen admin bearer) are
    the required transport hardening beneath it, but are not sufficient human presence by
    themselves. Still a code-first Phase-3 prerequisite (Vedetta has neither sessions nor
