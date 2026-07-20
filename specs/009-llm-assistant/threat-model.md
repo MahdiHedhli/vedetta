@@ -223,7 +223,8 @@ eligibility; changes are audited and reversible and can never breach the code ce
 ## Acceptance gates (must all pass before human-accepted execution ships)
 
 1. **Scope isolation.** A table-driven `ScopeSatisfies` test proves `ScopeAssistant`
-   satisfies itself only, **never read/admin**; admin still satisfies read;
+   satisfies itself only, **never read/admin**, and `ScopeAdmin` does **not** satisfy
+   `ScopeAssistant`; admin still satisfies read;
    assistant-read projection middleware admits assistant/admin and rejects other
    scopes; `RequireExactScope` enforces admin != assistant on action routes. Negative
    route tests: an assistant bearer gets 403 on every raw `RequireRead` endpoint and
@@ -240,7 +241,7 @@ eligibility; changes are audited and reversible and can never breach the code ce
 3. **Accept requires a present human** *(replaces the old propose-and-confirm gate)*.
    An automated prepare → accept → execute test proves **no action executes without a
    genuine human-presence acceptance** (WebAuthn/passkey user-verification over
-   `action_id||nonce`, or an equivalent step-up/user-presence primitive). A
+   `action_id||accept_nonce`, or an equivalent step-up/user-presence primitive). A
    dashboard session with CSRF + Origin/Host protects the browser flow but is not
    sufficient by itself; an admin **bearer** (not just the assistant token) gets
    403/challenge on the accept route and cannot accept headlessly; browser
