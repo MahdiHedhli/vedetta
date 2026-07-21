@@ -91,7 +91,7 @@ jobs:
           printf 'commit_sha=%s\n' "$commit_sha" >> "$GITHUB_OUTPUT"
 
       - name: Check out the immutable release commit
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ steps.validate.outputs.commit_sha }}
           persist-credentials: false
@@ -133,7 +133,7 @@ jobs:
     needs: validate-tag
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.validate-tag.outputs.commit_sha }}
           persist-credentials: false
@@ -162,7 +162,7 @@ jobs:
           # Windows is cgo-free (ETW + native ICMP/ARP) → cross-compile on ubuntu.
           - { runner: ubuntu-latest, goos: windows, goarch: amd64, cgo: "0" }
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Build the immutable commit resolved by validate-tag. Matrix jobs must
           # never resolve a mutable tag independently.
@@ -226,7 +226,7 @@ jobs:
     permissions:
       contents: write # create or refresh a draft release only in this job
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Installer assets must come from the same immutable commit validated
           # for the binaries, never from the workflow runner's default branch.
