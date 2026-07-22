@@ -602,7 +602,7 @@ export function FindingCard({
               {finding.reason || `${finding.detector || 'Vedetta'} detected ${observableLabel(finding)}.`}
             </p>
           </div>
-          <div className="text-right text-xs text-gray-500 flex-shrink-0">
+          <div className="text-right text-xs text-gray-500 shrink-0">
             <p>{occurrenceCount} occurrence{occurrenceCount === 1 ? '' : 's'}</p>
             {outcomeCountText && <p className="mt-1">{outcomeCountText}</p>}
             <p className="mt-1">{displayDate(finding.first_seen)} – {displayDate(finding.last_seen)}</p>
