@@ -6,7 +6,7 @@ export function TelemetryInertBackground({ active, children }) {
   return (
     <div
       className="min-h-screen"
-      inert={active ? '' : undefined}
+      inert={active ? true : undefined}
       aria-hidden={active ? 'true' : undefined}
     >
       {children}
