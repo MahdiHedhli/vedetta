@@ -1,3 +1,4 @@
+import React from 'react';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import UpdateNotice, { UPDATE_STATUS_POLL_MS } from './UpdateNotice';

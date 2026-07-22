@@ -6,7 +6,7 @@ export function TelemetryInertBackground({ active, children }) {
   return (
     <div
       className="min-h-screen"
-      inert={active ? '' : undefined}
+      inert={active ? true : undefined}
       aria-hidden={active ? 'true' : undefined}
     >
       {children}
@@ -174,7 +174,7 @@ export function TelemetryAcknowledgementDialog({
   return (
     <div
       ref={dialogRef}
-      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4 overflow-y-auto overscroll-contain"
+      className="fixed inset-0 bg-black/80 backdrop-blur-xs flex items-center justify-center z-[60] p-4 overflow-y-auto overscroll-contain"
       role="dialog"
       aria-modal="true"
       aria-labelledby="telemetry-ack-title"
@@ -183,7 +183,7 @@ export function TelemetryAcknowledgementDialog({
     >
       <div className="bg-gray-900 border border-amber-900/50 rounded-2xl max-w-lg w-full p-6 sm:p-8 space-y-5 shadow-2xl max-h-[90dvh] overflow-y-auto overscroll-contain my-auto">
         <div className="flex items-start gap-3">
-          <svg aria-hidden="true" className="w-6 h-6 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg aria-hidden="true" className="w-6 h-6 text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <h2 id="telemetry-ack-title" className="text-lg font-semibold text-white leading-snug">
@@ -222,7 +222,7 @@ export function TelemetryAcknowledgementDialog({
             ref={primaryRef}
             onClick={onAcknowledge}
             disabled={isLoading}
-            className="bg-amber-600 hover:bg-amber-500 text-white font-medium text-sm px-6 py-2.5 rounded-lg transition-colors flex-shrink-0 tracking-wide disabled:opacity-50 disabled:cursor-wait"
+            className="bg-amber-600 hover:bg-amber-500 text-white font-medium text-sm px-6 py-2.5 rounded-lg transition-colors shrink-0 tracking-wide disabled:opacity-50 disabled:cursor-wait"
           >
             {isLoading ? 'CHECKING…' : phase === 'error' || setting?.effective === false ? 'CONTINUE' : 'ACKNOWLEDGED'}
           </button>

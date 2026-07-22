@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react';
+import React, { useEffect, useReducer, useState } from 'react';
 import { authFetch } from './lib/api';
 
 // UpdateNotice shows a dismissible banner when the backend reports that a newer Vedetta

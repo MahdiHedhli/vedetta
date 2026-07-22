@@ -853,7 +853,7 @@ export default function App() {
                       onChange={(e) => setSetupCode(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') createInitialAdminToken(); }}
                       placeholder="Paste setup code..."
-                      className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500"
+                      className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-hidden focus:border-emerald-500"
                     />
                     <p className="text-[10px] text-gray-500">
                       Printed to the Core logs on first start. Run <span className="font-mono text-gray-400">docker logs &lt;core-container&gt;</span> and copy the setup code.
@@ -880,7 +880,7 @@ export default function App() {
                 onChange={(e) => setTokenInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') submitPastedToken(); }}
                 placeholder="64-character hex token..."
-                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-amber-500"
+                className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-hidden focus:border-amber-500"
               />
               <button
                 onClick={submitPastedToken}
@@ -983,9 +983,9 @@ function AddWhitelistRule({ onAdd, onError }) {
     <div className="bg-gray-800/40 rounded-lg p-3 space-y-2">
       <div className="grid grid-cols-2 gap-2">
         <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Rule name"
-          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:border-teal-500" />
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm focus:outline-hidden focus:border-teal-500" />
         <select value={category} onChange={(e) => setCategory(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:border-teal-500">
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm focus:outline-hidden focus:border-teal-500">
           <option value="custom">Custom</option>
           <option value="mdns">mDNS</option>
           <option value="apple">Apple</option>
@@ -996,11 +996,11 @@ function AddWhitelistRule({ onAdd, onError }) {
       </div>
       <div className="grid grid-cols-3 gap-2">
         <input type="text" value={domainPattern} onChange={(e) => setDomainPattern(e.target.value)} placeholder="Domain (*.example.com)"
-          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-teal-500" />
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-hidden focus:border-teal-500" />
         <input type="text" value={sourceIpPattern} onChange={(e) => setSourceIpPattern(e.target.value)} placeholder="Source IP (10.0.0.*)"
-          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-teal-500" />
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-hidden focus:border-teal-500" />
         <input type="text" value={tagMatch} onChange={(e) => setTagMatch(e.target.value)} placeholder="Tag (beaconing)"
-          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-teal-500" />
+          className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm font-mono focus:outline-hidden focus:border-teal-500" />
       </div>
       <div className="flex items-center justify-end gap-2">
         <button onClick={() => setOpen(false)} className="text-xs text-gray-500 hover:text-gray-300 px-3 py-1">Cancel</button>
@@ -1468,7 +1468,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
               </div>
               <div className="px-6 py-4 space-y-4">
                 <div className="bg-amber-950/30 border border-amber-900/50 rounded-lg p-3 flex gap-3">
-                  <svg className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4v2m0 4v2M8.228 9.228A9 9 0 1120.228 20.228M12 5v4m0 4v4" />
                   </svg>
                   <p className="text-sm text-amber-300">This will acknowledge and clear all existing threat alerts from the active view. It will NOT suppress future alerts matching these patterns. Acknowledged events can still be viewed by toggling the suppressed filter.</p>
@@ -1481,7 +1481,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                     onChange={(e) => setAckAllReason(e.target.value)}
                     placeholder="e.g., Initial baseline, reviewed all events"
                     disabled={ackAllProcessing}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-hidden focus:border-amber-500 disabled:opacity-50"
                   />
                 </div>
               </div>
@@ -1561,9 +1561,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
               const isThreat = (hour.count || 0) > 0;
               return (
                 <div key={idx} className="flex-1 flex flex-col items-center gap-1">
-                  <div className="w-full bg-gray-800 rounded-sm relative h-28 flex items-end">
+                  <div className="w-full bg-gray-800 rounded-xs relative h-28 flex items-end">
                     <div
-                      className={`w-full rounded-sm transition-all ${isThreat ? 'bg-red-500' : 'bg-teal-500'}`}
+                      className={`w-full rounded-xs transition-all ${isThreat ? 'bg-red-500' : 'bg-teal-500'}`}
                       style={{ height: `${Math.max(height, 5)}%` }}
                       title={`${hour.count || 0} events`}
                     />
@@ -2409,7 +2409,7 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                       value={actionMode.reason}
                                       onChange={(e) => setActionMode({ ...actionMode, reason: e.target.value })}
                                       placeholder="e.g., my VPN, Ring doorbell, expected traffic"
-                                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-amber-500"
+                                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-hidden focus:border-amber-500"
                                       autoFocus
                                       onKeyDown={(e) => {
                                         if (e.key === 'Enter') {
@@ -2746,7 +2746,7 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
                     onChange={(e) => setSetupCode(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') createAdmin(); }}
                     placeholder="Paste setup code..."
-                    className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500"
+                    className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-hidden focus:border-emerald-500"
                   />
                   <p className="text-[10px] text-gray-500">
                     Printed to the Core logs on first start. Run <span className="font-mono text-gray-400">docker logs &lt;core-container&gt;</span> and copy the setup code (header <span className="font-mono text-gray-400">X-Vedetta-Setup-Code</span>).
@@ -2797,7 +2797,7 @@ function SensorSetupDialog({ onDismiss, onAdminCreated }) {
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <code className="text-sm text-amber-300 font-mono break-all">{enrollCode}</code>
-                  {enrollExpiresLabel && <span className="text-[10px] text-gray-500 flex-shrink-0">expires {enrollExpiresLabel}</span>}
+                  {enrollExpiresLabel && <span className="text-[10px] text-gray-500 shrink-0">expires {enrollExpiresLabel}</span>}
                 </div>
                 <div className="bg-gray-950 rounded-lg p-3 border border-gray-700">
                   <p className="text-[10px] text-gray-400 mb-1 font-medium">macOS / Linux (install.sh):</p>
@@ -3179,7 +3179,7 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
           <button
             type="button"
             onClick={() => setSensorActionError('')}
-            className="flex-shrink-0 text-red-300 hover:text-red-100"
+            className="shrink-0 text-red-300 hover:text-red-100"
             aria-label="Dismiss sensor action error"
           >
             &times;
@@ -3203,15 +3203,15 @@ export function SensorsView({ sensors, removedSensors = [], onSetup, onRefreshSe
             <div key={s.sensor_id} className={`bg-gray-900 border rounded-lg p-4 ${s.is_primary ? 'border-amber-500/40' : 'border-gray-800'}`}>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${s.status === 'online' ? 'bg-green-400' : 'bg-gray-600'}`} />
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-medium truncate">{s.hostname}</p>
                       {s.is_primary && (
-                        <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded flex-shrink-0">primary</span>
+                        <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded shrink-0">primary</span>
                       )}
                       {!s.is_primary && primaryStale && primary && s.hostname === primary.hostname && (
-                        <span className="text-xs bg-sky-500/15 text-sky-300 px-2 py-0.5 rounded flex-shrink-0">likely redeploy of {primary.hostname}</span>
+                        <span className="text-xs bg-sky-500/15 text-sky-300 px-2 py-0.5 rounded shrink-0">likely redeploy of {primary.hostname}</span>
                       )}
                     </div>
                     <p className="text-xs text-gray-500 truncate">{s.sensor_id}</p>
@@ -3711,19 +3711,19 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                 <label className="text-xs text-gray-400 mb-1 block">Custom Name</label>
                 <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)}
                   placeholder="e.g., Living Room TV, Ring Doorbell"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500" />
               </div>
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Notes</label>
                 <textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)}
                   placeholder="Any notes about this device..."
                   rows={2}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 resize-none" />
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500 resize-none" />
               </div>
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Segment</label>
                 <select value={editSegment} onChange={(e) => setEditSegment(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500">
                   <option value="default">Default</option>
                   <option value="iot">IoT</option>
                   <option value="guest">Guest</option>
@@ -3732,7 +3732,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Device Type</label>
                 <select value={editDeviceType} onChange={(e) => setEditDeviceType(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500">
                   <option value="">Auto-detect</option>
                   <option value="computer">Computer</option>
                   <option value="laptop">Laptop</option>
@@ -3757,13 +3757,13 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                   <label className="text-xs text-gray-400 mb-1 block">OS / Platform</label>
                   <input type="text" value={editOSFamily} onChange={(e) => setEditOSFamily(e.target.value)}
                     placeholder="e.g., macOS, Windows, iOS, Linux"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 mb-1 block">Model</label>
                   <input type="text" value={editModel} onChange={(e) => setEditModel(e.target.value)}
                     placeholder="e.g., MacBook Pro, Ring Doorbell"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500" />
                 </div>
               </div>
               <button
@@ -3909,7 +3909,7 @@ function DevicesView({ devices, scanning, onScan, scanStatus, threatEvents, onRe
                           value={bulkReason}
                           onChange={(e) => setBulkReason(e.target.value)}
                           placeholder="e.g., known Azure traffic, my VPN"
-                          className="flex-1 bg-gray-800 border border-gray-700 rounded px-2.5 py-1 text-sm focus:outline-none focus:border-amber-500"
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded px-2.5 py-1 text-sm focus:outline-hidden focus:border-amber-500"
                           autoFocus
                           onKeyDown={(e) => { if (e.key === 'Enter') doBulkAction(bulkAction, bulkReason); if (e.key === 'Escape') { setBulkAction(null); setBulkReason(''); } }}
                         />
@@ -4125,17 +4125,17 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Name</label>
                 <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="IoT Network"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500" />
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500" />
               </div>
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">CIDR</label>
                 <input type="text" value={cidr} onChange={(e) => setCidr(e.target.value)} placeholder="10.0.50.0/24"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-amber-500" />
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-hidden focus:border-amber-500" />
               </div>
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Segment</label>
                 <select value={segment} onChange={(e) => setSegment(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500">
                   <option value="default">Default</option>
                   <option value="iot">IoT</option>
                   <option value="guest">Guest</option>
@@ -4155,7 +4155,7 @@ function ScanTargetsView({ targets, defaultCIDR, scanning, onRefresh, onScanTarg
                 <div>
                   <label className="text-xs text-gray-400 mb-1 block">DNS Interface</label>
                   <select value={dnsInterface} onChange={(e) => setDnsInterface(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500">
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:border-amber-500">
                     <option value="">Auto-detect</option>
                     {sensorInterfaces.map(iface => (
                       <option key={iface.name} value={iface.name}>
@@ -4477,7 +4477,7 @@ function TelemetrySettings() {
     <div
       id="telemetry-settings"
       tabIndex={-1}
-      className="bg-gray-900 border border-gray-800 rounded-lg p-5 focus:outline-none focus:ring-2 focus:ring-amber-500/70"
+      className="bg-gray-900 border border-gray-800 rounded-lg p-5 focus:outline-hidden focus:ring-2 focus:ring-amber-500/70"
     >
       <h3 className="text-sm font-medium mb-1">Pseudonymous Telemetry — Core Live Gate</h3>
       <p className="text-xs text-gray-500 mb-2">
@@ -4506,7 +4506,7 @@ function TelemetrySettings() {
           aria-checked={effective === true}
           disabled={!state || !isAdmin || saving || loading}
           onClick={toggle}
-          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${effective === true ? 'bg-green-500' : 'bg-gray-600'}`}
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${effective === true ? 'bg-green-500' : 'bg-gray-600'}`}
           title={!isAdmin ? 'Admin token required to change this setting' : !state ? 'Core telemetry gate status unavailable' : (effective ? 'Turn Core telemetry gate off' : 'Turn Core telemetry gate on')}
         >
           <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${effective === true ? 'translate-x-6' : 'translate-x-1'}`} />
@@ -4547,7 +4547,7 @@ function SettingsView() {
           <h3 className="text-sm font-medium mb-1">Data Retention</h3>
           <p className="text-xs text-gray-500 mb-3">How long to keep event and device history</p>
           <div className="flex items-center gap-3">
-            <input type="number" defaultValue={90} className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-center focus:outline-none focus:border-amber-500" />
+            <input type="number" defaultValue={90} className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-center focus:outline-hidden focus:border-amber-500" />
             <span className="text-sm text-gray-400">days</span>
           </div>
         </div>
@@ -4556,7 +4556,7 @@ function SettingsView() {
           <h3 className="text-sm font-medium mb-1">Scan Schedule</h3>
           <p className="text-xs text-gray-500 mb-3">Default interval for automatic sensor scans</p>
           <div className="flex items-center gap-3">
-            <select defaultValue="5m" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-amber-500">
+            <select defaultValue="5m" className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-hidden focus:border-amber-500">
               <option value="1m">Every 1 minute</option>
               <option value="5m">Every 5 minutes</option>
               <option value="15m">Every 15 minutes</option>
