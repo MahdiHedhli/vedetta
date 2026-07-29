@@ -116,7 +116,7 @@ allowed.
 The backend includes an **Advanced DNS Hunting** profile, disabled by default,
 for the following behavioural detectors:
 
-- DGA-like domain patterns
+- DGA-like domain patterns corroborated by a per-device NXDOMAIN burst
 - beaconing behavior
 - DNS tunneling patterns
 - DNS rebinding

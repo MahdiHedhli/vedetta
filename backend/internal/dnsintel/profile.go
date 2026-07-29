@@ -14,10 +14,8 @@ type AdvancedDNSHuntingProfile struct {
 	Tunneling      bool `json:"tunneling"`
 	Beaconing      bool `json:"beaconing"`
 	DGANXDomain    bool `json:"dga_nxdomain"`
-	AnswerChurn    bool `json:"answer_churn"`
 	ResolverBypass bool `json:"resolver_bypass"`
 	Rebinding      bool `json:"rebinding"`
-	InternalRecon  bool `json:"internal_recon"`
 }
 
 // DefaultAdvancedDNSHuntingProfile is intentionally quiet. Collection health
@@ -40,14 +38,10 @@ func (p AdvancedDNSHuntingProfile) DetectorEnabled(detector string) bool {
 		return p.Beaconing
 	case "dga_nxdomain":
 		return p.DGANXDomain
-	case "answer_churn":
-		return p.AnswerChurn
 	case "resolver_bypass":
 		return p.ResolverBypass
 	case "rebinding":
 		return p.Rebinding
-	case "internal_recon":
-		return p.InternalRecon
 	default:
 		return false
 	}

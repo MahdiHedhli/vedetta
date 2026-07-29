@@ -313,11 +313,15 @@ func TestCommunityReasonCannotEraseGenuineCoreHeuristicFinding(t *testing.T) {
 	}}
 	enricher := dnsintel.NewEnricher(nil)
 	enricher.SetAdvancedDNSHuntingProfile(dnsintel.AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	// Isolate the community-vs-Core evidence contract from the burst threshold;
+	// dedicated dnsintel tests cover the production five-domain correlation.
+	enricher.NXDomainBurst.MinDistinctDomains = 1
 	processor := newProcessorWithStore(db, enricher,
 		WithThreatLookup(lookup), WithClock(func() time.Time { return now }))
 	result := processor.ProcessBatch(context.Background(), []IngressEnvelope{{Event: models.Event{
 		EventID: "community-reason-collision", Timestamp: now, EventType: "dns_query",
 		SourceHash: "stable", Domain: "asdfjklqwerty.com",
+		Metadata: `{"dns_direction":"response","dns_response_code":"NXDOMAIN"}`,
 	}}})[0]
 	if result.Err != nil {
 		t.Fatal(result.Err)

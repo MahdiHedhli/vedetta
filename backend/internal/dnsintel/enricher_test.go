@@ -57,27 +57,89 @@ func TestEnrichDoesNotPromoteSubthresholdTunnelSignal(t *testing.T) {
 	}
 }
 
-func TestEnrichPromotesStrongDGA(t *testing.T) {
-	event := models.Event{
-		EventType:  "dns_query",
-		SourceHash: "source-a",
-		Domain:     "r7t2x9k4m1n8.biz",
-		QueryType:  "A",
-		Timestamp:  time.Now().UTC(),
-	}
-
+func TestEnrichPromotesDGAAfterNXDomainBurst(t *testing.T) {
 	e := NewEnricher(nil)
 	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
-	e.Enrich(&event)
-
-	if event.AnomalyScore == 0 {
-		t.Fatal("expected strong DGA to raise anomaly score")
+	base := time.Now().UTC()
+	domains := []string{
+		"r7t2x9k4m1n8.biz",
+		"q8v3z7p2l6d9.biz",
+		"m4k8w1x7r2t6.biz",
+		"n9c3v6b1q8z4.biz",
+		"h7j2k9w5x3p8.biz",
 	}
-	if !hasTag(event.Tags, "dga_candidate") {
-		t.Fatalf("expected dga_candidate tag, got %v", event.Tags)
+
+	var event models.Event
+	for i, domain := range domains {
+		if !ScoreDGA(domain).IsDGA {
+			t.Fatalf("test fixture %q must be DGA-shaped", domain)
+		}
+		event = models.Event{
+			EventType: "dns_query", SourceHash: "source-a", Domain: domain, QueryType: "A",
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			Metadata:  `{"dns_direction":"response","dns_response_code":"NXDOMAIN"}`,
+		}
+		e.Enrich(&event)
+		if i < len(domains)-1 && hasTag(event.Tags, "dga_candidate") {
+			t.Fatalf("DGA fired before corroborating NXDOMAIN burst at observation %d: %v", i+1, event.Tags)
+		}
+	}
+
+	if event.AnomalyScore == 0 || !hasTag(event.Tags, "dga_candidate") {
+		t.Fatalf("expected corroborated DGA finding, got score=%.2f tags=%v", event.AnomalyScore, event.Tags)
 	}
 	if event.ThreatDesc == "" {
 		t.Fatal("expected threat description")
+	}
+}
+
+func TestEnrichDGARequiresNXDomainResponse(t *testing.T) {
+	e := NewEnricher(nil)
+	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	base := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		event := models.Event{
+			EventType: "dns_query", SourceHash: "source-a", Domain: "r7t2x9k4m1n8.biz", QueryType: "A",
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			Metadata:  `{"dns_direction":"response","dns_response_code":"NOERROR"}`,
+		}
+		e.Enrich(&event)
+		if hasTag(event.Tags, "dga_candidate") {
+			t.Fatalf("non-NXDOMAIN response emitted a DGA finding: %v", event.Tags)
+		}
+	}
+}
+
+func TestNXDomainBurstStateRollsBackWithFailedEvent(t *testing.T) {
+	e := NewEnricher(nil)
+	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	base := time.Now().UTC()
+	domains := []string{
+		"r7t2x9k4m1n8.biz", "q8v3z7p2l6d9.biz", "m4k8w1x7r2t6.biz",
+		"n9c3v6b1q8z4.biz", "h7j2k9w5x3p8.biz",
+	}
+	makeEvent := func(i int) models.Event {
+		return models.Event{
+			EventType: "dns_query", SourceHash: "rollback-source", Domain: domains[i], QueryType: "A",
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			Metadata:  `{"dns_direction":"response","dns_response_code":"NXDOMAIN"}`,
+		}
+	}
+
+	failed := makeEvent(0)
+	enrich, _, rollback := e.BeginEventState(failed)
+	enrich(&failed)
+	rollback()
+	if e.NXDomainBurstEntryCount() != 0 {
+		t.Fatalf("rolled-back event retained DGA/NXDOMAIN state: %d entries", e.NXDomainBurstEntryCount())
+	}
+
+	for i := 1; i < len(domains); i++ {
+		event := makeEvent(i)
+		e.Enrich(&event)
+		if hasTag(event.Tags, "dga_candidate") {
+			t.Fatalf("rolled-back event counted toward DGA burst: tags=%v", event.Tags)
+		}
 	}
 }
 

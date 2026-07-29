@@ -2274,6 +2274,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                           <div>Bigram anomaly: <span className="font-mono">{(meta.dga.bigram_score * 100).toFixed(0)}%</span></div>
                                           <div>Scored label: <span className="font-mono">{meta.dga.label}</span></div>
                                           <div>Composite: <span className="font-mono">{(meta.dga.score * 100).toFixed(0)}%</span></div>
+                                          {meta.dga.distinct_nxdomain > 0 && (
+                                            <div>Corroboration: <span className="font-mono">{meta.dga.distinct_nxdomain}</span> distinct NXDOMAIN names{meta.dga.window_seconds ? ` in ${Math.round(meta.dga.window_seconds / 60)}m` : ''}</div>
+                                          )}
                                         </div>
                                       </div>
                                     )}
@@ -4537,11 +4540,9 @@ function TelemetrySettings() {
 const DNS_HUNTING_DETECTORS = [
   ['tunneling', 'DNS tunneling', 'Long or encoded labels, unusual subdomain churn, and TXT/NULL activity.'],
   ['beaconing', 'Beaconing / low-and-slow C2', 'Regular per-device DNS callbacks after enough observations.'],
-  ['dga_nxdomain', 'DGA and NXDOMAIN bursts', 'Random-looking domains and repeated failed lookups.'],
-  ['answer_churn', 'Answer churn', 'Reserved for cautious future public-answer change analysis.'],
+  ['dga_nxdomain', 'DGA and NXDOMAIN bursts', 'Random-looking domains corroborated by repeated failed lookups.'],
   ['resolver_bypass', 'Public resolver bypass', 'A device directly queries a known public resolver instead of the local resolver.'],
   ['rebinding', 'DNS rebinding', 'A domain changes from a public to a private answer.'],
-  ['internal_recon', 'Small-business internal reconnaissance', 'Reserved for Windows-domain and internal DNS-specific detection.'],
 ];
 
 function AdvancedDNSHuntingSettings() {
@@ -4630,6 +4631,10 @@ function AdvancedDNSHuntingSettings() {
           </label>
         ))}
       </div>
+
+      <p className="text-[10px] text-gray-500 mt-3">
+        Planned quality detectors: CDN-aware public-answer churn and Windows/internal-DNS reconnaissance. They are not exposed as switches until Core has the TTL, resolver, and network-context evidence needed to avoid misleading alerts.
+      </p>
 
       {!isAdmin && <p className="text-[10px] text-amber-400/80 mt-2">An admin token is required to change this setting.</p>}
       {!state && !loading && <p className="text-[10px] text-gray-500 mt-2"><button type="button" onClick={load} className="underline hover:text-gray-300">Retry</button> after authenticating if needed.</p>}

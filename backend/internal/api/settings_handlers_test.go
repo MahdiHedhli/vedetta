@@ -199,8 +199,8 @@ func TestAdvancedDNSHunting_DefaultIsQuietAndPersistedProfileAppliesLive(t *test
 	w = doPutJSON(router, "/api/v1/settings/dns-hunting", admin, map[string]any{
 		"profile": map[string]any{
 			"enabled": true, "tunneling": true, "beaconing": true,
-			"dga_nxdomain": true, "answer_churn": false,
-			"resolver_bypass": true, "rebinding": true, "internal_recon": false,
+			"dga_nxdomain":    true,
+			"resolver_bypass": true, "rebinding": true,
 		},
 	})
 	if w.Code != http.StatusOK {
@@ -234,5 +234,8 @@ func TestAdvancedDNSHunting_PutRequiresAdminAndRejectsUnknownFields(t *testing.T
 	}
 	if w := doPutJSON(router, "/api/v1/settings/dns-hunting", admin, map[string]any{"profile": map[string]any{"enabled": true, "not_a_detector": true}}); w.Code != http.StatusBadRequest {
 		t.Fatalf("unknown profile field: got %d: %s", w.Code, w.Body.String())
+	}
+	if w := doPutJSON(router, "/api/v1/settings/dns-hunting", admin, map[string]any{"profile": map[string]any{"answer_churn": true}}); w.Code != http.StatusBadRequest {
+		t.Fatalf("unimplemented detector must not be accepted as a no-op: got %d: %s", w.Code, w.Body.String())
 	}
 }
