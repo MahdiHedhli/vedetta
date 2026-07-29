@@ -19,6 +19,7 @@ import (
 // event's anomaly_score and tags in place.
 type Enricher struct {
 	stateMu       sync.Mutex
+	advancedDNS   AdvancedDNSHuntingProfile
 	Beacon        *BeaconDetector
 	ThreatDB      *threatintel.ThreatIntelDB
 	Rebinding     *RebindingDetector
@@ -150,12 +151,34 @@ func SelfDomainsFromURLs(raw ...string) []string {
 // (can be nil if feeds haven't loaded yet).
 func NewEnricher(threatDB *threatintel.ThreatIntelDB) *Enricher {
 	return &Enricher{
+		advancedDNS:  DefaultAdvancedDNSHuntingProfile(),
 		Beacon:       NewBeaconDetector(),
 		ThreatDB:     threatDB,
 		Rebinding:    NewRebindingDetector(24 * time.Hour),
 		Bypass:       NewBypassDetector(nil, []string{}, 1*time.Hour),
 		FirewallSeen: NewFirewallFirstSeen(24 * time.Hour),
 	}
+}
+
+// SetAdvancedDNSHuntingProfile updates the live behavioural-detection policy.
+// It is safe while ingestion is active; the next event observes the new policy.
+func (e *Enricher) SetAdvancedDNSHuntingProfile(profile AdvancedDNSHuntingProfile) {
+	if e == nil {
+		return
+	}
+	e.stateMu.Lock()
+	e.advancedDNS = profile
+	e.stateMu.Unlock()
+}
+
+// AdvancedDNSHuntingProfile returns a point-in-time copy of the live policy.
+func (e *Enricher) AdvancedDNSHuntingProfile() AdvancedDNSHuntingProfile {
+	if e == nil {
+		return DefaultAdvancedDNSHuntingProfile()
+	}
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	return e.advancedDNS
 }
 
 // EnsureDefaults fills optional detector dependencies for callers that build an
@@ -323,7 +346,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	isPrivatePTR := isPrivateReverseDNS(event.Domain)
 
 	// 1. DGA detection on the domain
-	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel {
+	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel && e.advancedDNS.DetectorEnabled("dga_nxdomain") {
 		dgaResult := ScoreDGA(event.Domain)
 		if dgaResult.IsDGA {
 			event.Tags = appendUnique(event.Tags, "dga_candidate")
@@ -344,7 +367,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 2. DNS tunnel detection
-	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel {
+	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel && e.advancedDNS.DetectorEnabled("tunneling") {
 		tunnelResult := ScoreTunnel(event.Domain)
 		if tunnelResult.IsTunnel {
 			event.Tags = appendUnique(event.Tags, "dns_tunnel")
@@ -368,7 +391,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 3. Beaconing detection
-	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBeaconing {
+	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBeaconing && e.advancedDNS.DetectorEnabled("beaconing") {
 		beaconResult := e.Beacon.RecordAndScore(event.SourceHash, event.Domain, event.Timestamp)
 		if beaconResult.IsBeaconing {
 			event.Tags = appendUnique(event.Tags, "beaconing")
@@ -389,7 +412,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 4. DNS rebinding detection
-	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipNetworkHeuristics {
+	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipNetworkHeuristics && e.advancedDNS.DetectorEnabled("rebinding") {
 		rebindResult := e.Rebinding.Check(event.Domain, event.ResolvedIP)
 		if rebindResult != nil && rebindResult.IsRebinding {
 			event.Tags = appendUnique(event.Tags, "dns_rebinding")
@@ -428,7 +451,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	// bypassing the local network DNS (Pi-hole, router, etc.).
 	// This is a strong signal of IoT devices with hardcoded resolvers, or
 	// compromised devices trying to evade DNS-level security controls.
-	if event.Domain != "" && e.Bypass != nil && !skipNetworkHeuristics {
+	if event.Domain != "" && e.Bypass != nil && !skipNetworkHeuristics && e.advancedDNS.DetectorEnabled("resolver_bypass") {
 		// Check for hardcoded public DNS resolver IPs
 		if event.ResolvedIP != "" {
 			resolverIP, provider := e.Bypass.DetectPublicResolverBypass(event.ResolvedIP)

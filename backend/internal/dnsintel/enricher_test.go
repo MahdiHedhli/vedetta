@@ -21,7 +21,9 @@ func TestEnrichDoesNotPromoteSubthresholdDGA(t *testing.T) {
 		Timestamp:  time.Now().UTC(),
 	}
 
-	NewEnricher(nil).Enrich(&event)
+	e := NewEnricher(nil)
+	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	e.Enrich(&event)
 
 	if event.AnomalyScore != 0 {
 		t.Fatalf("expected subthreshold DGA heuristic to stay out of threat view, got %.2f", event.AnomalyScore)
@@ -64,7 +66,9 @@ func TestEnrichPromotesStrongDGA(t *testing.T) {
 		Timestamp:  time.Now().UTC(),
 	}
 
-	NewEnricher(nil).Enrich(&event)
+	e := NewEnricher(nil)
+	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	e.Enrich(&event)
 
 	if event.AnomalyScore == 0 {
 		t.Fatal("expected strong DGA to raise anomaly score")
@@ -130,6 +134,7 @@ func TestEnrich_SelfDomain_NotFlaggedBeaconing(t *testing.T) {
 	}
 
 	self := NewEnricher(nil)
+	self.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, Beaconing: true})
 	self.SelfDomains = []string{" FEED.VEDETTAS.COM. "}
 	got := drive(self, "FEED.VEDETTAS.COM.")
 	if hasTag(got.Tags, "beaconing") {
@@ -139,7 +144,9 @@ func TestEnrich_SelfDomain_NotFlaggedBeaconing(t *testing.T) {
 		t.Fatalf("expected vedetta_self tag, got %v", got.Tags)
 	}
 
-	ctrl := drive(NewEnricher(nil), "feed.vedettas.com")
+	ctrlEnricher := NewEnricher(nil)
+	ctrlEnricher.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, Beaconing: true})
+	ctrl := drive(ctrlEnricher, "feed.vedettas.com")
 	if !hasTag(ctrl.Tags, "beaconing") {
 		t.Fatalf("control (no SelfDomains) should flag a perfect 900s cadence as beaconing, got %v", ctrl.Tags)
 	}
@@ -172,13 +179,16 @@ func TestEnrich_ContextExemptionsStillRunNetworkDetectors(t *testing.T) {
 	}
 
 	self := NewEnricher(nil)
+	self.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, Rebinding: true})
 	self.SelfDomains = []string{"feed.vedettas.com"}
 	assertRebinding(t, self, "feed.vedettas.com")
 
 	knownGood := NewEnricher(nil)
+	knownGood.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, Rebinding: true})
 	assertRebinding(t, knownGood, "plex.tv")
 
 	bypass := NewEnricher(nil)
+	bypass.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, ResolverBypass: true})
 	bypass.SelfDomains = []string{"feed.vedettas.com"}
 	bypass.Bypass = NewBypassDetector(nil, nil, time.Hour)
 	event := models.Event{
@@ -188,6 +198,17 @@ func TestEnrich_ContextExemptionsStillRunNetworkDetectors(t *testing.T) {
 	bypass.Enrich(&event)
 	if !hasTag(event.Tags, "dns_bypass") {
 		t.Fatalf("self-domain context suppressed DNS bypass: %v", event.Tags)
+	}
+}
+
+func TestEnrich_DefaultAdvancedDNSProfileIsQuiet(t *testing.T) {
+	event := models.Event{
+		EventType: "dns_query", SourceHash: "quiet-default", Domain: "r7t2x9k4m1n8.biz",
+		QueryType: "A", Timestamp: time.Now().UTC(),
+	}
+	NewEnricher(nil).Enrich(&event)
+	if hasTag(event.Tags, "dga_candidate") || event.AnomalyScore != 0 {
+		t.Fatalf("default profile emitted behavioural DNS finding: tags=%v score=%.2f", event.Tags, event.AnomalyScore)
 	}
 }
 

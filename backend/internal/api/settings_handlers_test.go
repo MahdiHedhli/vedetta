@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/vedetta-network/vedetta/backend/internal/auth"
+	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 )
 
 type telemetrySettingResp struct {
@@ -170,5 +171,68 @@ func TestTelemetrySetting_PutRequiresBody(t *testing.T) {
 
 	if w := doPutJSON(router, "/api/v1/settings/telemetry", admin, map[string]any{}); w.Code != http.StatusBadRequest {
 		t.Fatalf("PUT with empty body: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdvancedDNSHunting_DefaultIsQuietAndPersistedProfileAppliesLive(t *testing.T) {
+	srv, db := setupTestServer(t)
+	srv.Enricher = dnsintel.NewEnricher(nil)
+	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
+	read := createTestToken(t, db, auth.ScopeRead, "")
+
+	w := doGet(router, "/api/v1/settings/dns-hunting", read)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET default profile: got %d: %s", w.Code, w.Body.String())
+	}
+	var initial struct {
+		Profile dnsintel.AdvancedDNSHuntingProfile `json:"profile"`
+		Source  string                             `json:"source"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&initial); err != nil {
+		t.Fatalf("decode default profile: %v", err)
+	}
+	if initial.Source != "default" || initial.Profile.Enabled {
+		t.Fatalf("default profile must be quiet, got %+v", initial)
+	}
+
+	w = doPutJSON(router, "/api/v1/settings/dns-hunting", admin, map[string]any{
+		"profile": map[string]any{
+			"enabled": true, "tunneling": true, "beaconing": true,
+			"dga_nxdomain": true, "answer_churn": false,
+			"resolver_bypass": true, "rebinding": true, "internal_recon": false,
+		},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT profile: got %d: %s", w.Code, w.Body.String())
+	}
+	if got := srv.Enricher.AdvancedDNSHuntingProfile(); !got.Enabled || !got.Tunneling || !got.DGANXDomain || !got.ResolverBypass {
+		t.Fatalf("live enricher did not receive persisted profile: %+v", got)
+	}
+
+	w = doGet(router, "/api/v1/settings/dns-hunting", read)
+	var persisted struct {
+		Profile dnsintel.AdvancedDNSHuntingProfile `json:"profile"`
+		Source  string                             `json:"source"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&persisted); err != nil {
+		t.Fatalf("decode persisted profile: %v", err)
+	}
+	if persisted.Source != "setting" || !persisted.Profile.Enabled || !persisted.Profile.Beaconing {
+		t.Fatalf("persisted profile mismatch: %+v", persisted)
+	}
+}
+
+func TestAdvancedDNSHunting_PutRequiresAdminAndRejectsUnknownFields(t *testing.T) {
+	srv, db := setupTestServer(t)
+	router := NewRouter(srv)
+	admin := createTestToken(t, db, auth.ScopeAdmin, "")
+	read := createTestToken(t, db, auth.ScopeRead, "")
+
+	if w := doPutJSON(router, "/api/v1/settings/dns-hunting", read, map[string]any{"profile": map[string]any{"enabled": true}}); w.Code != http.StatusForbidden {
+		t.Fatalf("read token PUT: got %d: %s", w.Code, w.Body.String())
+	}
+	if w := doPutJSON(router, "/api/v1/settings/dns-hunting", admin, map[string]any{"profile": map[string]any{"enabled": true, "not_a_detector": true}}); w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown profile field: got %d: %s", w.Code, w.Body.String())
 	}
 }

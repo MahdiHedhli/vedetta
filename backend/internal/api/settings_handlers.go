@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/vedetta-network/vedetta/backend/internal/dnsintel"
 )
 
 // MachineCredentialState reports the compose-provisioned machine-credential
@@ -30,6 +32,10 @@ func MachineCredentialState() (ingestConfigured, readConfigured, collision bool)
 // opt-in toggle (issue #37). Kept in one place so the GET/PUT handlers and any
 // future reader agree on it.
 const settingKeyTelemetryOptIn = "telemetry_opt_in"
+
+// settingKeyAdvancedDNSHunting stores the operator-controlled behavioural DNS
+// hunting profile. Exact threat-intelligence matching does not consult it.
+const settingKeyAdvancedDNSHunting = "advanced_dns_hunting"
 
 // envTelemetryOptIn returns the telemetry opt-in value implied by the
 // VEDETTA_TELEMETRY_OPTIN environment variable. Telemetry is ON by default
@@ -109,5 +115,76 @@ func (s *Server) handlePutTelemetrySetting(w http.ResponseWriter, r *http.Reques
 		"opt_in":    optIn,
 		"source":    source,
 		"effective": effective,
+	})
+}
+
+// advancedDNSHuntingState returns the persisted profile when present and the
+// intentionally-quiet default otherwise. Profiles are JSON so new detector
+// toggles remain backwards compatible with existing installations.
+func (s *Server) advancedDNSHuntingState() (dnsintel.AdvancedDNSHuntingProfile, string) {
+	profile := dnsintel.DefaultAdvancedDNSHuntingProfile()
+	if s.DB == nil {
+		return profile, "default"
+	}
+	raw, found, err := s.DB.GetSetting(settingKeyAdvancedDNSHunting)
+	if err != nil || !found {
+		return profile, "default"
+	}
+	if err := json.Unmarshal([]byte(raw), &profile); err != nil {
+		return dnsintel.DefaultAdvancedDNSHuntingProfile(), "default"
+	}
+	return profile, "setting"
+}
+
+// handleGetDNSHuntingSetting reports the live advanced-DNS hunting profile.
+// GET /api/v1/settings/dns-hunting (read scope).
+func (s *Server) handleGetDNSHuntingSetting(w http.ResponseWriter, r *http.Request) {
+	profile, source := s.advancedDNSHuntingState()
+	if s.Enricher != nil {
+		profile = s.Enricher.AdvancedDNSHuntingProfile()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"profile": profile,
+		"source":  source,
+	})
+}
+
+// handlePutDNSHuntingSetting persists and immediately applies the behavioural
+// DNS hunting profile. It is intentionally an admin-only setting: changing it
+// changes which local network behaviour can create findings.
+// PUT /api/v1/settings/dns-hunting body: {"profile": {...}}.
+func (s *Server) handlePutDNSHuntingSetting(w http.ResponseWriter, r *http.Request) {
+	if s.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database not available"})
+		return
+	}
+	var body struct {
+		Profile *dnsintel.AdvancedDNSHuntingProfile `json:"profile"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 2048))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil || body.Profile == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "profile required"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		return
+	}
+	raw, err := json.Marshal(*body.Profile)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid profile"})
+		return
+	}
+	if err := s.DB.SetSetting(settingKeyAdvancedDNSHunting, string(raw)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to persist setting"})
+		return
+	}
+	if s.Enricher != nil {
+		s.Enricher.SetAdvancedDNSHuntingProfile(*body.Profile)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"profile": *body.Profile,
+		"source":  "setting",
 	})
 }

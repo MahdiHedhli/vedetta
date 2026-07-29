@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -185,6 +186,19 @@ func main() {
 		}
 		return db.IsDomainWhitelisted(domain)
 	})
+	// Advanced DNS hunting is opt-in and persisted per Core. Load it before any
+	// collectors start so behavioural detectors never briefly run with a stale
+	// policy after restart. Threat-intelligence matching remains always active.
+	if raw, found, err := db.GetSetting("advanced_dns_hunting"); err != nil {
+		log.Printf("WARNING: failed to read advanced DNS hunting profile: %v", err)
+	} else if found {
+		var profile dnsintel.AdvancedDNSHuntingProfile
+		if err := json.Unmarshal([]byte(raw), &profile); err != nil {
+			log.Printf("WARNING: invalid persisted advanced DNS hunting profile; using defaults: %v", err)
+		} else {
+			enricher.SetAdvancedDNSHuntingProfile(profile)
+		}
+	}
 	// Vedetta polls its own community feed/telemetry host on a fixed timer, which would
 	// otherwise trip the beaconing/C2 detector on the Core host's own DNS. Exclude those
 	// hosts from the behavioral detectors, derived from config so a self-hosted feed

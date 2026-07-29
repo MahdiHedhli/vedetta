@@ -113,13 +113,18 @@ raw-event or finding counts. Events preserve the source-reported enforcement
 semantics as `blocked`, `allowed`, or `observed`; absent enforcement is not called
 allowed.
 
-The backend includes detectors for:
+The backend includes an **Advanced DNS Hunting** profile, disabled by default,
+for the following behavioural detectors:
 
 - DGA-like domain patterns
 - beaconing behavior
 - DNS tunneling patterns
 - DNS rebinding
 - DNS bypass and public-resolver use
+
+Operators enable the master profile and individual detectors from Settings. The
+profile changes detection only: it never blocks DNS traffic. Exact threat-intelligence
+and IPS evidence are outside the profile and remain evaluated regardless of its state.
 
 High-confidence IOC/IPS evidence is evaluated before allowlist or device context.
 The community snapshot is consumed every 15 minutes by default, but community

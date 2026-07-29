@@ -14,7 +14,7 @@ _Animated tour shown with synthetic documentation-only demo data._
 
 - **Vedetta Core** runs in Docker Compose and provides the API, dashboard, local storage, and ingest pipeline.
 - **Vedetta Sensor** runs natively on the network you want to inspect and handles active device discovery, passive ARP/DHCP/mDNS/SSDP visibility, and passive DNS capture.
-- **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
+- **Advanced DNS Hunting** is an off-by-default, per-Core profile for behavioural DGA, beaconing, tunneling, rebinding, and public-resolver-bypass detections. Exact threat-intelligence matches remain active independently.
 - **Threat enrichment** is local-first, backed by curated feeds, and can consume the advisory Vedetta community snapshot.
 - **Asset-centered findings** turn repeated raw signals into durable, device-linked, explainable alerts with lifecycle, outcome, evidence, and recommended action.
 - **EOL Router & Camera Detection** — Detects specific end-of-life and vulnerable router and camera models listed in the [FBI IC3 FLASH 2026-03-12 advisory](https://www.ic3.gov/CSA/2026/260312.pdf) (AVrecon malware / SocksEscort) and applies elevated risk scoring when they exhibit suspicious behavior.

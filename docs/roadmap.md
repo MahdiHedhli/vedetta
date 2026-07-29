@@ -1,6 +1,6 @@
 # Vedetta Roadmap
 
-> Last updated: 2026-07-12
+> Last updated: 2026-07-29
 > Status: Public beta / active development
 
 ## What Vedetta is today
@@ -16,7 +16,7 @@ Vedetta is not a Pi-hole product, and it is not yet a plug-and-play consumer app
 
 - **Vedetta Core** runs in Docker Compose and provides the API, dashboard, local storage, and ingestion pipeline.
 - **Vedetta Sensor** runs natively on the network you want to watch, with install paths for macOS, Linux, and Windows. On macOS/Linux it combines nmap-based discovery with passive DNS, ARP, DHCP, mDNS, and SSDP/UPnP visibility; the Windows sensor is driver-free and host-scoped in v1 (DNS via ETW, native ICMP/ARP discovery, no Npcap/nmap).
-- **DNS detections** include DGA, beaconing, tunneling, rebinding, and DNS bypass scoring.
+- **Advanced DNS Hunting** provides off-by-default per-detector controls for DGA, beaconing, tunneling, rebinding, and DNS bypass scoring. Exact threat-intelligence matches stay active independently.
 - **Threat enrichment** uses curated local intelligence plus an advisory community snapshot; either cloud-facing control can be disabled without losing local detection.
 - **EOL Router & Camera Risk Detection** — Detects specific end-of-life and vulnerable router and camera models listed in the [FBI IC3 FLASH 2026-03-12 advisory](https://www.ic3.gov/CSA/2026/260312.pdf) (AVrecon / SocksEscort) and applies elevated risk scoring when they exhibit suspicious behavior.
 - **Optional DNS sources** include Pi-hole and AdGuard Home pollers.
@@ -53,6 +53,7 @@ against the [project constitution](../.specify/memory/constitution.md).
 - Install and onboarding polish for public beta users
 - Live SNR / operational validation of the newly implemented UniFi source on real deployments before it is labelled "supported"
 - Better public docs that separate shipped features from roadmap items
+- DNS Detection Quality: durable device/domain baselines, DGA/NXDOMAIN correlation, DNS collection-health detail, and CDN-aware answer-churn analysis
 
 ### Planned next
 
