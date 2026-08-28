@@ -7,7 +7,7 @@ import (
 
 func TestLoadQTFYAdvisoryImportsExactCurrentIndicators(t *testing.T) {
 	db := testThreatDB(t)
-	loaded, err := loadQTFYAdvisoryAt(db, time.Date(2026, time.August, 28, 0, 0, 0, 0, time.UTC))
+	loaded, err := loadQTFYAdvisoryAt(db)
 	if err != nil {
 		t.Fatalf("load QTFY advisory: %v", err)
 	}
@@ -38,10 +38,10 @@ func TestLoadQTFYAdvisoryReplacesOnlyItsOwnSnapshot(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("seed unrelated indicator: %v", err)
 	}
-	if _, err := loadQTFYAdvisoryAt(db, time.Date(2026, time.August, 28, 0, 0, 0, 0, time.UTC)); err != nil {
+	if _, err := loadQTFYAdvisoryAt(db); err != nil {
 		t.Fatalf("first load: %v", err)
 	}
-	if _, err := loadQTFYAdvisoryAt(db, time.Date(2026, time.August, 29, 0, 0, 0, 0, time.UTC)); err != nil {
+	if _, err := loadQTFYAdvisoryAt(db); err != nil {
 		t.Fatalf("replacement load: %v", err)
 	}
 	if got := db.Lookup("unrelated.example"); !got.Found {

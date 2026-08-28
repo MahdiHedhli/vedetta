@@ -23,7 +23,7 @@ type qtfyAdvisoryEntry struct {
 	value          string
 	kind           string
 	firstSeen      string
-	lastSeen       string // ISO date, or Present when current at publication time.
+	lastSeen       string // Source value retained for audit context; not used as a local freshness timestamp.
 	classification string
 }
 
@@ -65,12 +65,15 @@ var qtfyAdvisoryEntries = []qtfyAdvisoryEntry{
 
 // LoadQTFYAdvisory imports the current QTFY snapshot from JCSA-20260826-01.
 // ReplaceSource ensures upgrades neither accumulate withdrawn entries nor
-// overwrite indicators from unrelated sources.
+// overwrite indicators from unrelated sources. The source contains future
+// "last seen" values, so all local entries are deliberately anchored to the
+// publication date and expire after 30 days unless this reviewed snapshot is
+// refreshed in a later release.
 func LoadQTFYAdvisory(db *ThreatIntelDB) (int, error) {
-	return loadQTFYAdvisoryAt(db, time.Now().UTC())
+	return loadQTFYAdvisoryAt(db)
 }
 
-func loadQTFYAdvisoryAt(db *ThreatIntelDB, now time.Time) (int, error) {
+func loadQTFYAdvisoryAt(db *ThreatIntelDB) (int, error) {
 	if db == nil {
 		return 0, fmt.Errorf("qtfy advisory: threat intel database is required")
 	}
@@ -85,17 +88,6 @@ func loadQTFYAdvisoryAt(db *ThreatIntelDB, now time.Time) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("qtfy advisory: %s has invalid first-seen date: %w", entry.value, err)
 		}
-		lastSeen := publishedAt
-		ttlHours := qtfyPresentTTLHours
-		if entry.lastSeen != "Present" {
-			lastSeen, err = time.Parse("2006-01-02", entry.lastSeen)
-			if err != nil {
-				return 0, fmt.Errorf("qtfy advisory: %s has invalid last-seen date: %w", entry.value, err)
-			}
-			// A dated indicator remains current through the stated date, then becomes
-			// stale rather than silently surviving as a permanent blocklist entry.
-			ttlHours = 24
-		}
 		indicators = append(indicators, Indicator{
 			Value:      entry.value,
 			Type:       entry.kind,
@@ -103,8 +95,8 @@ func loadQTFYAdvisoryAt(db *ThreatIntelDB, now time.Time) (int, error) {
 			Confidence: 0.90,
 			Tags:       []string{"advisory", "qtfy", entry.classification},
 			FirstSeen:  firstSeen.UTC(),
-			LastSeen:   lastSeen.UTC(),
-			TTLHours:   ttlHours,
+			LastSeen:   publishedAt.UTC(),
+			TTLHours:   qtfyPresentTTLHours,
 		})
 	}
 	return db.ReplaceSource(qtfyAdvisorySource, indicators)
