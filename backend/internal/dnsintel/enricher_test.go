@@ -21,7 +21,9 @@ func TestEnrichDoesNotPromoteSubthresholdDGA(t *testing.T) {
 		Timestamp:  time.Now().UTC(),
 	}
 
-	NewEnricher(nil).Enrich(&event)
+	e := NewEnricher(nil)
+	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	e.Enrich(&event)
 
 	if event.AnomalyScore != 0 {
 		t.Fatalf("expected subthreshold DGA heuristic to stay out of threat view, got %.2f", event.AnomalyScore)
@@ -55,25 +57,89 @@ func TestEnrichDoesNotPromoteSubthresholdTunnelSignal(t *testing.T) {
 	}
 }
 
-func TestEnrichPromotesStrongDGA(t *testing.T) {
-	event := models.Event{
-		EventType:  "dns_query",
-		SourceHash: "source-a",
-		Domain:     "r7t2x9k4m1n8.biz",
-		QueryType:  "A",
-		Timestamp:  time.Now().UTC(),
+func TestEnrichPromotesDGAAfterNXDomainBurst(t *testing.T) {
+	e := NewEnricher(nil)
+	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	base := time.Now().UTC()
+	domains := []string{
+		"r7t2x9k4m1n8.biz",
+		"q8v3z7p2l6d9.biz",
+		"m4k8w1x7r2t6.biz",
+		"n9c3v6b1q8z4.biz",
+		"h7j2k9w5x3p8.biz",
 	}
 
-	NewEnricher(nil).Enrich(&event)
-
-	if event.AnomalyScore == 0 {
-		t.Fatal("expected strong DGA to raise anomaly score")
+	var event models.Event
+	for i, domain := range domains {
+		if !ScoreDGA(domain).IsDGA {
+			t.Fatalf("test fixture %q must be DGA-shaped", domain)
+		}
+		event = models.Event{
+			EventType: "dns_query", SourceHash: "source-a", Domain: domain, QueryType: "A",
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			Metadata:  `{"dns_direction":"response","dns_response_code":"NXDOMAIN"}`,
+		}
+		e.Enrich(&event)
+		if i < len(domains)-1 && hasTag(event.Tags, "dga_candidate") {
+			t.Fatalf("DGA fired before corroborating NXDOMAIN burst at observation %d: %v", i+1, event.Tags)
+		}
 	}
-	if !hasTag(event.Tags, "dga_candidate") {
-		t.Fatalf("expected dga_candidate tag, got %v", event.Tags)
+
+	if event.AnomalyScore == 0 || !hasTag(event.Tags, "dga_candidate") {
+		t.Fatalf("expected corroborated DGA finding, got score=%.2f tags=%v", event.AnomalyScore, event.Tags)
 	}
 	if event.ThreatDesc == "" {
 		t.Fatal("expected threat description")
+	}
+}
+
+func TestEnrichDGARequiresNXDomainResponse(t *testing.T) {
+	e := NewEnricher(nil)
+	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	base := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		event := models.Event{
+			EventType: "dns_query", SourceHash: "source-a", Domain: "r7t2x9k4m1n8.biz", QueryType: "A",
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			Metadata:  `{"dns_direction":"response","dns_response_code":"NOERROR"}`,
+		}
+		e.Enrich(&event)
+		if hasTag(event.Tags, "dga_candidate") {
+			t.Fatalf("non-NXDOMAIN response emitted a DGA finding: %v", event.Tags)
+		}
+	}
+}
+
+func TestNXDomainBurstStateRollsBackWithFailedEvent(t *testing.T) {
+	e := NewEnricher(nil)
+	e.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	base := time.Now().UTC()
+	domains := []string{
+		"r7t2x9k4m1n8.biz", "q8v3z7p2l6d9.biz", "m4k8w1x7r2t6.biz",
+		"n9c3v6b1q8z4.biz", "h7j2k9w5x3p8.biz",
+	}
+	makeEvent := func(i int) models.Event {
+		return models.Event{
+			EventType: "dns_query", SourceHash: "rollback-source", Domain: domains[i], QueryType: "A",
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			Metadata:  `{"dns_direction":"response","dns_response_code":"NXDOMAIN"}`,
+		}
+	}
+
+	failed := makeEvent(0)
+	enrich, _, rollback := e.BeginEventState(failed)
+	enrich(&failed)
+	rollback()
+	if e.NXDomainBurstEntryCount() != 0 {
+		t.Fatalf("rolled-back event retained DGA/NXDOMAIN state: %d entries", e.NXDomainBurstEntryCount())
+	}
+
+	for i := 1; i < len(domains); i++ {
+		event := makeEvent(i)
+		e.Enrich(&event)
+		if hasTag(event.Tags, "dga_candidate") {
+			t.Fatalf("rolled-back event counted toward DGA burst: tags=%v", event.Tags)
+		}
 	}
 }
 
@@ -130,6 +196,7 @@ func TestEnrich_SelfDomain_NotFlaggedBeaconing(t *testing.T) {
 	}
 
 	self := NewEnricher(nil)
+	self.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, Beaconing: true})
 	self.SelfDomains = []string{" FEED.VEDETTAS.COM. "}
 	got := drive(self, "FEED.VEDETTAS.COM.")
 	if hasTag(got.Tags, "beaconing") {
@@ -139,7 +206,9 @@ func TestEnrich_SelfDomain_NotFlaggedBeaconing(t *testing.T) {
 		t.Fatalf("expected vedetta_self tag, got %v", got.Tags)
 	}
 
-	ctrl := drive(NewEnricher(nil), "feed.vedettas.com")
+	ctrlEnricher := NewEnricher(nil)
+	ctrlEnricher.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, Beaconing: true})
+	ctrl := drive(ctrlEnricher, "feed.vedettas.com")
 	if !hasTag(ctrl.Tags, "beaconing") {
 		t.Fatalf("control (no SelfDomains) should flag a perfect 900s cadence as beaconing, got %v", ctrl.Tags)
 	}
@@ -172,13 +241,16 @@ func TestEnrich_ContextExemptionsStillRunNetworkDetectors(t *testing.T) {
 	}
 
 	self := NewEnricher(nil)
+	self.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, Rebinding: true})
 	self.SelfDomains = []string{"feed.vedettas.com"}
 	assertRebinding(t, self, "feed.vedettas.com")
 
 	knownGood := NewEnricher(nil)
+	knownGood.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, Rebinding: true})
 	assertRebinding(t, knownGood, "plex.tv")
 
 	bypass := NewEnricher(nil)
+	bypass.SetAdvancedDNSHuntingProfile(AdvancedDNSHuntingProfile{Enabled: true, ResolverBypass: true})
 	bypass.SelfDomains = []string{"feed.vedettas.com"}
 	bypass.Bypass = NewBypassDetector(nil, nil, time.Hour)
 	event := models.Event{
@@ -188,6 +260,17 @@ func TestEnrich_ContextExemptionsStillRunNetworkDetectors(t *testing.T) {
 	bypass.Enrich(&event)
 	if !hasTag(event.Tags, "dns_bypass") {
 		t.Fatalf("self-domain context suppressed DNS bypass: %v", event.Tags)
+	}
+}
+
+func TestEnrich_DefaultAdvancedDNSProfileIsQuiet(t *testing.T) {
+	event := models.Event{
+		EventType: "dns_query", SourceHash: "quiet-default", Domain: "r7t2x9k4m1n8.biz",
+		QueryType: "A", Timestamp: time.Now().UTC(),
+	}
+	NewEnricher(nil).Enrich(&event)
+	if hasTag(event.Tags, "dga_candidate") || event.AnomalyScore != 0 {
+		t.Fatalf("default profile emitted behavioural DNS finding: tags=%v score=%.2f", event.Tags, event.AnomalyScore)
 	}
 }
 

@@ -175,7 +175,9 @@ func TestProcessPollerEventsFeedsStatefulDetectorsChronologically(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	processor := processing.NewProcessor(db, dnsintel.NewEnricher(nil))
+	enricher := dnsintel.NewEnricher(nil)
+	enricher.SetAdvancedDNSHuntingProfile(dnsintel.AdvancedDNSHuntingProfile{Enabled: true, Rebinding: true})
+	processor := processing.NewProcessor(db, enricher)
 	base := time.Now().UTC().Add(-time.Minute)
 
 	// AdGuard and Pi-hole commonly return newest-first. If that order reached the

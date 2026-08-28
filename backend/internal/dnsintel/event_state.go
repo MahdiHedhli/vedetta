@@ -13,6 +13,10 @@ type detectorStateSnapshot struct {
 	beaconKey      beaconKey
 	beaconValue    *beaconEntry
 	beaconExisted  bool
+	nxdomain       *NXDomainBurstDetector
+	nxdomainKey    string
+	nxdomainValue  *nxdomainEntry
+	nxdomainFound  bool
 	rebinding      *RebindingDetector
 	rebindingKey   string
 	rebindingValue *domainHistory
@@ -58,6 +62,20 @@ func snapshotDetectorState(e *Enricher, event models.Event) detectorStateSnapsho
 		}
 		e.Beacon.mu.Unlock()
 	}
+	if e.NXDomainBurst != nil && event.SourceHash != "" {
+		snapshot.nxdomain = e.NXDomainBurst
+		snapshot.nxdomainKey = event.SourceHash
+		e.NXDomainBurst.mu.Lock()
+		if value, ok := e.NXDomainBurst.entries[snapshot.nxdomainKey]; ok {
+			copyValue := &nxdomainEntry{
+				observations: append([]nxdomainObservation(nil), value.observations...),
+				lastSeen:     value.lastSeen,
+			}
+			snapshot.nxdomainFound = true
+			snapshot.nxdomainValue = copyValue
+		}
+		e.NXDomainBurst.mu.Unlock()
+	}
 	if e.Rebinding != nil && event.Domain != "" {
 		snapshot.rebinding = e.Rebinding
 		snapshot.rebindingKey = event.Domain
@@ -99,6 +117,15 @@ func (snapshot detectorStateSnapshot) restore() {
 			delete(snapshot.beacon.entries, snapshot.beaconKey)
 		}
 		snapshot.beacon.mu.Unlock()
+	}
+	if snapshot.nxdomain != nil {
+		snapshot.nxdomain.mu.Lock()
+		if snapshot.nxdomainFound {
+			snapshot.nxdomain.entries[snapshot.nxdomainKey] = snapshot.nxdomainValue
+		} else {
+			delete(snapshot.nxdomain.entries, snapshot.nxdomainKey)
+		}
+		snapshot.nxdomain.mu.Unlock()
 	}
 	if snapshot.rebinding != nil {
 		snapshot.rebinding.mu.Lock()

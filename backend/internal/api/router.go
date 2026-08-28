@@ -191,12 +191,14 @@ func NewRouter(srv *Server) http.Handler {
 			// Telemetry opt-in is a read-scope read: the telemetry daemon polls it
 			// each tick with its read token to decide whether to export (issue #37).
 			r.Get("/settings/telemetry", srv.handleGetTelemetrySetting)
+			r.Get("/settings/dns-hunting", srv.handleGetDNSHuntingSetting)
 		})
 
 		// Persisting the telemetry opt-in is an admin action (dashboard control).
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireStrictAdmin(srv.DB))
 			r.Put("/settings/telemetry", srv.handlePutTelemetrySetting)
+			r.Put("/settings/dns-hunting", srv.handlePutDNSHuntingSetting)
 		})
 
 		// Ingest endpoint for the Fluent Bit log collector (Pi-hole DNS + firewall syslog).

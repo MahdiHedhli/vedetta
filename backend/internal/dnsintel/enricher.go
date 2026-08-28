@@ -19,7 +19,9 @@ import (
 // event's anomaly_score and tags in place.
 type Enricher struct {
 	stateMu       sync.Mutex
+	advancedDNS   AdvancedDNSHuntingProfile
 	Beacon        *BeaconDetector
+	NXDomainBurst *NXDomainBurstDetector
 	ThreatDB      *threatintel.ThreatIntelDB
 	Rebinding     *RebindingDetector
 	Bypass        *BypassDetector
@@ -150,12 +152,35 @@ func SelfDomainsFromURLs(raw ...string) []string {
 // (can be nil if feeds haven't loaded yet).
 func NewEnricher(threatDB *threatintel.ThreatIntelDB) *Enricher {
 	return &Enricher{
-		Beacon:       NewBeaconDetector(),
-		ThreatDB:     threatDB,
-		Rebinding:    NewRebindingDetector(24 * time.Hour),
-		Bypass:       NewBypassDetector(nil, []string{}, 1*time.Hour),
-		FirewallSeen: NewFirewallFirstSeen(24 * time.Hour),
+		advancedDNS:   DefaultAdvancedDNSHuntingProfile(),
+		Beacon:        NewBeaconDetector(),
+		NXDomainBurst: NewNXDomainBurstDetector(),
+		ThreatDB:      threatDB,
+		Rebinding:     NewRebindingDetector(24 * time.Hour),
+		Bypass:        NewBypassDetector(nil, []string{}, 1*time.Hour),
+		FirewallSeen:  NewFirewallFirstSeen(24 * time.Hour),
 	}
+}
+
+// SetAdvancedDNSHuntingProfile updates the live behavioural-detection policy.
+// It is safe while ingestion is active; the next event observes the new policy.
+func (e *Enricher) SetAdvancedDNSHuntingProfile(profile AdvancedDNSHuntingProfile) {
+	if e == nil {
+		return
+	}
+	e.stateMu.Lock()
+	e.advancedDNS = profile
+	e.stateMu.Unlock()
+}
+
+// AdvancedDNSHuntingProfile returns a point-in-time copy of the live policy.
+func (e *Enricher) AdvancedDNSHuntingProfile() AdvancedDNSHuntingProfile {
+	if e == nil {
+		return DefaultAdvancedDNSHuntingProfile()
+	}
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	return e.advancedDNS
 }
 
 // EnsureDefaults fills optional detector dependencies for callers that build an
@@ -167,6 +192,9 @@ func (e *Enricher) EnsureDefaults() {
 	}
 	if e.Beacon == nil {
 		e.Beacon = NewBeaconDetector()
+	}
+	if e.NXDomainBurst == nil {
+		e.NXDomainBurst = NewNXDomainBurstDetector()
 	}
 	if e.Rebinding == nil {
 		e.Rebinding = NewRebindingDetector(24 * time.Hour)
@@ -208,10 +236,12 @@ type deviceContextMeta struct {
 }
 
 type dgaMeta struct {
-	Entropy     float64 `json:"entropy"`
-	BigramScore float64 `json:"bigram_score"`
-	Score       float64 `json:"score"`
-	Label       string  `json:"label"`
+	Entropy          float64 `json:"entropy"`
+	BigramScore      float64 `json:"bigram_score"`
+	Score            float64 `json:"score"`
+	Label            string  `json:"label"`
+	DistinctNXDomain int     `json:"distinct_nxdomain"`
+	WindowSeconds    int     `json:"window_seconds"`
 }
 
 type tunnelMeta struct {
@@ -322,29 +352,35 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	// random strings to the entropy/bigram scorers.
 	isPrivatePTR := isPrivateReverseDNS(event.Domain)
 
-	// 1. DGA detection on the domain
-	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel {
+	// 1. DGA/NXDOMAIN correlation. A random-looking name alone is too noisy for
+	// an SMB default posture. Require a short burst of distinct DGA-shaped names
+	// that receive NXDOMAIN responses from the same device before producing a
+	// behavioural finding.
+	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel && e.advancedDNS.DetectorEnabled("dga_nxdomain") {
 		dgaResult := ScoreDGA(event.Domain)
-		if dgaResult.IsDGA {
-			event.Tags = appendUnique(event.Tags, "dga_candidate")
-			meta.DGA = &dgaMeta{
-				Entropy:     dgaResult.Entropy,
-				BigramScore: dgaResult.BigramScore,
-				Score:       dgaResult.Score,
-				Label:       dgaResult.Label,
+		if dgaResult.IsDGA && isNXDomainResponse(event.Metadata) && e.NXDomainBurst != nil {
+			burst := e.NXDomainBurst.RecordCandidate(event.SourceHash, normalizeDNSName(event.Domain), event.Timestamp)
+			if burst.IsBurst {
+				event.Tags = appendUnique(event.Tags, "dga_candidate")
+				meta.DGA = &dgaMeta{
+					Entropy:          dgaResult.Entropy,
+					BigramScore:      dgaResult.BigramScore,
+					Score:            dgaResult.Score,
+					Label:            dgaResult.Label,
+					DistinctNXDomain: burst.DistinctDomains,
+					WindowSeconds:    int(burst.Window.Seconds()),
+				}
+				descriptions = append(descriptions, fmt.Sprintf(
+					"DGA/NXDOMAIN burst detected. This device requested %d distinct random-looking names that failed to resolve within %d minutes; the latest label \"%s\" has high entropy (%.1f bits) and unusual character patterns (bigram score %.0f%%).",
+					burst.DistinctDomains, int(burst.Window.Minutes()), dgaResult.Label, dgaResult.Entropy, dgaResult.BigramScore*100,
+				))
+				scores = append(scores, dgaResult.Score)
 			}
-			descriptions = append(descriptions, fmt.Sprintf(
-				"Domain looks machine-generated (DGA). The label \"%s\" has high entropy (%.1f bits) and unusual character patterns (bigram score %.0f%%), which is characteristic of malware that generates random domain names to contact command servers.",
-				dgaResult.Label, dgaResult.Entropy, dgaResult.BigramScore*100,
-			))
-		}
-		if dgaResult.IsDGA {
-			scores = append(scores, dgaResult.Score)
 		}
 	}
 
 	// 2. DNS tunnel detection
-	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel {
+	if event.Domain != "" && !isPrivatePTR && !skipDGATunnel && e.advancedDNS.DetectorEnabled("tunneling") {
 		tunnelResult := ScoreTunnel(event.Domain)
 		if tunnelResult.IsTunnel {
 			event.Tags = appendUnique(event.Tags, "dns_tunnel")
@@ -368,7 +404,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 3. Beaconing detection
-	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBeaconing {
+	if event.Domain != "" && event.SourceHash != "" && !isPrivatePTR && !skipBeaconing && e.advancedDNS.DetectorEnabled("beaconing") {
 		beaconResult := e.Beacon.RecordAndScore(event.SourceHash, event.Domain, event.Timestamp)
 		if beaconResult.IsBeaconing {
 			event.Tags = appendUnique(event.Tags, "beaconing")
@@ -389,7 +425,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	}
 
 	// 4. DNS rebinding detection
-	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipNetworkHeuristics {
+	if event.Domain != "" && event.ResolvedIP != "" && e.Rebinding != nil && !skipNetworkHeuristics && e.advancedDNS.DetectorEnabled("rebinding") {
 		rebindResult := e.Rebinding.Check(event.Domain, event.ResolvedIP)
 		if rebindResult != nil && rebindResult.IsRebinding {
 			event.Tags = appendUnique(event.Tags, "dns_rebinding")
@@ -428,7 +464,7 @@ func (e *Enricher) enrichEvent(event *models.Event) {
 	// bypassing the local network DNS (Pi-hole, router, etc.).
 	// This is a strong signal of IoT devices with hardcoded resolvers, or
 	// compromised devices trying to evade DNS-level security controls.
-	if event.Domain != "" && e.Bypass != nil && !skipNetworkHeuristics {
+	if event.Domain != "" && e.Bypass != nil && !skipNetworkHeuristics && e.advancedDNS.DetectorEnabled("resolver_bypass") {
 		// Check for hardcoded public DNS resolver IPs
 		if event.ResolvedIP != "" {
 			resolverIP, provider := e.Bypass.DetectPublicResolverBypass(event.ResolvedIP)
@@ -777,6 +813,9 @@ func (e *Enricher) StartEviction() func() {
 			case <-ticker.C:
 				e.stateMu.Lock()
 				e.Beacon.EvictStale(time.Now())
+				if e.NXDomainBurst != nil {
+					e.NXDomainBurst.EvictStale(time.Now())
+				}
 				if e.FirewallSeen != nil {
 					e.FirewallSeen.EvictStale(time.Now())
 				}
@@ -798,6 +837,26 @@ func (e *Enricher) BeaconEntryCount() int {
 		return 0
 	}
 	return e.Beacon.EntryCount()
+}
+
+// NXDomainBurstEntryCount reports active per-device DGA/NXDOMAIN windows for
+// health and tuning visibility. It never exposes queried names.
+func (e *Enricher) NXDomainBurstEntryCount() int {
+	if e == nil || e.NXDomainBurst == nil {
+		return 0
+	}
+	return e.NXDomainBurst.EntryCount()
+}
+
+func isNXDomainResponse(metadata string) bool {
+	var values map[string]any
+	if json.Unmarshal([]byte(metadata), &values) != nil {
+		return false
+	}
+	code, _ := values["dns_response_code"].(string)
+	direction, _ := values["dns_direction"].(string)
+	return strings.EqualFold(strings.TrimSpace(code), "NXDOMAIN") &&
+		(strings.TrimSpace(direction) == "" || strings.EqualFold(strings.TrimSpace(direction), "response"))
 }
 
 func appendUnique(slice []string, val string) []string {

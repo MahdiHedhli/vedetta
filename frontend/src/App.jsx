@@ -2274,6 +2274,9 @@ function ThreatsView({ events, stats, timeline, onRefresh, devices, suppressionR
                                           <div>Bigram anomaly: <span className="font-mono">{(meta.dga.bigram_score * 100).toFixed(0)}%</span></div>
                                           <div>Scored label: <span className="font-mono">{meta.dga.label}</span></div>
                                           <div>Composite: <span className="font-mono">{(meta.dga.score * 100).toFixed(0)}%</span></div>
+                                          {meta.dga.distinct_nxdomain > 0 && (
+                                            <div>Corroboration: <span className="font-mono">{meta.dga.distinct_nxdomain}</span> distinct NXDOMAIN names{meta.dga.window_seconds ? ` in ${Math.round(meta.dga.window_seconds / 60)}m` : ''}</div>
+                                          )}
                                         </div>
                                       </div>
                                     )}
@@ -4534,6 +4537,112 @@ function TelemetrySettings() {
   );
 }
 
+const DNS_HUNTING_DETECTORS = [
+  ['tunneling', 'DNS tunneling', 'Long or encoded labels, unusual subdomain churn, and TXT/NULL activity.'],
+  ['beaconing', 'Beaconing / low-and-slow C2', 'Regular per-device DNS callbacks after enough observations.'],
+  ['dga_nxdomain', 'DGA and NXDOMAIN bursts', 'Random-looking domains corroborated by repeated failed lookups.'],
+  ['resolver_bypass', 'Public resolver bypass', 'A device directly queries a known public resolver instead of the local resolver.'],
+  ['rebinding', 'DNS rebinding', 'A domain changes from a public to a private answer.'],
+];
+
+function AdvancedDNSHuntingSettings() {
+  const [state, setState] = useState(null); // { profile, source }
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const isAdmin = hasAdminToken();
+
+  const load = useCallback(() => {
+    setLoading(true);
+    authFetch('/api/v1/settings/dns-hunting')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('unavailable'))))
+      .then((data) => { setState(data); setError(''); })
+      .catch(() => setState(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async (profile) => {
+    setSaving(true);
+    setError('');
+    try {
+      const res = await authFetch('/api/v1/settings/dns-hunting', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to update DNS hunting settings');
+      setState(data);
+    } catch (e) {
+      setError(e.message || 'Failed to update DNS hunting settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const profile = state?.profile || {};
+  const disabled = !state || !isAdmin || loading || saving;
+  const update = (key, value) => save({ ...profile, [key]: value });
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-sm font-medium mb-1">Advanced DNS Hunting</h3>
+          <p className="text-xs text-gray-500 max-w-2xl">
+            Optional behavioural hunting for managed small-business networks. Disabled by default to avoid noisy alerts from normal IoT, update, and CDN traffic. These controls never disable exact threat-intelligence matches and never block DNS traffic.
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-label="Enable Advanced DNS Hunting"
+          aria-checked={profile.enabled === true}
+          disabled={disabled}
+          onClick={() => update('enabled', !profile.enabled)}
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${profile.enabled ? 'bg-amber-500' : 'bg-gray-600'}`}
+          title={!isAdmin ? 'Admin token required to change this setting' : (profile.enabled ? 'Disable behavioural DNS hunting' : 'Enable behavioural DNS hunting')}
+        >
+          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${profile.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+        </button>
+      </div>
+
+      <p className="text-[10px] text-gray-500 mt-2">
+        {loading ? 'Checking Core profile…' : state ? (profile.enabled ? 'Behavioural findings are enabled.' : 'Behavioural findings are paused; selections below are retained.') : 'Advanced DNS Hunting status unavailable.'}
+        {state?.source === 'default' ? ' · Default profile' : state ? ' · Saved profile' : ''}
+      </p>
+
+      <div className="mt-4 divide-y divide-gray-800 border-y border-gray-800">
+        {DNS_HUNTING_DETECTORS.map(([key, label, description]) => (
+          <label key={key} className="flex items-center justify-between gap-4 py-3 cursor-pointer">
+            <span>
+              <span className="block text-sm text-gray-300">{label}</span>
+              <span className="block text-xs text-gray-500 mt-0.5">{description}</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={profile[key] === true}
+              disabled={disabled}
+              onChange={(event) => update(key, event.target.checked)}
+              className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-amber-500 focus:ring-amber-500 disabled:opacity-40"
+            />
+          </label>
+        ))}
+      </div>
+
+      <p className="text-[10px] text-gray-500 mt-3">
+        Planned quality detectors: CDN-aware public-answer churn and Windows/internal-DNS reconnaissance. They are not exposed as switches until Core has the TTL, resolver, and network-context evidence needed to avoid misleading alerts.
+      </p>
+
+      {!isAdmin && <p className="text-[10px] text-amber-400/80 mt-2">An admin token is required to change this setting.</p>}
+      {!state && !loading && <p className="text-[10px] text-gray-500 mt-2"><button type="button" onClick={load} className="underline hover:text-gray-300">Retry</button> after authenticating if needed.</p>}
+      {error && <div className="text-xs text-red-400 bg-red-950/50 border border-red-900 rounded p-2 mt-2">{error}</div>}
+    </div>
+  );
+}
+
 function SettingsView() {
   return (
     <>
@@ -4543,6 +4652,7 @@ function SettingsView() {
       </div>
 
       <div className="space-y-4">
+		<AdvancedDNSHuntingSettings />
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-5">
           <h3 className="text-sm font-medium mb-1">Data Retention</h3>
           <p className="text-xs text-gray-500 mb-3">How long to keep event and device history</p>

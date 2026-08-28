@@ -159,7 +159,9 @@ func TestFailedPersistenceDoesNotConsumeRebindingOrFirewallFirstSeen(t *testing.
 	t.Run("rebinding", func(t *testing.T) {
 		db := newStatefulTestStore()
 		db.failures["private"] = 1
-		processor := newProcessorWithStore(db, dnsintel.NewEnricher(nil), WithClock(func() time.Time { return now }))
+		enricher := dnsintel.NewEnricher(nil)
+		enricher.SetAdvancedDNSHuntingProfile(dnsintel.AdvancedDNSHuntingProfile{Enabled: true, Rebinding: true})
+		processor := newProcessorWithStore(db, enricher, WithClock(func() time.Time { return now }))
 		public := models.Event{EventID: "public", Timestamp: now, EventType: "dns_query", SourceHash: "stable", Domain: "rebind.example", ResolvedIP: "198.51.100.20"}
 		if result := processor.ProcessBatch(context.Background(), []IngressEnvelope{{Event: public, Origin: "sensor_dns"}})[0]; result.Err != nil || !result.Inserted {
 			t.Fatalf("seed public result = %+v", result)
@@ -309,11 +311,17 @@ func TestCommunityReasonCannotEraseGenuineCoreHeuristicFinding(t *testing.T) {
 	lookup := multiLookup{values: map[string][]threatintel.LookupResult{
 		"asdfjklqwerty.com": {{Found: true, Indicator: community, Confidence: 0.95}},
 	}}
-	processor := newProcessorWithStore(db, dnsintel.NewEnricher(nil),
+	enricher := dnsintel.NewEnricher(nil)
+	enricher.SetAdvancedDNSHuntingProfile(dnsintel.AdvancedDNSHuntingProfile{Enabled: true, DGANXDomain: true})
+	// Isolate the community-vs-Core evidence contract from the burst threshold;
+	// dedicated dnsintel tests cover the production five-domain correlation.
+	enricher.NXDomainBurst.MinDistinctDomains = 1
+	processor := newProcessorWithStore(db, enricher,
 		WithThreatLookup(lookup), WithClock(func() time.Time { return now }))
 	result := processor.ProcessBatch(context.Background(), []IngressEnvelope{{Event: models.Event{
 		EventID: "community-reason-collision", Timestamp: now, EventType: "dns_query",
 		SourceHash: "stable", Domain: "asdfjklqwerty.com",
+		Metadata: `{"dns_direction":"response","dns_response_code":"NXDOMAIN"}`,
 	}}})[0]
 	if result.Err != nil {
 		t.Fatal(result.Err)
