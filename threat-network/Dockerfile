@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 # mattn/go-sqlite3 requires CGO (matches the Core backend's SQLite driver).
 RUN apk --no-cache add gcc musl-dev
