@@ -174,6 +174,10 @@ func main() {
 	threatDB, err := threatintel.NewThreatIntelDB(db.DB)
 	if err != nil {
 		log.Printf("Threat intel DB init failed (non-fatal): %v", err)
+	} else if imported, loadErr := threatintel.LoadQTFYAdvisory(threatDB); loadErr != nil {
+		log.Printf("QTFY advisory indicator load failed (non-fatal): %v", loadErr)
+	} else {
+		log.Printf("Threat intel: loaded %d current QTFY advisory indicators", imported)
 	}
 
 	// Wire whitelist checking into the enricher for early noise suppression.
