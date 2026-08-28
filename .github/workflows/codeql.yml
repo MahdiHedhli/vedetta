@@ -50,7 +50,7 @@ jobs:
       # init prepends CodeQL's tracing wrapper to PATH; running setup-go later
       # replaces that wrapper and produces an empty Go database.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -71,6 +71,6 @@ jobs:
           (cd sensor && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...)
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           category: /language:${{ matrix.language }}
