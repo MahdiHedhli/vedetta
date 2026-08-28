@@ -61,7 +61,7 @@ func TestCorpusPublishRejectsStoredCrossProfilePredecessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	baseVariantID := base.Variants[0].VariantID
-	base, err = db.PublishCorpusProfile(context.Background(), base.ProfileID, corpusPublishRequest(0),
+	_, err = db.PublishCorpusProfile(context.Background(), base.ProfileID, corpusPublishRequest(0),
 		CorpusMutation{ExpectedETag: base.ETag})
 	if err != nil {
 		t.Fatal(err)

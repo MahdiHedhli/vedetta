@@ -411,7 +411,7 @@ ok grep -Fq 'run: bash scripts/run-trusted-pr-sanitation.sh' "$WORKFLOW" "truste
 # alternate YAML spellings such as quoted keys, flow mappings, anchors, and
 # aliases that text-only step counts cannot interpret safely.
 is "$(file_sha256 "$WORKFLOW")" \
-    "2d54052e13e715e6353ca9cee405a41e88c6b4f5dbe94e69ff4558a806953f44" \
+    "dfffa7eaacf6ebf20b00d34b07868bf12a32d1768923762c237eab8ed5f2ce40" \
     "trusted workflow matches the exact reviewed definition"
 ok workflow_has_no_writable_permissions "$WORKFLOW" "trusted workflow grants no writable permission"
 is "$(grep -Ec '^[[:space:]]*(-[[:space:]]*)?uses:' "$WORKFLOW")" \

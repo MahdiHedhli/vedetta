@@ -237,13 +237,22 @@ func signAndPost(t *testing.T, ts *httptest.Server, id, key, nonce string, body 
 }
 
 func batchBody(batchID string) []byte {
+	// Consensus intentionally considers only a trailing window. Keep this fixture
+	// inside that window instead of pinning it to the date the test was written.
+	bucket := time.Now().UTC().Truncate(time.Hour)
+	generatedAt := bucket.Add(15 * time.Minute)
 	return []byte(fmt.Sprintf(`{
-      "schema_version":1,"batch_id":%q,"generated_at":"2026-07-03T14:15:02Z",
-      "window_start":"2026-07-03T14:00:00Z","window_end":"2026-07-03T15:00:00Z","signals":[
-        {"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":"2026-07-03T14:00:00Z",
+      "schema_version":1,"batch_id":%q,"generated_at":%q,
+      "window_start":%q,"window_end":%q,"signals":[
+        {"signal_id":"s1","kind":"known_bad_domain_hit","time_bucket":%q,
          "domain":"c2.badzone.example","etld_plus_one":"badzone.example","local_confidence":0.99,
          "local_reasons":["known_bad"],"observation_count":4,"distinct_asset_count":2,"blocked_count":4}
-      ]}`, batchID))
+      ]}`,
+		batchID,
+		generatedAt.Format(time.RFC3339),
+		bucket.Format(time.RFC3339),
+		bucket.Add(time.Hour).Format(time.RFC3339),
+		bucket.Format(time.RFC3339)))
 }
 
 func TestEndToEndRegisterIngestConsensusFeed(t *testing.T) {

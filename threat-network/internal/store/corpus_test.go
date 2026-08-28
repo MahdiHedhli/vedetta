@@ -695,7 +695,7 @@ func TestCorpusDraftPublishRevisionAndImmutableRelease(t *testing.T) {
 	if manifest.CorpusRevision != 1 || string(stillOne) != string(releaseOneBytes) {
 		t.Fatal("draft revision changed the public release")
 	}
-	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(1), CorpusMutation{ExpectedETag: profile.ETag})
+	_, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(1), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1196,7 +1196,7 @@ func TestCorpusAbandonedUnpublishedVariantCanRestartIdentity(t *testing.T) {
 	if got == nil || got.VariantID != childID || got.PredecessorVariantID != "" || got.Draft == nil || got.Draft.Revision != 2 {
 		t.Fatalf("abandoned identity was not safely restarted: %+v", got)
 	}
-	profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
+	_, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID,
 		corpusPublishRequest(0), CorpusMutation{ExpectedETag: profile.ETag})
 	if err != nil {
 		t.Fatal(err)

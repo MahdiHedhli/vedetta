@@ -38,5 +38,10 @@ jobs:
           VEDETTA_BASE_REF: ${{ github.event.pull_request.base.ref }}
           VEDETTA_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           VEDETTA_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          VEDETTA_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          # GitHub may leave merge_commit_sha empty for a newly opened PR even
+          # when refs/pull/N/merge already exists. The trusted runner fetches
+          # and verifies that merge ref against the pinned base/head itself;
+          # the head SHA here is therefore a non-empty, validated fallback for
+          # its required event-shape input, not a substitute merge tree.
+          VEDETTA_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.event.pull_request.head.sha }}
         run: bash scripts/run-trusted-pr-sanitation.sh

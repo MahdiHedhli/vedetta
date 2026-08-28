@@ -78,7 +78,7 @@ func TestCorpusReadErrorsReleaseSingleConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		profile, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
+		_, err = db.PublishCorpusProfile(context.Background(), profile.ProfileID, corpusPublishRequest(0),
 			CorpusMutation{ExpectedETag: profile.ETag})
 		if err != nil {
 			t.Fatal(err)
