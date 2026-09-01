@@ -7497,7 +7497,7 @@ prefix,vendor
 001d63,Miele & Cie. KG
 001d64,Adam Communications Systems Int Ltd
 001d65,Microwave Radio Communications
-001d66,Hyundai Telecom
+001d66,"HYUNDAI HT Co., Ltd."
 001d67,AMEC
 001d68,Thomson Telecom Belgium
 001d69,Knorr-Bremse IT-Services GmbH
@@ -10299,6 +10299,7 @@ prefix,vendor
 003de1,"Huawei Device Co., Ltd."
 003de8,LG Electronics (Mobile Communications)
 003e73,"Mist Systems, Inc."
+003ec4,"Huawei Device Co., Ltd."
 003ee1,"Apple, Inc."
 003f10,"Shenzhen GainStrong Technology Co., Ltd."
 004000,PCI COMPONENTES DA AMZONIA LTD
@@ -11112,6 +11113,7 @@ prefix,vendor
 0060fe,"LYNX SYSTEM DEVELOPERS, INC."
 0060ff,"QuVis, Inc."
 006151,"HUAWEI TECHNOLOGIES CO.,LTD"
+006168,Nokia
 006171,"Apple, Inc."
 006201,"Motorola Mobility LLC, a Lenovo Company"
 00620b,Broadcom Limited
@@ -11150,6 +11152,7 @@ prefix,vendor
 0071c2,PEGATRON CORPORATION
 0071cc,"Hon Hai Precision Ind. Co.,Ltd."
 007204,"Samsung Electronics Co., Ltd. ARTIK"
+007230,Nordic Semiconductor ASA
 007263,"Netis Technology Co., Ltd."
 007278,"Cisco Systems, Inc"
 0072ee,Intel Corporate
@@ -11555,7 +11558,7 @@ prefix,vendor
 009058,Ultra Electronics Command & Control Systems
 009059,TELECOM DEVICE K.K.
 00905a,"DEARBORN GROUP, INC."
-00905b,RAYMOND AND LAE ENGINEERING
+00905b,Parameter LLC
 00905c,EDMI
 00905d,NETCOM SICHERHEITSTECHNIK GMBH
 00905e,RAULAND-BORG CORPORATION
@@ -11741,6 +11744,7 @@ prefix,vendor
 009b08,"Quectel Wireless Solutions Co.,Ltd."
 009c02,Hewlett Packard
 009c17,"Quectel Wireless Solutions Co.,Ltd."
+009c57,Hextronics
 009cc0,"vivo Mobile Communication Co., Ltd."
 009d6b,"Murata Manufacturing Co., Ltd."
 009d85,Sigmastar Technology Ltd.
@@ -12686,6 +12690,7 @@ prefix,vendor
 00d78f,"Cisco Systems, Inc"
 00d861,"Micro-Star INTL CO., LTD."
 00d8a2,"Huawei Device Co., Ltd."
+00d98b,"Hangzhou Huacheng Network Technology Co.,Ltd"
 00d9d1,Sony Interactive Entertainment Inc.
 00da27,Palo Alto Networks
 00da55,"Cisco Systems, Inc"
@@ -13385,6 +13390,7 @@ prefix,vendor
 04ce09,"Shenzhen Skyworth Digital  Technology  CO., Ltd"
 04ce14,Wilocity LTD.
 04ce7e,NXP France Semiconductors France
+04ced8,NXP Semiconductors Germany GmbH
 04cf25,"MANYCOLORS, INC."
 04cf4b,Intel Corporate
 04cf8c,"XIAOMI Electronics,CO.,LTD"
@@ -13402,6 +13408,7 @@ prefix,vendor
 04d4c4,ASUSTek COMPUTER INC.
 04d590,"Fortinet, Inc."
 04d60e,"FUNAI ELECTRIC CO., LTD."
+04d634,"Nanjing RISC-V Institute Co., Ltd."
 04d688,CIG SHANGHAI CO LTD
 04d6aa,SAMSUNG ELECTRO-MECHANICS(THAILAND)
 04d6f4,"GD Midea Air-Conditioning Equipment Co.,Ltd."
@@ -13444,6 +13451,7 @@ prefix,vendor
 04e9e5,"PJRC.COM, LLC"
 04ea56,Intel Corporate
 04eb40,"Cisco Systems, Inc"
+04eca9,IEEE Registration Authority
 04ecbb,"Fiberhome Telecommunication Technologies Co.,LTD"
 04ecd8,Intel Corporate
 04ed33,Intel Corporate
@@ -13816,6 +13824,7 @@ prefix,vendor
 087572,Obelux Oy
 087618,ViTrox Technologies Sdn. Bhd
 087671,Juniper Networks
+087683,AltoBeam Inc.
 087695,"Auto Industrial Co., Ltd."
 0876ff,Thomson Telecom Belgium
 087808,"Samsung Electronics Co.,Ltd"
@@ -13871,6 +13880,7 @@ prefix,vendor
 089734,Hewlett Packard Enterprise
 089758,"Shenzhen Strong Rising Electronics Co.,Ltd DongGuan Subsidiary"
 089798,"COMPAL INFORMATION (KUNSHAN) CO., LTD."
+0898ef,Shenzhen Taichi Technology Limited
 0899e8,KEMAS GmbH
 089ac7,zte corporation
 089b27,GSD VIET NAM TECHNOLOGY COMPANY LIMITED
@@ -14318,6 +14328,7 @@ prefix,vendor
 0cb787,"HUAWEI TECHNOLOGIES CO.,LTD"
 0cb789,"Honor Device Co., Ltd."
 0cb78e,"Huawei Device Co., Ltd."
+0cb7ec,"HUAWEI TECHNOLOGIES CO.,LTD"
 0cb815,Espressif Inc.
 0cb8e8,Renesas Electronics (Penang) Sdn. Bhd.
 0cb912,JM-DATA GmbH
@@ -14556,6 +14567,7 @@ prefix,vendor
 10394e,"Hisense broadband multimedia technology Co.,Ltd"
 1039e9,Juniper Networks
 103a5d,Emerson
+103b54,"HUAWEI TECHNOLOGIES CO.,LTD"
 103b59,"Samsung Electronics Co.,Ltd"
 103c59,zte corporation
 103d0a,"Hui Zhou Gaoshengda Technology Co.,LTD"
@@ -14715,6 +14727,7 @@ prefix,vendor
 109836,Dell Inc.
 10985f,Inventus Power Eletronica do Brasil LTDA
 1098c3,"Murata Manufacturing Co., Ltd."
+109a93,Telink Micro LLC
 109ab9,Tosibox Oy
 109aba,Intel Corporate
 109add,"Apple, Inc."
@@ -14791,6 +14804,7 @@ prefix,vendor
 10c197,Xiaomi Communications Co Ltd
 10c22f,"China Entropy Co., Ltd."
 10c25a,Vantiva USA LLC
+10c283,Suzhou Pairlink Network Technology
 10c2ba,"UTT Co., Ltd."
 10c34d,"SHENZHEN WATER WORLD CO.,LTD."
 10c37b,ASUSTek COMPUTER INC.
@@ -14798,6 +14812,7 @@ prefix,vendor
 10c4ca,"HUMAX Co., Ltd."
 10c586,"BIO SOUND LAB CO., LTD."
 10c595,Lenovo
+10c5fa,Zyxel Communications Corporation
 10c60c,Domino UK Ltd
 10c61f,"HUAWEI TECHNOLOGIES CO.,LTD"
 10c65e,Adapt-IP
@@ -14899,6 +14914,7 @@ prefix,vendor
 140152,"Samsung Electronics Co.,Ltd"
 14019c,Ubyon Inc.
 1402ec,Hewlett Packard Enterprise
+140338,"HUAWEI TECHNOLOGIES CO.,LTD"
 140467,"SNK Technologies Co.,Ltd."
 140589,"Motorola Mobility LLC, a Lenovo Company"
 14064c,Vogl Electronic GmbH
@@ -14963,6 +14979,7 @@ prefix,vendor
 1423f2,Broadcom Limited
 1423f3,Broadcom Limited
 142475,"4DReplay, Inc"
+142720,Bosch Rexroth (Changzhou) Co. Ltd.
 142876,"Apple, Inc."
 142882,MIDICOM ELECTRONICS CO.LTD
 142971,NEMOA ELECTRONICS (HK) CO. LTD
@@ -15086,6 +15103,7 @@ prefix,vendor
 14755b,Intel Corporate
 147590,"TP-LINK TECHNOLOGIES CO.,LTD."
 1475e5,ELMAX Srl
+147649,Hewlett Packard Enterprise
 147740,"Huawei Device Co., Ltd."
 14780b,Varex Imaging Deutschland AG
 147830,NVIDIA Corporation
@@ -15198,6 +15216,7 @@ prefix,vendor
 14b837,"Shenzhen YOUHUA Technology Co., Ltd"
 14b903,"HUAWEI TECHNOLOGIES CO.,LTD"
 14b968,"HUAWEI TECHNOLOGIES CO.,LTD"
+14ba88,"Zhejiang Uniview Technologies Co.,Ltd."
 14baaf,BKS GmbH
 14bb6e,"Samsung Electronics Co.,Ltd"
 14bc68,"Cisco Systems, Inc"
@@ -15236,6 +15255,7 @@ prefix,vendor
 14d11f,"HUAWEI TECHNOLOGIES CO.,LTD"
 14d169,"HUAWEI TECHNOLOGIES CO.,LTD"
 14d19e,"Apple, Inc."
+14d1d4,"Huawei Device Co., Ltd."
 14d424,AzureWave Technology Inc.
 14d4fe,Commscope
 14d537,All Inspire Health Inc.
@@ -15258,9 +15278,11 @@ prefix,vendor
 14dde5,MPMKVVCL
 14de39,"Huawei Device Co., Ltd."
 14e01d,"Samsung Electronics Co.,Ltd"
+14e1c9,Silicon Laboratories
 14e22a,"Cisco Systems, Inc"
 14e289,Abietec Inc.
 14e4ec,mLogic LLC
+14e602,"Shenzhen EMTEK Storage Technology Co.,Ltd"
 14e6e4,"TP-LINK TECHNOLOGIES CO.,LTD."
 14e7c8,Integrated Device Technology (Malaysia) Sdn. Bhd.
 14e9b2,"Fiberhome Telecommunication Technologies Co.,LTD"
@@ -15323,6 +15345,7 @@ prefix,vendor
 181456,Nokia Corporation
 18146c,"Zhejiang Tmall Technology Co., Ltd."
 1814ae,Nokia
+1814f4,Texas Instruments
 181628,SharkNinja Operating LLC
 1816c9,"Samsung Electronics Co.,Ltd"
 1816e8,"Siliconware Precision Industries Co., Ltd."
@@ -15594,12 +15617,14 @@ prefix,vendor
 18b209,"Torrey Pines Logic, Inc"
 18b3ba,Netlogic AB
 18b430,Nest Labs Inc.
+18b4fe,"Tozed Kangwei Tech Co., Ltd"
 18b591,I-Storm
 18b657,"HUAWEI TECHNOLOGIES CO.,LTD"
 18b6cc,We Corporation Inc.
 18b6f7,NEW POS TECHNOLOGY LIMITED
 18b79e,Invoxia
 18b81f,Commscope
+18b83d,"Samsung Electronics Co.,Ltd"
 18b842,"Apple, Inc."
 18b905,Hong Kong Bouffalo Lab Limited
 18b96e,"Dongguan Liesheng Electronic Co., Ltd."
@@ -15688,6 +15713,7 @@ prefix,vendor
 18ef3a,"Sichuan AI-Link Technology Co., Ltd."
 18ef63,"Cisco Systems, Inc"
 18efc0,Sercomm Japan Corporation
+18f055,"Nanjing Qinheng Microelectronics Co., Ltd."
 18f0e4,Xiaomi Communications Co Ltd
 18f145,NetComm Wireless Limited
 18f18e,ChipER Technology co. ltd
@@ -15765,16 +15791,19 @@ prefix,vendor
 1c20db,"HUAWEI TECHNOLOGIES CO.,LTD"
 1c2156,Smappee NV
 1c21d1,IEEE Registration Authority
+1c2226,"Cisco Systems, Inc"
 1c2285,Serrature Meroni SpA
 1c232c,"Samsung Electronics Co.,Ltd"
 1c234f,EDMI  Europe Ltd
 1c23a2,FRITZ! Technology GmbH
 1c24cd,ASKEY COMPUTER CORP
 1c24eb,Burlywood
+1c2575,Xiaomi Communications Co Ltd
 1c25e1,China Mobile IOT Company Limited
 1c2704,zte corporation
 1c27dd,"Datang Gohighsec(zhejiang)Information Technology Co.,Ltd."
 1c28af,Hewlett Packard Enterprise
+1c2904,Espressif Inc.
 1c2a8b,Nokia
 1c2aa3,"Shenzhen HongRui Optical Technology Co., Ltd."
 1c2ab0,"Beijing Xiaomi Electronics Co.,Ltd"
@@ -15937,6 +15966,7 @@ prefix,vendor
 1c83b0,Linked IP GmbH
 1c83ec,"Ubee Interactive co, Limited."
 1c8464,FORMOSA WIRELESS COMMUNICATION CORP.
+1c84a6,"Cisco Systems, Inc"
 1c860b,"Guangdong Taiying Technology Co.,Ltd"
 1c8682,"Apple, Inc."
 1c869a,"Samsung Electronics Co.,Ltd"
@@ -15945,6 +15975,7 @@ prefix,vendor
 1c87e3,TECNO MOBILE LIMITED
 1c880c,"Shenzhen Skyworth Digital  Technology  CO., Ltd"
 1c8b76,Calix Inc.
+1c8b84,Espressif Systems (Singapore) Pte. Ltd
 1c8bef,"Beijing Xiaomi Electronics Co.,Ltd"
 1c8c6e,Arista Networks
 1c8e2a,"Apple, Inc."
@@ -16069,6 +16100,7 @@ prefix,vendor
 1ce192,Qisda Corporation
 1ce209,"Apple, Inc."
 1ce2cc,Texas Instruments
+1ce4cb,Espressif Systems (Singapore) Pte. Ltd
 1ce4dd,"Technicolor (China) Technology Co., Ltd."
 1ce504,"HUAWEI TECHNOLOGIES CO.,LTD"
 1ce57f,"Samsung Electronics Co.,Ltd"
@@ -16177,6 +16209,7 @@ prefix,vendor
 2021a5,LG Electronics (Mobile Communications)
 202351,TP-Link Systems Inc
 202564,PEGATRON CORPORATION
+202565,Espressif Inc.
 202598,Teleview
 2025cc,Xiaomi Communications Co Ltd
 2025d2,"Fiberhome Telecommunication Technologies Co.,LTD"
@@ -16188,6 +16221,7 @@ prefix,vendor
 202b20,CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD.
 202bc1,"HUAWEI TECHNOLOGIES CO.,LTD"
 202bda,IEEE Registration Authority
+202c05,"ZHEJIANG DAHUA ZHILIAN CO.,LTD"
 202cb7,Kong Yue Electronics & Information Industry (Xinhui) Ltd.
 202d07,"Samsung Electronics Co.,Ltd"
 202d23,Collinear Networks Inc.
@@ -16314,6 +16348,7 @@ prefix,vendor
 207355,Commscope
 207454,"vivo Mobile Communication Co., Ltd."
 2074cf,"Shenzhen Voxtech Co.,Ltd"
+2074dd,eero inc.
 207600,"Actiontec Electronics, Inc"
 20768f,"Apple, Inc."
 207693,Lenovo (Beijing) Limited.
@@ -16635,6 +16670,7 @@ prefix,vendor
 244845,"Hangzhou Hikvision Digital Technology Co.,Ltd."
 244885,"Huawei Device Co., Ltd."
 24497b,Innovative Converged Devices Inc
+244af8,Silicon Laboratories
 244b03,"Samsung Electronics Co.,Ltd"
 244b81,"Samsung Electronics Co.,Ltd"
 244bf1,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -16717,6 +16753,7 @@ prefix,vendor
 247656,"Shanghai Net Miles Fiber Optics Technology Co., LTD."
 24767d,Cisco SPVTG
 247703,Intel Corporate
+247755,"Huawei Device Co., Ltd."
 247823,"Panasonic Entertainment & Communication Co., Ltd."
 2478ef,Nokia
 24792a,Ruckus Wireless
@@ -16769,6 +16806,7 @@ prefix,vendor
 249e7d,"Beijing Roborock Technology Co., Ltd."
 249eab,"HUAWEI TECHNOLOGIES CO.,LTD"
 249f89,Texas Instruments
+24a02d,"shenzhen worldelite electronics co., LTD"
 24a074,"Apple, Inc."
 24a10d,IEEE Registration Authority
 24a160,Espressif Inc.
@@ -16788,7 +16826,7 @@ prefix,vendor
 24a799,"Huawei Device Co., Ltd."
 24a7dc,SKY UK LIMITED
 24a87d,"Panasonic Automotive Systems Asia Pacific(Thailand)Co.,Ltd."
-24a937,PURE Storage
+24a937,"Everpure, Inc."
 24ab81,"Apple, Inc."
 24acac,Polar Electro Oy
 24aecc,"Honor Device Co., Ltd."
@@ -16898,6 +16936,7 @@ prefix,vendor
 24e9b3,"Cisco Systems, Inc"
 24e9ca,"Huawei Device Co., Ltd."
 24ea40,Helmholz GmbH & Co. KG
+24ea9b,"HUAWEI TECHNOLOGIES CO.,LTD"
 24eb16,Intel Corporate
 24eb65,SAET I.S. S.r.l.
 24ebed,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -16945,6 +16984,7 @@ prefix,vendor
 280244,"Apple, Inc."
 280245,"Konze System Technology Co.,Ltd."
 2802d8,"Samsung Electronics Co.,Ltd"
+2803e6,Nokia
 28047a,WNC Corporation
 2804c6,Wanan Hongsheng Electronic Co.Ltd
 2804e0,FERMAX ELECTRONICA S.A.U.
@@ -17199,6 +17239,7 @@ prefix,vendor
 28a6ac,seca gmbh & co. kg
 28a6db,"HUAWEI TECHNOLOGIES CO.,LTD"
 28a915,SERVERCOM (INDIA) PRIVATE LIMITED
+28a9ae,"HUAWEI TECHNOLOGIES CO.,LTD"
 28ac67,"Mach Power, Rappresentanze Internazionali s.r.l."
 28ac9e,"Cisco Systems, Inc"
 28ad18,"Hui Zhou Gaoshengda Technology Co.,LTD"
@@ -17243,6 +17284,7 @@ prefix,vendor
 28bef3,"FUJIAN STAR-NET COMMUNICATION CO.,LTD"
 28bf89,"Fiberhome Telecommunication Technologies Co.,LTD"
 28c01b,"Shenzhen Skyworth Digital  Technology  CO., Ltd"
+28c039,"HUAWEI TECHNOLOGIES CO.,LTD"
 28c0da,Juniper Networks
 28c13c,"Hon Hai Precision Industry Co., Ltd."
 28c1a0,"Apple, Inc."
@@ -17290,6 +17332,7 @@ prefix,vendor
 28d3ea,"Huawei Device Co., Ltd."
 28d41e,"Barrot Technology Co.,Ltd."
 28d436,"Jiangsu dewosi electric co., LTD"
+28d555,"vivo Mobile Communication Co., Ltd."
 28d576,"Premier Wireless, Inc."
 28d5b1,"Apple, Inc."
 28d6ec,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -17322,6 +17365,7 @@ prefix,vendor
 28e71d,Arista Networks
 28e794,Microtime Computer Inc.
 28e7cf,"Apple, Inc."
+28e888,"Lingban Technology (Hangzhou) Co., Ltd"
 28e971,EM Microelectronic
 28e98e,Mitsubishi Electric Corporation
 28ea0b,Microsoft Corporation
@@ -17414,6 +17458,7 @@ prefix,vendor
 2c1a05,"Cisco Systems, Inc"
 2c1a31,Electronics Company Limited
 2c1b3a,"Hui Zhou Gaoshengda Technology Co.,LTD"
+2c1b8e,BYD Semiconductor Co，Ltd
 2c1bc8,"Hunan Topview Network System CO.,LTD"
 2c1cf6,Alien Green LLC
 2c1cf7,"Apple, Inc."
@@ -18082,6 +18127,7 @@ prefix,vendor
 30b89a,KRYON TECHNOLOGY PRIVATE LIMITED
 30b930,zte corporation
 30b9b0,"Intracom Asia Co., Ltd"
+30bb28,IEEE Registration Authority
 30bb43,"Sixi Networks Co., Ltd"
 30bb7d,"OnePlus Technology (Shenzhen) Co., Ltd"
 30bc4f,"Beijing Jianguo Bite Technology Co., Ltd."
@@ -18159,7 +18205,7 @@ prefix,vendor
 30eb15,"Huawei Device Co., Ltd."
 30eb1f,"Skylab M&C Technology Co.,Ltd"
 30eb25,INTEK DIGITAL
-30eb5a,Landis+Gyr S.A.
+30eb5a,EYKON Solutions S.A.
 30ec7c,"Shenzhen Along Electronics Co., Ltd"
 30eca3,Alfatron Electronics INC
 30ed96,LS Mecapion
@@ -18208,6 +18254,7 @@ prefix,vendor
 340286,Intel Corporate
 34029b,Plexonics Technologies LImited
 34029c,D-Link Corporation
+34033d,HP Inc.
 3403de,Texas Instruments
 34049e,IEEE Registration Authority
 340557,"vivo Mobile Communication Co., Ltd."
@@ -18424,6 +18471,7 @@ prefix,vendor
 347e39,Nokia Danmark A/S
 347e5c,"Sonos, Inc."
 347eca,NEXTWILL
+347f63,Concept Pro Surveillance
 34800d,Cavium Inc
 3480b3,Xiaomi Communications Co Ltd
 348137,UNICARD SA
@@ -18457,6 +18505,7 @@ prefix,vendor
 348f27,Ruckus Wireless
 3490ea,"Murata Manufacturing Co., Ltd."
 34916f,UserGate Ltd.
+3491f0,DJI BAIWANG TECHNOLOGY CO LTD
 3492c2,"Square Route Co., Ltd."
 349342,TTE Corporation
 34936f,Juniper Networks
@@ -18481,6 +18530,7 @@ prefix,vendor
 349f7b,CANON INC.
 34a137,"HUAWEI TECHNOLOGIES CO.,LTD"
 34a183,"AWare, Inc"
+34a27d,Unisyue Technologies Co;LTD
 34a2a2,"HUAWEI TECHNOLOGIES CO.,LTD"
 34a34e,NevadaNano
 34a395,"Apple, Inc."
@@ -18494,6 +18544,7 @@ prefix,vendor
 34a7ba,Fischer International Systems Corporation
 34a843,KYOCERA Display Corporation
 34a84e,"Cisco Systems, Inc"
+34a8a0,"HUAWEI TECHNOLOGIES CO.,LTD"
 34a8db,SenArch ApS
 34a8eb,"Apple, Inc."
 34aa31,"Shenzhen Skyworth Digital  Technology  CO., Ltd"
@@ -18503,6 +18554,7 @@ prefix,vendor
 34ab37,"Apple, Inc."
 34ab95,Espressif Inc.
 34ac11,"China Mobile Group Device Co.,Ltd."
+34ac2f,zte corporation
 34ad61,CELESTICA INC.
 34ade4,"Shanghai Chint Power Systems Co., Ltd."
 34af2c,"Nintendo Co., Ltd."
@@ -18513,6 +18565,7 @@ prefix,vendor
 34b20a,"Huawei Device Co., Ltd."
 34b354,"HUAWEI TECHNOLOGIES CO.,LTD"
 34b472,Espressif Inc.
+34b4f0,Hasselblad (Shenzhen) Trading CompanyLimited
 34b571,PLDS
 34b5a3,CIG SHANGHAI CO LTD
 34b5f3,IEEE Registration Authority
@@ -18628,6 +18681,7 @@ prefix,vendor
 34ef44,2Wire Inc
 34ef8b,"NTT DOCOMO BUSINESS, Inc."
 34efb6,Edgecore Networks Corporation
+34efd7,"HUAWEI TECHNOLOGIES CO.,LTD"
 34f015,"Beijing Xiaomi Mobile Software Co., Ltd"
 34f043,"Samsung Electronics Co.,Ltd"
 34f084,"Samsung Electronics Co.,Ltd"
@@ -18766,6 +18820,7 @@ prefix,vendor
 38396c,"Huawei Device Co., Ltd."
 38398f,Silicon Laboratories
 3839cd,"vivo Mobile Communication Co., Ltd."
+3839dd,Nokia
 383a21,IEEE Registration Authority
 383b26,"Jiangsu Qinheng Co., Ltd."
 383bc8,2Wire Inc
@@ -18872,6 +18927,7 @@ prefix,vendor
 388345,"TP-LINK TECHNOLOGIES CO.,LTD."
 38839a,"SHENZHEN RF-LINK TECHNOLOGY CO.,LTD."
 388479,Cisco Meraki
+3885bb,Commodore International Corporation
 388602,Flexoptix GmbH
 3886f7,"Google, Inc."
 38879c,Ei Electronics
@@ -18991,6 +19047,7 @@ prefix,vendor
 38c85c,Cisco SPVTG
 38c986,"Apple, Inc."
 38c9a9,"SMART High Reliability Solutions, Inc."
+38c9b1,zte corporation
 38ca73,"Shenzhen MiaoMing  Intelligent Technology Co.,Ltd"
 38ca84,HP Inc.
 38ca97,Contour Design LLC
@@ -19050,6 +19107,7 @@ prefix,vendor
 38f195,"HUAWEI TECHNOLOGIES CO.,LTD"
 38f20d,Juniper Networks
 38f23e,Microsoft Mobile Oy
+38f25d,"Hangzhou Ezviz Software Co.,Ltd."
 38f32e,Skullcandy
 38f33f,TATSUNO CORPORATION
 38f3ab,"LCFC(Hefei) Electronics Technology co., ltd"
@@ -19112,6 +19170,7 @@ prefix,vendor
 3c0c48,"Servergy, Inc."
 3c0c7d,Tiny Mesh AS
 3c0cdb,"UNION MAN TECHNOLOGY CO.,LTD"
+3c0d0d,Espressif Systems (Singapore) Pte. Ltd
 3c0d2c,Liquid-Markets GmbH
 3c0e23,"Cisco Systems, Inc"
 3c0f02,Espressif Inc.
@@ -19122,6 +19181,7 @@ prefix,vendor
 3c10e6,PHAZR Inc.
 3c11b2,Fraunhofer FIT
 3c135a,Xiaomi Communications Co Ltd
+3c1367,CxTEK Innovations India Pvt Ltd
 3c13bb,"HUAWEI TECHNOLOGIES CO.,LTD"
 3c13cc,"Cisco Systems, Inc"
 3c1512,"Shenzhen Huanhu Technology Co.,Ltd"
@@ -19285,6 +19345,7 @@ prefix,vendor
 3c71bf,Espressif Inc.
 3c7437,RIM
 3c754a,Commscope
+3c75de,"GUANGDONG OPPO MOBILE TELECOMMUNICATIONS CORP.,LTD"
 3c7625,zte corporation
 3c7787,"Huawei Device Co., Ltd."
 3c77e6,"Hon Hai Precision Ind. Co.,Ltd."
@@ -19314,6 +19375,7 @@ prefix,vendor
 3c869a,"HUAWEI TECHNOLOGIES CO.,LTD"
 3c86a8,"Sangshin elecom .co,, LTD"
 3c86d1,"vivo Mobile Communication Co., Ltd."
+3c87cf,Quanta Computer Inc.
 3c894d,Dr. Ing. h.c. F. Porsche AG
 3c8970,Neosfar
 3c8994,SKY UK LIMITED
@@ -19455,7 +19517,7 @@ prefix,vendor
 3cd92b,Hewlett Packard
 3cd9ce,Eclipse WiFi
 3cda2a,zte corporation
-3cda6d,"Tiandy Technologies CO.,LTD"
+3cda6d,"Tiandy Technologies Co.,LTD"
 3cdc03,IEEE Registration Authority
 3cdc75,Espressif Inc.
 3cdcbc,"Samsung Electronics Co.,Ltd"
@@ -19517,6 +19579,7 @@ prefix,vendor
 3cfdfe,Intel Corporate
 3cfeac,"Cisco Systems, Inc"
 3cffd8,"HUAWEI TECHNOLOGIES CO.,LTD"
+3cffe4,Siemens AG
 4000e0,Derek(Shaoguan)Limited
 400107,Arista Corp
 40017a,"Cisco Systems, Inc"
@@ -19574,6 +19637,7 @@ prefix,vendor
 40270b,"Mobileeco Co., Ltd"
 4027a8,Cisco Meraki
 402814,RFI Engineering
+402a6c,"Zhejiang Hyxi Technology Co.,Ltd."
 402a8f,"Shanghai High-Flying Electronics  Technology Co., Ltd"
 402b50,Commscope
 402b69,Kumho Electric Inc.
@@ -19640,6 +19704,7 @@ prefix,vendor
 4050e0,Milton Security Group LLC
 40516c,Grandex International Corporation
 40520d,Pico Technology
+40538c,LG Electronics
 405493,zte corporation
 4054e4,Wearsafe Labs Inc
 405539,"Cisco Systems, Inc"
@@ -19880,6 +19945,7 @@ prefix,vendor
 40e230,AzureWave Technology Inc.
 40e317,"Extreme Networks, Inc."
 40e3d6,Hewlett Packard Enterprise
+40e4c6,Nokia
 40e64b,"Apple, Inc."
 40e730,"DEY Storage Systems, Inc."
 40e762,Calix Inc.
@@ -19895,6 +19961,7 @@ prefix,vendor
 40ed98,IEEE Registration Authority
 40edcf,"Apple, Inc."
 40ee15,Zioncom Electronics (Shenzhen) Ltd.
+40ee6d,"HUAWEI TECHNOLOGIES CO.,LTD"
 40eebe,NXP Semiconductor (Tianjin) LTD.
 40eedd,"HUAWEI TECHNOLOGIES CO.,LTD"
 40ef4c,"Fihonest communication co.,Ltd"
@@ -19956,6 +20023,7 @@ prefix,vendor
 441244,Hewlett Packard Enterprise
 441319,WKK TECHNOLOGY LTD.
 4413d0,zte corporation
+441404,eero inc.
 441441,AudioControl Inc.
 441524,Sagemcom Broadband SAS
 441622,Microsoft Corporation
@@ -19985,6 +20053,7 @@ prefix,vendor
 442063,AUMOVIO Germany GmbH
 44227c,"HUAWEI TECHNOLOGIES CO.,LTD"
 442295,China Mobile Iot Limited company
+4422be,rescuetrack GmbH
 4422f1,"S.FAC, INC"
 44237c,"Beijing Xiaomi Mobile Software Co., Ltd"
 4423aa,"Farmage Co., Ltd."
@@ -20000,6 +20069,7 @@ prefix,vendor
 442aff,"E3 Technology, Inc."
 442b03,"Cisco Systems, Inc"
 442c05,"AMPAK Technology, Inc."
+442d49,"Extreme Networks, Inc."
 44303f,"HUAWEI TECHNOLOGIES CO.,LTD"
 443192,Hewlett Packard
 44321d,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -20069,11 +20139,13 @@ prefix,vendor
 444f8e,WiZ
 4451db,Raytheon BBN Technologies
 4454c0,Thompson Aerospace
+44552b,"Samsung Electronics Co.,Ltd"
 4455b1,"HUAWEI TECHNOLOGIES CO.,LTD"
 4455c4,"Huawei Device Co., Ltd."
 44568d,"PNC Technologies  Co., Ltd."
 4456b7,"Spawn Labs, Inc"
 4456e2,"Sichuan Tianyi Comheart Telecom Co.,LTD"
+44579f,"Beijing Xiaomi Mobile Software Co., Ltd"
 445829,Cisco SPVTG
 445925,Square Inc.
 445943,zte corporation
@@ -20132,6 +20204,7 @@ prefix,vendor
 4476e7,TECNO MOBILE LIMITED
 447831,"HUAWEI TECHNOLOGIES CO.,LTD"
 44783e,"Samsung Electronics Co.,Ltd"
+447b30,Espressif Inc.
 447b45,Amazon Technologies Inc.
 447bbb,"Shenzhen YOUHUA Technology Co., Ltd"
 447bc4,"DualShine Technology(SZ)Co.,Ltd"
@@ -20162,6 +20235,7 @@ prefix,vendor
 448c00,"Realme Chongqing Mobile Telecommunications Corp.,Ltd."
 448c52,"KTIS CO., Ltd"
 448cab,"Beijing Flitlink Vientiane Technology Co., LTD"
+448cec,Anhui Sunchip semiconductor technology Co;Ltd
 448dbf,Rhino Mobility LLC
 448dd5,"Cisco Systems, Inc"
 448e12,"DT Research, Inc."
@@ -20244,10 +20318,12 @@ prefix,vendor
 44bdc8,Xiaomi Communications Co Ltd
 44bdde,BHTC GmbH
 44be0b,"HUAWEI TECHNOLOGIES CO.,LTD"
+44be23,PEGATRON CORPORATION
 44bfe3,"Shenzhen Longtech Electronics Co.,Ltd"
 44c15c,Texas Instruments
 44c20c,"Cisco Systems, Inc"
 44c233,Guangzhou Comet Technology Development Co.Ltd
+44c277,"Shenzhen Kingspec Electronics Technology Co., Ltd."
 44c306,SIFROM Inc.
 44c346,"HUAWEI TECHNOLOGIES CO.,LTD"
 44c39b,OOO RUBEZH NPO
@@ -20290,6 +20366,7 @@ prefix,vendor
 44d6e1,Snuza International Pty. Ltd.
 44d77e,Robert Bosch GmbH
 44d791,"HUAWEI TECHNOLOGIES CO.,LTD"
+44d7b7,eero inc.
 44d832,AzureWave Technology Inc.
 44d878,"Hui Zhou Gaoshengda Technology Co.,LTD"
 44d884,"Apple, Inc."
@@ -20297,6 +20374,7 @@ prefix,vendor
 44d9e7,Ubiquiti Inc
 44da30,"Apple, Inc."
 44db60,"Nanjing Baihezhengliu Technology Co., Ltd"
+44dbbe,"HUAWEI TECHNOLOGIES CO.,LTD"
 44dbd2,"YEALINK(XIAMEN) NETWORK TECHNOLOGY CO.,LTD."
 44dc4e,ITEL MOBILE LIMITED
 44dc91,PLANEX COMMUNICATIONS INC.
@@ -20304,6 +20382,7 @@ prefix,vendor
 44df65,"Beijing Xiaomi Mobile Software Co., Ltd"
 44e08e,Cisco SPVTG
 44e137,Commscope
+44e213,"Beijing Xiaomi Mobile Software Co., Ltd"
 44e2f1,"NewRadio Technologies Co. , Ltd."
 44e2f8,Silicon Laboratories
 44e49a,OMNITRONICS PTY LTD
@@ -20322,6 +20401,7 @@ prefix,vendor
 44e9dd,Sagemcom Broadband SAS
 44ea30,"Samsung Electronics Co.,Ltd"
 44ea4b,Actlas Inc.
+44ea54,UDISENSE DBA NANIT
 44ead8,Texas Instruments
 44eb2e,"ALPSALPINE CO,.LTD"
 44ecce,Juniper Networks
@@ -20398,7 +20478,9 @@ prefix,vendor
 481f66,"China Mobile Group Device Co.,Ltd."
 48210b,PEGATRON CORPORATION
 48216c,China Mobile IOT Company Limited
+4821b8,"Guangzhou V-Solution Telecommunication Technology Co.,Ltd."
 482218,"Shenzhen Yipingfang Network Technology Co., Ltd."
+48221d,Bose Corporation
 482254,TP-Link Systems Inc
 482335,Dialog Semiconductor Hellas SA
 482567,Poly
@@ -20422,6 +20504,7 @@ prefix,vendor
 482e72,"Cisco Systems, Inc"
 482f6b,Hewlett Packard Enterprise
 482fd7,"HUAWEI TECHNOLOGIES CO.,LTD"
+483106,NVIDIA Corporation
 483133,Robert Bosch Elektronika Kft.
 483177,"Nintendo Co.,Ltd"
 4831b7,Espressif Inc.
@@ -20442,6 +20525,7 @@ prefix,vendor
 483c0c,"HUAWEI TECHNOLOGIES CO.,LTD"
 483d32,Syscor Controls &amp; Automation
 483e5e,SERNET (SUZHOU) TECHNOLOGIES CORPORATION
+483f72,"Samsung Electronics Co.,Ltd"
 483fda,Espressif Inc.
 483fe9,"HUAWEI TECHNOLOGIES CO.,LTD"
 4840d5,Intel Corporate
@@ -20555,6 +20639,7 @@ prefix,vendor
 48814e,"E&M SOLUTION CO,.Ltd"
 4881d4,"Ruijie Networks Co.,LTD"
 488244,Life Fitness / Div. of Brunswick
+4882df,"Huawei Device Co., Ltd."
 4882f2,Appel Elektronik GmbH
 48836f,EM Microelectronic
 4883b4,"GUANGDONG OPPO MOBILE TELECOMMUNICATIONS CORP.,LTD"
@@ -20593,6 +20678,7 @@ prefix,vendor
 4898ab,"Wistron InfoComm(Chongqing)Co.,Ltd."
 4898ca,"Sichuan AI-Link Technology Co., Ltd."
 489a42,Technomate Ltd
+489a58,"Samsung Electronics Co.,Ltd"
 489a5b,"Shenzhen iComm Semiconductor CO.,LTD"
 489bd5,"Extreme Networks, Inc."
 489be0,"Realme Chongqing Mobile Telecommunications Corp.,Ltd."
@@ -20749,6 +20835,7 @@ prefix,vendor
 48f3f3,"Baidu Online Network Technology (Beijing) Co., Ltd"
 48f47d,TechVision Holding  Internation Limited
 48f6ee,Espressif Inc.
+48f73c,"ELECOM CO.,LTD"
 48f7bc,"HUAWEI TECHNOLOGIES CO.,LTD"
 48f7c0,Vantiva USA LLC
 48f7f1,Nokia
@@ -20772,6 +20859,7 @@ prefix,vendor
 4c022e,"CMR KOREA CO., LTD"
 4c0289,"LEX COMPUTECH CO., LTD"
 4c034f,Intel Corporate
+4c0573,MOKA GLOBAL LIMITED
 4c0617,Taicang T&W Electronics
 4c068a,Basler Electric Company
 4c06b7,ProDVX Europe B.V.
@@ -20856,6 +20944,7 @@ prefix,vendor
 4c3bdf,Microsoft Corporation
 4c3c16,"Samsung Electronics Co.,Ltd"
 4c3c8f,"Shenzhen Jingxun Technology Co., Ltd."
+4c3ce2,"Huawei Device Co., Ltd."
 4c3fa7,uGrid Network Inc.
 4c3fd3,Texas Instruments
 4c4088,"SANSHIN ELECTRONICS CO.,LTD."
@@ -20960,6 +21049,7 @@ prefix,vendor
 4c7975,"Apple, Inc."
 4c79ba,Intel Corporate
 4c7a48,Nippon Seiki (Europe) B.V.
+4c7a88,"Cisco Systems, Inc"
 4c7b35,"UNIONMAN TECHNOLOGY CO.,LTD"
 4c7c5f,"Apple, Inc."
 4c7cd9,"Apple, Inc."
@@ -21088,6 +21178,7 @@ prefix,vendor
 4cc95e,"Samsung Electronics Co.,Ltd"
 4cca53,"Skyera, Inc."
 4cca95,"Huawei Device Co., Ltd."
+4ccbea,"Huawei Device Co., Ltd."
 4ccbf5,zte corporation
 4ccc34,Motorola Solutions Inc.
 4ccc6a,"Micro-Star INTL CO., LTD."
@@ -21308,6 +21399,7 @@ prefix,vendor
 504289,zte corporation
 504348,ThingsMatrix Inc.
 5043b9,OktoInform RUS
+504472,"Motorola Mobility LLC, a Lenovo Company"
 504594,Radisys
 5045f7,Liuhe Intelligence Technology Ltd.
 50464a,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -21360,6 +21452,7 @@ prefix,vendor
 505e5c,"SUNITEC TECHNOLOGY CO.,LIMITED"
 505fb5,ASKEY COMPUTER CORP
 506028,Xirrus Inc.
+50613c,ShenZhen XinZhongXin Technology Co.， Ltd
 50613f,eero inc.
 50617e,"Shenzhen MiaoMing Intelligent Technology Co.,Ltd"
 506184,Avaya Inc
@@ -21414,6 +21507,7 @@ prefix,vendor
 507b91,Sigmastar Technology Ltd.
 507b9d,"LCFC(Hefei) Electronics Technology co., ltd"
 507c6f,Intel Corporate
+507c90,"Huami (Shenzhen) Information Technology Co., Ltd"
 507d02,BIODIT
 507e5d,Arcadyan Corporation
 50804a,"Quectel Wireless Solutions Co.,Ltd."
@@ -21508,6 +21602,7 @@ prefix,vendor
 50b888,wi2be Tecnologia S/A
 50b8a2,"ImTech Technologies LLC,"
 50ba02,"Qingdao Intelligent&Precise Electronics Co.,Ltd."
+50ba84,"Cisco Systems, Inc"
 50bb9f,Vantiva USA LLC
 50bbb5,AzureWave Technology Inc.
 50bc96,"Apple, Inc."
@@ -21593,6 +21688,7 @@ prefix,vendor
 50ee32,"Hon Hai Precision Industry Co.,LTD"
 50ee87,HPRO
 50ee9b,AltoBeam Inc.
+50eeb5,Texas Instruments
 50f003,"Open Stack, Inc."
 50f0d3,"Samsung Electronics Co.,Ltd"
 50f14a,Texas Instruments
@@ -21634,6 +21730,7 @@ prefix,vendor
 5404a6,ASUSTek COMPUTER INC.
 540536,Vivago Oy
 54055f,Alcatel Lucent
+540583,ITEL MOBILE LIMITED
 540593,"WOORI ELEC Co.,Ltd"
 5405db,"LCFC(Hefei) Electronics Technology co., ltd"
 54068b,Ningbo Deli Kebei Technology Co.LTD
@@ -21642,6 +21739,7 @@ prefix,vendor
 54083b,IEEE Registration Authority
 540853,"Qingdao Haier Technology Co.,Ltd"
 5408d3,Tianyi Telecom Terminals Company Limited
+5408f1,"SHENZHENLINGDECHUANGTECHNOLOGY CO.,LTD"
 540910,"Apple, Inc."
 540929,Inventus Power Eletronica do Brasil LTDA
 540955,zte corporation
@@ -21692,6 +21790,8 @@ prefix,vendor
 542259,"HUAWEI TECHNOLOGIES CO.,LTD"
 5422e0,Adtran Inc
 5422f8,zte corporation
+542369,"HUAWEI TECHNOLOGIES CO.,LTD"
+5423e3,"Ruijie Networks Co.,LTD"
 5425ea,"HUAWEI TECHNOLOGIES CO.,LTD"
 542618,"HUAWEI TECHNOLOGIES CO.,LTD"
 54263d,Sony Corporation
@@ -21750,6 +21850,7 @@ prefix,vendor
 544617,zte corporation
 54466b,"Shenzhen CZTIC Electronic Technology Co., Ltd"
 544741,XCHENG HOLDING
+544781,"Quectel Wireless Solutions Co.,Ltd."
 5447cc,Sagemcom Broadband SAS
 5447d3,TSAT AS
 5447e8,Syrotech Networks. Ltd.
@@ -21876,7 +21977,9 @@ prefix,vendor
 549b49,"NEC Platforms, Ltd."
 549b72,Ericsson AB
 549c27,Plasma Cloud Limited
+549c6a,"Shenzhen Bilian Electronic Co.,Ltd"
 549d85,EnerAccess inc
+549dea,Espressif Inc.
 549f06,"Nokia Shanghai Bell Co., Ltd."
 549f13,"Apple, Inc."
 549f35,Dell Inc.
@@ -21889,6 +21992,7 @@ prefix,vendor
 54a245,Digisol Systems Limited
 54a274,"Cisco Systems, Inc"
 54a31b,"Shenzhen Linkworld Technology Co,.LTD"
+54a356,Annapurna labs
 54a3fa,BQT Solutions (Australia)Pty Ltd
 54a493,IEEE Registration Authority
 54a51b,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -21928,6 +22032,7 @@ prefix,vendor
 54bd79,"Samsung Electronics Co.,Ltd"
 54be53,zte corporation
 54bef7,PEGATRON CORPORATION
+54bf55,Juniper Networks
 54bf64,Dell Inc.
 54c078,Infinix mobility limited
 54c1d3,"Guangzhou TR Intelligent Manufacturing Technology Co., Ltd"
@@ -22271,6 +22376,7 @@ prefix,vendor
 58a839,Intel Corporate
 58a87b,"Fitbit, Inc."
 58a8e8,Amazon Technologies Inc.
+58abfb,"Huawei Device Co., Ltd."
 58ac78,"Cisco Systems, Inc"
 58ad08,IEEE Registration Authority
 58ad12,"Apple, Inc."
@@ -22415,6 +22521,7 @@ prefix,vendor
 5c07a6,"HUAWEI TECHNOLOGIES CO.,LTD"
 5c0947,"Apple, Inc."
 5c0979,"HUAWEI TECHNOLOGIES CO.,LTD"
+5c0a11,"Dongguan Liesheng Electronic Co., Ltd."
 5c0a5b,"SAMSUNG ELECTRO MECHANICS CO., LTD."
 5c0b3b,"HUAWEI TECHNOLOGIES CO.,LTD"
 5c0bca,Tunstall Nordic AB
@@ -22520,6 +22627,7 @@ prefix,vendor
 5c4dbf,zte corporation
 5c4eee,AltoBeam Inc.
 5c5015,"Cisco Systems, Inc"
+5c50d3,Knit Sound Company
 5c50d9,"Apple, Inc."
 5c5136,"Samsung Electronics Co.,Ltd"
 5c514f,Intel Corporate
@@ -22658,6 +22766,7 @@ prefix,vendor
 5ca176,"Sichuan Tianyi Comheart Telecom Co.,LTD"
 5ca178,TableTop Media (dba Ziosk)
 5ca1e0,EmbedWay Technologies
+5ca2a2,Texas Instruments
 5ca39d,"SAMSUNG ELECTRO MECHANICS CO., LTD."
 5ca3eb,SKODA DIGITAL s.r.o.
 5ca436,Shenzhen G-world Technology Incorporated Company
@@ -22880,6 +22989,7 @@ prefix,vendor
 601d9d,"Sichuan AI-Link Technology Co., Ltd."
 601e02,EltexAlatau
 601e98,Axevast Technology
+601f56,"HUAWEI TECHNOLOGIES CO.,LTD"
 602101,"GUANGDONG OPPO MOBILE TELECOMMUNICATIONS CORP.,LTD"
 602103,"I4VINE, INC"
 6021c0,"Murata Manufacturing Co., Ltd."
@@ -23169,6 +23279,8 @@ prefix,vendor
 60d02c,Ruckus Wireless
 60d039,"Apple, Inc."
 60d0a9,"Samsung Electronics Co.,Ltd"
+60d15f,"Futurepath Technology(Shenzhen)Co.,Ltd."
+60d178,"Cisco Systems, Inc"
 60d1aa,Vishal Telecommunications Pvt Ltd
 60d1d8,Silicon Laboratories
 60d21c,Sunnovo International Limited
@@ -23238,11 +23350,13 @@ prefix,vendor
 60f494,"Hon Hai Precision Ind. Co.,Ltd."
 60f549,"Apple, Inc."
 60f59c,CRU-Dataport
+60f620,Sonos Inc.
 60f673,TERUMO CORPORATION
 60f677,Intel Corporate
 60f723,"Beijing Xiaomi Mobile Software Co., Ltd"
 60f81d,"Apple, Inc."
 60f8f2,Synaptec
+60f91c,CHINA DRAGON TECHNOLOGY LIMITED
 60fa9d,"HUAWEI TECHNOLOGIES CO.,LTD"
 60faa7,SHENZHEN MTC CO LTD
 60fab1,Kempower Oyj
@@ -23358,8 +23472,10 @@ prefix,vendor
 643e8c,"HUAWEI TECHNOLOGIES CO.,LTD"
 643f5f,Exablaze
 6441e6,"Apple, Inc."
+6441ff,"Shenzhen Wolf Technology Co., Ltd."
 644212,"Shenzhen Water World Information Co.,Ltd."
 644214,Swisscom Energy Solutions AG
+6442c2,"Mellanox Technologies, Inc."
 644346,"GuangDong Quick Network Computer CO.,LTD"
 64447b,"vivo Mobile Communication Co., Ltd."
 6444d5,TD Tech
@@ -23391,6 +23507,7 @@ prefix,vendor
 64557f,"NSFOCUS Information Technology Co., Ltd."
 6455b1,Commscope
 645601,"TP-LINK TECHNOLOGIES CO.,LTD."
+6456b5,"Samsung Electronics Co.,Ltd"
 645725,"Hui Zhou Gaoshengda Technology Co.,LTD"
 6457ba,Intel Corporate
 6457e5,"Beijing Royaltech Co.,Ltd"
@@ -23478,9 +23595,11 @@ prefix,vendor
 648434,BEMER Int. AG
 648505,zte corporation
 648624,"Beijing Global Safety Technology Co., LTD."
+64876c,"HUAWEI TECHNOLOGIES CO.,LTD"
 648788,Juniper Networks
 6487d7,ADB Broadband Italia
 6488ff,Sichuan Changhong Electric Ltd.
+648914,Espressif Inc.
 64899a,LG Electronics (Mobile Communications)
 6489f1,"Samsung Electronics Co.,Ltd"
 648b9b,ALWAYS ON TECH PTE.LTD.
@@ -23531,6 +23650,7 @@ prefix,vendor
 64a769,HTC Corporation
 64a7dd,Avaya Inc
 64a837,"Juni Korea Co., Ltd"
+64a963,"Huawei Device Co., Ltd."
 64a965,"Linkflow Co., Ltd."
 64ac2b,Juniper Networks
 64ace0,"Samsung Electronics Co.,Ltd"
@@ -23580,6 +23700,7 @@ prefix,vendor
 64c6af,AXERRA Networks Ltd
 64c6d2,Seiko Epson Corporation
 64c753,"Apple, Inc."
+64c7f1,Premier-D LLC
 64c901,INVENTEC Corporation
 64c905,"Apple, Inc."
 64c944,"LARK Technologies, Inc"
@@ -23609,6 +23730,7 @@ prefix,vendor
 64d4da,Intel Corporate
 64d4f0,NETVUE，INC.
 64d562,"Huawei Device Co., Ltd."
+64d608,"Shenzhen Ailyworld Technology Co.,Ltd."
 64d667,"Shanghai Ikotek Technology Co.,Ltd"
 64d69a,Intel Corporate
 64d7c0,"Huawei Device Co., Ltd."
@@ -23720,6 +23842,7 @@ prefix,vendor
 681aa4,"Shenzhen Skyworth Digital  Technology  CO., Ltd"
 681ab2,zte corporation
 681bef,"HUAWEI TECHNOLOGIES CO.,LTD"
+681c52,"Cisco Systems, Inc"
 681ca2,Rosewill Inc.
 681d4c,Kontron eSystems GmbH
 681d64,"Sunwave Communications Co., Ltd"
@@ -23736,6 +23859,7 @@ prefix,vendor
 6823b0,Texas Instruments
 6823f4,"Shenzhen Jinlangxin Technology Co., Ltd"
 682499,"Quectel Wireless Solutions Co.,Ltd."
+6824f9,VIOLET AUDIO PTE. LTD.
 6825dd,Espressif Inc.
 682624,Ergatta
 68262a,"Sichuan Tianyi Comheart Telecom Co.,LTD"
@@ -23826,6 +23950,7 @@ prefix,vendor
 6855d4,Seiko Epson Corporation
 68572d,Tuya Smart Inc.
 685811,"Fiberhome Telecommunication Technologies Co.,LTD"
+685892,NXP Semiconductors Taiwan Ltd.
 6858a0,"Honor Device Co., Ltd."
 6858c5,ZF TRW Automotive
 685932,"Sunitec Enterprise Co.,Ltd"
@@ -24091,6 +24216,7 @@ prefix,vendor
 68ff7b,"TP-LINK TECHNOLOGIES CO.,LTD."
 6c006b,"Samsung Electronics Co.,Ltd"
 6c0273,"Shenzhen Jin Yun Video Equipment Co., Ltd."
+6c028c,"HUAWEI TECHNOLOGIES CO.,LTD"
 6c02e0,HP Inc.
 6c0309,"Cisco Systems, Inc"
 6c0370,"Extreme Networks, Inc."
@@ -24194,6 +24320,7 @@ prefix,vendor
 6c3c53,SoundHawk Corp
 6c3c7c,CANON INC.
 6c3c8c,Dell Inc.
+6c3d7d,Vantiva USA LLC
 6c3dd8,Espressif Systems (Singapore) Pte. Ltd
 6c3e51,Mindray North America
 6c3e6d,"Apple, Inc."
@@ -24281,7 +24408,7 @@ prefix,vendor
 6c6e07,CE LINK LIMITED
 6c6efe,Core Logic Inc.
 6c6f18,"Stereotaxis, Inc."
-6c7028,Landis+Gyr S.A.
+6c7028,EYKON Solutions S.A.
 6c7039,Novar GmbH
 6c709f,"Apple, Inc."
 6c70cb,"Samsung Electronics Co.,Ltd"
@@ -24361,6 +24488,7 @@ prefix,vendor
 6ca100,Intel Corporate
 6ca31e,ITEL MOBILE LIMITED
 6ca367,Avlinkpro
+6ca3d3,Peplink International Ltd.
 6ca401,essensys plc
 6ca4d1,"Fiberhome Telecommunication Technologies Co.,LTD"
 6ca604,Commscope
@@ -24594,6 +24722,7 @@ prefix,vendor
 70305e,"Nanjing Zhongke Menglian Information Technology Co.,LTD"
 70317f,"Apple, Inc."
 703187,ACX GmbH
+70320c,Ruckus Wireless
 703217,Intel Corporate
 7032d5,Athena Wireless Communications Inc
 703509,"Cisco Systems, Inc"
@@ -24967,6 +25096,7 @@ prefix,vendor
 740ea4,"Apple, Inc."
 740edb,"Optowiz Co., Ltd"
 7410e0,Broadcom Limited
+7411a0,Nokia
 7411b2,"Cisco Systems, Inc"
 741213,"Linksys USA, Inc"
 7412b3,"CHONGQING FUGUI ELECTRONICS CO.,LTD."
@@ -25040,6 +25170,7 @@ prefix,vendor
 743491,"Shenzhen Kings IoT Co., Ltd"
 7434ae,this is engineering Inc.
 74366d,Vodafone Italia S.p.A.
+743675,Juniper Networks
 74372f,"Tongfang Shenzhen Cloudcomputing Technology Co.,Ltd"
 74373b,"UNINET Co.,Ltd."
 74375f,SERCOMM PHILIPPINES INC
@@ -25083,6 +25214,7 @@ prefix,vendor
 744f80,"shenzhen Amos Electronics Co.,Ltd"
 74504e,"New H3C Technologies Co., Ltd"
 7450cd,"HUAWEI TECHNOLOGIES CO.,LTD"
+74518f,"Jiangsu Hetai Intelligent Control Technology Co., Ltd"
 7451ba,Xiaomi Communications Co Ltd
 7452ce,"Hengtai Intelligent Technology (Zhongshan) Co., LTD"
 745327,"COMMSEN CO., LIMITED"
@@ -25106,6 +25238,8 @@ prefix,vendor
 745d43,BSH Hausgeräte GmbH
 745d68,"Fiberhome Telecommunication Technologies Co.,LTD"
 745e1c,PIONEER CORPORATION
+745ea5,"shenzhen trolink  Technology Co.,Ltd"
+745eb4,"YOKOWO CO., LTD."
 745f00,Samsung Semiconductor Inc.
 745f90,LAM Technologies
 745fae,TSL PPL
@@ -25147,6 +25281,7 @@ prefix,vendor
 7473e2,Hillstone Networks Corp.
 747446,"Google, Inc."
 747548,Amazon Technologies Inc.
+747563,Duke Manufacturing
 7475df,TECLINK
 74761f,Microsoft Corporation
 74765b,"Quectel Wireless Solutions Co.,Ltd."
@@ -25453,6 +25588,7 @@ prefix,vendor
 7818ec,"Fortinet, Inc."
 78192e,NASCENT Technology
 7819f7,Juniper Networks
+781a32,"Huawei Device Co., Ltd."
 781c1e,"Chongqing Yipingfang Technology Co., Ltd."
 781c3c,Espressif Inc.
 781c5a,SHARP Corporation
@@ -25497,6 +25633,7 @@ prefix,vendor
 782e03,"GUANGDONG GENIUS TECHNOLOGY CO., LTD."
 782e56,"China Mobile Group Device Co.,Ltd."
 782eef,Nokia Corporation
+782f02,"Honor Device Co., Ltd."
 782f17,"Xlab Co.,Ltd"
 78303b,"Stephen Technologies Co.,Limited"
 78305d,zte corporation
@@ -25550,6 +25687,7 @@ prefix,vendor
 7848fc,System Loco Ltd
 78491d,The Will-Burt Company
 784946,"Cambridge Mobile Telematics, Inc."
+7849d7,"Samsung Electronics Co.,Ltd"
 784b08,f.robotics acquisitions ltd
 784b87,"Murata Manufacturing Co., Ltd."
 784f24,Taicang T&W Electronics
@@ -25730,6 +25868,7 @@ prefix,vendor
 78ac44,Dell Inc.
 78acbf,Igneous Systems
 78acc0,Hewlett Packard
+78adda,Sonova Consumer Hearing GmbH
 78ae0c,Far South Networks
 78af08,Intel Corporate
 78af58,GIMASI SA
@@ -25854,6 +25993,7 @@ prefix,vendor
 78ee4c,Espressif Inc.
 78ef4c,"Unetconvergence Co., Ltd."
 78f09b,"Huawei Device Co., Ltd."
+78f13b,AltoBeam Inc.
 78f1c6,"Cisco Systems, Inc"
 78f235,"Sichuan AI-Link Technology Co., Ltd."
 78f238,"Samsung Electronics Co.,Ltd"
@@ -25917,6 +26057,7 @@ prefix,vendor
 7c1689,Sagemcom Broadband SAS
 7c1779,EM Microelectronic
 7c18cd,"E-TRON Co.,Ltd."
+7c1960,"HUAWEI TECHNOLOGIES CO.,LTD"
 7c19e3,"Google, Inc."
 7c1a03,"8Locations Co., Ltd."
 7c1ac0,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -25996,6 +26137,7 @@ prefix,vendor
 7c4b78,Red Sun Synthesis Pte Ltd
 7c4c58,"Scale Computing, Inc."
 7c4ca5,SKY UK LIMITED
+7c4d4a,"Zhiyue Xingchen(shanghai) Intelligent Terminal Co.,Ltd."
 7c4d8f,HP Inc.
 7c4e09,"Shenzhen Skyworth Wireless Technology Co.,Ltd"
 7c4f7d,Sawwave
@@ -26043,6 +26185,7 @@ prefix,vendor
 7c6a8a,"SINOBONDER Technology Co., Ltd."
 7c6ab3,IBC TECHNOLOGIES INC.
 7c6ac3,"GatesAir, Inc"
+7c6ad7,"New H3C Technologies Co., Ltd"
 7c6adb,"SafeTone Technology Co.,Ltd"
 7c6af3,Integrated Device Technology (Malaysia) Sdn. Bhd.
 7c6b33,Tenyu Tech Co. Ltd.
@@ -26057,6 +26200,7 @@ prefix,vendor
 7c6d62,"Apple, Inc."
 7c6da6,Superwave Group LLC
 7c6df8,"Apple, Inc."
+7c6e47,"Huizhou Guangshijia Communication Technology Co., Ltd."
 7c6f06,Caterpillar Trimble Control Technologies
 7c6ff8,"ShenZhen ACTO Digital Video Technology Co.,Ltd."
 7c70bc,IEEE Registration Authority
@@ -26076,6 +26220,7 @@ prefix,vendor
 7c7716,Zyxel Communications Corporation
 7c787e,"Samsung Electronics Co.,Ltd"
 7c78b2,Wyze Labs Inc
+7c79d4,"Network Optix, Inc."
 7c79e8,PayRange Inc.
 7c7a3c,"New H3C Technologies Co., Ltd"
 7c7a53,Phytrex Technology Corp.
@@ -26119,6 +26264,7 @@ prefix,vendor
 7c94b2,Philips Healthcare PCCI
 7c95b1,"Extreme Networks, Inc."
 7c95f3,"Cisco Systems, Inc"
+7c96a0,"Ningbo Shunyun Electronics Co.,Ltd."
 7c96d2,"Fihonest communication co.,Ltd"
 7c9763,Openmatics s.r.o.
 7c97e1,"Huawei Device Co., Ltd."
@@ -26266,6 +26412,7 @@ prefix,vendor
 7ce1ff,"Computer Performance, Inc. DBA Digital Loggers, Inc."
 7ce269,Texas Instruments
 7ce2ca,Juniper Networks
+7ce4a1,IEEE Registration Authority
 7ce4aa,Private
 7ce524,"Quirky, Inc."
 7ce53f,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -26451,12 +26598,14 @@ prefix,vendor
 804b20,Ventilation Control
 804b50,Silicon Laboratories
 804c5d,NXP Semiconductor (Tianjin) LTD.
+804dcb,"Huawei Device Co., Ltd."
 804e70,"Samsung Electronics Co.,Ltd"
 804e81,"Samsung Electronics Co.,Ltd"
 804f58,"ThinkEco, Inc."
 80501b,Nokia Corporation
 805067,W & D TECHNOLOGY CORPORATION
 8050f6,ITEL MOBILE LIMITED
+8053e0,Espressif Inc.
 80542d,"Samsung Electronics Co.,Ltd"
 80546a,"SHENZHEN GONGJIN ELECTRONICS CO.,LT"
 80549c,"Samsung Electronics Co.,Ltd"
@@ -26539,6 +26688,7 @@ prefix,vendor
 807d1b,Neosystem Co. Ltd.
 807d3a,Espressif Inc.
 807de3,Chongqing Sichuan Instrument Microcircuit Co.LTD.
+807df9,"Mellanox Technologies, Inc."
 807eb4,"Shenzhen SuperElectron Technology Co.,Ltd."
 807ff8,Juniper Networks
 80802c,"Fortinet, Inc."
@@ -26556,6 +26706,7 @@ prefix,vendor
 8086f2,Intel Corporate
 808800,zte corporation
 808917,"TP-LINK TECHNOLOGIES CO.,LTD."
+808943,"Samsung Electronics Co.,Ltd"
 808a8b,"vivo Mobile Communication Co., Ltd."
 808abd,"Samsung Electronics Co.,Ltd"
 808af7,Nanoleaf
@@ -26746,6 +26897,7 @@ prefix,vendor
 84002d,PEGATRON CORPORATION
 840055,VusionGroup
 8400d2,Sony Corporation
+8400ec,Shelly Europe LTD
 840112,"Kaon Group Co., Ltd."
 84016e,"Honor Device Co., Ltd."
 8401a7,"Greyware Automation Products, Inc"
@@ -26844,6 +26996,7 @@ prefix,vendor
 843b10,LVSWITCHES INC.
 843c4c,Robert Bosch SRL
 843c99,zte corporation
+843cfc,"HUAWEI TECHNOLOGIES CO.,LTD"
 843dc6,"Cisco Systems, Inc"
 843e03,Sagemcom Broadband SAS
 843e1d,"Hui Zhou Gaoshengda Technology Co.,LTD"
@@ -26936,11 +27089,13 @@ prefix,vendor
 847c9b,"GD Midea Air-Conditioning Equipment Co.,Ltd."
 847cee,"Cisco Systems, Inc"
 847d50,Holley Metering Limited
+847d7e,"Cisco Systems, Inc"
 847e40,Texas Instruments
 847f3d,Integrated Device Technology (Malaysia) Sdn. Bhd.
 84802d,"Cisco Systems, Inc"
 848094,"Meter, Inc."
 848102,"Fiberhome Telecommunication Technologies Co.,LTD"
+8481ea,"Shanghai Baud Data Communication Co.,Ltd."
 84821b,PROX SG Pte Ltd
 8482f4,"Beijing Huasun Unicreate Technology Co., Ltd"
 848319,"Hangzhou Zero Zero Technology Co., Ltd."
@@ -27002,6 +27157,7 @@ prefix,vendor
 84a1d1,Sagemcom Broadband SAS
 84a24d,Birds Eye Systems Private Limited
 84a329,Arcadyan Corporation
+84a34b,"Barrot Technology Co.,Ltd."
 84a3b5,Propulsion systems
 84a423,Sagemcom Broadband SAS
 84a466,"Samsung Electronics Co.,Ltd"
@@ -27333,6 +27489,7 @@ prefix,vendor
 8863c5,"HUAWEI TECHNOLOGIES CO.,LTD"
 8863df,"Apple, Inc."
 886440,"Apple, Inc."
+8864a8,TeraNXT Global India Pvt Ltd.
 88659f,"Fiberhome Telecommunication Technologies Co.,LTD"
 886639,"HUAWEI TECHNOLOGIES CO.,LTD"
 88665a,"Apple, Inc."
@@ -27479,6 +27636,7 @@ prefix,vendor
 88b8d0,"Dongguan Koppo Electronic Co.,Ltd"
 88b945,"Apple, Inc."
 88b951,Xiaomi Communications Co Ltd
+88b9b8,NXP Semiconductors Taiwan Ltd.
 88ba74,Silicon Laboratories
 88ba7f,"Qfiednet Co., Ltd."
 88bcac,Zebra Technologies Inc.
@@ -27499,6 +27657,7 @@ prefix,vendor
 88c344,"Google, Inc."
 88c36e,Beijing Ereneben lnformation Technology Limited
 88c397,"Beijing Xiaomi Mobile Software Co., Ltd"
+88c3b2,ROTEK LLC
 88c3b3,SOVICO
 88c3e5,Betop Techonologies
 88c48e,UNEEVIU TECHNOLOGIES INDIA PRIVATE LIMITED
@@ -27649,6 +27808,7 @@ prefix,vendor
 8c1f94,RF Surgical System Inc.
 8c20f1,OpenAI
 8c210a,"TP-LINK TECHNOLOGIES CO.,LTD."
+8c2114,"Huawei Device Co., Ltd."
 8c22d2,"Hangzhou Hikvision Digital Technology Co.,Ltd."
 8c2505,"HUAWEI TECHNOLOGIES CO.,LTD"
 8c255e,VoltServer
@@ -27876,6 +28036,7 @@ prefix,vendor
 8c9b2d,"PLANTRONICS, INC."
 8c9f3b,"Qingdao Hisense Communications Co.,Ltd."
 8ca048,"Beijing NeTopChip Technology Co.,LTD"
+8ca2f5,"Huawei Device Co., Ltd."
 8ca2fd,"Starry, Inc."
 8ca399,SERVERCOM (INDIA) PRIVATE LIMITED
 8ca3ec,"Samsung Electronics Co.,Ltd"
@@ -28078,8 +28239,10 @@ prefix,vendor
 901b0e,Fujitsu Technology Solutions GmbH
 901c9e,Alcatel-Lucent Enterprise
 901d27,zte corporation
+901dff,"ZOWEE TECHNOLOGY(HEYUAN)Co.,Ltd"
 901edd,GREAT COMPUTER CORPORATION
 901f09,Silicon Laboratories
+901f94,TP-Link Systems Inc.
 90203a,"BYD Precision Manufacture Co.,Ltd"
 902083,General Engine Management Systems Ltd.
 9020c2,Hewlett Packard Enterprise
@@ -28283,6 +28446,7 @@ prefix,vendor
 90903c,TRISON TECHNOLOGY CORPORATION
 909060,RSI VIDEO TECHNOLOGIES
 909164,"ChongQing Lavid Technology Co., Ltd."
+90916e,"nFore Technology Co., Ltd."
 90922c,"Changzhi City Zhouyi Hengtong Information Security Co.,Ltd."
 9092b4,Diehl BGT Defence GmbH & Co. KG
 90935a,Commscope
@@ -28374,6 +28538,7 @@ prefix,vendor
 90c792,Commscope
 90c7d8,zte corporation
 90c952,"Durin, Inc"
+90c97e,"HUAWEI TECHNOLOGIES CO.,LTD"
 90c99b,Tesorion Nederland B.V.
 90cafa,"Google, Inc."
 90cba3,TECNO MOBILE LIMITED
@@ -28393,6 +28558,7 @@ prefix,vendor
 90d3cf,ASKEY COMPUTER CORP
 90d432,zte corporation
 90d473,"vivo Mobile Communication Co., Ltd."
+90d529,ACCTON TECHNOLOGY CORPORATION
 90d689,"Huahao Fangzhou Technology Co.,Ltd"
 90d733,"HUAWEI TECHNOLOGIES CO.,LTD"
 90d74f,Bookeen
@@ -28451,11 +28617,13 @@ prefix,vendor
 90f3b8,"China Mobile Group Device Co.,Ltd."
 90f421,IEEE Registration Authority
 90f4c1,Rand McNally
+90f510,Technologie Optic.ca Inc.
 90f644,"Huawei Device Co., Ltd."
 90f652,"TP-LINK TECHNOLOGIES CO.,LTD."
 90f721,IndiNatus (IndiNatus India Private Limited)
 90f72f,"Phillips Machine & Welding Co., Inc."
 90f7b2,"New H3C Technologies Co., Ltd"
+90f80c,"Samsung Electronics Co.,Ltd"
 90f82e,Amazon Technologies Inc.
 90f861,u-blox AG
 90f891,"Kaon Group Co., Ltd."
@@ -28523,6 +28691,7 @@ prefix,vendor
 94193a,Elvaco AB
 941c56,"Actiontec Electronics, Inc"
 941d1c,TLab West Systems AB
+941dd4,"Google, Inc."
 941f3a,Ambiq
 941fa2,"Wuhan YuXin Semiconductor Co., Ltd."
 942053,Nokia Corporation
@@ -28546,6 +28715,7 @@ prefix,vendor
 94298d,"Shanghai AdaptComm Technology Co., Ltd."
 942a3f,Diversey Inc
 942a6f,Ubiquiti Inc
+942ad6,Texas Instruments
 942b68,"Apple, Inc."
 942cb3,"HUMAX Co., Ltd."
 942d3a,PRIZOR VIZTECH LIMITED
@@ -28562,6 +28732,7 @@ prefix,vendor
 943469,Silicon Laboratories
 94350a,"Samsung Electronics Co.,Ltd"
 943589,"HUAWEI TECHNOLOGIES CO.,LTD"
+94368b,"GD Midea Air-Conditioning Equipment Co.,Ltd."
 9436e0,"Sichuan Bihong Broadcast &amp; Television New Technologies Co.,Ltd"
 9437f7,"Huawei Device Co., Ltd."
 9438aa,Technology Innovation Institute
@@ -28626,6 +28797,7 @@ prefix,vendor
 945afc,Amazon Technologies Inc.
 945b7e,TRILOBIT LTDA.
 945c9a,"Apple, Inc."
+945dbf,Nokia Solutions and Networks India Private Limited
 945f34,Renesas Electronics (Penang) Sdn. Bhd.
 946010,"Huawei Device Co., Ltd."
 9460d5,Hewlett Packard Enterprise
@@ -28666,6 +28838,7 @@ prefix,vendor
 947f1d,"Shenzhen Fastrain Technology Co., Ltd."
 947fd8,"Shenzhen Skyworth Digital  Technology  CO., Ltd"
 9481a4,Azuray Technologies
+9482b2,GL Intelligence
 9483c4,GL Technologies (Hong Kong) Limited
 94857a,Evantage Industries Corp
 9486cd,SEOUL ELECTRONICS&TELECOM
@@ -28754,6 +28927,7 @@ prefix,vendor
 94b3f7,"Hui Zhou Gaoshengda Technology Co.,LTD"
 94b40f,Hewlett Packard Enterprise
 94b555,Espressif Inc.
+94b5ad,ERM Electronic Systems LTD
 94b609,Intel Corporate
 94b819,Nokia
 94b86d,Intel Corporate
@@ -28792,6 +28966,7 @@ prefix,vendor
 94c960,"Zhongshan B&T technology.co.,ltd"
 94c962,Teseq AG
 94c9b7,IEEE Registration Authority
+94c9f3,"Bouffalo Lab (Nanjing) Co., Ltd."
 94ca0f,Honeywell Analytics
 94ca9a,Paul Vahle GmbH & Co. KG
 94cbcd,zte corporation
@@ -28920,9 +29095,11 @@ prefix,vendor
 980637,IEEE Registration Authority
 98063a,Home Control Singapore Pte Ltd
 98063c,"Samsung Electronics Co.,Ltd"
+9806a3,GSD VIET NAM TECHNOLOGY COMPANY LIMITED
 980709,"Huawei Device Co., Ltd."
 98072d,Texas Instruments
 980802,ORBIS BV
+980818,AltoBeam Inc.
 9809cf,"OnePlus Technology (Shenzhen) Co., Ltd"
 980a4b,Nokia Solutions and Networks GmbH & Co. KG
 980c33,Silicon Laboratories
@@ -29047,6 +29224,7 @@ prefix,vendor
 984fee,Intel Corporate
 98502e,"Apple, Inc."
 9850a3,SIGNALTEK JSC
+9851fc,"Huawei Device Co., Ltd."
 985207,"HUAWEI TECHNOLOGIES CO.,LTD"
 98523d,"Sunitec Enterprise Co.,Ltd"
 98524a,Vantiva USA LLC
@@ -29090,6 +29268,7 @@ prefix,vendor
 98743d,Shenzhen Jun Kai Hengye Technology Co. Ltd
 9874da,Infinix mobility limited
 98751a,"Huawei Device Co., Ltd."
+987552,Xiaomi Communications Co Ltd
 987596,EM Microelectronic
 9876b6,Adafruit
 987770,"Pep Digital Technology (Guangzhou) Co., Ltd"
@@ -29158,6 +29337,7 @@ prefix,vendor
 98a14a,"Quectel Wireless Solutions Co.,Ltd."
 98a2c0,"Cisco Systems, Inc"
 98a316,Espressif Inc.
+98a33c,"Shenzhen Cultraview Digital Technology Co., Ltd"
 98a375,"Huawei Device Co., Ltd."
 98a404,Ericsson AB
 98a40e,"Snap, Inc."
@@ -29179,7 +29359,7 @@ prefix,vendor
 98af65,Intel Corporate
 98b039,Nokia
 98b08b,"Samsung Electronics Co.,Ltd"
-98b177,Landis+Gyr S.A.
+98b177,EYKON Solutions S.A.
 98b379,"Apple, Inc."
 98b3ef,"Huawei Device Co., Ltd."
 98b6e9,"Nintendo Co.,Ltd"
@@ -29202,6 +29382,7 @@ prefix,vendor
 98c0eb,Global Regency Ltd
 98c377,Espressif Inc.
 98c3d2,"Ningbo Sanxing Medical Electric Co.,Ltd"
+98c5b3,"New H3C Technologies Co., Ltd"
 98c5db,Ericsson AB
 98c7a4,"Shenzhen HS Fiber Communication Equipment CO., LTD"
 98c81c,BAYTEC LIMITED
@@ -29279,6 +29460,7 @@ prefix,vendor
 98f1ae,Senaisc
 98f217,Castlenet Technology Inc.
 98f2b3,Hewlett Packard Enterprise
+98f364,"Yantai Dongfang Wisdom Elrctic Co.,Ltd."
 98f3f6,"HUAWEI TECHNOLOGIES CO.,LTD"
 98f428,zte corporation
 98f487,Texas Instruments
@@ -29420,6 +29602,7 @@ prefix,vendor
 9c4a7b,Nokia Corporation
 9c4b6b,iFlight Technology Company Limited
 9c4cae,Mesa Labs
+9c4dc2,"Cisco Systems, Inc"
 9c4e20,"Cisco Systems, Inc"
 9c4e36,Intel Corporate
 9c4e8e,ALT Systems Ltd
@@ -29474,6 +29657,7 @@ prefix,vendor
 9c63ed,zte corporation
 9c645e,Harman Consumer Group
 9c648b,"Apple, Inc."
+9c64a1,Silicon Laboratories
 9c65b0,"Samsung Electronics Co.,Ltd"
 9c65eb,Intel Corporate
 9c65ee,"Zhone Technologies, Inc."
@@ -29519,6 +29703,7 @@ prefix,vendor
 9c7f57,UNIC Memory Technology Co Ltd
 9c7f64,"Nanjing Qinheng Microelectronics Co., Ltd."
 9c7f81,"SHENZHEN FAST TECHNOLOGIES CO.,LTD"
+9c803d,TCT mobile ltd
 9c807d,SYSCABLE Korea Inc.
 9c80df,Arcadyan Corporation
 9c823f,"Huawei Device Co., Ltd."
@@ -29560,6 +29745,7 @@ prefix,vendor
 9c95f8,"SmartDoor Systems, LLC"
 9c9613,Lenovo Future Communication Technology (Chongqing) Company Limited
 9c961b,IFTER Jerzy Taczalski
+9c96d5,Espressif Systems (Singapore) Pte. Ltd
 9c971b,Intel Corporate
 9c9726,Vantiva Technologies Belgium
 9c9774,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -29580,6 +29766,7 @@ prefix,vendor
 9c9e71,"Huawei Device Co., Ltd."
 9c9ed5,Xiaomi Communications Co Ltd
 9ca10a,SCLE SFE
+9ca118,"Huawei Device Co., Ltd."
 9ca134,"Nike, Inc."
 9ca2f4,TP-Link Systems Inc
 9ca389,Nokia
@@ -29670,6 +29857,7 @@ prefix,vendor
 9cdbaf,"HUAWEI TECHNOLOGIES CO.,LTD"
 9cdbcb,"Funshion Online Technologies Co.,Ltd"
 9cdc71,Hewlett Packard Enterprise
+9cdc99,"Extreme Networks, Inc."
 9cdd1f,"Intelligent Steward Co.,Ltd"
 9cde4d,"ML vision Co.,LTD"
 9cdef0,"Jiangxi Risound Electronics Co.,LTD"
@@ -30061,6 +30249,7 @@ a0c589,Intel Corporate
 a0c5f2,IEEE Registration Authority
 a0c6a5,"Lierda Science & Technology Group Co., Ltd"
 a0c6ec,"ShenZhen ANYK Technology Co.,LTD"
+a0c773,Chipsea Technologies (Shenzhen) Corp.
 a0c7d2,"Cisco Systems, Inc"
 a0c926,"Huawei Device Co., Ltd."
 a0c98b,Nokia Solutions and Networks GmbH & Co. KG
@@ -30115,6 +30304,7 @@ a0e617,MATIS
 a0e6f8,Texas Instruments
 a0e70b,Intel Corporate
 a0e7ae,Commscope
+a0e922,Optiemus Electronics Limited
 a0e9db,"Ningbo FreeWings Technologies Co.,Ltd"
 a0eb76,AirCUVE Inc.
 a0ec80,zte corporation
@@ -30234,6 +30424,7 @@ a42a95,D-Link International
 a42b8c,NETGEAR
 a42bb0,"TP-LINK TECHNOLOGIES CO.,LTD."
 a42c08,Masterwork Automodules
+a42df1,"Motorola Mobility LLC, a Lenovo Company"
 a4307a,"Samsung Electronics Co.,Ltd"
 a43111,ZIV
 a43135,"Apple, Inc."
@@ -30246,6 +30437,8 @@ a43523,"Guangdong Donyan Network Technologies Co.,Ltd."
 a4352d,TRIZ Networks corp.
 a436c7,LG Innotek
 a4373e,"Huawei Device Co., Ltd."
+a437e6,"Murata Manufacturing Co., Ltd."
+a43828,"HUAWEI TECHNOLOGIES CO.,LTD"
 a43831,RF elements s.r.o.
 a438cc,"Nintendo Co.,Ltd"
 a438fc,Plastic Logic
@@ -30628,6 +30821,7 @@ a81b18,XTS CORP
 a81b5a,"GUANGDONG OPPO MOBILE TELECOMMUNICATIONS CORP.,LTD"
 a81b5d,Foxtel Management Pty Ltd
 a81b6a,Texas Instruments
+a81c36,"SmartSens Technology (Shanghai) Co., Ltd."
 a81d16,AzureWave Technology Inc.
 a81e84,Quanta Computer Inc.
 a81f79,Yingling Innovations Pte. Ltd.
@@ -30917,6 +31111,7 @@ a8d409,USA 111 Inc
 a8d498,Avira Operations GmbH & Co. KG
 a8d4e0,"HUAWEI TECHNOLOGIES CO.,LTD"
 a8d579,"Beijing Chushang Science and Technology Co.,Ltd"
+a8d6d9,CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD.
 a8d828,Ascensia Diabetes Care
 a8d861,ITEL MOBILE LIMITED
 a8d88a,Wyconn
@@ -30925,6 +31120,7 @@ a8da0c,SERVERCOM (INDIA) PRIVATE LIMITED
 a8db03,SAMSUNG ELECTRO-MECHANICS(THAILAND)
 a8dc5a,Digital Watchdog
 a8dd9f,"Quectel Wireless Solutions Co.,Ltd."
+a8ddbc,Tuya Smart Inc.
 a8ddec,"Hangzhou BroadLink Technology Co., Ltd"
 a8de68,"Beijing Wide Technology Co.,Ltd"
 a8e018,Nokia Corporation
@@ -30988,9 +31184,11 @@ ac02ca,"HI Solutions, Inc."
 ac02cf,RW Tecnologia Industria e Comercio Ltda
 ac02ef,Comsis
 ac040b,"Peloton Interactive, Inc"
+ac0416,zte corporation
 ac0425,ball-b GmbH Co KG
 ac0481,"Jiangsu Huaxing Electronics Co., Ltd."
 ac04aa,GoPro
+ac04e6,"NTX Electronics YangZhou co.,LTD"
 ac05c7,Intel Corporate
 ac0613,Senselogix Ltd
 ac0650,"Shanghai Baosight Software Co., Ltd"
@@ -31091,6 +31289,7 @@ ac3dfa,"Hangzhou Huacheng Network Technology Co.,Ltd"
 ac3eb1,"Google, Inc."
 ac3fa4,"TAIYO YUDEN CO.,LTD"
 ac401e,"vivo Mobile Communication Co., Ltd."
+ac40b5,Lumiva Inc.
 ac40ea,C&T Solution Inc.
 ac4122,Eclipse Electronic Systems Inc.
 ac416a,Amazon Technologies Inc.
@@ -31220,6 +31419,7 @@ ac8674,"Open Mesh, Inc."
 ac867e,Create New Technology (HK) Limited Company
 ac86a3,"Apple, Inc."
 ac86d1,IEEE Registration Authority
+ac873f,"Bouffalo Lab (Nanjing) Co., Ltd."
 ac8746,"Huizhou BYD Electronic Co., Ltd."
 ac87a3,"Apple, Inc."
 ac8866,"Shenzhen Skyworth Digital  Technology  CO., Ltd"
@@ -31253,6 +31453,7 @@ ac9738,"Apple, Inc."
 ac976c,Greenliant
 ac9929,"HUAWEI TECHNOLOGIES CO.,LTD"
 ac9a22,NXP Semiconductors
+ac9a3f,Texas Instruments
 ac9a96,"Maxlinear, Inc"
 ac9b0a,Sony Corporation
 ac9b84,Smak Tecnologia e Automacao
@@ -31415,6 +31616,8 @@ acf6f7,LG Electronics (Mobile Communications)
 acf70d,"China Mobile Group Device Co.,Ltd."
 acf7f3,Xiaomi Communications Co Ltd
 acf85c,"Chengdu Higon Integrated Circuit Design Co,. Ltd."
+acf878,Tuya Smart Inc.
+acf896,eero inc.
 acf8cc,Commscope
 acf932,NXP Semiconductor (Tianjin) LTD.
 acf970,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -31459,6 +31662,7 @@ b019c6,"Apple, Inc."
 b01b4b,Invisible Fun Studio Limited
 b01b7c,Ontrol A.S.
 b01bd2,Le Shi Zhi Xin Electronic Technology (Tianjin) Limited
+b01bfc,"Cisco Systems, Inc"
 b01c0c,"SHENZHEN CHUANGWEI-RGB ELECTRONICS CO.,LTD"
 b01c91,Elim Co
 b01f29,Helvetia INC.
@@ -31564,6 +31768,7 @@ b05dd4,Commscope
 b06088,Intel Corporate
 b061a9,"YEALINK(XIAMEN) NETWORK TECHNOLOGY CO.,LTD."
 b061c7,Ericsson-LG Enterprise
+b061eb,Silicon Laboratories
 b064e0,"Samsung Electronics Co.,Ltd"
 b0653a,"Murata Manufacturing Co., Ltd."
 b06563,Shanghai Railway Communication Factory
@@ -31614,6 +31819,7 @@ b0808c,Laser Light Engines
 b08101,"Honor Device Co., Ltd."
 b08184,Espressif Inc.
 b081d8,I-sys Corp
+b082ab,"Guangdong Welland Technology Co.,Ltd"
 b082e2,ASUSTek COMPUTER INC.
 b083d6,Commscope
 b083fe,Dell Inc.
@@ -31670,6 +31876,7 @@ b0a3f2,Huaqin Technology Co. LTD
 b0a454,Tripwire Inc.
 b0a460,Intel Corporate
 b0a4f0,"HUAWEI TECHNOLOGIES CO.,LTD"
+b0a5b3,Hewlett Packard Enterprise
 b0a604,Espressif Inc.
 b0a651,"Cisco Systems, Inc"
 b0a6f5,"Xaptum, Inc."
@@ -31688,6 +31895,7 @@ b0acfa,FUJITSU LIMITED
 b0adaa,Avaya Inc
 b0ae25,Varikorea
 b0aff7,"Shenzhen Yipingfang Network Technology Co., Ltd."
+b0b0a1,"Hon Hai Precision Industry Co.,LTD"
 b0b113,Texas Instruments
 b0b194,zte corporation
 b0b21c,Espressif Inc.
@@ -31711,6 +31919,7 @@ b0bc8e,SkyMirr
 b0bd1b,"Dongguan Liesheng Electronic Co., Ltd."
 b0bd6d,Echostreams Innovative Solutions
 b0bda1,ZAKLAD ELEKTRONICZNY SIMS
+b0be45,"Mellanox Technologies, Inc."
 b0be76,"TP-LINK TECHNOLOGIES CO.,LTD."
 b0be83,"Apple, Inc."
 b0bf99,WIZITDONGDO
@@ -31753,6 +31962,7 @@ b0d2f5,"Vello Systems, Inc."
 b0d41f,MOBITITECABSOLUT S.A.
 b0d568,"Shenzhen Cultraview Digital Technology Co., Ltd"
 b0d576,"Apple, Inc."
+b0d587,"silex technology, Inc."
 b0d59d,"Shenzhen Zowee Technology Co., Ltd"
 b0d5cc,Texas Instruments
 b0d5fb,"Google, Inc."
@@ -31826,6 +32036,7 @@ b0fc88,Sagemcom Broadband SAS
 b0fd0b,IEEE Registration Authority
 b0febd,Private
 b0fee5,"Huawei Device Co., Ltd."
+b0ff0d,"Hangzhou Hikvision Digital Technology Co.,Ltd."
 b0ff72,IEEE Registration Authority
 b40016,INGENICO TERMINALS SAS
 b4009c,CableWorld Ltd.
@@ -31999,6 +32210,7 @@ b46dc2,SHENZHEN BILIAN ELECTRONIC CO.，LTD
 b46e08,"HUAWEI TECHNOLOGIES CO.,LTD"
 b46e10,"vivo Mobile Communication Co., Ltd."
 b46f2d,Wahoo Fitness
+b46f78,ACCTON TECHNOLOGY CORPORATION
 b47064,"Samsung Electronics Co.,Ltd"
 b472d4,zte corporation
 b47356,"Hangzhou Treebear Networking Co., Ltd."
@@ -32148,10 +32360,12 @@ b4cdf5,CUB ELECPARTS INC.
 b4ce40,"Samsung Electronics Co.,Ltd"
 b4cef6,HTC Corporation
 b4cefe,James Czekaj
+b4cf49,WNC Corporation
 b4cfdb,"Shenzhen Jiuzhou Electric Co.,LTD"
 b4cfe0,"Sichuan tianyi kanghe communications co., LTD"
 b4d0a9,"China Mobile Group Device Co.,Ltd."
 b4d135,Cloudistics
+b4d1f6,"HUAWEI TECHNOLOGIES CO.,LTD"
 b4d286,"Telechips, Inc."
 b4d31a,LYSORA TECHNOLOGY INC.
 b4d5bd,Intel Corporate
@@ -32169,6 +32383,7 @@ b4de31,"Cisco Systems, Inc"
 b4dedf,zte corporation
 b4df09,FLUX::
 b4df3b,Chromlech
+b4df43,IEEE Registration Authority
 b4df91,Cisco Meraki
 b4dffa,Litemax Electronics Inc.
 b4e01d,CONCEPTION ELECTRONIQUE
@@ -32232,6 +32447,7 @@ b4fc7d,AVM Audiovisuelles Marketing und Computersysteme GmbH
 b4fe8c,Centro Sicurezza Italia SpA
 b4ff98,"HUAWEI TECHNOLOGIES CO.,LTD"
 b80018,Htel
+b8005b,"Huawei Device Co., Ltd."
 b8011f,"Apple, Inc."
 b802a4,"Aeonsemi, Inc."
 b80305,Intel Corporate
@@ -32247,6 +32463,7 @@ b8098a,"Apple, Inc."
 b80b9a,"HUAWEI TECHNOLOGIES CO.,LTD"
 b80b9d,ROPEX Industrie-Elektronik GmbH
 b80bda,"GD Midea Air-Conditioning Equipment Co.,Ltd."
+b80c68,"Honor Device Co., Ltd."
 b80e1d,PAX Computer Technology(Shenzhen) Ltd.
 b810d4,Masimo Corporation
 b8114b,"Cisco Systems, Inc"
@@ -32423,6 +32640,7 @@ b88035,Shenzhen Qihu Intelligent Technology Company Limited
 b8804f,Texas Instruments
 b88198,Intel Corporate
 b881fa,"Apple, Inc."
+b88268,"SHENZHEN HOPESTAR TECHNOLOGY CO.,LTD."
 b882f2,WNC Corporation
 b88303,Hewlett Packard Enterprise
 b88411,"Shenzhen Shokz Co., Ltd."
@@ -32525,6 +32743,7 @@ b8b94e,"Shenzhen iBaby Labs, Inc."
 b8ba66,Microsoft Corporation
 b8ba68,"Xi'an Jizhong Digital Communication Co.,Ltd"
 b8ba72,Cynove
+b8bb11,Espressif Systems (Singapore) Pte. Ltd
 b8bb23,"Guangdong Nufront CSC Co., Ltd"
 b8bb6d,"ENERES Co.,Ltd."
 b8bbaf,"Samsung Electronics Co.,Ltd"
@@ -32681,6 +32900,7 @@ bc0ffe,Juniper Networks
 bc102f,SJI Industry Company
 bc107b,"Samsung Electronics Co.,Ltd"
 bc121f,ACCTON TECHNOLOGY CORPORATION
+bc122f,"LCFC(Hefei) Electronics Technology co., ltd"
 bc125e,Beijing  WisVideo  INC.
 bc13a8,"Shenzhen YOUHUA Technology Co., Ltd"
 bc1401,Hitron Technologies. Inc
@@ -32709,6 +32929,7 @@ bc2247,"New H3C Technologies Co., Ltd"
 bc22fb,RF Industries
 bc2392,BYD Precision Manufacture Company Ltd.
 bc2411,Proxmox Server Solutions GmbH
+bc2492,"New H3C Technologies Co., Ltd"
 bc25e0,"HUAWEI TECHNOLOGIES CO.,LTD"
 bc25f0,"3D Display Technologies Co., Ltd."
 bc261d,HONG KONG TECON TECHNOLOGY
@@ -32792,6 +33013,7 @@ bc4e3c,"CORE STAFF CO., LTD."
 bc4e5d,"ZhongMiao Technology Co., Ltd."
 bc4f2d,"Apple, Inc."
 bc515f,Nokia Solutions and Networks India Private Limited
+bc516c,"Tiandy Technologies Co.,LTD"
 bc51fe,Swann communications Pty Ltd
 bc5274,"Samsung Electronics Co.,Ltd"
 bc52b4,Nokia
@@ -32839,6 +33061,7 @@ bc6ad1,Xiaomi Communications Co Ltd
 bc6b4d,Nokia
 bc6bff,Guangzhou Shiyuan Electronic Technology Company Limited
 bc6c21,"Apple, Inc."
+bc6c96,"SHEN ZHEN TENDA TECHNOLOGY CO.,LTD"
 bc6d05,"Dusun Electron Co.,Ltd."
 bc6e64,Sony Corporation
 bc6e6d,EM Microelectronic
@@ -32901,6 +33124,7 @@ bc926b,"Apple, Inc."
 bc9307,"Samsung Electronics Co.,Ltd"
 bc9325,"Ningbo Joyson Preh Car Connect Co.,Ltd."
 bc932a,Silicon Laboratories
+bc9388,"Nokia Solutions (Shanghai) Co.,Ltd."
 bc9424,TCT mobile ltd
 bc9680,"SHENZHEN GONGJIN ELECTRONICS CO.,LT"
 bc96e5,SERCOMM PHILIPPINES INC
@@ -33075,6 +33299,7 @@ bcff4d,Espressif Inc.
 bcff54,zte corporation
 bcffac,TOPCON CORPORATION
 bcffeb,"Motorola Mobility LLC, a Lenovo Company"
+c00195,Amazon Technologies Inc.
 c0028d,"WINSTAR Display CO.,Ltd"
 c00380,Juniper Networks
 c005c2,Commscope
@@ -33221,6 +33446,7 @@ c05e79,"SHENZHEN HUAXUN ARK TECHNOLOGIES CO.,LTD"
 c05f87,"Legrand INTELLIGENT ELECTRICAL(HUIZHOU)CO.,LTD."
 c06118,"TP-LINK TECHNOLOGIES CO.,LTD."
 c0613d,"BioIntelliSense, Inc."
+c06194,"Huawei Device Co., Ltd."
 c0619a,IEEE Registration Authority
 c0626b,"Cisco Systems, Inc"
 c062f2,"Beijing Cotytech Co.,LTD"
@@ -33520,6 +33746,7 @@ c41c07,"Samsung Electronics Co.,Ltd"
 c41c9c,JiQiDao
 c41cff,"Vizio, Inc"
 c41ece,HMI Sources Ltd.
+c42155,"Huawei Device Co., Ltd."
 c421b9,zte corporation
 c421c8,KYOCERA CORPORATION
 c4224e,Telink Micro LLC
@@ -33560,6 +33787,7 @@ c4393a,SMC Networks Inc
 c43960,"GD Midea Air-Conditioning Equipment Co.,Ltd."
 c43a35,FN-LINK TECHNOLOGY LIMITED
 c43a9f,Siconix Inc.
+c43aa5,AzureWave Technology Inc.
 c43abe,Sony Corporation
 c43c3c,CYBELEC SA
 c43cb0,SHENZHEN BILIAN ELECTRONIC CO.，LTD
@@ -33588,6 +33816,7 @@ c4491b,"Apple, Inc."
 c4493e,"Motorola Mobility LLC, a Lenovo Company"
 c449bb,"MITSUMI ELECTRIC CO.,LTD."
 c44ad0,FIREFLIES SYSTEMS
+c44b31,"Cisco Systems, Inc"
 c44b44,Omniprint Inc.
 c44bd1,"Wallys Communications  Teachnologies Co.,Ltd."
 c44d84,"Cisco Systems, Inc"
@@ -33612,6 +33841,7 @@ c45746,Texas Instruments
 c4576e,"Samsung Electronics Co.,Ltd"
 c45781,Wingtech Group (HongKong) Limited
 c457cd,"HUAWEI TECHNOLOGIES CO.,LTD"
+c45878,AltoBeam Inc.
 c458c2,"Shenzhen TATFOOK Technology Co., Ltd."
 c45976,Fugoo Coorporation
 c45a86,"Huawei Device Co., Ltd."
@@ -33746,6 +33976,7 @@ c4a10e,IEEE Registration Authority
 c4a151,"Sichuan Tianyi Comheart Telecom Co.,LTD"
 c4a1ae,"Huawei Device Co., Ltd."
 c4a366,zte corporation
+c4a3ef,UEI Electronics Private Ltd.
 c4a402,"HUAWEI TECHNOLOGIES CO.,LTD"
 c4a451,TECNO MOBILE LIMITED
 c4a559,IEEE Registration Authority
@@ -33807,6 +34038,7 @@ c4c9ec,Gugaoo   HK Limited
 c4ca2b,Arista Networks
 c4ca67,"Chongqing ZQZER Technology Co., LTD"
 c4cad9,"Hangzhou H3C Technologies Co., Limited"
+c4cb33,Garmin International
 c4cb54,Fibocom Auto Inc.
 c4cb6b,"Airista Flow, Inc."
 c4cb76,Microsoft Corporation
@@ -33939,6 +34171,7 @@ c816bd,"Qingdao Hisense Communications Co.,Ltd."
 c816da,"Realme Chongqing Mobile Telecommunications Corp.,Ltd."
 c81739,ITEL MOBILE LIMITED
 c817f5,"Nanjing Qinheng Microelectronics Co., Ltd."
+c819d8,Blink by Amazon
 c819f7,"Samsung Electronics Co.,Ltd"
 c81afe,DLOGIC GmbH
 c81b5c,BCTech
@@ -34178,6 +34411,7 @@ c8ae9c,Shanghai TYD Elecronic Technology Co. Ltd
 c8af40,marco Systemanalyse und Entwicklung GmbH
 c8afe3,"Hefei Radio Communication Technology Co., Ltd"
 c8aff0,CDVI Wireless SpA
+c8b0b2,zte corporation
 c8b1cd,"Apple, Inc."
 c8b1ee,Qorvo
 c8b21e,CHIPSEA TECHNOLOGIES (SHENZHEN) CORP.
@@ -34221,6 +34455,7 @@ c8c83f,Texas Instruments
 c8c873,CHIPSEN INC.
 c8c992,"Beijing Roborock Technology Co., Ltd."
 c8c9a3,Espressif Inc.
+c8c9b2,Amazon Technologies Inc.
 c8ca63,"Huawei Device Co., Ltd."
 c8ca79,Ciena Corporation
 c8cb9e,Intel Corporate
@@ -34252,6 +34487,7 @@ c8d884,"Universal Electronics, Inc."
 c8d959,"Motorola Mobility LLC, a Lenovo Company"
 c8d995,Juniper Networks
 c8d9d2,Hewlett Packard
+c8da29,Espressif Systems (Singapore) Pte. Ltd
 c8db26,Logitech
 c8dd6a,OHSUNG
 c8ddc9,Lenovo Mobile Communication Technology Ltd.
@@ -34275,6 +34511,7 @@ c8e713,"Bouffalo Lab (Nanjing) Co., Ltd."
 c8e776,PTCOM Technology
 c8e7d8,"MERCURY COMMUNICATION TECHNOLOGIES CO.,LTD."
 c8e7f0,Juniper Networks
+c8e8af,eero inc.
 c8eaf8,zte corporation
 c8ebec,"Shenzhen YOUHUA Technology Co., Ltd"
 c8edfc,"Shenzhen Ideaform Industrial Product Design Co., Ltd"
@@ -34366,6 +34603,7 @@ cc208c,"HUAWEI TECHNOLOGIES CO.,LTD"
 cc20ac,"Samsung Electronics Co.,Ltd"
 cc20e8,"Apple, Inc."
 cc2119,"Samsung Electronics Co.,Ltd"
+cc219d,"Shenzhen Wangliantong Intelligent Technology Co.,Lte"
 cc2218,"InnoDigital Co., Ltd."
 cc2237,IEEE Registration Authority
 cc2293,Amazon Technologies Inc.
@@ -34534,6 +34772,7 @@ cc7b61,"NIKKISO CO., LTD."
 cc7d37,Commscope
 cc7d5b,"Telink Semiconductor (Shanghai) Co., Ltd."
 cc7e0f,Theben AG
+cc7e1f,Espressif Inc.
 cc7ee7,Panasonic Corporation AVC Networks Company
 cc7f75,"Cisco Systems, Inc"
 cc7f76,"Cisco Systems, Inc"
@@ -34565,6 +34804,7 @@ cc9093,Hansong Tehnologies
 cc9096,"Huawei Device Co., Ltd."
 cc90e8,"Shenzhen YOUHUA Technology Co., Ltd"
 cc912b,TE Connectivity Touch Solutions
+cc915b,"Huawei Device Co., Ltd."
 cc934a,"Sierra Wireless, ULC"
 cc944a,Pfeiffer Vacuum GmbH
 cc9470,"Kinestral Technologies, Inc."
@@ -34575,6 +34815,7 @@ cc96a2,"China Mobile Group Device Co.,Ltd."
 cc96e5,Dell Inc.
 cc988b,SONY Visual Products Inc.
 cc9891,"Cisco Systems, Inc"
+cc98ef,"GUANGDONG OPPO MOBILE TELECOMMUNICATIONS CORP.,LTD"
 cc9916,Integrated Device Technology (Malaysia) Sdn. Bhd.
 cc9c3e,Cisco Meraki
 cc9da2,Eltex Enterprise Ltd.
@@ -34598,6 +34839,8 @@ cca462,Commscope
 cca4af,"Shenzhen Sowell Technology Co., LTD"
 cca614,AIFA TECHNOLOGY CORP.
 cca7c1,"Google, Inc."
+cca823,Silicon Laboratories
+ccaa00,Microsoft Corporation
 ccab2c,"HUMAX Co., Ltd."
 ccacfe,"Telink Semiconductor (Shanghai) Co., Ltd."
 ccaf78,"Hon Hai Precision Ind. Co.,Ltd."
@@ -34638,6 +34881,7 @@ ccbe71,OptiLogix BV
 ccbf0c,"SHENZHEN FENDA TECHNOLOGY CO., LTD"
 ccc079,"Murata Manufacturing Co., Ltd."
 ccc104,Applied Technical Systems
+ccc253,zte corporation
 ccc261,IEEE Registration Authority
 ccc2e0,"Raisecom Technology CO., LTD"
 ccc3ea,"Motorola Mobility LLC, a Lenovo Company"
@@ -34753,6 +34997,7 @@ d004b0,"Samsung Electronics Co.,Ltd"
 d0052a,Arcadyan Corporation
 d005e4,"Huawei Device Co., Ltd."
 d0066a,"Cornelis Networks, Inc."
+d00674,"Siemens Industrial Automation Products Ltd., Chengdu"
 d00790,Texas Instruments
 d007ca,Juniper Networks
 d009c8,"Cisco Systems, Inc"
@@ -34938,6 +35183,7 @@ d07714,"Motorola Mobility LLC, a Lenovo Company"
 d077ce,Edgecore Networks Corporation
 d07880,"Fiberhome Telecommunication Technologies Co.,LTD"
 d0789a,Vantiva - Connected Home
+d0792f,"New H3C Intelligence Terminal Co., Ltd."
 d07ab5,"HUAWEI TECHNOLOGIES CO.,LTD"
 d07b6f,"Zhuhai Yunmai Technology Co.,Ltd"
 d07c2d,"Leie IOT technology Co., Ltd"
@@ -34987,6 +35233,7 @@ d097fe,"Realme Chongqing Mobile Telecommunications Corp.,Ltd."
 d0989c,ConMet
 d098b1,"GScoolink Microelectronics (Beijing) Co.,LTD"
 d099d5,Alcatel-Lucent
+d09aaf,Espressif Systems (Singapore) Pte. Ltd
 d09b05,Emtronix
 d09c30,"Foster Electric Company, Limited"
 d09c7a,Xiaomi Communications Co Ltd
@@ -35086,6 +35333,7 @@ d0d6cc,Wintop
 d0d783,"HUAWEI TECHNOLOGIES CO.,LTD"
 d0d7be,"HUAWEI TECHNOLOGIES CO.,LTD"
 d0d94f,IEEE Registration Authority
+d0da24,IEEE Registration Authority
 d0dad7,"Apple, Inc."
 d0db32,Nokia Corporation
 d0dbb7,Casa Systems
@@ -35107,6 +35355,7 @@ d0e828,Radiant Industries Incorporated
 d0ea11,Routerboard.com
 d0ea30,NXP Semiconductors Taiwan Ltd.
 d0eb03,Zhehua technology limited
+d0eb1a,Siemens AG
 d0eb9e,Seowoo Inc.
 d0ec35,"Cisco Systems, Inc"
 d0edff,ZF CVCS
@@ -35155,6 +35404,7 @@ d40aa9,Commscope
 d40adc,"Qingdao Intelligent&Precise Electronics Co.,Ltd."
 d40b1a,HTC Corporation
 d40bb9,Solid Semecs bv.
+d40c9d,"SiFly Aviation, Inc"
 d40dab,"Shenzhen Cudy Technology Co., Ltd."
 d40e60,"Nanjing phx-gctech Information Technology Co., Ltd"
 d40f9e,"Apple, Inc."
@@ -35207,6 +35457,7 @@ d42c0f,Commscope
 d42c3d,Sky Light Digital Limited
 d42c44,"Cisco Systems, Inc"
 d42c46,BUFFALO.INC
+d42ca6,"Samsung Electronics Co.,Ltd"
 d42dc5,"i-PRO Co., Ltd."
 d42dcc,"Apple, Inc."
 d42f23,Akenori PTE Ltd
@@ -35531,6 +35782,7 @@ d4dd0b,WAVETEL TECHNOLOGY LIMITED
 d4df57,Alpinion Medical Systems
 d4e053,Hewlett Packard Enterprise
 d4e08e,ValueHD Corporation
+d4e13c,"Mellanox Technologies, Inc."
 d4e22f,"Roku, Inc"
 d4e2cb,Vantiva USA LLC
 d4e32c,S. Siedle & Sohne
@@ -35630,6 +35882,7 @@ d81909,Wiwynn Technology Service Malaysia
 d8197a,Nuheara Ltd
 d819ce,Telesquare
 d81bb5,"HUAWEI TECHNOLOGIES CO.,LTD"
+d81bf4,Texas Instruments
 d81bfe,TWINLINX CORPORATION
 d81c14,"Compacta International, Ltd."
 d81c79,"Apple, Inc."
@@ -35789,6 +36042,7 @@ d87495,zte corporation
 d874df,"HUAWEI TECHNOLOGIES CO.,LTD"
 d874ef,Guangzhou Shiyuan Electronic Technology Company Limited
 d87533,Nokia Corporation
+d87602,NXJ INC.
 d8760a,"Escort, Inc."
 d876ae,"HUAWEI TECHNOLOGIES CO.,LTD"
 d87766,"Nurivoice Co., Ltd"
@@ -35831,6 +36085,7 @@ d890e8,"Samsung Electronics Co.,Ltd"
 d8911d,"Jiangsu Yuwell POCTech Biotechnology Co.,Ltd"
 d8912a,Zyxel Communications Corporation
 d89136,Dover Fueling Solutions
+d89333,"HUAWEI TECHNOLOGIES CO.,LTD"
 d89341,General Electric Global Research
 d893d4,Xiaomi Communications Co Ltd
 d89403,Hewlett Packard Enterprise
@@ -35989,10 +36244,12 @@ d8eb97,"TRENDnet, Inc."
 d8ec5e,Belkin International Inc.
 d8ece5,Zyxel Communications Corporation
 d8ed1c,Magna Technology SL
+d8eda8,Xiaomi Communications Co Ltd
 d8ee42,"Sichuan Tianyi Comheart Telecom Co.,LTD"
 d8ee78,Moog Protokraft
 d8ef42,"Huawei Device Co., Ltd."
 d8efcd,Nokia Solutions and Networks GmbH & Co. KG
+d8f02f,Texas Instruments
 d8f0f2,Zeebo Inc
 d8f12e,TP-Link Systems Inc.
 d8f15b,Espressif Inc.
@@ -36090,6 +36347,7 @@ dc2e6a,"HCT. Co., Ltd."
 dc2e97,"Quectel Wireless Solutions Co.,Ltd."
 dc2f03,"Step forward Group Co., Ltd."
 dc2ffa,GE Lighting
+dc3052,zte corporation
 dc309c,Heyrex Limited
 dc3130,3onedata Technology Co. Ltd.
 dc31d1,"vivo Mobile Communication Co., Ltd."
@@ -36150,6 +36408,7 @@ dc5475,Espressif Inc.
 dc54ad,"Hangzhou RunZhou Fiber Technologies Co.,Ltd"
 dc54d7,Amazon Technologies Inc.
 dc5583,"GUANGDONG OPPO MOBILE TELECOMMUNICATIONS CORP.,LTD"
+dc55b1,Espressif Inc.
 dc567b,CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD.
 dc56e6,"Shenzhen Bococom Technology Co.,LTD"
 dc56e7,"Apple, Inc."
@@ -36258,6 +36517,7 @@ dc9c9f,"Shenzhen YOUHUA Technology Co., Ltd"
 dc9ded,"Samsung Electronics Co.,Ltd"
 dc9e8f,"Apple, Inc."
 dc9eab,"Chongqing Yipingfang Technology Co., Ltd."
+dc9f1f,"Aseko, spol. s r.o."
 dc9fa4,Nokia Corporation
 dc9fdb,Ubiquiti Inc
 dca0d0,Amazon Technologies Inc.
@@ -36351,6 +36611,7 @@ dcd83b,"Cisco Systems, Inc"
 dcd87c,"Beijing Jingdong Century Trading Co., LTD."
 dcd87f,Shenzhen JoinCyber Telecom Equipment Ltd
 dcd916,"HUAWEI TECHNOLOGIES CO.,LTD"
+dcd9a8,"Guang zhou Xradio Technology Co., Ltd"
 dcd9ae,"Nokia Shanghai Bell Co., Ltd."
 dcda0c,Espressif Inc.
 dcda4d,CELESTICA INC.
@@ -36384,6 +36645,7 @@ dce994,CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD.
 dceae7,D-Link Corporation
 dceb4d,"Motorola (Wuhan) Mobility Technologies Communication Co., Ltd."
 dceb53,"Wuhan QianXiao Elecronic Technology CO.,LTD"
+dceb5d,"Shandong Sinochip Semiconductors Co.,Ltd."
 dceb69,Vantiva USA LLC
 dceb94,"Cisco Systems, Inc"
 dcec06,"Heimi Network Technology Co., Ltd."
@@ -36648,6 +36910,7 @@ e092a7,"Feitian Technologies Co., Ltd"
 e09467,Intel Corporate
 e09559,Arcadyan Corporation
 e09579,"ORTHOsoft inc, d/b/a Zimmer CAS"
+e095b3,Texas Instruments
 e095ff,Infinix mobility limited
 e096e8,"Fiberhome Telecommunication Technologies Co.,LTD"
 e09796,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -36664,6 +36927,7 @@ e09d31,Intel Corporate
 e09d73,"Mellanox Technologies, Inc."
 e09db8,PLANEX COMMUNICATIONS INC.
 e09dfa,Wanan Hongsheng Electronic Co.Ltd
+e09e2d,Nokia
 e09ec1,"Silicon Innovation Microelectronics Co.,Ltd."
 e09f2a,Iton Technology Corp.
 e0a129,"Extreme Networks, Inc."
@@ -36929,6 +37193,7 @@ e441e6,Ottec Technology GmbH
 e442a6,Intel Corporate
 e4434b,Dell Inc.
 e44389,"Apple, Inc."
+e443cf,TP-Link Systems Inc.
 e444e5,"Extreme Networks, Inc."
 e44519,"Beijing Xiaomi Electronics Co.,Ltd"
 e446b0,Fujitsu Client Computing Limited
@@ -36983,6 +37248,7 @@ e46059,"Pingtek Co., Ltd."
 e461f4,"shenzhen worldelite electronics co., LTD"
 e46251,HAO CHENG GROUP LIMITED
 e462c4,"Cisco Systems, Inc"
+e463fe,"FUJIAN STAR-NET COMMUNICATION CO.,LTD"
 e46447,EM Microelectronic
 e46449,Commscope
 e46564,"SHENZHEN KTC TECHNOLOGY CO.,LTD"
@@ -37222,6 +37488,7 @@ e4fd45,Intel Corporate
 e4fd8c,"Extreme Networks, Inc."
 e4fda1,"HUAWEI TECHNOLOGIES CO.,LTD"
 e4fe43,"Beijing Xiaomi Mobile Software Co., Ltd"
+e4fed4,Microsoft Corporation
 e4fed9,EDMI Europe Ltd
 e4fee4,Ciena Corporation
 e4ff69,Holiday Robotics
@@ -37262,6 +37529,7 @@ e81367,AIRSOUND Inc.
 e8136e,"HUAWEI TECHNOLOGIES CO.,LTD"
 e81499,"Yoqu Technology(Shenzhen)Co.,Ltd."
 e8150e,Nokia Corporation
+e815fe,"New H3C Technologies Co., Ltd"
 e8162b,"IDEO Security Co., Ltd."
 e81656,"Hangzhou BroadLink Technology Co.,Ltd"
 e81711,"Shenzhen Vipstech Co., Ltd"
@@ -37341,6 +37609,7 @@ e84dd0,"HUAWEI TECHNOLOGIES CO.,LTD"
 e84dec,Xerox Corporation
 e84e06,"EDUP INTERNATIONAL (HK) CO., LTD"
 e84e84,"Samsung Electronics Co.,Ltd"
+e84eba,"Google, Inc."
 e84ece,"Nintendo Co., Ltd."
 e84f25,"Murata Manufacturing Co., Ltd."
 e84f4b,"Shenzhen Delos Electronic Co., Ltd"
@@ -37732,6 +38001,7 @@ ec3111,"Sichuan AI-Link Technology Co., Ltd."
 ec314a,"Chengdu Quanjing Intelligent Technology Co.,Ltd"
 ec315f,Amazon Technologies Inc.
 ec316d,Hansgrohe
+ec33cc,Hewlett Packard Enterprise
 ec34e2,Yasmina Labs Trading FZE
 ec3532,Tactrix Inc.
 ec354d,"Wingtech Mobile Communications Co.,Ltd"
@@ -37856,6 +38126,7 @@ ec8152,"HUAWEI TECHNOLOGIES CO.,LTD"
 ec8193,"Logitech, Inc"
 ec819c,"HUAWEI TECHNOLOGIES CO.,LTD"
 ec8263,zte corporation
+ec8306,"GooWi Wireless Technology Co., Limited"
 ec8350,Microsoft Corporation
 ec836c,"RM Tech Co., Ltd."
 ec83b7,PUWELL CLOUD TECH LIMITED
@@ -37921,6 +38192,7 @@ eca78d,"Cisco Systems, Inc"
 eca7ad,"Barrot Technology Co.,Ltd."
 eca7b1,IEEE Registration Authority
 eca81f,Vantiva USA LLC
+eca854,"EFOCE Technology Co., Ltd."
 eca86b,"Elitegroup Computer Systems Co.,Ltd."
 eca907,"Apple, Inc."
 eca940,Commscope
@@ -37954,6 +38226,7 @@ ecb907,CloudGenix Inc
 ecb931,TP-Link Systems Inc.
 ecb970,"Ruijie Networks Co.,LTD"
 ecb9a5,"Huawei Device Co., Ltd."
+ecba34,IEEE Registration Authority
 ecbafe,GIROPTIC
 ecbb78,"Cisco Systems, Inc"
 ecbbae,Digivoice Tecnologia em Eletronica Ltda
@@ -38392,7 +38665,7 @@ f0d805,"Cisco Systems, Inc"
 f0d9b2,EXO S.A.
 f0da7c,"RLH INDUSTRIES,INC."
 f0db2a,"LANNER ELECTRONICS, INC."
-f0db30,Yottabyte
+f0db30,Verge.io
 f0dbe2,"Apple, Inc."
 f0dbf8,"Apple, Inc."
 f0dce2,"Apple, Inc."
@@ -38404,8 +38677,10 @@ f0e4a2,"HUAWEI TECHNOLOGIES CO.,LTD"
 f0e5c3,Drägerwerk AG & Co. KG aA
 f0e752,"Shenzhen Huajuxin Semiconductor Co.,ltd"
 f0e77e,"Samsung Electronics Co.,Ltd"
+f0eae1,"Nanjing RISC-V Institute Co., Ltd."
 f0ebd0,"Shanghai Feixun Communication Co.,Ltd."
 f0ec39,Essec
+f0ec80,Zero Boundary Singularity Technology(Shenzhen)
 f0ed19,zte corporation
 f0ed1e,Bilkon Bilgisayar Kontrollu Cih. Im.Ltd.
 f0ed51,"Qingdao Intelligent&Precise Electronics Co.,Ltd."
@@ -38440,7 +38715,9 @@ f0f832,"Google, Inc."
 f0f842,"KEEBOX, Inc."
 f0f84a,BUFFALO.INC
 f0f8f2,Texas Instruments
+f0f95d,Aditya Infotech Ltd.
 f0f9f7,IES GmbH & Co. KG
+f0faba,NVIDIA Corporation
 f0fac7,"Huawei Device Co., Ltd."
 f0fb7f,"Mellanox Technologies, Inc."
 f0fc65,SynaXG Technologies Pte. Ltd.
@@ -38461,6 +38738,7 @@ f40321,BeNeXt B.V.
 f4032a,Amazon Technologies Inc.
 f4032f,Reduxio Systems
 f40343,Hewlett Packard Enterprise
+f40393,"Nanjing Qinheng Microelectronics Co., Ltd."
 f4044c,ValenceTech Limited
 f40595,Sagemcom Broadband SAS
 f40616,"Apple, Inc."
@@ -38469,6 +38747,7 @@ f40669,Intel Corporate
 f4068d,devolo AG
 f406a3,"Huawei Device Co., Ltd."
 f406a5,"Hangzhou Bianfeng Networking Technology Co., Ltd."
+f40855,Qingdao Haier Technology Co.Ltd
 f409d8,SAMSUNG ELECTRO-MECHANICS(THAILAND)
 f40a2e,"Shenzhen Skyworth Digital  Technology  CO., Ltd"
 f40a4a,"INDUSNET Communication Technology Co.,LTD"
@@ -38585,6 +38864,7 @@ f44d30,"Elitegroup Computer Systems Co.,Ltd."
 f44d5c,Zyxel Communications Corporation
 f44dad,Cable Matters Inc.
 f44e05,"Cisco Systems, Inc"
+f44e35,"Meta Platforms, Inc."
 f44e38,Olibra LLC
 f44eb4,CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD.
 f44ee3,Intel Corporate
@@ -38628,6 +38908,7 @@ f4645d,Toshiba
 f464b6,Sercomm Corporation.
 f4650b,Espressif Inc.
 f465a6,"Apple, Inc."
+f46639,"GD Midea Air-Conditioning Equipment Co.,Ltd."
 f4672d,ShenZhen Topstar Technology Company
 f46802,"HUAWEI TECHNOLOGIES CO.,LTD"
 f46942,ASKEY COMPUTER CORP
@@ -38680,6 +38961,7 @@ f485c6,FDT Technologies
 f48771,Infoblox
 f487c5,"Huawei Device Co., Ltd."
 f48918,"HUAWEI TECHNOLOGIES CO.,LTD"
+f48974,"Cisco Systems, Inc"
 f48b32,Xiaomi Communications Co Ltd
 f48c50,Intel Corporate
 f48ceb,D-Link International
@@ -38737,6 +39019,7 @@ f4b24e,"Huawei Device Co., Ltd."
 f4b301,Intel Corporate
 f4b381,WindowMaster A/S
 f4b3b1,Silicon Laboratories
+f4b49e,eero inc.
 f4b520,Biostar Microtech international corp.
 f4b52f,Juniper Networks
 f4b549,"Xiamen Yeastar Digital Technology Co., Ltd"
@@ -38965,6 +39248,7 @@ f82f6a,ITEL MOBILE LIMITED
 f82fa8,"Hon Hai Precision Ind. Co.,Ltd."
 f83002,Texas Instruments
 f83094,Alcatel-Lucent Telecom Limited
+f83125,"Xiamen uink Technology Co., Ltd"
 f8313e,endeavour GmbH
 f832ba,VusionGroup
 f832e4,ASUSTek COMPUTER INC.
@@ -38973,6 +39257,7 @@ f83376,"Good Mind Innovation Co., Ltd."
 f83441,Intel Corporate
 f83451,Comcast-SRL
 f8345a,Hitron Technologies. Inc
+f834e5,"vivo Mobile Communication Co., Ltd."
 f83553,Magenta Research Ltd.
 f835dd,"Gemtek Technology Co., Ltd."
 f8369b,Texas Instruments
@@ -39177,6 +39462,7 @@ f8a73a,"Cisco Systems, Inc"
 f8a763,"Zhejiang Tmall Technology Co., Ltd."
 f8a91f,"ZVISION Technologies Co., Ltd"
 f8a963,"COMPAL INFORMATION (KUNSHAN) CO., LTD."
+f8a986,Microsoft Corporation
 f8a9d0,LG Electronics (Mobile Communications)
 f8a9de,PUISSANCE PLUS
 f8aa3f,DWnet Technologies(Suzhou) Corporation
@@ -39221,6 +39507,7 @@ f8c116,Juniper Networks
 f8c120,"Xi'an Link-Science Technology Co.,Ltd"
 f8c249,AMPERE COMPUTING LLC
 f8c288,"Cisco Systems, Inc"
+f8c362,Silicon Laboratories
 f8c372,TSUZUKI DENKI
 f8c397,NZXT Corp. Ltd.
 f8c39e,"HUAWEI TECHNOLOGIES CO.,LTD"
@@ -39392,6 +39679,7 @@ fc1d84,Autobase
 fc1e16,IPEVO corp
 fc1f19,"SAMSUNG ELECTRO MECHANICS CO., LTD."
 fc1fc0,EURECAM
+fc2120,"Cisco Systems, Inc"
 fc221c,"Shenzhen Xunman Technology Co., Ltd"
 fc229c,"Han Kyung I Net Co.,Ltd."
 fc22d3,FDSYS
@@ -39400,6 +39688,7 @@ fc2325,"EosTek (Shenzhen) Co., Ltd."
 fc23cd,SHENZHEN BILIAN ELECTRONIC CO.，LTD
 fc2422,"Hangzhou Ezviz Software Co.,Ltd."
 fc253f,"Apple, Inc."
+fc2640,"Huawei Device Co., Ltd."
 fc268c,Signify B.V.
 fc27a2,"TRANS ELECTRIC CO., LTD."
 fc29e3,Infinix mobility limited
@@ -39670,8 +39959,10 @@ fcc2de,"Murata Manufacturing Co., Ltd."
 fcc2e5,"HOLOWITS TECHNOLOGIES CO.,LTD"
 fcc734,"Samsung Electronics Co.,Ltd"
 fcc737,"Shaanxi Gangsion Electronic Technology Co., Ltd"
+fcc766,"Huawei Device Co., Ltd."
 fcc897,zte corporation
 fcca10,"MERCUSYS TECHNOLOGIES CO., LTD."
+fcca40,Sony Interactive Entertainment Inc.
 fccac4,"LifeHealth, LLC"
 fccce4,Ascon Ltd.
 fccd2f,IEEE Registration Authority
@@ -39710,9 +40001,11 @@ fce1fb,Array Networks
 fce23f,CLAY PAKY SPA
 fce26c,"Apple, Inc."
 fce33c,"HUAWEI TECHNOLOGIES CO.,LTD"
+fce33d,CLOUD NETWORK TECHNOLOGY SINGAPORE PTE. LTD.
 fce421,"zhejiang Dusun Electron Co.,Ltd"
 fce498,IEEE Registration Authority
 fce557,Nokia Corporation
+fce5f0,"Samsung Electronics Co.,Ltd"
 fce66a,Industrial Software Co
 fce6c6,"China Mobile Group Device Co.,Ltd."
 fce806,Edifier International
