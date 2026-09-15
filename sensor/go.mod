@@ -1,12 +1,12 @@
 module github.com/vedetta-network/vedetta/sensor
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/0xrawsec/golang-etw v1.6.2
 	github.com/google/gopacket v1.1.19
-	golang.org/x/net v0.57.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/net v0.59.0
+	golang.org/x/sys v0.48.0
 )
 
 require github.com/0xrawsec/golang-utils v1.3.1 // indirect
