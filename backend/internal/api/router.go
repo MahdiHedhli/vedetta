@@ -319,6 +319,7 @@ func NewRouter(srv *Server) http.Handler {
 				r.Post("/heartbeat", srv.handleSensorHeartbeat)
 				r.Post("/devices", srv.handleSensorDevices)
 				r.Post("/dns", srv.handleSensorDNS)
+				r.Post("/security", srv.handleSensorSecurity)
 				r.Get("/work", srv.handleSensorWork)
 			})
 

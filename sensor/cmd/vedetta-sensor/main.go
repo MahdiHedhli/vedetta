@@ -168,6 +168,13 @@ func main() {
 	passiveDHCP := flag.Bool("passive-dhcp", true, "Enable passive DHCP discovery")
 	passiveMDNS := flag.Bool("passive-mdns", true, "Enable passive mDNS discovery")
 	passiveSSDP := flag.Bool("passive-ssdp", true, "Enable passive SSDP/UPnP discovery")
+	iotEnabled := flag.Bool("iot-detection", true, "Enable passive Realtek exploit and Cling UDP detection (Unix packet capture)")
+	iotIface := flag.String("iot-iface", "auto", "Network interface for passive IoT security detection")
+	iotPromiscuous := flag.Bool("iot-promiscuous", false, "Request promiscuous IoT capture for an authorized mirror port; subject CIDR still applies")
+	iotHostAudit := flag.Bool("iot-host-audit", runtime.GOOS == "linux", "Audit this sensor host's known Cling/Realtek files every 15 minutes (read-only)")
+	iotAuditRoot := flag.String("iot-audit-root", "", "Audit an extracted filesystem or /, print security-observation JSON, and exit without scanning")
+	iotAuditIP := flag.String("iot-audit-ip", "", "Explicit device IP associated with --iot-audit-root; required for submission")
+	iotAuditSubmit := flag.Bool("iot-audit-submit", false, "Submit the explicit filesystem audit to --core using an existing enrolled sensor credential")
 	arpDiscovery := flag.Bool("arp-discovery", true, "Enable unprivileged ARP-cache discovery (reads the OS neighbor cache; passive, no root)")
 	arpSweep := flag.Bool("arp-sweep", false, "Warm the ARP cache with a lightweight unprivileged TCP/UDP sweep (active; off by default)")
 	arpPollInterval := flag.Duration("arp-poll-interval", 30*time.Second, "How often to read the OS ARP/neighbor cache")
@@ -209,6 +216,23 @@ func main() {
 	// Report the linker-stamped build version to Core at registration (a "0.1.0-dev"
 	// literal was previously hardcoded, so released sensors mis-reported their version).
 	client.Version = buildVersion
+
+	// Filesystem auditing is an explicit, network-free mode unless submission is
+	// requested. Dispatch before nmap, enrollment, and packet capture initialization.
+	if *iotAuditRoot != "" || *iotAuditSubmit || *iotAuditIP != "" {
+		if *iotAuditRoot == "" || *reset || *selfCheck || *enrollOnly {
+			log.Fatal("filesystem audit requires --iot-audit-root and cannot be combined with reset, check, or enrollment")
+		}
+		if *iotAuditSubmit && !coreExplicit {
+			log.Fatal("--iot-audit-submit requires an explicit --core destination")
+		}
+		ctx, stop := interactiveContext()
+		defer stop()
+		if err := runSecurityAudit(ctx, *iotAuditRoot, *iotAuditIP, *iotAuditSubmit, *coreURL, os.Stdout); err != nil {
+			log.Fatalf("filesystem audit: %v", err)
+		}
+		return
+	}
 
 	// Diagnostics dispatch before reset handling so even an accidental
 	// `--reset --check` cannot clear the token or enroll. --require-token is scoped to
@@ -312,6 +336,10 @@ func main() {
 		passiveDHCP:          *passiveDHCP,
 		passiveMDNS:          *passiveMDNS,
 		passiveSSDP:          *passiveSSDP,
+		iotEnabled:           *iotEnabled,
+		iotIface:             *iotIface,
+		iotPromiscuous:       *iotPromiscuous,
+		iotHostAudit:         *iotHostAudit,
 
 		arpEnabled:       *arpDiscovery,
 		arpSweep:         *arpSweep,
@@ -379,6 +407,11 @@ type sensorRun struct {
 	passiveDHCP          bool
 	passiveMDNS          bool
 	passiveSSDP          bool
+	iotEnabled           bool
+	iotIface             string
+	iotPromiscuous       bool
+	iotHostAudit         bool
+	security             *securityRuntime
 
 	arpEnabled       bool
 	arpSweep         bool
@@ -655,6 +688,7 @@ func (r *sensorRun) startCaptures() {
 			log.Printf("ARP-cache discovery active (sweep=%v poll=%s)", r.arpSweep, r.arpPollInterval)
 		}
 	}
+	r.startSecurityDetection()
 }
 
 // explicitARPInterface returns an OS interface only when the operator genuinely
@@ -706,6 +740,7 @@ func (r *sensorRun) ensurePassiveSink() {
 // shutdown stops the capturers and drains their push goroutines within the bounded
 // window.
 func (r *sensorRun) shutdown() {
+	r.stopSecurityDetection()
 	// Stop the ARP source BEFORE shutdownCaptures closes r.passiveHosts, so its poll
 	// loop can never send on a closed channel. Stop() blocks until the loop has drained.
 	if r.arpSource != nil {

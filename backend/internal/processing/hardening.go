@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vedetta-network/vedetta/backend/internal/iotsecurity"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 )
 
@@ -18,7 +19,11 @@ var coreOwnedTags = map[string]struct{}{
 	"whitelisted": {}, "known_good_context": {}, "vedetta_self": {}, "wan_scan_noise": {},
 	"new_device": {}, "very_new_device": {}, "new_device_context": {}, "iot_context": {},
 	"eol_router": {}, "eol_device_context": {}, "high_risk_iot": {}, "known_exploited": {},
-	"source:unifi": {},
+	"source:unifi":                      {},
+	iotsecurity.DetectorRealtekExposure: {}, iotsecurity.DetectorRealtekExploit: {},
+	iotsecurity.DetectorSTUNFanout: {}, iotsecurity.DetectorRegistration: {},
+	iotsecurity.DetectorArtifact: {}, iotsecurity.DetectorPersistence: {},
+	"cling": {}, "realtek_exploit": {}, "stun_fanout": {}, "cling_compromised": {},
 }
 
 type trustedIPS struct {
