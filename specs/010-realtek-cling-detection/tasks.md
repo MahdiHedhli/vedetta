@@ -30,6 +30,9 @@
   suppression, filesystem confinement, bounded capture/delivery, and IOC source
   accuracy. Registration chronology and persistence-source findings were fixed
   and their regression tests passed.
+- Windows CI exposed a Unix execute-permission assumption in an audit fixture.
+  Audit coverage and platform-specific assertions explicitly preserve Windows'
+  inability to establish Unix executable eligibility.
 - `git diff --cached --check` and the repository sanitation gate passed before
   publication. No live traffic, malware execution, or device exploitation was
   used for validation.

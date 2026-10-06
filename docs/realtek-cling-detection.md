@@ -9,7 +9,7 @@ binary, or change a device's configuration.
 
 | Observation | Interpretation |
 | --- | --- |
-| Realtek SDK marker and UDPServer executable in the audited filesystem | Potentially affected component; confirm the OEM firmware and backported patch status |
+| Realtek SDK marker and an ELF UDPServer component in the audited filesystem | Potentially affected component; confirm the OEM firmware and backported patch status |
 | UDP traffic to port 9034 beginning with `orf;` and additional content | Exploit attempt targeting the destination, execution and vulnerability unconfirmed |
 | Valid zero-ID STUN Binding Requests to at least three distinct peers in 60 seconds | Suspicious behavior, not sufficient by itself to identify Cling |
 | A recognized infection-method registration on the same source/peer socket as a zero-ID request | Probable Cling behavior |
@@ -93,6 +93,10 @@ layouts therefore reduce coverage rather than producing a clean verdict.
 Persistence checks recognize straightforward init commands. Complex shell
 constructs, continuations, functions, heredocs, and multiline quoting leave
 persistence coverage partial; the audit still checks the file's digest.
+Windows filesystem metadata does not preserve Unix execute permissions. An audit
+run on Windows reports that limitation and leaves permission-dependent
+persistence checks unassessed. File digest, marker, init-reference, and SDK
+collection remain available for explicitly supplied extracted filesystems.
 
 ## Findings and coverage
 

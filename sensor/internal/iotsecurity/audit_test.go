@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -51,8 +52,11 @@ func TestAuditCollectsArtifactsWithoutExecution(t *testing.T) {
 	}
 	file := observation.Files[0]
 	wantDigest := sha256.Sum256(data)
-	if file.SHA256 != hex.EncodeToString(wantDigest[:]) || file.Size != int64(len(data)) || file.MagicHex != "7f454c46" || !file.Executable || !reflect.DeepEqual(file.Markers, fileMarkers) {
+	if file.SHA256 != hex.EncodeToString(wantDigest[:]) || file.Size != int64(len(data)) || file.MagicHex != "7f454c46" || !reflect.DeepEqual(file.Markers, fileMarkers) {
 		t.Fatalf("incorrect file facts: %+v", file)
+	}
+	if wantExecutable := runtime.GOOS != "windows"; file.Executable != wantExecutable {
+		t.Fatalf("executable evidence = %v, want %v on %s", file.Executable, wantExecutable, runtime.GOOS)
 	}
 	if len(observation.Persistence) != 2 {
 		t.Fatalf("expected two execution references, excluding comments/echo: %+v", observation.Persistence)
@@ -66,8 +70,21 @@ func TestAuditCollectsArtifactsWithoutExecution(t *testing.T) {
 	if err != nil || !bytes.Equal(after, data) {
 		t.Fatal("audit changed an inspected file")
 	}
-	if coverageFor(t, observation, "filesystem_audit").Status != "complete" {
-		t.Fatal("complete allowlist read should report complete collection")
+	wantStatus := "complete"
+	if runtime.GOOS == "windows" {
+		wantStatus = "partial"
+		coverage := coverageFor(t, observation, "unix_execute_permissions")
+		if coverage.Status != "unsupported" || !strings.Contains(coverage.Detail, "unassessed") || !strings.Contains(coverage.Detail, "hashes and fixed-path evidence remain available") {
+			t.Fatalf("missing Windows permission limitation: %+v", coverage)
+		}
+		for _, evidence := range observation.Files {
+			if evidence.Executable {
+				t.Fatalf("Windows audit inferred Unix executable eligibility: %+v", evidence)
+			}
+		}
+	}
+	if got := coverageFor(t, observation, "filesystem_audit").Status; got != wantStatus {
+		t.Fatalf("filesystem coverage = %q, want %q on %s", got, wantStatus, runtime.GOOS)
 	}
 }
 
@@ -113,7 +130,14 @@ func TestAuditEmptyRootIsNotCleanAndSubjectOptional(t *testing.T) {
 		t.Fatalf("audit inferred facts from an empty root: %+v", observation)
 	}
 	coverage := coverageFor(t, observation, "filesystem_audit")
-	if coverage.Status != "complete" || !strings.Contains(coverage.Detail, "does not establish a clean") {
+	wantStatus := "complete"
+	if runtime.GOOS == "windows" {
+		wantStatus = "partial"
+		if coverageFor(t, observation, "unix_execute_permissions").Status != "unsupported" {
+			t.Fatal("empty Windows root must retain unsupported Unix permission coverage")
+		}
+	}
+	if coverage.Status != wantStatus || !strings.Contains(coverage.Detail, "does not establish a clean") {
 		t.Fatalf("missing negative-result limitation: %+v", coverage)
 	}
 	if _, err := Audit("", "192.0.2.1"); err == nil {

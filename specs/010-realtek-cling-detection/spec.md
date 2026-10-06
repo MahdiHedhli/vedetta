@@ -37,7 +37,9 @@ No active vulnerability assessment, remote shell collection, generic file crawl,
 payload execution, automatic quarantine/remediation, or assertion that a network
 is clean. No blanket STUN destination blocklist. Windows supports portable audit
 logic for explicitly supplied extracted filesystems but no native packet capture
-in this feature. DNS-only installations retain their existing coverage limits.
+in this feature. Windows audits report Unix execute permissions as unassessed;
+permission-dependent persistence conclusions therefore remain unavailable.
+DNS-only installations retain their existing coverage limits.
 
 ## Evidence states
 

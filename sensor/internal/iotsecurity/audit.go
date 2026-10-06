@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -65,6 +66,13 @@ func Audit(root string, subjectIP string) (Observation, error) {
 	var component string
 	var sdkMarker, sdkVersion string
 	partial := false
+	if runtime.GOOS == "windows" {
+		partial = true
+		observation.Coverage = append(observation.Coverage, Coverage{
+			Check: "unix_execute_permissions", Status: "unsupported",
+			Detail: "Unix execute permissions are unavailable on Windows; executable eligibility and persistence based on markers are unassessed; hashes and fixed-path evidence remain available",
+		})
+	}
 	for _, candidate := range auditPaths() {
 		limit := int64(maxAuditBinarySize)
 		if candidate.kind == "init" || candidate.kind == "sdk" || candidate.kind == "pointer" {
@@ -222,7 +230,7 @@ func describeFile(name string, data []byte, info fs.FileInfo) FileEvidence {
 	evidence := FileEvidence{
 		Path: name, SHA256: hex.EncodeToString(sha256sum[:]), SHA1: hex.EncodeToString(sha1sum[:]),
 		Size: int64(len(data)), MagicHex: hex.EncodeToString(data[:min(len(data), 4)]),
-		Executable: info.Mode()&0o111 != 0,
+		Executable: runtime.GOOS != "windows" && info.Mode()&0o111 != 0,
 	}
 	for _, marker := range fileMarkers {
 		if bytes.Contains(data, []byte(marker)) {
