@@ -273,6 +273,7 @@ func (processor *Processor) processRecord(ctx context.Context, envelope IngressE
 	// without allowing a feed reason to manufacture them.
 	heuristics = deduplicateEvidence(append(heuristics, heuristicEvidence(event, detectionMeta, now)...))
 	evidence := deduplicateEvidence(append(strongEvidence, heuristics...))
+	evidence = deduplicateEvidence(append(evidence, sensorSecurityEvidence(&event, envelope, originalMeta, detectionMeta, now)...))
 	markFindingEligibility(evidence)
 	attachDeviceContext(evidence, deviceContext)
 	applyPostDetectionContext(&event, deviceContext, evidence)

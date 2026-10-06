@@ -1,6 +1,6 @@
 # Vedetta Backlog
 
-> Last updated: 2026-05-19
+> Last updated: 2026-10-06
 > Purpose: day-to-day project management, task assignment, and working coordination
 
 This document is the working task tracker for Vedetta. It is intentionally different from the product roadmap:
@@ -39,6 +39,7 @@ This document is the working task tracker for Vedetta. It is intentionally diffe
 
 | ID | Task | Area | Priority | Status | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
+| VED-016 | Detect Realtek CVE-2021-35394 and Cling evidence | Sensor / Detection | P1 | In Progress | Codex | [Spec 010](../specs/010-realtek-cling-detection/spec.md): implementation and independent review complete; passive UDP and read-only host evidence, distinct exposure/attack/compromise findings; awaiting integration and maintainer review |
 | VED-003 | Write an alpha install and troubleshooting guide for Core + Sensor | Docs / DX | P1 | Ready | Unassigned | Keep install messaging aligned with the current Docker + native sensor reality |
 | VED-004 | Decide whether to standardize repo and Go module naming | Repo / Build | P1 | Inbox | Unassigned | Public repo uses `MahdiHedhli/vedetta`, while code still uses `github.com/vedetta-network/...` imports |
 | VED-015 | Fix broken fresh-install migration runner (was: fails at 009) | Schema / Bug | P0 | Done | — | **Resolved (commit `ac8a96b`).** `001_init.sql` now ships the final 19-column events schema and `009_event_type_encrypted_dns.sql` was reworked to recreate `events` with the explicit final schema and copy rows via an explicit shared column list (works from both the 14-column legacy and 19-column fresh shapes); migration 020 repairs correlation FKs. The fresh-install chain (001..023) now runs clean end-to-end and a real-runner regression test was added. Fresh production Docker Core installs are no longer affected. |

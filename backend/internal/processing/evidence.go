@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vedetta-network/vedetta/backend/internal/iotsecurity"
 	"github.com/vedetta-network/vedetta/backend/internal/models"
 	"github.com/vedetta-network/vedetta/backend/internal/threatintel"
 	"golang.org/x/net/publicsuffix"
@@ -461,6 +462,18 @@ func recommendedAction(evidence models.DetectionEvidence) string {
 	// supporting event. Keeping the action outcome-neutral prevents a later
 	// allowed event from producing a "mixed" finding with blocked-only advice.
 	switch evidence.Detector {
+	case iotsecurity.DetectorRealtekExposure:
+		return "Identify the exact device model and OEM firmware, verify the vendor's CVE-2021-35394 patch or backport, and disable or restrict UDPServer on UDP 9034 where supported. This observation does not establish network exposure."
+	case iotsecurity.DetectorRealtekExploit:
+		return "Restrict access to UDP 9034, verify the target's OEM firmware and patch status, and inspect for follow-on Cling activity. An observed attack does not prove successful exploitation."
+	case iotsecurity.DetectorSTUNFanout:
+		return "Identify the originating process or device and correlate with registration or filesystem evidence. Verify expected STUN/WebRTC use before taking action; do not block public STUN infrastructure solely on this signal."
+	case iotsecurity.DetectorRegistration:
+		return "Investigate and consider isolating the source device, collect authorized filesystem or process evidence, and verify its firmware. Public STUN destinations alone are not malicious indicators."
+	case iotsecurity.DetectorArtifact:
+		return "Preserve the matching file and verify the inspected filesystem's association with the device. Isolate an affected live device and restore trusted firmware; a digest match alone does not establish current execution."
+	case iotsecurity.DetectorPersistence:
+		return "Isolate the affected live device, preserve the executable and init evidence, and restore trusted firmware or a known-good filesystem. Verify patched firmware before reconnecting and do not rely on deleting one file."
 	case "threat_intelligence", "ips":
 		return "Isolate the affected device, verify its software or firmware, and investigate related activity."
 	case "dns_tunnel":

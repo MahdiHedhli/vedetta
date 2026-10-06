@@ -31,6 +31,9 @@ Public-beta hardening. Highlights in flight:
 - Removed a large binary from version control; corrected landing-page claims.
 
 ### Added
+- Passive Realtek CVE-2021-35394 exploit and Cling STUN observations, read-only
+  host/firmware artifact audits, and separate evidence-based Core findings.
+  See `docs/realtek-cling-detection.md` for operation and coverage limits.
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `PRIVACY.md`, and issue templates.
 
 <!-- Add a dated version section here when the first beta tag is cut, e.g.:

@@ -5,6 +5,27 @@ device discovery + DNS signals to Vedetta Core. It runs directly on the host OS 
 a container) because L2 visibility requires the host network stack. See
 [docs/sensor-architecture.md](../docs/sensor-architecture.md) for the full architecture.
 
+## Realtek and Cling security observations
+
+The native sensor also supplies narrowly filtered passive UDP observations for
+CVE-2021-35394 exploit attempts and Cling-like STUN behavior. Linux sensors perform
+a bounded read-only audit of their own known malware/component paths. Core keeps
+potential vulnerability, exploit attempts, and compromise evidence distinct.
+See [detection operation and limits](../docs/realtek-cling-detection.md).
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--iot-detection` | `true` | Passive UDP security capture on supported Unix hosts |
+| `--iot-iface` | `auto` | Capture interface |
+| `--iot-promiscuous` | `false` | Request promiscuous capture on an authorized mirror port |
+| `--iot-host-audit` | `true` on Linux | Read-only local sensor filesystem checks every 15 minutes |
+| `--iot-audit-root` | unset | Explicit filesystem audit, JSON output, then exit |
+| `--iot-audit-ip` | unset | Device IP for an explicit filesystem audit |
+| `--iot-audit-submit` | `false` | Submit explicit audit with an enrolled sensor credential and explicit `--core` |
+
+Packet visibility depends on sensor placement; local filesystem checks do not
+inspect other devices. Missing observations never certify a clean device.
+
 ## Unprivileged ARP-cache discovery
 
 The sensor learns IP↔MAC bindings by reading the operating system's own neighbor (ARP)
